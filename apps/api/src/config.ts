@@ -9,6 +9,10 @@ const schema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   // Хеш коммита, выставляется при сборке/выкладке; локально – 'dev'.
   GIT_SHA: z.string().min(1).default('dev'),
+  // Рантайм-учётка yu_app (ADR 0001). Без неё API отдаёт только /health.
+  DATABASE_URL: z.string().min(1).optional(),
+  // Секрет HMAC токенов сессий (K12). Без него вход сотрудников выключен.
+  SESSION_PEPPER: z.string().min(32, 'не короче 32 символов').optional(),
 });
 
 export type Config = z.infer<typeof schema>;

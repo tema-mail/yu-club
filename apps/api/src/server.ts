@@ -1,8 +1,10 @@
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import { pathToFileURL } from 'node:url';
+import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
 import { AppError } from './core/errors.ts';
 import './core/registry.ts'; // проверка реестров модулей на дубли – при старте (ADR 0002)
+import { staffAuthConfig } from './modules/staff/auth.ts';
 import { staffAuthRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 
 export interface ServerDeps {
@@ -38,9 +40,21 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   return app;
 }
 
+/** Зависимости из окружения: пул yu_app (search_path=app,journal – model-dannyh §0) и вход сотрудников. */
+export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void> } {
+  if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
+  const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
+  const deps: ServerDeps = {};
+  if (config.SESSION_PEPPER) deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
+  return { deps, close: () => pool.end() };
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
-  const app = buildServer(config);
+  const { deps, close } = depsFromConfig(config);
+  const app = buildServer(config, deps);
+  if (!deps.staff) app.log.warn('Вход сотрудников выключен: нужны DATABASE_URL и SESSION_PEPPER');
+  app.addHook('onClose', close);
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       void app.close().then(() => process.exit(0));
