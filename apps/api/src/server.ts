@@ -7,7 +7,9 @@ import './core/registry.ts'; // проверка реестров модулей
 import { blockRoutes } from './modules/booking/blocks.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
-import { clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
+import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
+import { attachVisitorHolds } from './modules/booking/hold.ts';
+import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
@@ -111,8 +113,26 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   }
 
   if (deps.clients) {
-    const clients = deps.clients;
+    // K5: при входе удержания посетителя переходят к клиенту (attach в транзакции входа).
+    const clients: ClientPublicDeps = { ...deps.clients, hooks: { onLogin: attachVisitorHolds, ...deps.clients.hooks } };
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
+    void app.register(
+      async (scope) =>
+        bookingPublicRoutes(scope, {
+          pool: clients.pool as Parameters<typeof bookingPublicRoutes>[1]['pool'],
+          ...(clients.clock ? { clock: clients.clock } : {}),
+          identify: async (request, reply) => {
+            if (!/(?:^|;\s*)yu_client=/.test(request.headers.cookie ?? '')) return null;
+            try {
+              return { clientId: (await authenticateClient(clients, request, reply)).clientId };
+            } catch (err) {
+              if (err instanceof AppError && err.code === 'SESSION_REVOKED') return null;
+              throw err;
+            }
+          },
+        }),
+      { prefix: '/api/public/v1' },
+    );
   }
 
   return app;
