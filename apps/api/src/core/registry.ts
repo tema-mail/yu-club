@@ -10,6 +10,8 @@ import { auditActions as clientsAudit } from '../modules/clients/audit.ts';
 import { errors as clientsErrors } from '../modules/clients/errors.ts';
 import { auditActions as financeAudit } from '../modules/finance/audit.ts';
 import { errors as financeErrors } from '../modules/finance/errors.ts';
+import { auditActions as loyaltyAudit } from '../modules/loyalty/audit.ts';
+import { errors as loyaltyErrors } from '../modules/loyalty/errors.ts';
 import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit.ts';
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
 import { auditActions as networkAudit } from '../modules/network/audit.ts';
@@ -35,6 +37,7 @@ const moduleErrors = {
   pricing: pricingErrors,
   notifications: notificationsErrors,
   finance: financeErrors,
+  loyalty: loyaltyErrors,
 } as const;
 const moduleAudit = {
   settings: settingsAudit,
@@ -49,6 +52,7 @@ const moduleAudit = {
   // K3 правило 6: проводку и сторно пишет в аудит модуль-потребитель; код один на всех (K2, Э2).
   ledger: ['ledger.posted', 'ledger.reversed'] as const,
   finance: financeAudit,
+  loyalty: loyaltyAudit,
 } as const;
 
 type ModuleErrors = typeof moduleErrors;
