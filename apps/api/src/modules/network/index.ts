@@ -35,15 +35,18 @@ interface BranchRow {
   temp_close_reason: string | null;
 }
 
-export const BRANCH_SELECT = `b.id, b.city_id, c.slug AS city_slug, c.name AS city_name, b.slug, b.name, b.address,
-  b.timezone, b.status, b.temp_closed_from, b.temp_closed_to, b.temp_close_reason
-  FROM app.branches b JOIN app.cities c ON c.id = b.city_id`;
+export const BRANCH_COLUMNS = `b.id, b.city_id, c.slug AS city_slug, c.name AS city_name, b.slug, b.name, b.address,
+  b.timezone, b.status, b.temp_closed_from, b.temp_closed_to, b.temp_close_reason`;
+export const BRANCH_FROM = 'app.branches b JOIN app.cities c ON c.id = b.city_id';
+const BRANCH_SELECT = `${BRANCH_COLUMNS} FROM ${BRANCH_FROM}`;
 
 function zone(tz: string): TimeZone {
   // Зону проверяет команда при сохранении; неверная в базе – ошибка данных, не пользователя.
   if (!isValidTimeZone(tz)) throw new Error(`network: неверная зона в базе: ${tz}`);
   return tz;
 }
+
+export type { BranchRow };
 
 export function toBranchInfo(r: BranchRow): BranchInfo {
   return {
