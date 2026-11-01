@@ -2,7 +2,7 @@
 // На каждый запрос: GET /me + список филиалов зоны (K11 №1, №18) → locals; затем контекст сеть/город/филиал.
 // Права меню здесь лишь для показа; защищает сервер API (K1: чужое → 404).
 import { defineMiddleware } from 'astro:middleware';
-import { ApiError, crm, type Branch, type Me } from './lib/api.ts';
+import { ApiError, crm, safeNext, type Branch, type Me } from './lib/api.ts';
 
 export const CTX_COOKIE = 'yu_ctx';
 
@@ -49,11 +49,6 @@ export function resolveContext(raw: string | undefined, me: Me, branches: Branch
   return first ? { kind: 'branch', branch: first } : { kind: 'none' };
 }
 
-/** Внутренний адрес для возврата после входа: только свой путь, без //host. */
-export function safeNext(next: string | null): string {
-  return next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') ? next : '/';
-}
-
 function unavailable(): Response {
   return new Response(
     '<!doctype html><html lang="ru"><meta charset="utf-8"><title>CRM недоступна</title>' +
@@ -86,7 +81,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     return unavailable();
   }
 
-  if (isLogin) return context.redirect(safeNext(context.url.searchParams.get('next')));
+  if (isLogin) return context.redirect(safeNext(context.url.searchParams.get('next'), context.url.origin));
 
   context.locals.me = me;
   context.locals.branches = branches;

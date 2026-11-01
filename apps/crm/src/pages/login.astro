@@ -38,17 +38,12 @@ import '../styles/crm.css';
     </main>
 
     <script>
-      import { ApiError, auth } from '../lib/api.ts';
+      import { ApiError, auth, safeNext } from '../lib/api.ts';
 
       const form = document.getElementById('login-form') as HTMLFormElement;
       const errorBox = document.getElementById('login-error') as HTMLElement;
       const totpField = document.getElementById('totp-field') as HTMLElement;
       const button = form.querySelector('button[type="submit"]') as HTMLButtonElement;
-
-      function nextUrl(): string {
-        const n = new URLSearchParams(location.search).get('next');
-        return n && n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/\\') ? n : '/';
-      }
 
       function message(e: unknown): string {
         if (!(e instanceof ApiError)) return 'Не удалось войти. Повторите позже.';
@@ -83,7 +78,7 @@ import '../styles/crm.css';
             errorBox.textContent = 'Введите код из приложения.';
             return;
           }
-          location.assign(nextUrl());
+          location.assign(safeNext(new URLSearchParams(location.search).get('next'), location.origin));
         } catch (e) {
           errorBox.textContent = message(e);
         } finally {

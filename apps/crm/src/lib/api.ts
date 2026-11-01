@@ -4,6 +4,7 @@
 // Подмена мок ↔ настоящий бэкенд – только переменная окружения API_URL.
 
 export const API_PREFIX = '/api/crm/v1';
+const BRANCH_PAGES_MAX = 20;
 
 export type StaffRole = 'owner' | 'director' | 'admin';
 
@@ -70,6 +71,21 @@ export const BRANCH_STATUS_LABEL: Record<BranchStatus, string> = {
   archived: 'В архиве',
 };
 
+/** Куда вернуть после входа: только путь этого же сайта. Одна функция для сервера и браузера.
+ *  Управляющие символы и `\` – отказ (браузер вырезает таб/перевод строки, и `/\t/evil.com` становится `//evil.com`). */
+export function safeNext(next: string | null | undefined, origin: string): string {
+  // eslint-disable-next-line no-control-regex -- ловим именно управляющие символы
+  if (!next || !next.startsWith('/') || /[\u0000-\u001f\u007f\\]/.test(next)) return '/';
+  let url: URL;
+  try {
+    url = new URL(next, origin);
+  } catch {
+    return '/';
+  }
+  if (url.origin !== new URL(origin).origin) return '/';
+  return url.pathname + url.search + url.hash;
+}
+
 /** Адрес API для серверной части. Без переменной CRM не работает – говорим имя переменной, не гадаем. */
 export function apiBase(): string {
   const url = process.env.API_URL;
@@ -106,8 +122,19 @@ export async function serverCall<T>(cookie: string | null, path: string, init: {
 
 export const crm = {
   me: (cookie: string | null) => serverCall<Me>(cookie, '/me'),
-  branches: (cookie: string | null) =>
-    serverCall<{ items: Branch[]; nextCursor: string | null }>(cookie, '/branches?limit=100').then((r) => r.items),
+  /** Все филиалы зоны: проходим курсор до конца (K11: limit ≤ 100). Больше BRANCH_PAGES_MAX страниц – ошибка, не обрезка. */
+  branches: async (cookie: string | null) => {
+    const items: Branch[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < BRANCH_PAGES_MAX; page++) {
+      const q: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+      const r: { items: Branch[]; nextCursor: string | null } = await serverCall(cookie, `/branches?limit=100${q}`);
+      items.push(...r.items);
+      if (!r.nextCursor) return items;
+      cursor = r.nextCursor;
+    }
+    throw new Error(`Список филиалов длиннее ${BRANCH_PAGES_MAX * 100} – переключателю нужен поиск`);
+  },
   branch: (cookie: string | null, id: string) => serverCall<Branch>(cookie, `/branches/${encodeURIComponent(id)}`),
 };
 

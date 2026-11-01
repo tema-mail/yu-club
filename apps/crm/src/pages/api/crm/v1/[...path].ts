@@ -3,6 +3,7 @@
 // На проде Caddy может отдавать /api/* в api напрямую – тогда этот маршрут просто не вызывается.
 import type { APIRoute } from 'astro';
 import { API_PREFIX, apiBase } from '../../../../lib/api.ts';
+import { clientIp, parseTrusted } from '../../../../lib/client-ip.ts';
 
 const FORWARD_REQUEST = ['accept', 'content-type', 'cookie', 'idempotency-key', 'user-agent'];
 const FORWARD_RESPONSE = ['content-type', 'retry-after', 'cache-control'];
@@ -16,7 +17,8 @@ export const ALL: APIRoute = async ({ request, params, clientAddress }) => {
     const v = request.headers.get(name);
     if (v) headers.set(name, v);
   }
-  headers.set('x-forwarded-for', clientAddress);
+  // Адрес посетителя для лимита входа K12: за Caddy clientAddress у всех один – см. lib/client-ip.ts.
+  headers.set('x-forwarded-for', clientIp(clientAddress, request.headers.get('x-forwarded-for'), parseTrusted(process.env.TRUSTED_PROXIES)));
 
   const url = new URL(request.url);
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
