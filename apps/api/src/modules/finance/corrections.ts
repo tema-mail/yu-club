@@ -180,7 +180,12 @@ export async function correctOperation(
 ): Promise<{ reversal: FinanceOperationDto; replacement: FinanceOperationDto }> {
   const clock = opts.clock ?? systemClock;
   const input = parse(correctSchema, raw);
-  const { original, reversal, replayed } = await reverseCore(tx, ctx, input, meta, { ...opts, auditAction: 'finance.operation.corrected' });
+  // Ключ сторно в исправлении – свой (`finance-rev:correct:<key>`): тот же HTTP-ключ сторно №44 не выдаётся за повтор.
+  const { original, reversal, replayed } = await reverseCore(tx, ctx, input, meta, {
+    ...opts,
+    idempotencyKey: `correct:${opts.idempotencyKey}`,
+    auditAction: 'finance.operation.corrected',
+  });
   const { kind, ...body } = input.replacement;
   const replacement = await REPLACE[kind](tx, ctx, { ...body, branchId: original.branchId }, meta, { idempotencyKey: `${opts.idempotencyKey}:replacement`, clock });
   if (!replayed) {

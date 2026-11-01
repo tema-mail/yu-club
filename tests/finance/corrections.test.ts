@@ -206,6 +206,16 @@ describe('исправление', () => {
     expect((await getOperation(db.client, exp2.id))!.reversedBy).toBeNull();
   });
 
+  it('тот же ключ после сторно №44 – исправление не выдаёт его за повтор: ALREADY_REVERSED', async () => {
+    const b = await newBranch();
+    const inc = await income(b, 2_000);
+    const key = randomUUID();
+    await run(reverseOperation, { operationId: inc.id, reason: 'ошибка' }, owner, key);
+    const replacement = { kind: 'income', method: 'cash', amountKop: 200, source: 'other', occurredAt: AT };
+    await fails(run(correctOperation, { operationId: inc.id, reason: 'x', replacement }, owner, key), 'ALREADY_REVERSED');
+    expect((await balances(b)).cash).toBe(0);
+  });
+
   it('замена начального остатка: сторно прежнего освобождает место для нового', async () => {
     const b = await newBranch();
     const ob = await run(recordOpeningBalance, { branchId: b, place: 'cash', amountKop: 50_000, date: '2026-11-01', comment: 'пересчёт' });
