@@ -1,7 +1,23 @@
-// Единый тип ошибки (ADR 0002). Коды – стабильные, список растёт вместе с модулями (K5 §Ошибки).
-export type ErrorCode = 'VALIDATION_FAILED' | 'INVALID_DURATION';
+// Единый тип ошибки (ADR 0002). Коды – стабильные. Общие коды – здесь, коды модулей –
+// в modules/<x>/errors.ts, собираются в core/registry.ts (там же проверка на дубли).
+import type { ModuleErrorCode } from './registry.ts';
 
 export type HttpStatus = 400 | 401 | 403 | 404 | 409 | 410 | 422 | 429 | 500 | 503;
+
+export const coreErrors = {
+  VALIDATION_FAILED: 400,
+  INVALID_DURATION: 422,
+  AUTH_REQUIRED: 401, // K1: нет сессии
+  SESSION_REVOKED: 401, // K1/K12: сессия отозвана, истекла, сотрудник заблокирован
+  FORBIDDEN: 403, // K1: объект в зоне, действие роли не разрешено
+  NOT_FOUND: 404, // K1: нет объекта ИЛИ он вне зоны – тело одинаковое
+  VERSION_CONFLICT: 409, // K11: устаревший rowVersion
+  RATE_LIMITED: 429,
+  INTERNAL: 500,
+} as const satisfies Record<string, HttpStatus>;
+
+export type CoreErrorCode = keyof typeof coreErrors;
+export type ErrorCode = CoreErrorCode | ModuleErrorCode;
 
 export class AppError extends Error {
   readonly code: ErrorCode;
