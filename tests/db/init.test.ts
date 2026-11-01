@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { loadMigrations } from '../../db/migrate.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const run = promisify(execFile);
@@ -99,14 +100,18 @@ describe('CLI db/migrate.ts на чистой базе', () => {
     ).rows[0]!.n;
 
   it('вверх → повтор no-op → вниз → вверх', async () => {
-    expect(await cli('up')).toBe('Применены: 0001');
+    // Список берём из папки: тест не ломается от каждой новой миграции.
+    const all = await loadMigrations();
+    const versions = all.map((m) => m.version).join(', ');
+    const status = (mark: string) => all.map((m) => `[${mark}] ${m.version}_${m.name}`).join('\n');
+    expect(await cli('up')).toBe(`Применены: ${versions}`);
     expect(Number(await objects())).toBe(3);
     expect(await cli('up')).toBe('Нечего применять');
-    expect(await cli('status')).toBe('[x] 0001_init');
-    expect(await cli('down')).toBe('Откачены: 0001');
+    expect(await cli('status')).toBe(status('x'));
+    expect(await cli('down', String(all.length))).toBe(`Откачены: ${[...all].reverse().map((m) => m.version).join(', ')}`);
     expect(Number(await objects())).toBe(0);
-    expect(await cli('status')).toBe('[ ] 0001_init');
-    expect(await cli('up')).toBe('Применены: 0001');
+    expect(await cli('status')).toBe(status(' '));
+    expect(await cli('up')).toBe(`Применены: ${versions}`);
     const role = await db.client.query("SELECT 1 FROM pg_roles WHERE rolname = 'yu_app'");
     expect(role.rowCount).toBe(1); // откат не трогает роль кластера
   });
