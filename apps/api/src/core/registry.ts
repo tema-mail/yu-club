@@ -3,13 +3,15 @@
 // Дубль кода между модулями (или с core) – ошибка при загрузке, то есть при старте и в тестах.
 import { coreErrors } from './errors.ts';
 import { ledgerErrors } from './ledger.ts';
+import { auditActions as clientsAudit } from '../modules/clients/audit.ts';
+import { errors as clientsErrors } from '../modules/clients/errors.ts';
 import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit.ts';
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
 import { auditActions as staffAudit } from '../modules/staff/audit.ts';
 import { errors as staffErrors } from '../modules/staff/errors.ts';
 
-const moduleErrors = { ledger: ledgerErrors, staff: staffErrors, dictionaries: dictionariesErrors } as const;
-const moduleAudit = { staff: staffAudit, dictionaries: dictionariesAudit } as const;
+const moduleErrors = { ledger: ledgerErrors, staff: staffErrors, dictionaries: dictionariesErrors, clients: clientsErrors } as const;
+const moduleAudit = { staff: staffAudit, dictionaries: dictionariesAudit, clients: clientsAudit } as const;
 
 type ModuleErrors = typeof moduleErrors;
 export type ModuleErrorCode = { [M in keyof ModuleErrors]: keyof ModuleErrors[M] }[keyof ModuleErrors];
