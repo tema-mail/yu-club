@@ -56,8 +56,10 @@ echo "→ CRM и сайт собраны на маке и отправлены"
 # VAPID (Web Push, S1-15) – пара P-256 тоже один раз: SEC1 DER 121 байт, закрытый ключ – байты 8..39, открытый – последние 65.
 # Смена пары = все подписки браузеров недействительны (клиентам подписываться заново).
 "${SSH[@]}" "set -e; grep -q '^VAPID_PRIVATE_KEY=' $ROOT/.env || { umask 077; K=\$(mktemp); openssl ecparam -name prime256v1 -genkey -noout -outform DER -out \$K; test \$(wc -c <\$K) -eq 121; printf 'VAPID_PUBLIC_KEY=%s\nVAPID_PRIVATE_KEY=%s\nVAPID_SUBJECT=https://%s\n' \$(tail -c 65 \$K | base64 | tr '+/' '-_' | tr -d '=\n') \$(head -c 39 \$K | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') $DOMAIN >> $ROOT/.env; rm -f \$K; echo '→ в $ROOT/.env добавлены VAPID_*'; }; chmod 600 $ROOT/.env"
+# пароль роли yu_boss (pg-boss процесса worker) – тоже один раз
+"${SSH[@]}" "set -e; grep -q '^YU_BOSS_PASSWORD=' $ROOT/.env || { umask 077; printf 'YU_BOSS_PASSWORD=%s\n' \$(openssl rand -hex 24) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен YU_BOSS_PASSWORD'; }; chmod 600 $ROOT/.env"
 
-# 3. образ, база, миграции, API
+# 3. образ, база, миграции, API, worker
 "${SSH[@]}" "bash -s" <<REMOTE
 set -euo pipefail
 cd $ROOT/src/deploy
@@ -66,10 +68,14 @@ GIT_SHA=$REV "\${DC[@]}" build --pull -q api </dev/null   # по одному о
 "\${DC[@]}" build --pull -q crm </dev/null
 "\${DC[@]}" build --pull -q site </dev/null
 "\${DC[@]}" up -d --wait postgres </dev/null
+# роль yu_boss (pg-boss процесса worker) – и на кластере, созданном до неё; пароль идёт в psql через stdin
+BOSS_PW=\$(grep '^YU_BOSS_PASSWORD=' $ROOT/.env | cut -d= -f2-)
+printf "DO \\\$\\\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yu_boss') THEN CREATE ROLE yu_boss LOGIN; END IF; END \\\$\\\$;\nALTER ROLE yu_boss PASSWORD '%s';\n" "\$BOSS_PW" \
+  | docker exec -i yu-club-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q
 if [ "$RESET" = 1 ]; then
   grep -qx 'APP_ENV=stage' $ROOT/.env || { echo "!!! не stage – отказ"; exit 1; }
   BACKUP_DB=yu_club bash $ROOT/src/deploy/backup.sh </dev/null
-  "\${DC[@]}" stop site crm api </dev/null
+  "\${DC[@]}" stop worker site crm api </dev/null
   docker exec yu-club-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
     -c "DROP DATABASE IF EXISTS yu_club WITH (FORCE)" -c "CREATE DATABASE yu_club OWNER yu_owner" \
     -c "REVOKE ALL ON DATABASE yu_club FROM PUBLIC"
@@ -84,7 +90,15 @@ if ! OUT=\$("\${DC[@]}" run --rm -T migrate </dev/null 2>&1); then
   exit 1
 fi
 echo "\$OUT" | grep -E 'Применены|Нечего' || true
+# схема pgboss – собственность yu_boss: pg-boss сам создаёт в ней таблицы и разделы очередей (ADR 0001)
+docker exec yu-club-postgres psql -U postgres -d yu_club -v ON_ERROR_STOP=1 -q \
+  -c "GRANT CONNECT ON DATABASE yu_club TO yu_boss" -c "CREATE SCHEMA IF NOT EXISTS pgboss AUTHORIZATION yu_boss" \
+  -c "ALTER SCHEMA pgboss OWNER TO yu_boss"
 GIT_SHA=$REV "\${DC[@]}" up -d --wait api crm site </dev/null
+"\${DC[@]}" up -d worker </dev/null
+sleep 5
+docker ps --filter name=yu-club-worker --filter status=running -q | grep -q . || { docker logs --tail 20 yu-club-worker; echo "!!! worker не запустился"; exit 1; }
+docker logs yu-club-worker 2>&1 | grep -q '"msg":"запущен' || { docker logs --tail 20 yu-club-worker; echo "!!! worker не сообщил о старте"; exit 1; }
 docker image prune -f --filter label=project=yu-club >/dev/null
 echo "→ контейнеры: \$(docker ps --filter name=yu-club- --format '{{.Names}} {{.Status}}' | tr '\n' ';')"
 REMOTE
