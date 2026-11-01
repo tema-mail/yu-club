@@ -207,6 +207,8 @@
   padding:var(--yc-sp-xs) 0;
   border-bottom:1px solid var(--yc-line);
 }
+.yc-table tbody tr:first-child{ padding-top:0; }
+.yc-table tbody tr:last-child{ border-bottom:0; }
 .yc-table td{ display:block; min-width:0; padding:0; }
 .yc-table td[data-label]::before{
   content:attr(data-label) ": ";

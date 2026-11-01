@@ -1,0 +1,41 @@
+---
+// Карточка филиала (K11 №18). Право проверяет API: чужой или несуществующий филиал – 404 с одинаковым телом (K1),
+// и CRM отвечает так же – «не найден», не раскрывая, есть ли такой филиал.
+import Crm from '../../layouts/Crm.astro';
+import { ApiError, BRANCH_STATUS_LABEL, crm, type Branch } from '../../lib/api.ts';
+
+const id = Astro.params.branchId ?? '';
+let branch: Branch | null = null;
+try {
+  branch = await crm.branch(Astro.locals.cookie, id);
+} catch (e) {
+  if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 403)) throw e;
+  Astro.response.status = 404;
+}
+const title = branch ? branch.name : 'Филиал не найден';
+---
+<Crm title={title}>
+  {branch ? (
+    <>
+      <div class="yc-head">
+        <p class="yc-crumbs"><a href="/">Филиалы</a> / {branch.cityName}</p>
+        <h1>{branch.name}</h1>
+      </div>
+      <section class="yc-panel" aria-labelledby="branch-props">
+        <h2 id="branch-props">Карточка филиала</h2>
+        <dl class="yc-props">
+          <dt>Город</dt><dd>{branch.cityName}</dd>
+          <dt>Адрес</dt><dd>{branch.address}</dd>
+          <dt>Статус</dt><dd><span class={`yc-badge yc-badge--${branch.status}`}>{BRANCH_STATUS_LABEL[branch.status]}</span></dd>
+          <dt>Часовой пояс</dt><dd>{branch.timezone}</dd>
+        </dl>
+      </section>
+    </>
+  ) : (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Филиал не найден</h1>
+      <p>Такого филиала нет или он вне вашей зоны доступа. Проверьте ссылку или выберите филиал в переключателе контекста.</p>
+      <p><a href="/">К списку филиалов</a></p>
+    </div>
+  )}
+</Crm>
