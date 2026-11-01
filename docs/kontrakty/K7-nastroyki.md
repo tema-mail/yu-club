@@ -77,6 +77,28 @@ export function settingHistory(db: Db, key: SettingKey, scope: SettingScope): Pr
 | `client.session_days` | int 1..365 | 30 | network | `settings.network.manage` | 03 §6.1 (решение) |
 | `branch.default_hours` | `{open:'HH:mm', close:'HH:mm'}` | `{"open":"10:00","close":"22:00"}` | network, city | `settings.network.manage` | 01 §4.1 п.1 – только для создания 7 строк нового филиала |
 
+## Реестр ключей Э2 (S2-01; основание – K10 §2, K15 §13, K17 §12; внесено S2-00 02.11.2026)
+
+Все ключи денег и баллов меняет только Владелец (`settings.network.manage`, решение: уровень «филиал» у двух ключей кассы – для разной настройки филиалов, но Директор их не меняет – иначе запрет минуса кассы снимался бы в обход Q-28). `affectsExisting: false`: платёж хранит снимок флага R-03 (`topup_rule_snapshot`), партия – свой срок (K15 §2).
+
+| Ключ | Тип, пределы (`schema`) | `systemDefault` | Уровни | Право (K1) | Основание |
+|---|---|---|---|---|---|
+| `payment.certificate_topup_enabled` | boolean | false | network | `settings.network.manage` | K10 §2, Q-24 / R-03 |
+| `finance.negative_balance_allowed` | boolean | false | network, branch | `settings.network.manage` | K17 §6, Q-28 |
+| `finance.cash_shift_enabled` | boolean | false | network, branch | `settings.network.manage` | K17 §7, Q-22 |
+| `certificate.sale_methods` | непустой массив без повторов из `cash`, `card`, `transfer` | `["cash","card","transfer"]` | network | `settings.network.manage` | K16 §2, Q-26 |
+| `certificate.nominal_min_kop` | int 1..100 000 000 или null | null | network | `settings.network.manage` | K16 §2, 08 §4.5 |
+| `certificate.nominal_max_kop` | int 1..100 000 000 или null | null | network | `settings.network.manage` | K16 §2, 08 §4.5 |
+| `loyalty.batch_ttl_days` | int 1..3650 или null | null (бессрочно) | network | `settings.network.manage` | K15 §2, Q-43 / R-05 |
+| `loyalty.penalty_scope` | `'visit'` \| `'booking'` | `'visit'` | network | `settings.network.manage` | K15 §5, Q-44 / R-07 |
+| `loyalty.penalties_from` | ISO-время UTC или null | null | network | `settings.network.manage` | K15 §5, план 4.3 п.10 |
+| `loyalty.points_resource_types` | массив кодов `dict_resource_types` без повторов (может быть пустым) | `["pc","vr_seat","ps_room"]` | network | `settings.network.manage` | K15 §3, Q-42 |
+| `loyalty.accrue_for_points` | boolean | false | network | `settings.network.manage` | K15 §4, Q-40 / R-06 |
+| `loyalty.accrue_for_certificate` | boolean | true | network | `settings.network.manage` | K15 §4, Q-40 / R-06 |
+
+- `loyalty.penalties_from = null` (решение S2-00): «дата запуска Э2» заранее неизвестна, поэтому системное значение – «штрафы не начисляются»; Владелец ставит дату при выпуске Э2 в бой (6.4.3 плана). Так ни одна неявка Э1 не получит штраф задним числом.
+- Сверка `nominal_min_kop ≤ nominal_max_kop` и существования кодов типов ресурсов – в модуле-потребителе при чтении (K16, K15), а не в схеме ключа: схема не видит второго ключа и справочника.
+
 Шаг слота **не** настройка: единственный источник – `dict_resource_types.step_minutes` (+ `resources.step_minutes_override`), 15 §3.1 «один источник значения», 15 §7.2.
 Часы работы **не** настройка: `branch_weekly_hours` + `calendar_exceptions` (15 §3.1 «часы работы задаются в карточке филиала»).
 
