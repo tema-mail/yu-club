@@ -28,6 +28,11 @@ export interface BookingDto {
   priceKop: number; paymentNote: 'pay_at_club'; status: string; canCancel: boolean;
 }
 export interface ConfirmResultDto { checkoutId: string; bookings: BookingDto[] }
+/** K9 «Мои записи» (packages/contracts MyBookingDto, MyVisitDto). */
+export interface MyBookingDto extends BookingDto { cityName: string; roomName: string | null; visit: { arrivedAt: string } | null }
+export interface MyVisitDto { bookingId: string; number: number; branchName: string; resourceName: string; plannedStart: string; plannedEnd: string; arrivedAt: string; status: 'visited' }
+export interface Page<T> { items: T[]; nextCursor: string | null }
+export type MyTab = 'upcoming' | 'past' | 'cancelled';
 export interface HoldItemInput { resourceId: string; start: string; end: string }
 
 async function call<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
@@ -73,6 +78,10 @@ export const bookingApi = {
   attach: (holdId: string) => call<HoldDto>('POST', `/holds/${enc(holdId)}/attach`),
   /** Ключ – один на попытку оформления: повторное нажатие отдаёт ту же бронь (ADR 0004). */
   confirm: (holdId: string, key: string) => call<ConfirmResultDto>('POST', `/holds/${enc(holdId)}/confirm`, {}, key),
+  myBookings: (tab: MyTab, cursor?: string) => call<Page<MyBookingDto>>('GET', `/me/bookings?tab=${tab}${cursor ? `&cursor=${enc(cursor)}` : ''}`),
+  myVisits: (cursor?: string) => call<Page<MyVisitDto>>('GET', `/me/visits${cursor ? `?cursor=${enc(cursor)}` : ''}`),
+  /** K5 №13: отмена своей записи; ключ – один на окно подтверждения. */
+  cancel: (bookingId: string, key: string) => call<BookingDto>('POST', `/bookings/${enc(bookingId)}/cancel`, {}, key),
 };
 
 // ── Таймер от серверного времени ───────────────────────────
