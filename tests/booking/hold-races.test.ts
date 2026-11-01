@@ -150,13 +150,14 @@ describe('гонки (п.8)', () => {
       ]);
       const bookings = await one<{ n: number }>('SELECT count(*)::int n FROM app.bookings WHERE hold_id = $1', [h.id]);
       const status = (await one<{ status: string }>('SELECT status FROM app.holds WHERE id = $1', [h.id])).status;
+      const seen = `итерация ${k}: confirm=${confirmed}, expired=${expired}, bookings=${bookings.n}, hold=${status}`;
       if (confirmed === 'ok') {
-        expect([bookings.n, status]).toEqual([1, 'converted']);
+        expect([bookings.n, status], seen).toEqual([1, 'converted']);
         const occ = await one<{ n: number }>(`SELECT count(*)::int n FROM app.occupancy o JOIN app.bookings b ON b.id = o.source_id WHERE b.hold_id = $1 AND o.active`, [h.id]);
         expect(occ.n).toBe(1);
       } else {
-        expect(confirmed).toBe('HOLD_EXPIRED');
-        expect([bookings.n, status, expired >= 1]).toEqual([0, 'expired', true]);
+        expect(confirmed, seen).toBe('HOLD_EXPIRED');
+        expect([bookings.n, status, expired >= 1], seen).toEqual([0, 'expired', true]);
       }
     }
   });

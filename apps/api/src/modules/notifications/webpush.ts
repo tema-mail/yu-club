@@ -54,10 +54,16 @@ export function vapidKeys(publicKey: string, privateKey: string, subject: string
 }
 
 /** Новая пара VAPID (для тестов и разовой генерации на сервере). */
-export function generateVapidKeys(): { publicKey: string; privateKey: string } {
-  const ecdh = createECDH('prime256v1');
-  ecdh.generateKeys();
-  return { publicKey: b64url(ecdh.getPublicKey()), privateKey: b64url(ecdh.getPrivateKey()) };
+export function generateVapidKeys(ecdh?: ReturnType<typeof createECDH>): { publicKey: string; privateKey: string } {
+  const pair = ecdh ?? createECDH('prime256v1');
+  if (!ecdh) pair.generateKeys();
+  return { publicKey: b64url(pair.getPublicKey()), privateKey: b64url(privateKey32(pair.getPrivateKey())) };
+}
+
+/** getPrivateKey() отбрасывает ведущие нулевые байты (≈1 ключ из 256 даёт 31 байт) – дополняем до 32 слева. */
+export function privateKey32(raw: Buffer): Buffer {
+  if (raw.length > 32) throw new Error('webpush: закрытый ключ длиннее 32 байт');
+  return raw.length === 32 ? raw : Buffer.concat([Buffer.alloc(32 - raw.length), raw]);
 }
 
 /** JWT ES256 для заголовка Authorization: vapid t=…, k=… (RFC 8292 §2–3). aud – origin push-сервиса. */

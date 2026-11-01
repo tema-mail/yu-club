@@ -1,9 +1,11 @@
 // S1-16: запрос Web Push – шифрование aes128gcm (RFC 8291/8188), VAPID (RFC 8292), заголовки, классификация ответов.
+import { createECDH, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   buildPushRequest,
   classifyStatus,
   generateVapidKeys,
+  privateKey32,
   maskEndpoint,
   pushTopic,
   sendPushRequest,
@@ -17,6 +19,17 @@ const vapid: VapidKeys = vapidKeys(pair.publicKey, pair.privateKey, 'mailto:ops@
 const now = new Date('2026-11-14T14:00:00Z');
 
 describe('ключи VAPID', () => {
+  it('закрытый ключ с ведущим нулевым байтом: генератор отдаёт 32 байта, пара принимается (≈1 из 256 ключей)', () => {
+    const ecdh = createECDH('prime256v1');
+    ecdh.setPrivateKey(Buffer.concat([Buffer.alloc(1), randomBytes(31)]));
+    expect(ecdh.getPrivateKey().length).toBeLessThan(32); // так ведёт себя node: ведущий ноль отброшен
+    const pair = generateVapidKeys(ecdh);
+    expect(Buffer.from(pair.privateKey, 'base64url').length).toBe(32);
+    expect(() => vapidKeys(pair.publicKey, pair.privateKey, 'mailto:ops@yu-club.test')).not.toThrow();
+    expect(privateKey32(Buffer.alloc(32, 1)).length).toBe(32);
+    expect(() => privateKey32(Buffer.alloc(33))).toThrow();
+  });
+
   it('пара проверяется на старте: чужой открытый ключ, кривая длина, плохой subject – ошибка', () => {
     const other = generateVapidKeys();
     expect(() => vapidKeys(other.publicKey, pair.privateKey, 'mailto:a@b.c')).toThrow(/не соответствует/);
