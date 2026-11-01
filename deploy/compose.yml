@@ -1,0 +1,77 @@
+# Тест-стенд yu-club (S0-19): api + postgres:16. Наружу порты не публикуются –
+# вход только через общий Caddy сервера (внешняя сеть CADDY_NETWORK, блок deploy/Caddyfile.yu-club).
+# Пароли и пути – из файла окружения вне репозитория:
+#   docker compose --env-file /opt/yu-club/.env -f deploy/compose.yml up -d
+# Миграции под yu_owner: docker compose ... run --rm migrate
+# Ресурсы сервера малы: у Postgres маленькие буферы, у контейнеров лимиты памяти.
+name: yu-club
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: yu-club-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?нет POSTGRES_PASSWORD}
+      # для deploy/initdb/01-roles.sh (выполняется один раз, на пустом каталоге данных)
+      YU_OWNER_PASSWORD: ${YU_OWNER_PASSWORD:?нет YU_OWNER_PASSWORD}
+      YU_APP_PASSWORD: ${YU_APP_PASSWORD:?нет YU_APP_PASSWORD}
+      TZ: UTC
+    command: >-
+      postgres -c shared_buffers=32MB -c effective_cache_size=128MB -c work_mem=2MB
+      -c maintenance_work_mem=16MB -c max_connections=30 -c max_wal_size=256MB
+    volumes:
+      - ${DATA_DIR:-/opt/yu-club/data}:/var/lib/postgresql/data
+      # бэкапы (deploy/backup.sh): pg_dump пишет сюда изнутри контейнера
+      - ${BACKUP_DIR:-/opt/yu-club/backups}:/backups
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    mem_limit: 256m
+    shm_size: 64m
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d yu_club"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: &log
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  migrate:
+    image: yu-club-api:local
+    profiles: [migrate]
+    command: ["node", "db/migrate.ts", "up"]
+    environment:
+      MIGRATION_DATABASE_URL: postgres://yu_owner:${YU_OWNER_PASSWORD}@postgres:5432/yu_club
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 128m
+    networks: [internal]
+    logging: *log
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-dev}
+    image: yu-club-api:local
+    container_name: yu-club-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-stage}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://yu_app:${YU_APP_PASSWORD}@postgres:5432/yu_club
+      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 160m
+    networks: [internal, caddy]
+    logging: *log
+
+networks:
+  internal:
+    name: yu-club-internal
+    internal: true
+  caddy:
+    name: ${CADDY_NETWORK:-dzenbot_default}
+    external: true
