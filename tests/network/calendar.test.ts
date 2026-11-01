@@ -1,8 +1,26 @@
-// S1-03: календарь филиала – схема 0103 и открытые интервалы по приоритету ресурс → комната → филиал → неделя (K13 §Проверка).
+// S1-03: календарь филиала – схема 0103 и открытые интервалы по приоритету ресурс → комната → филиал → неделя (K13 §Проверка);
+// изменение графика и исключений: брони не трогаются, до сохранения – список затронутых (TC-17 частично).
 import { randomUUID } from 'node:crypto';
+import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { LocalDate, TimeZone } from '../../apps/api/src/core/time.ts';
-import { openIntervals, openIntervalsBulk, resolveDay } from '../../apps/api/src/modules/network/calendar.ts';
+import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
+import { AppError } from '../../apps/api/src/core/errors.ts';
+import type { AccessContext, StaffRole } from '../../apps/api/src/core/permissions.ts';
+import { fixedClock, type LocalDate, type TimeZone } from '../../apps/api/src/core/time.ts';
+import {
+  applyHoursChange,
+  calendarDenialOf,
+  getWeeklyHours,
+  listExceptions,
+  openIntervals,
+  openIntervalsBulk,
+  previewHoursChange,
+  resolveDay,
+  type AffectedBookingsProvider,
+  type CalendarDeps,
+  type FutureBooking,
+} from '../../apps/api/src/modules/network/calendar.ts';
+import * as network from '../../apps/api/src/modules/network/index.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 let db: TestDatabase;
@@ -60,10 +78,16 @@ beforeAll(async () => {
   await branch('msk', 'Europe/Moscow');
   await branch('nsk', 'Asia/Novosibirsk');
   await branch('ber', 'Europe/Berlin');
+  await branch('chg', 'Europe/Moscow');
+  await branch('other', 'Asia/Novosibirsk');
+  pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 4 });
 });
 afterAll(async () => {
+  await pool.end();
   await db.drop();
 });
+
+let pool: pg.Pool;
 
 describe('0103: схема исключений', () => {
   it('одно активное исключение на объект и дату – EXCLUDE; разные объекты одной даты – можно', async () => {
@@ -197,5 +221,211 @@ describe('resolveDay – чистое правило', () => {
     const weekly = { closed: false as const, open: '10:00' as never, close: '22:00' as never };
     expect(resolveDay({ date: D, tz, weekly, exceptions: [ex('resource', 'closed', 'r1')], target: { resourceId: 'r2' } })).toHaveLength(1);
     expect(resolveDay({ date: D, tz, weekly, exceptions: [ex('resource', 'closed', 'r1')], target: { resourceId: 'r1' } })).toEqual([]);
+  });
+});
+
+// ---- изменения графика (previewHoursChange / applyHoursChange)
+
+const clock = fixedClock('2026-11-14T05:00:00Z'); // суббота 08:00 по Москве
+function ctx(role: StaffRole, scope: { cityIds?: string[]; branchIds?: string[] } = {}): AccessContext {
+  return {
+    actor: { kind: 'staff', staffId: randomUUID(), sessionId: randomUUID() },
+    role,
+    network: role === 'owner',
+    cityIds: new Set(scope.cityIds ?? []),
+    branchIds: new Set(scope.branchIds ?? []),
+    at: clock.now(),
+  };
+}
+const owner = ctx('owner');
+const meta = (c: AccessContext): AuditRequestMeta => ({ actor: c.actor, access: c, source: 'crm', requestId: randomUUID() });
+
+async function tx<T>(fn: (t: pg.PoolClient) => Promise<T>): Promise<T> {
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const r = await fn(c);
+    await c.query('COMMIT');
+    return r;
+  } catch (err) {
+    await c.query('ROLLBACK');
+    throw err;
+  } finally {
+    c.release();
+  }
+}
+
+async function fails(p: Promise<unknown>, code: string): Promise<AppError> {
+  const err = await p.then(
+    () => null,
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(AppError);
+  expect((err as AppError).code).toBe(code);
+  return err as AppError;
+}
+
+/** Брони «в памяти» вместо модуля booking: фиксируем вызовы и проверяем, что брони не меняются. */
+function bookingsStub(list: FutureBooking[]): AffectedBookingsProvider & { calls: Array<{ from: Date; to: Date | null }> } {
+  const calls: Array<{ from: Date; to: Date | null }> = [];
+  return {
+    calls,
+    futureBookings: async (_db, input) => {
+      calls.push({ from: input.from, to: input.to });
+      return list.filter((b) => b.end > input.from && (input.to === null || b.start < input.to));
+    },
+  };
+}
+const booking = (id: string, start: string, end: string, roomId: string | null = null, resourceId = randomUUID()): FutureBooking => ({
+  id,
+  resourceId,
+  roomId,
+  start: new Date(start),
+  end: new Date(end),
+});
+
+describe('исключение: сокращение часов со списком затронутых (TC-17 частично)', () => {
+  const late = booking(randomUUID(), '2026-11-20T17:00:00Z', '2026-11-20T18:00:00Z'); // 20:00–21:00 Москвы
+  const early = booking(randomUUID(), '2026-11-20T09:00:00Z', '2026-11-20T10:00:00Z'); // 12:00–13:00
+  const other = booking(randomUUID(), '2026-11-21T17:00:00Z', '2026-11-21T18:00:00Z'); // другой день
+  const short = { kind: 'exception', branchId: '', scope: { type: 'branch' }, date: '2026-11-20', exceptionKind: 'short_day', open: '10:00', close: '18:00', reason: 'санитарный день' };
+
+  it('предпросмотр: затронута только бронь 20:00–21:00; провайдер спрошен за сутки филиала', async () => {
+    const stub = bookingsStub([late, early, other]);
+    const deps: CalendarDeps = { clock, bookings: stub };
+    const p = await previewHoursChange(pool, owner, { ...short, branchId: ids.chg }, deps);
+    expect(p.affectedBookingIds).toEqual([late.id]);
+    expect(stub.calls).toEqual([{ from: new Date('2026-11-19T21:00:00Z'), to: new Date('2026-11-20T21:00:00Z') }]);
+    expect((await db.client.query('SELECT count(*)::int n FROM app.calendar_exceptions WHERE branch_id = $1', [ids.chg])).rows[0].n).toBe(0);
+  });
+
+  it('применение с устаревшим списком → AFFECTED_CHANGED с текущим; с верным – сохранено, бронь не тронута', async () => {
+    const deps: CalendarDeps = { clock, bookings: bookingsStub([late, early]) };
+    const stale = await fails(tx((t) => applyHoursChange(t, owner, { ...short, branchId: ids.chg, confirmedAffected: [] }, meta(owner), deps)), 'AFFECTED_CHANGED');
+    expect(stale.details).toEqual({ affectedBookingIds: [late.id] });
+    await fails(tx((t) => applyHoursChange(t, owner, { ...short, branchId: ids.chg }, meta(owner), deps)), 'VALIDATION_FAILED');
+    const before = JSON.stringify([late, early]);
+    const r = await tx((t) => applyHoursChange(t, owner, { ...short, branchId: ids.chg, confirmedAffected: [late.id] }, meta(owner), deps));
+    expect(r).toMatchObject({ kind: 'exception', affectedBookingIds: [late.id], exception: { kind: 'short_day', open: '10:00', close: '18:00', date: '2026-11-20' } });
+    expect(JSON.stringify([late, early])).toBe(before);
+    expect(iso(await openIntervals(pool, { branchId: ids.chg!, date: '2026-11-20' as LocalDate }))).toEqual([['2026-11-20T07:00:00.000Z', '2026-11-20T15:00:00.000Z']]);
+    const a = await db.client.query(`SELECT action, object_type, reason, after FROM journal.audit_events WHERE object_id = $1`, [
+      r.kind === 'exception' ? r.exception.id : '',
+    ]);
+    expect(a.rows).toEqual([expect.objectContaining({ action: 'calendar.exception_created', object_type: 'calendar_exception', reason: 'санитарный день' })]);
+    expect(a.rows[0].after.affectedBookingIds).toEqual([late.id]);
+  });
+
+  it('второе исключение на ту же дату и объект – SCHEDULE_CONFLICT до сохранения', async () => {
+    const e = await fails(previewHoursChange(pool, owner, { ...short, branchId: ids.chg, exceptionKind: 'closed', open: undefined, close: undefined }, { clock }), 'SCHEDULE_CONFLICT');
+    expect(e.details?.exceptionId).toEqual(expect.any(String));
+  });
+
+  it('отмена исключения: часы вернулись к неделе, запись аудита; повторная отмена – 404', async () => {
+    const list = await listExceptions(pool, owner, ids.chg!, { from: '2026-11-20', to: '2026-11-20' });
+    const id = list.items[0]!.id;
+    const cancel = { kind: 'cancel_exception', branchId: ids.chg, exceptionId: id, reason: 'передумали' };
+    await tx((t) => applyHoursChange(t, owner, { ...cancel, confirmedAffected: [] }, meta(owner), { clock }));
+    expect(iso(await openIntervals(pool, { branchId: ids.chg!, date: '2026-11-20' as LocalDate }))).toEqual([['2026-11-20T07:00:00.000Z', '2026-11-20T19:00:00.000Z']]);
+    const a = await db.client.query(`SELECT action FROM journal.audit_events WHERE object_id = $1 ORDER BY occurred_at`, [id]);
+    expect(a.rows.map((x) => x.action)).toEqual(['calendar.exception_created', 'calendar.exception_cancelled']);
+    await fails(tx((t) => applyHoursChange(t, owner, { ...cancel, confirmedAffected: [] }, meta(owner), { clock })), 'NOT_FOUND');
+    // отменённое видно в истории
+    const after = await listExceptions(pool, owner, ids.chg!, { from: '2026-11-20', to: '2026-11-20' });
+    expect(after.items.map((x) => x.status)).toEqual(['cancelled']);
+  });
+
+  it('исключение комнаты: без модуля ресурсов – 404; с ним – затронута только бронь этой комнаты', async () => {
+    const room = { kind: 'exception', branchId: ids.chg, scope: { type: 'room', id: ROOM }, date: '2026-11-21', exceptionKind: 'technical', reason: 'ремонт' };
+    await fails(previewHoursChange(pool, owner, room, { clock }), 'NOT_FOUND');
+    const inRoom = booking(randomUUID(), '2026-11-21T09:00:00Z', '2026-11-21T10:00:00Z', ROOM);
+    const elsewhere = booking(randomUUID(), '2026-11-21T09:00:00Z', '2026-11-21T10:00:00Z', randomUUID());
+    const targets = { belongsToBranch: async (_db: unknown, t: { id: string }, b: string) => t.id === ROOM && b === ids.chg };
+    const deps: CalendarDeps = { clock, bookings: bookingsStub([inRoom, elsewhere]), targets };
+    expect((await previewHoursChange(pool, owner, room, deps)).affectedBookingIds).toEqual([inRoom.id]);
+    await tx((t) => applyHoursChange(t, owner, { ...room, confirmedAffected: [inRoom.id] }, meta(owner), deps));
+    expect(await openIntervals(pool, { branchId: ids.chg!, date: '2026-11-21' as LocalDate, roomId: ROOM })).toEqual([]);
+    expect(await openIntervals(pool, { branchId: ids.chg!, date: '2026-11-21' as LocalDate })).toHaveLength(1);
+  });
+
+  it('проверки: прошлое, часы, права', async () => {
+    const base = { ...short, branchId: ids.chg, date: '2026-11-25' };
+    await fails(previewHoursChange(pool, owner, { ...base, date: '2026-11-13' }, { clock }), 'VALIDATION_FAILED');
+    await fails(previewHoursChange(pool, owner, { ...base, open: '18:00', close: '10:00' }, { clock }), 'INVALID_HOURS');
+    await fails(previewHoursChange(pool, owner, { ...base, close: undefined }, { clock }), 'INVALID_HOURS');
+    await fails(previewHoursChange(pool, owner, { ...base, exceptionKind: 'closed' }, { clock }), 'INVALID_HOURS');
+    await fails(previewHoursChange(pool, owner, { ...base, open: '25:00' }, { clock }), 'VALIDATION_FAILED');
+    const stranger = ctx('director', { branchIds: [ids.other!] });
+    const nf = await fails(previewHoursChange(pool, stranger, base, { clock }), 'NOT_FOUND');
+    expect(calendarDenialOf(nf)).toMatchObject({ action: 'calendar.exception_created', branchId: ids.chg });
+    const missing = await fails(previewHoursChange(pool, stranger, { ...base, branchId: randomUUID() }, { clock }), 'NOT_FOUND');
+    expect(nf.message).toBe(missing.message);
+    const admin = ctx('admin', { branchIds: [ids.chg!] });
+    const fb = await fails(previewHoursChange(pool, admin, base, { clock }), 'FORBIDDEN');
+    expect(calendarDenialOf(fb)?.reason).toBe('FORBIDDEN: network.hours.manage');
+    const director = ctx('director', { branchIds: [ids.chg!] });
+    expect(await previewHoursChange(pool, director, base, { clock })).toEqual({ affectedBookingIds: [] });
+  });
+});
+
+describe('недельный график: новая строка с даты, прошлое не переписывается', () => {
+  const mondays = { kind: 'weekly', branchId: '', validFrom: '2026-11-16', days: [{ weekday: 1, open: '12:00', close: '20:00' }] };
+
+  it('с сегодняшней даты нельзя (только исключением); день недели дважды – ошибка', async () => {
+    await fails(previewHoursChange(pool, owner, { ...mondays, branchId: ids.chg, validFrom: '2026-11-14' }, { clock }), 'VALIDATION_FAILED');
+    await fails(
+      previewHoursChange(pool, owner, { ...mondays, branchId: ids.chg, days: [mondays.days[0], mondays.days[0]] }, { clock }),
+      'VALIDATION_FAILED',
+    );
+    await fails(previewHoursChange(pool, owner, { ...mondays, branchId: ids.chg, days: [{ weekday: 1, open: '12:00', close: null }] }, { clock }), 'INVALID_HOURS');
+  });
+
+  it('понедельники 12–20 с 16.11: затронута бронь пн 23.11 в 20:00, не воскресная; прошлый понедельник прежний', async () => {
+    const mon = booking(randomUUID(), '2026-11-23T17:00:00Z', '2026-11-23T18:00:00Z'); // пн 20:00 Москвы
+    const sun = booking(randomUUID(), '2026-11-22T17:00:00Z', '2026-11-22T18:00:00Z'); // вс 20:00
+    const stub = bookingsStub([mon, sun]);
+    const deps: CalendarDeps = { clock, bookings: stub };
+    const change = { ...mondays, branchId: ids.chg };
+    expect(await previewHoursChange(pool, owner, change, deps)).toEqual({ affectedBookingIds: [mon.id] });
+    expect(stub.calls[0]).toEqual({ from: new Date('2026-11-15T21:00:00Z'), to: null });
+    await tx((t) => applyHoursChange(t, owner, { ...change, confirmedAffected: [mon.id] }, meta(owner), deps));
+    expect(iso(await openIntervals(pool, { branchId: ids.chg!, date: '2026-11-16' as LocalDate }))).toEqual([['2026-11-16T09:00:00.000Z', '2026-11-16T17:00:00.000Z']]);
+    expect(iso(await openIntervals(pool, { branchId: ids.chg!, date: '2026-11-09' as LocalDate }))).toEqual([['2026-11-09T07:00:00.000Z', '2026-11-09T19:00:00.000Z']]);
+    expect(iso(await openIntervals(pool, { branchId: ids.chg!, date: '2026-11-15' as LocalDate }))).toEqual([['2026-11-15T07:00:00.000Z', '2026-11-15T19:00:00.000Z']]);
+    const rows = await db.client.query(
+      `SELECT to_char(valid_from, 'YYYY-MM-DD') f, to_char(valid_to, 'YYYY-MM-DD') t FROM app.branch_weekly_hours WHERE branch_id = $1 AND weekday = 1 ORDER BY valid_from`,
+      [ids.chg],
+    );
+    expect(rows.rows).toEqual([
+      { f: '2026-01-01', t: '2026-11-15' },
+      { f: '2026-11-16', t: null },
+    ]);
+    const a = await db.client.query(`SELECT before, after FROM journal.audit_events WHERE action = 'branch.hours_changed' AND object_id = $1`, [ids.chg]);
+    expect(a.rows[0].before.days).toEqual([{ weekday: 1, open: '10:00', close: '22:00' }]);
+  });
+
+  it('повтор с той же даты правит запланированную строку; выходной – is_closed; более ранняя дата при плане – SCHEDULE_CONFLICT', async () => {
+    const change = { ...mondays, branchId: ids.chg, days: [{ weekday: 1, open: null, close: null }] };
+    await tx((t) => applyHoursChange(t, owner, { ...change, confirmedAffected: [] }, meta(owner), { clock }));
+    expect(await openIntervals(pool, { branchId: ids.chg!, date: '2026-11-23' as LocalDate })).toEqual([]);
+    const n = await db.client.query(`SELECT count(*)::int n FROM app.branch_weekly_hours WHERE branch_id = $1 AND weekday = 1`, [ids.chg]);
+    expect(n.rows[0].n).toBe(2);
+    await fails(previewHoursChange(pool, owner, { ...change, validFrom: '2026-11-15' }, { clock }), 'SCHEDULE_CONFLICT');
+  });
+
+  it('чтение для CRM: график с будущими строками, зона филиала', async () => {
+    const w = await getWeeklyHours(pool, owner, ids.chg!, clock);
+    expect(w.timezone).toBe('Europe/Moscow');
+    expect(w.items.filter((x) => x.weekday === 1)).toEqual([
+      { weekday: 1, open: '10:00', close: '22:00', closed: false, validFrom: '2026-01-01', validTo: '2026-11-15' },
+      { weekday: 1, open: null, close: null, closed: true, validFrom: '2026-11-16', validTo: null },
+    ]);
+    await fails(getWeeklyHours(pool, ctx('admin', { branchIds: [ids.other!] }), ids.chg!, clock), 'NOT_FOUND');
+    await fails(listExceptions(pool, owner, ids.chg!, { from: '2026-01-01', to: '2027-06-01' }), 'VALIDATION_FAILED');
+  });
+
+  it('index.ts отдаёт те же openIntervals (K13 – один вход модуля)', async () => {
+    expect(network.openIntervals).toBe(openIntervals);
+    expect(network.previewHoursChange).toBe(previewHoursChange);
   });
 });
