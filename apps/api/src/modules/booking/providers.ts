@@ -75,3 +75,101 @@ export const bookingLookup = {
     };
   },
 };
+
+// ---- Э2 (S2-05): провайдеры для finance (K10 §4 payableBooking) и loyalty (K15 §3–5). Модули Э2 booking не импортируют –
+// server.ts передаёт им этот объект (ADR 0002). Всё читается по текущей версии брони (booking_versions): перенос меняет цену и минуты.
+
+export type BookingStatus = 'confirmed' | 'arrived' | 'completed' | 'no_show' | 'cancelled_by_client' | 'cancelled_by_club';
+
+export interface PayableBookingRow {
+  bookingId: string;
+  branchId: string;
+  branchTimezone: TimeZone;
+  clientId: string;
+  status: BookingStatus;
+  /** K10 §1: к оплате только arrived | completed. */
+  payable: boolean;
+  version: number;
+  priceKop: number;
+  /** Минуты по расписанию текущей версии (07 §4.3, Q-40). */
+  minutes: number;
+  resourceId: string;
+  resourceType: string;
+  start: Date;
+  end: Date;
+}
+
+export interface HoldBookingRow {
+  bookingId: string;
+  clientId: string;
+  status: BookingStatus;
+  minutes: number;
+  resourceType: string;
+}
+
+const PAYABLE = new Set<BookingStatus>(['arrived', 'completed']);
+const minutesSql = (period: string) => `(extract(epoch FROM upper(${period}) - lower(${period})) / 60)::int`;
+
+export const paymentBookingProvider = {
+  /** K10 §4 п.1: бронь для оплаты под FOR SHARE строки bookings (статус не сменится до конца транзакции оплаты). Нет брони – null. */
+  async payableBooking(tx: Db | Tx, bookingId: string): Promise<PayableBookingRow | null> {
+    const r = await tx.query<Omit<PayableBookingRow, 'payable' | 'priceKop'> & { priceKop: string }>(
+      `SELECT b.id AS "bookingId", b.branch_id AS "branchId", v.branch_timezone AS "branchTimezone", b.client_id AS "clientId",
+              b.status, b.current_version AS version, v.price_kop AS "priceKop", ${minutesSql('v.period')} AS minutes,
+              v.resource_id AS "resourceId", r.resource_type AS "resourceType", lower(v.period) AS start, upper(v.period) AS "end"
+       FROM app.bookings b
+       JOIN journal.booking_versions v ON v.booking_id = b.id AND v.version = b.current_version
+       JOIN app.resources r ON r.id = v.resource_id
+       WHERE b.id = $1
+       FOR SHARE OF b`,
+      [bookingId],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return { ...row, priceKop: Number(row.priceKop), payable: PAYABLE.has(row.status) };
+  },
+
+  /** K15 §4: активное посещение брони (начисление – только при нём). */
+  async activeVisit(tx: Db | Tx, bookingId: string): Promise<{ visitId: string; branchId: string; clientId: string; arrivedAt: Date } | null> {
+    const r = await tx.query<{ visitId: string; branchId: string; clientId: string; arrivedAt: Date }>(
+      `SELECT id AS "visitId", branch_id AS "branchId", client_id AS "clientId", arrived_at AS "arrivedAt"
+       FROM app.visits WHERE booking_id = $1 AND status = 'active'`,
+      [bookingId],
+    );
+    return r.rows[0] ?? null;
+  },
+
+  /** K15 §5 (penalty_scope 'visit', Q-44): брони того же клиента в том же филиале, идущие подряд без перерыва
+   *  (конец одной = начало следующей), включая саму бронь; отменённые разрывают цепочку. Порядок – по началу. */
+  async adjacentChain(tx: Db | Tx, bookingId: string): Promise<string[]> {
+    const r = await tx.query<{ id: string }>(
+      `WITH RECURSIVE live AS (
+         SELECT b.id, b.period FROM app.bookings b
+         JOIN app.bookings me ON me.id = $1 AND b.client_id = me.client_id AND b.branch_id = me.branch_id
+         WHERE b.status NOT LIKE 'cancelled%'
+       ),
+       chain AS (
+         SELECT id, period FROM live WHERE id = $1
+         UNION
+         SELECT l.id, l.period FROM live l JOIN chain c ON upper(l.period) = lower(c.period) OR lower(l.period) = upper(c.period)
+       )
+       SELECT id FROM chain ORDER BY lower(period), id`,
+      [bookingId],
+    );
+    return r.rows.map((x) => x.id);
+  },
+
+  /** K15 §3: брони, созданные подтверждением удержания (резерв удержания → резерв каждой брони). */
+  async holdBookings(tx: Db | Tx, holdId: string): Promise<HoldBookingRow[]> {
+    const r = await tx.query<HoldBookingRow>(
+      `SELECT b.id AS "bookingId", b.client_id AS "clientId", b.status, ${minutesSql('v.period')} AS minutes, r.resource_type AS "resourceType"
+       FROM app.bookings b
+       JOIN journal.booking_versions v ON v.booking_id = b.id AND v.version = b.current_version
+       JOIN app.resources r ON r.id = v.resource_id
+       WHERE b.hold_id = $1
+       ORDER BY lower(v.period), b.id`,
+      [holdId],
+    );
+    return r.rows;
+  },
+};
