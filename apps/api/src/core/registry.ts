@@ -8,6 +8,12 @@ import { auditActions as bookingAudit } from '../modules/booking/audit.ts';
 import { errors as bookingErrors } from '../modules/booking/errors.ts';
 import { auditActions as clientsAudit } from '../modules/clients/audit.ts';
 import { errors as clientsErrors } from '../modules/clients/errors.ts';
+import { auditActions as financeAudit } from '../modules/finance/audit.ts';
+import { errors as financeErrors } from '../modules/finance/errors.ts';
+import { auditActions as loyaltyAudit } from '../modules/loyalty/audit.ts';
+import { errors as loyaltyErrors } from '../modules/loyalty/errors.ts';
+import { auditActions as certificatesAudit } from '../modules/certificates/audit.ts';
+import { errors as certificatesErrors } from '../modules/certificates/errors.ts';
 import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit.ts';
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
 import { auditActions as networkAudit } from '../modules/network/audit.ts';
@@ -32,6 +38,9 @@ const moduleErrors = {
   booking: bookingErrors,
   pricing: pricingErrors,
   notifications: notificationsErrors,
+  finance: financeErrors,
+  loyalty: loyaltyErrors,
+  certificates: certificatesErrors,
 } as const;
 const moduleAudit = {
   settings: settingsAudit,
@@ -43,6 +52,11 @@ const moduleAudit = {
   booking: bookingAudit,
   pricing: pricingAudit,
   notifications: notificationsAudit,
+  // K3 правило 6: проводку и сторно пишет в аудит модуль-потребитель; код один на всех (K2, Э2).
+  ledger: ['ledger.posted', 'ledger.reversed'] as const,
+  finance: financeAudit,
+  loyalty: loyaltyAudit,
+  certificates: certificatesAudit,
 } as const;
 
 type ModuleErrors = typeof moduleErrors;

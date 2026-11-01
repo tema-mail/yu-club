@@ -40,7 +40,7 @@ function def<T>(schema: z.ZodType<T>, systemDefault: T, levels: readonly StoredL
   return { schema, systemDefault, levels, editAction, affectsExisting: false };
 }
 
-/** Реестр ключей Э0–Э1 (K7 §Реестр). Новый ключ = строка K7 + запись здесь. */
+/** Реестр ключей Э0–Э2 (K7 §Реестр, «Реестр ключей Э2»). Новый ключ = строка K7 + запись здесь. */
 export const SETTINGS = {
   'booking.window_default_days': def(int(1, 30), 7, NB, BRANCH),
   'booking.window_max_days': def(int(1, 90), 30, NB, BRANCH),
@@ -68,6 +68,30 @@ export const SETTINGS = {
     ['network', 'city'],
     NET,
   ),
+  // ---- Э2 (K7 «Реестр ключей Э2»; K10 §2, K15 §13, K17 §12). Менять – только Владелец (решение D2-02).
+  'payment.certificate_topup_enabled': def(z.boolean(), false, N, NET), // Q-24 / R-03
+  'finance.negative_balance_allowed': def(z.boolean(), false, NB, NET), // Q-28
+  'finance.cash_shift_enabled': def(z.boolean(), false, NB, NET), // Q-22
+  'certificate.sale_methods': def(
+    z.array(z.enum(['cash', 'card', 'transfer'])).min(1).refine((a) => new Set(a).size === a.length, 'без повторов'),
+    ['cash', 'card', 'transfer'] as ('cash' | 'card' | 'transfer')[],
+    N,
+    NET,
+  ), // Q-26
+  'certificate.nominal_min_kop': def(int(1, 100_000_000).nullable(), null as number | null, N, NET), // 08 §4.5
+  'certificate.nominal_max_kop': def(int(1, 100_000_000).nullable(), null as number | null, N, NET),
+  'loyalty.batch_ttl_days': def(int(1, 3650).nullable(), null as number | null, N, NET), // Q-43 / R-05: бессрочно
+  'loyalty.penalty_scope': def(z.enum(['visit', 'booking']), 'visit' as 'visit' | 'booking', N, NET), // Q-44 / R-07
+  // null – штрафы выключены до даты запуска Э2, её ставит Владелец (решение D2-03, план 4.3 п.10)
+  'loyalty.penalties_from': def(z.iso.datetime().nullable(), null as string | null, N, NET),
+  'loyalty.points_resource_types': def(
+    z.array(z.string().regex(/^[a-z][a-z0-9_]*$/)).refine((a) => new Set(a).size === a.length, 'без повторов'),
+    ['pc', 'vr_seat', 'ps_room'] as string[],
+    N,
+    NET,
+  ), // Q-42: комната целиком баллами не оплачивается
+  'loyalty.accrue_for_points': def(z.boolean(), false, N, NET), // Q-40 / R-06
+  'loyalty.accrue_for_certificate': def(z.boolean(), true, N, NET),
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;

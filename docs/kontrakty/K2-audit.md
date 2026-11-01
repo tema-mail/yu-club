@@ -80,7 +80,13 @@ export function objectTimeline(db: Db, ctx: AccessContext, object: { type: Audit
 | Уведомления | `notification.sent`, `notification.failed`, `notification.skipped` (системные, результат отправки) | `notification` |
 | Уведомления | `notification.push_subscribed`, `notification.push_unsubscribed` (клиент в ЛК; endpoint – только маска хоста, ключи не пишутся) | `client` |
 | Экспорт | `export.created` | `export` |
-| Э2–Э3 | `ledger.posted`, `ledger.reversed`, `loyalty.adjusted`, `certificate.*`, `repair.*`, `shift.*` | – |
+| Деньги (Э2, S2-02) | `payment.recorded`, `payment.refunded` | `payment` |
+| Деньги (Э2, S2-02) | `finance.operation.created`, `finance.operation.reversed`, `finance.operation.corrected`, `finance.category.created`, `finance.category.updated`, `finance.category.archived`, `finance.period.closed` | `finance_operation` / `finance_category` / `branch` |
+| Деньги (Э2, S2-02) | `cash_shift.opened`, `cash_shift.closed`, `cash_shift.resolved` | `cash_shift` |
+| Журнал K3 (Э2, S2-02) | `ledger.posted`, `ledger.reversed` (пишет модуль-потребитель, K3 правило 6) | `ledger_posting` |
+| Баллы (Э2, S2-03) | `loyalty.adjusted`, `loyalty.booked_below_limit`, `loyalty.issue.created`, `loyalty.issue.resolved`, `loyalty.reserve.created`, `loyalty.reserve.released`, `loyalty.goods.created`, `loyalty.goods.updated`, `loyalty.goods.archived`, `loyalty.goods.issued`, `loyalty.goods.returned` (начисления, штрафы, списания – через `ledger.*`) | `client` / `booking` / `loyalty_goods` |
+| Сертификаты (Э2, S2-04) | `certificate.sold`, `certificate.redeemed`, `certificate.redemption_returned`, `certificate.expired`, `certificate.cancelled`, `certificate.corrected`, `certificate.review_changed`, `certificate.recipient_changed`, `certificate.pin_reissued`, `certificate.pin_locked` (код и его хэш не пишутся) | `certificate` |
+| Э3 | `repair.*`, `shift.*` | – |
 
 Новый код действия добавляется только правкой этого реестра.
 

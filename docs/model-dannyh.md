@@ -1,6 +1,6 @@
-# Модель данных этапов 0 и 1
+# Модель данных этапов 0–2
 
-Версия 2 от 01.11.2026 (шаг S0-00, правки по architecture-reviewer; сверено с закоммиченными `db/migrations/0001_init.sql`, `db/migrate.ts`, `tests/helpers/pg.ts`). Основа: план 3.3–3.4, 6.1–6.2; ADR 0001–0005.
+Версия 3 от 02.11.2026: добавлен раздел 4 «Этап 2» (шаг S2-00, миграции 0201–0207). Версия 2 от 01.11.2026 (шаг S0-00, правки по architecture-reviewer; сверено с закоммиченными `db/migrations/0001_init.sql`, `db/migrate.ts`, `tests/helpers/pg.ts`). Основа: план 3.3–3.4, 6.1–6.2; ADR 0001–0005.
 Факты ТЗ – со ссылкой «файл §пункт». Мои решения помечены «решение».
 DDL ниже – нормативный: имена таблиц, столбцов, ограничений и их смысл – контракт для миграций. Порядок столбцов и индексы для скорости исполнитель может дополнять.
 
@@ -822,7 +822,415 @@ CREATE INDEX notifications_booking_idx ON app.notifications (booking_id);
 
 ---
 
-## 4. Ключевые правила → где гарантия
+## 4. Этап 2 – коммерческий контур
+
+Версия от 02.11.2026 (шаг S2-00). Основа: контракты K10 (оплата), K15 (баллы), K16 (сертификаты), K17 (касса), план 6.4.1. Порядок номеров = порядок слияния (план 6.4.1, правило раннера «порядок нарушен»): до первого применения на стенде номера можно переставить – решение техлида при слиянии с правкой этой таблицы и 6.4.1.
+
+| № | Файл | Таблицы | FK наружу (на что) | Отложенные FK, добавляемые здесь | Шаг |
+|---|---|---|---|---|---|
+| 0201 | `0201_ledger_limit.sql` | – (замена функции `journal.ledger_apply_balance`) | – | – | S2-07 |
+| 0202 | `0202_finance.sql` | `finance_categories`, `journal.finance_operations`, `finance_opening_balances`, `finance_periods`; `ledger_accounts.kind` + `cash_branch_noncash`; посев категорий 06 §7.3 | `→ branches`, `→ finance_categories` | – | S2-10 |
+| 0203 | `0203_loyalty.sql` | `loyalty_batches`, `journal.loyalty_batch_moves`, `loyalty_accruals`, `loyalty_penalties`, `loyalty_reserves`, `loyalty_issues` | `→ clients`, `→ ledger_entries`, `→ bookings`, `→ holds`, `→ visits`, `→ no_shows`, `→ branches` | – | S2-30 |
+| 0204 | `0204_certificates.sql` | `certificates`, `certificate_redemptions`, `journal.certificate_holder_history` | `→ branches`, `→ staff`, `→ clients`, `→ ledger_accounts`, `→ ledger_entries`, `→ finance_operations`, `→ bookings` | – | S2-50 |
+| 0205 | `0205_payments.sql` | `payment_sessions`, `payments`, `payment_lines`, `payment_refunds` | `→ bookings`, `→ branches`, `→ clients`, `→ finance_operations`, `→ certificates` | `certificate_redemptions.payment_id → payments`, `loyalty_accruals.payment_id → payments` | S2-20 |
+| 0206 | `0206_cash_shifts.sql` | `cash_shifts` | `→ branches`, `→ staff`, `→ finance_operations` | `finance_operations.shift_id → cash_shifts` | S2-16 |
+| 0207 | `0207_loyalty_goods.sql` | `loyalty_goods`, `loyalty_goods_branches`, `loyalty_goods_orders` | `→ branches`, `→ clients`, `→ ledger_entries` | – | S2-39 |
+
+Общие правила Э2 (решение, продолжают раздел 0):
+- Деньги – `bigint` копейки, баллы – `bigint` сотые (`*_kop`, `*_centi`); суммы операций > 0, знак – в `direction` или в записи K3.
+- Баланс и остаток считает только K3 (`ledger_entries`): таблицы модулей хранят бизнес-смысл и ссылку на запись (`ledger_entry_id`, `posting_id`); кэши (`remaining_centi` партий) сверяет ночная задача S2-80.
+- Журнальные таблицы (`journal.*`) – только вставка; изменяемые статусы живут в `app.*`.
+- `payment_id` в 0203/0204 – `uuid` без FK до 0205 (FK вперёд – в миграции цели, раздел 1).
+- Каждая миграция – вверх, вниз, вверх на чистой базе; `down` удаляет ровно то, что создал `up` (0201 – возвращает функцию 0004).
+- DDL ниже нормативен так же, как разделы 2–3: имена и смысл – контракт; шаг-исполнитель может добавить индексы и уточнить `CHECK`, расхождение с контрактом K10/K15–K17 – правкой этого раздела в том же коммите.
+
+### 0201 – ledger_limit (core)
+
+```sql
+-- migrate:up
+CREATE OR REPLACE FUNCTION journal.ledger_apply_balance() ...  -- тело 0004, одно изменение:
+--   IF acc.min_balance IS NOT NULL AND NEW.amount < 0 AND next_balance < acc.min_balance AND NOT NEW.limit_override THEN
+--     RAISE ... CONSTRAINT = 'ledger_balance_below_limit' ...
+-- migrate:down
+CREATE OR REPLACE FUNCTION journal.ledger_apply_balance() ...  -- тело 0004 без изменения
+```
+Почему (K15 §1, ревью 02.11): ниже предела счёт попадает только записью с `limit_override` (Владелец); при таком балансе любая запись, после которой баланс всё ещё ниже предела, отклонялась – не проходили начисление, возврат, сторно штрафа. Предел защищает от списаний, приход его не нарушает. `SECURITY DEFINER`, `search_path` и `REVOKE ALL … FROM PUBLIC` – как в 0004.
+
+### 0202 – finance (finance)
+
+```sql
+ALTER TABLE app.ledger_accounts DROP CONSTRAINT ledger_accounts_kind_check;
+ALTER TABLE app.ledger_accounts ADD CONSTRAINT ledger_accounts_kind_check
+  CHECK (kind IN ('cash_branch','cash_branch_noncash','loyalty_client','certificate','staff_payroll'));   -- K17 §2
+
+CREATE TABLE app.finance_categories (            -- справочник сети (06 §7, K17 §5)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  kind text NOT NULL CHECK (kind IN ('income','expense')),
+  parent_id uuid REFERENCES app.finance_categories(id),   -- два уровня; третий запрещает триггер finance_categories_depth
+  name text NOT NULL,
+  sort_order int NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+  row_version int NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE NULLS NOT DISTINCT (kind, parent_id, name)
+);
+
+CREATE SEQUENCE app.finance_operation_number_seq;
+CREATE TABLE journal.finance_operations (         -- операция кассы = заголовок одной проводки K3; только вставка (K17 §3)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number bigint NOT NULL UNIQUE DEFAULT nextval('app.finance_operation_number_seq'),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  kind text NOT NULL CHECK (kind IN ('opening_balance','income','expense','withdrawal','place_transfer','refund','correction','reversal')),
+  place text NOT NULL CHECK (place IN ('cash','noncash')),   -- для place_transfer – место-источник
+  method text CHECK (method IN ('cash','card','transfer')),
+  direction text NOT NULL CHECK (direction IN ('in','out')),
+  amount_kop bigint NOT NULL CHECK (amount_kop > 0),
+  source text CHECK (source IN ('session','certificate_sale','event','extra_service','other')),
+  category_id uuid REFERENCES app.finance_categories(id),
+  subcategory_id uuid REFERENCES app.finance_categories(id),
+  comment text,
+  ref_type text CHECK (ref_type IN ('booking','payment','certificate','event','repair','staff','operation','shift')),
+  ref_id uuid,
+  receipt_issued boolean,                            -- Q-23 «чек пробит»
+  occurred_at timestamptz NOT NULL,
+  recorded_at timestamptz NOT NULL DEFAULT now(),
+  author_type text NOT NULL CHECK (author_type IN ('staff','system')),
+  author_id uuid,
+  posting_id uuid NOT NULL UNIQUE,                   -- 1 операция = 1 проводка K3
+  reversal_of uuid UNIQUE REFERENCES journal.finance_operations(id),   -- второе сторно невозможно
+  shift_id uuid,                                     -- FK → cash_shifts добавит 0206
+  CHECK ((kind = 'income') = (source IS NOT NULL)),
+  CHECK (kind <> 'expense' OR category_id IS NOT NULL),
+  CHECK (kind NOT IN ('expense','withdrawal','correction','reversal','refund') OR comment IS NOT NULL),   -- 06 §8, K17 §3
+  CHECK ((kind = 'reversal') = (reversal_of IS NOT NULL)),
+  CHECK (kind <> 'withdrawal' OR place = 'cash'),
+  CHECK (method IS NULL OR (method = 'cash') = (place = 'cash'))   -- наличные – только место cash; карта и перевод – только noncash
+);
+CREATE INDEX finance_operations_branch_idx ON journal.finance_operations (branch_id, occurred_at, number);   -- порядок журнала (06 §10)
+CREATE INDEX finance_operations_ref_idx ON journal.finance_operations (ref_type, ref_id);
+
+CREATE TABLE app.finance_opening_balances (       -- один начальный остаток на место (06 §3.1, K17 §4)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  place text NOT NULL CHECK (place IN ('cash','noncash')),
+  operation_id uuid NOT NULL UNIQUE REFERENCES journal.finance_operations(id),
+  balance_date date NOT NULL,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','reversed')),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX finance_opening_balances_one_active ON app.finance_opening_balances (branch_id, place) WHERE status = 'active';
+
+CREATE TABLE app.finance_periods (                -- закрытые месяцы (06 §8, §14; K17 §6); открыть нельзя – нет UPDATE/DELETE у yu_app
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  month date NOT NULL CHECK (extract(day FROM month) = 1),   -- первое число месяца по зоне филиала
+  closed_at timestamptz NOT NULL,
+  closed_by uuid NOT NULL,
+  PRIMARY KEY (branch_id, month)
+);
+REVOKE UPDATE, DELETE ON app.finance_periods FROM yu_app;
+-- посев: категории расходов 06 §7.3 (8 категорий с подкатегориями по списку) – предложение, не закрытый перечень (6.4.3 п.13)
+```
+Места денег – счета K3 `cash_branch` (наличные) и `cash_branch_noncash` (безнал), `owner_type='branch'`, `owner_id = branch_id`, `min_balance NULL`: третье место того же вида невозможно – `UNIQUE (kind, owner_type, owner_id)` из 0004. Отрицательный остаток проверяет код под `lockAccounts` по `finance.negative_balance_allowed` (K17 §6). Тест S2-10: `UPDATE`/`DELETE journal.finance_operations` от `yu_app` → `42501`.
+
+### 0203 – loyalty (loyalty)
+
+```sql
+CREATE TABLE app.loyalty_batches (                -- партии баллов поверх K3 (K15 §2)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  source text NOT NULL CHECK (source IN ('visit','manual')),
+  accrual_entry_id bigint NOT NULL UNIQUE REFERENCES journal.ledger_entries(id),
+  branch_id uuid REFERENCES app.branches(id),
+  booking_id uuid REFERENCES app.bookings(id),
+  visit_id uuid REFERENCES app.visits(id),
+  amount_centi bigint NOT NULL CHECK (amount_centi > 0),
+  remaining_centi bigint NOT NULL CHECK (remaining_centi >= 0 AND remaining_centi <= amount_centi),   -- кэш, сверка 16 §14
+  expires_at timestamptz,                            -- NULL – бессрочно (Q-43)
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','depleted','expired')),
+  accrued_at timestamptz NOT NULL
+);
+CREATE INDEX loyalty_batches_fefo_idx ON app.loyalty_batches (client_id, expires_at NULLS LAST, accrued_at, id) WHERE status = 'active';
+
+CREATE TABLE journal.loyalty_batch_moves (         -- движения партий; только вставка
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  batch_id uuid NOT NULL REFERENCES app.loyalty_batches(id),
+  ledger_entry_id bigint NOT NULL REFERENCES journal.ledger_entries(id),
+  kind text NOT NULL CHECK (kind IN ('spend_time','spend_goods','penalty','expire','return','debt_cover','manual','accrual_reversal')),
+  delta_centi bigint NOT NULL CHECK (delta_centi <> 0),
+  ref_type text, ref_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX loyalty_batch_moves_entry_idx ON journal.loyalty_batch_moves (ledger_entry_id);
+
+CREATE TABLE app.loyalty_accruals (               -- одно начисление на бронь (K15 §4)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  booking_id uuid NOT NULL REFERENCES app.bookings(id),
+  visit_id uuid NOT NULL REFERENCES app.visits(id),
+  payment_id uuid NOT NULL,                          -- FK → payments добавит 0205
+  ledger_entry_id bigint NOT NULL UNIQUE REFERENCES journal.ledger_entries(id),
+  amount_centi bigint NOT NULL CHECK (amount_centi > 0),
+  planned_minutes int NOT NULL CHECK (planned_minutes > 0),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','reversed')),
+  reversal_entry_id bigint REFERENCES journal.ledger_entries(id),
+  reversal_reason text CHECK (reversal_reason IN ('visit_reverted','payment_refunded')),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX loyalty_accruals_one_active ON app.loyalty_accruals (booking_id) WHERE status = 'active';
+
+CREATE TABLE app.loyalty_penalties (              -- штраф за неявку, в том числе applied = 0 (K15 §5)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  booking_id uuid NOT NULL REFERENCES app.bookings(id),
+  no_show_id uuid NOT NULL UNIQUE REFERENCES app.no_shows(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  applied_centi bigint NOT NULL CHECK (applied_centi BETWEEN -500 AND 0),
+  ledger_entry_id bigint REFERENCES journal.ledger_entries(id),   -- NULL при applied = 0 (K3 запрещает нулевую запись)
+  group_booking_id uuid REFERENCES app.bookings(id),  -- merged: бронь, на которой стоит штраф цепочки (scope 'visit')
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','merged','reversed','skipped')),   -- skipped – неявка раньше penalties_from
+  reversal_entry_id bigint REFERENCES journal.ledger_entries(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK ((applied_centi = 0) = (ledger_entry_id IS NULL))
+);
+CREATE UNIQUE INDEX loyalty_penalties_one_active ON app.loyalty_penalties (booking_id) WHERE status = 'active';
+
+CREATE TABLE app.loyalty_reserves (               -- резерв на время удержания и брони (K15 §3)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  amount_centi bigint NOT NULL CHECK (amount_centi > 0),
+  hold_id uuid REFERENCES app.holds(id),
+  booking_id uuid REFERENCES app.bookings(id),
+  hold_signature text,                               -- sha256 отсортированных hold_item.id
+  status text NOT NULL CHECK (status IN ('hold','booking','spent','released','converted')),
+  release_reason text CHECK (release_reason IN ('hold_expired','hold_released','hold_changed','booking_cancelled','no_show',
+                                                'rescheduled_short','replaced','paid_other')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  closed_at timestamptz,
+  CHECK (status <> 'hold' OR (hold_id IS NOT NULL AND hold_signature IS NOT NULL)),
+  CHECK (status <> 'booking' OR booking_id IS NOT NULL),
+  CHECK ((status = 'released') = (release_reason IS NOT NULL))
+);
+CREATE UNIQUE INDEX loyalty_reserves_one_per_hold ON app.loyalty_reserves (hold_id) WHERE status = 'hold';
+CREATE UNIQUE INDEX loyalty_reserves_one_per_booking ON app.loyalty_reserves (booking_id) WHERE status = 'booking';
+CREATE INDEX loyalty_reserves_client_idx ON app.loyalty_reserves (client_id) WHERE status IN ('hold','booking');
+
+CREATE TABLE app.loyalty_issues (                 -- «требует решения»: сторно ниже −50 (K15 §4)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  kind text NOT NULL CHECK (kind IN ('accrual_reversal_below_limit')),
+  ref_type text NOT NULL CHECK (ref_type IN ('visit','payment_refund')),
+  ref_id uuid NOT NULL,
+  amount_centi bigint NOT NULL,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+  resolved_entry_id bigint REFERENCES journal.ledger_entries(id),
+  resolved_by uuid, resolved_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (kind, ref_type, ref_id)
+);
+```
+Инвариант (K15 §2): `Σ remaining_centi активных партий = max(0, баланс K3)` – проверяют property-based тест S2-30 и ночная сверка S2-80. Счёт баллов – K3 `loyalty_client`, `min_balance = −5000`, `branch_id NULL` (счёт на сеть).
+
+### 0204 – certificates (certificates)
+
+```sql
+CREATE TABLE app.certificates (                   -- K16 §10
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  number text NOT NULL UNIQUE CHECK (number ~ '^YC-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$'),   -- 8 символов Crockford Base32 (K16 §3), вид 'YC-7K2M-9QXD' (K16 §1)
+  pin_hash text NOT NULL,                            -- HMAC-SHA256(pin, CERT_PEPPER), hex
+  pin_failed_count smallint NOT NULL DEFAULT 0,
+  pin_locked_until timestamptz,
+  nominal_kop bigint NOT NULL CHECK (nominal_kop > 0),
+  sale_branch_id uuid NOT NULL REFERENCES app.branches(id),
+  sale_method text NOT NULL CHECK (sale_method IN ('cash','card','transfer')),
+  sale_operation_id uuid NOT NULL UNIQUE REFERENCES journal.finance_operations(id),
+  ledger_account_id uuid NOT NULL UNIQUE REFERENCES app.ledger_accounts(id),
+  sold_at timestamptz NOT NULL,
+  sold_by uuid NOT NULL REFERENCES app.staff(id),
+  expires_on date NOT NULL,                          -- последний день по зоне филиала продажи
+  expires_at timestamptz NOT NULL,                   -- начало следующих суток там же
+  expired_entry_id bigint REFERENCES journal.ledger_entries(id),
+  cancelled_at timestamptz, cancel_reason text,
+  review_reason text,                                -- не NULL – «требует проверки»
+  buyer_client_id uuid REFERENCES app.clients(id),
+  recipient_client_id uuid REFERENCES app.clients(id),
+  comment text,
+  row_version int NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK ((cancelled_at IS NULL) = (cancel_reason IS NULL))
+);
+CREATE INDEX certificates_expiry_idx ON app.certificates (expires_at) WHERE expired_entry_id IS NULL AND cancelled_at IS NULL;
+-- неизменяемые поля (08 §15): как у tariffs (0107)
+REVOKE UPDATE ON app.certificates FROM yu_app;
+GRANT UPDATE (pin_hash, pin_failed_count, pin_locked_until, expired_entry_id, cancelled_at, cancel_reason, review_reason,
+              recipient_client_id, comment, row_version) ON app.certificates TO yu_app;
+
+CREATE TABLE app.certificate_redemptions (        -- погашение = строка оплаты K10
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  certificate_id uuid NOT NULL REFERENCES app.certificates(id),
+  booking_id uuid NOT NULL REFERENCES app.bookings(id),
+  payment_id uuid NOT NULL,                          -- FK → payments добавит 0205
+  branch_id uuid NOT NULL REFERENCES app.branches(id),   -- филиал сеанса
+  client_id uuid REFERENCES app.clients(id),
+  amount_kop bigint NOT NULL CHECK (amount_kop > 0),
+  ledger_entry_id bigint NOT NULL UNIQUE REFERENCES journal.ledger_entries(id),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','returned','not_restored')),
+  return_entry_id bigint REFERENCES journal.ledger_entries(id),
+  created_by uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (status <> 'returned' OR return_entry_id IS NOT NULL)
+);
+CREATE INDEX certificate_redemptions_cert_idx ON app.certificate_redemptions (certificate_id);
+
+CREATE TABLE journal.certificate_holder_history ( -- смена получателя (08 §7); только вставка
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  certificate_id uuid NOT NULL REFERENCES app.certificates(id),
+  old_client_id uuid, new_client_id uuid,
+  changed_by uuid NOT NULL,
+  changed_at timestamptz NOT NULL
+);
+```
+Остаток – только счёт K3 `kind='certificate'`, `min_balance = 0` (K16 §1): столбца остатка нет. Код (`pin`) и его хэш не попадают в `idempotency_keys`, аудит и логи (K16 §3, S2-08). Тест S2-50: `UPDATE certificates SET nominal_kop` от `yu_app` → `42501`.
+
+### 0205 – payments (finance)
+
+```sql
+CREATE TABLE app.payment_sessions (               -- сеанс оплаты = бронь (K10 §1, §3)
+  booking_id uuid PRIMARY KEY REFERENCES app.bookings(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  amount_due_kop bigint NOT NULL CHECK (amount_due_kop >= 0),
+  booking_version int NOT NULL,
+  status text NOT NULL DEFAULT 'unpaid' CHECK (status IN ('unpaid','paid','partially_refunded','refunded')),
+  row_version int NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE app.payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL REFERENCES app.payment_sessions(booking_id),
+  attempt int NOT NULL CHECK (attempt >= 1),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','partially_refunded','refunded')),
+  total_kop bigint NOT NULL CHECK (total_kop >= 0),
+  topup_rule_snapshot boolean NOT NULL,              -- флаг R-03 на момент проведения (K10 §2)
+  recorded_by uuid NOT NULL, recorded_at timestamptz NOT NULL,
+  comment text,
+  UNIQUE (session_id, attempt)
+);
+CREATE UNIQUE INDEX payments_one_live_per_session ON app.payments (session_id) WHERE status IN ('active','partially_refunded');   -- TC-07
+CREATE TABLE app.payment_lines (
+  payment_id uuid NOT NULL REFERENCES app.payments(id),
+  line_no smallint NOT NULL CHECK (line_no IN (1, 2)),
+  method text NOT NULL CHECK (method IN ('cash','card','transfer','points','certificate')),
+  amount_kop bigint NOT NULL CHECK (amount_kop > 0),
+  points_centi bigint CHECK (points_centi > 0),
+  certificate_id uuid REFERENCES app.certificates(id),
+  ledger_posting_id uuid NOT NULL,
+  finance_operation_id uuid REFERENCES journal.finance_operations(id),
+  PRIMARY KEY (payment_id, line_no),
+  CHECK ((method = 'points') = (points_centi IS NOT NULL)),
+  CHECK ((method = 'certificate') = (certificate_id IS NOT NULL)),
+  CHECK ((method IN ('cash','card','transfer')) = (finance_operation_id IS NOT NULL))
+);
+-- триггер payment_lines_pair (BEFORE INSERT): строка 2 допустима, только если строка 1 – certificate, а строка 2 – cash|card|transfer (K10 §3)
+CREATE TABLE app.payment_refunds (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  payment_id uuid NOT NULL REFERENCES app.payments(id),
+  line_no smallint NOT NULL,
+  seq int NOT NULL,                                  -- n в ключе K3 refund:<paymentId>:<lineNo>:<n>
+  amount_kop bigint NOT NULL CHECK (amount_kop >= 0),
+  points_centi bigint,
+  reason text NOT NULL,
+  outcome text NOT NULL CHECK (outcome IN ('returned','not_restored')),
+  ledger_posting_id uuid,                            -- NULL при not_restored
+  created_by uuid NOT NULL, created_at timestamptz NOT NULL,
+  FOREIGN KEY (payment_id, line_no) REFERENCES app.payment_lines(payment_id, line_no),
+  UNIQUE (payment_id, line_no, seq),
+  CHECK ((outcome = 'returned') = (ledger_posting_id IS NOT NULL))
+);
+-- отложенные FK (раздел 1): payments появились здесь
+ALTER TABLE app.certificate_redemptions ADD CONSTRAINT certificate_redemptions_payment_fk FOREIGN KEY (payment_id) REFERENCES app.payments(id);
+ALTER TABLE app.loyalty_accruals ADD CONSTRAINT loyalty_accruals_payment_fk FOREIGN KEY (payment_id) REFERENCES app.payments(id);
+```
+Способ `none` (сумма 0) – платёж без строк (`total_kop = 0`) и без проводки (K10 §2). Статус оплаты брони живёт здесь, в `bookings` столбцов оплаты нет (ADR 0002 п.1).
+
+### 0206 – cash_shifts (finance)
+
+```sql
+CREATE TABLE app.cash_shifts (                    -- кассовая смена за флагом finance.cash_shift_enabled (K17 §7)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed','needs_resolution','resolved')),
+  opened_by uuid NOT NULL REFERENCES app.staff(id), opened_at timestamptz NOT NULL,
+  opening_counted_kop bigint NOT NULL CHECK (opening_counted_kop >= 0),
+  opening_expected_kop bigint NOT NULL,              -- Администратору не показывается
+  closed_by uuid REFERENCES app.staff(id), closed_at timestamptz,
+  closing_counted_kop bigint CHECK (closing_counted_kop >= 0),
+  closing_expected_kop bigint,
+  resolution text CHECK (resolution IN ('correct','accept')),
+  resolution_reason text,
+  resolution_operation_id uuid REFERENCES journal.finance_operations(id),
+  resolved_by uuid REFERENCES app.staff(id), resolved_at timestamptz,
+  row_version int NOT NULL DEFAULT 1,
+  CHECK (status = 'open' OR (closed_at IS NOT NULL AND closing_counted_kop IS NOT NULL)),
+  CHECK (resolution IS NULL OR resolution_reason IS NOT NULL)
+);
+CREATE UNIQUE INDEX cash_shifts_one_open ON app.cash_shifts (branch_id) WHERE status = 'open';
+ALTER TABLE journal.finance_operations ADD CONSTRAINT finance_operations_shift_fk FOREIGN KEY (shift_id) REFERENCES app.cash_shifts(id);
+```
+
+### 0207 – loyalty_goods (loyalty)
+
+```sql
+CREATE TABLE app.loyalty_goods (                  -- товары за баллы (07 §7, K15 §6)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL, description text, image_url text,
+  price_rub_kop bigint CHECK (price_rub_kop >= 0),   -- цены в рублях и в баллах – раздельно, без пересчёта (07 §7.1)
+  price_points_centi bigint NOT NULL CHECK (price_points_centi > 0),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+  row_version int NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE app.loyalty_goods_branches (         -- где выдаётся и остаток
+  goods_id uuid NOT NULL REFERENCES app.loyalty_goods(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  stock int CHECK (stock >= 0),                      -- NULL – остаток не ведётся
+  active boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (goods_id, branch_id)
+);
+CREATE TABLE app.loyalty_goods_orders (           -- выдача только целиком (Q-47)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  goods_id uuid NOT NULL REFERENCES app.loyalty_goods(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  price_points_centi bigint NOT NULL CHECK (price_points_centi > 0),   -- снимок цены
+  spend_entry_id bigint NOT NULL UNIQUE REFERENCES journal.ledger_entries(id),
+  status text NOT NULL DEFAULT 'issued' CHECK (status IN ('issued','returned')),
+  return_entry_id bigint REFERENCES journal.ledger_entries(id),
+  return_reason text,
+  issued_by uuid NOT NULL, issued_at timestamptz NOT NULL,
+  CHECK (status <> 'returned' OR return_reason IS NOT NULL)
+);
+```
+
+### Ключевые правила Э2 → где гарантия
+
+| Правило | ТЗ / контракт | Гарантия |
+|---|---|---|
+| Один живой платёж на сеанс | 06 §5.1, TC-07; K10 §3 | `payments_one_live_per_session` |
+| Только пара «сертификат + деньги» | K10 §2–3 | триггер `payment_lines_pair` + код правила способа |
+| Одно начисление на бронь | 07 §4.4, TC-09; K15 §4 | `loyalty_accruals_one_active` + ключ K3 `loyalty-accrual:<visitId>:<paymentId>` |
+| Один штраф на бронь | 07 §8.4; K15 §5 | `loyalty_penalties_one_active`, `UNIQUE (no_show_id)`, ключ `loyalty-penalty:<noShowId>` |
+| Резерв один на удержание и на бронь | K15 §3 | `loyalty_reserves_one_per_hold`, `loyalty_reserves_one_per_booking` |
+| Остаток сертификата ≥ 0 | 08 §6.3, 16 §8.2 | счёт K3 `min_balance = 0` + триггер под `FOR UPDATE` |
+| Начисление и возврат проходят ниже предела | K15 §1 | 0201: предел – только у `amount < 0` |
+| Номинал, срок, номер сертификата не меняются | 08 §15 | `REVOKE UPDATE` + список разрешённых столбцов |
+| Операции кассы не правятся, сторно одно | 06 §4.4, §17 п.15 | `journal.finance_operations` только вставка, `UNIQUE (reversal_of)` |
+| Начальный остаток один на место | 06 §3.1 | `finance_opening_balances_one_active` |
+| Одна открытая смена | K17 §7 | `cash_shifts_one_open` |
+| Закрытый месяц не открывается | K17 §6 | у `yu_app` нет `UPDATE`/`DELETE` на `finance_periods` |
+
+---
+
+
+## 5. Ключевые правила Э0–Э1 → где гарантия
 
 | Правило | ТЗ | Гарантия |
 |---|---|---|

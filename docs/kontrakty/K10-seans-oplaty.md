@@ -38,7 +38,7 @@ export interface PaymentSession {
   amountDueKop: number;        // цена версии брони на момент первой попытки оплаты
   bookingVersion: number;
   status: PaymentSessionStatus;
-  activePaymentId: string | null;
+  activePaymentId: string | null;   // вычисляется: живой платёж из payments_one_live_per_session, столбца нет (model-dannyh 0205)
   rowVersion: number;
 }
 
@@ -63,7 +63,7 @@ export interface Payment {
 - `payment_sessions` (PK = `booking_id` → `bookings`, `branch_id`, `client_id`, `amount_due_kop`, `booking_version`, `status`, `row_version`). Создаётся лениво первой командой оплаты: `INSERT … ON CONFLICT DO NOTHING`, затем `SELECT … FOR UPDATE`.
 - `payments` (`session_id` → `payment_sessions`, `attempt`, `status`, `total_kop`, `topup_rule_snapshot`, автор, время). **`CREATE UNIQUE INDEX payments_one_live_per_session ON payments (session_id) WHERE status IN ('active','partially_refunded')`** – второй живой платёж невозможен даже при гонке (TC-07, 18 §6.3). `UNIQUE (session_id, attempt)`.
 - `payment_lines` (`payment_id`, `line_no` 1..2, `method`, `amount_kop`, `points_centi`, `certificate_id` → `certificates`, `ledger_posting_id`, `finance_operation_id` → `finance_operations`). `CHECK`: строк ≤ 2; вторая строка допустима, только если первая `certificate`, а вторая `cash|card|transfer` (проверка триггером на вставку, решение).
-- `payment_refunds` (`payment_id`, `line_no`, `amount_kop`, `points_centi`, `reason`, автор, `ledger_posting_id`, `outcome`: `returned` | `not_restored`).
+- `payment_refunds` (`payment_id`, `line_no`, `seq` – номер возврата строки, `n` в ключе K3 раздела 9, `amount_kop`, `points_centi`, `reason`, автор, `ledger_posting_id`, `outcome`: `returned` | `not_restored`).
 
 ## 4. Функции
 
@@ -176,7 +176,7 @@ Payload без ПДн (K4 правило 2).
 - Ответ потерян (16 §15.3): повтор с тем же `Idempotency-Key` → прежний ответ; новый ключ → `ALREADY_PAID` с `paymentId` исходного платежа. CRM при `ALREADY_PAID` показывает проведённый платёж, а не ошибку.
 - Ключи K3 детерминированы от факта (K3 правило 4): `payment:<sessionId>:<attempt>:<lineNo>`, `refund:<paymentId>:<lineNo>:<n>`. Уточнение K3 правила 4: ключ `payment:<sessionId>` из черновика заменён на ключ с попыткой – иначе повторная оплата после полного возврата упрётся в `UNIQUE`.
 
-## 10. Изменения смежных контрактов (вносятся шагом S2-00)
+## 10. Изменения смежных контрактов (вносятся шагом S2-00; внесены 02.11.2026 – K1, K3, K4, K7, K11; K5 и K9 – по K15 §8 (ворота −50); реестр `docs/reshenia.md`)
 
 - K4: у `visit.confirmed` потребитель loyalty – «начисление, если у брони уже есть живой платёж» (K15 §4); добавить `payment.recorded`, `payment.refunded` (раздел 6) и события K15, K16.
 - K3: правило 4 – ключ оплаты по разделу 9; новый вид счёта `cash_branch_noncash` (K17 §2); тип ссылки `payment` (`RefType` в `ledger.ts`, шаг S2-10); предел счёта – только для списаний (миграция 0201, шаг S2-07); ключ начисления – `loyalty-accrual:<visitId>:<paymentId>` (K15 §4).

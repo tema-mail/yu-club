@@ -6,7 +6,7 @@
 # Сервер, ключ, адрес и сеть Caddy – окружением; переезд к заказчику = другие значения + свой .env.
 #   deploy/deploy.sh
 #   YU_HOST=root@1.2.3.4 YU_DOMAIN=crm.example.ru YU_CADDY=/etc/caddy/Caddyfile YU_CADDY_CT=caddy deploy/deploy.sh
-# Пароли БД, SESSION_PEPPER и пара VAPID генерируются на сервере один раз в $ROOT/.env (600) и никуда не выводятся.
+# Пароли БД, SESSION_PEPPER, CERT_PEPPER и пара VAPID генерируются на сервере один раз в $ROOT/.env (600) и никуда не выводятся.
 #
 # Следующий шаг (не сделан, решение владельца позже): .github/workflows/deploy-test.yml – выкладка по тегу
 # test-*: тот же сценарий из Actions; нужен деплой-ключ сервера в секретах репозитория.
@@ -53,6 +53,9 @@ echo "→ CRM и сайт собраны на маке и отправлены"
 "${SSH[@]}" "set -e; test -f $ROOT/.env || { umask 077; printf 'APP_ENV=stage\nPUBLIC_SITE_URL=https://%s\nPOSTGRES_PASSWORD=%s\nYU_OWNER_PASSWORD=%s\nYU_APP_PASSWORD=%s\nDATA_DIR=%s/data\nBACKUP_DIR=%s/backups\nBACKUP_RETENTION_DAYS=14\nCADDY_NETWORK=dzenbot_default\n' $DOMAIN \$(openssl rand -hex 24) \$(openssl rand -hex 24) \$(openssl rand -hex 24) $ROOT $ROOT > $ROOT/.env; echo '→ создан $ROOT/.env (600)'; }; chmod 600 $ROOT/.env"
 # SESSION_PEPPER (K12) – тоже один раз; на стенде, где .env создан раньше, дописывается. Смена значения = выход всех сотрудников.
 "${SSH[@]}" "set -e; grep -q '^SESSION_PEPPER=' $ROOT/.env || { umask 077; printf 'SESSION_PEPPER=%s\n' \$(openssl rand -hex 32) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен SESSION_PEPPER'; }; chmod 600 $ROOT/.env"
+# CERT_PEPPER (K16 §3, S2-08) – HMAC кода сертификата, тоже один раз; дописывается на стенде со старым .env.
+# Смена значения = все выданные коды сертификатов перестают сходиться – после первой продажи не менять.
+"${SSH[@]}" "set -e; grep -q '^CERT_PEPPER=' $ROOT/.env || { umask 077; printf 'CERT_PEPPER=%s\n' \$(openssl rand -hex 32) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен CERT_PEPPER'; }; chmod 600 $ROOT/.env"
 # VAPID (Web Push, S1-15) – пара P-256 тоже один раз: SEC1 DER 121 байт, закрытый ключ – байты 8..39, открытый – последние 65.
 # Смена пары = все подписки браузеров недействительны (клиентам подписываться заново).
 "${SSH[@]}" "set -e; grep -q '^VAPID_PRIVATE_KEY=' $ROOT/.env || { umask 077; K=\$(mktemp); openssl ecparam -name prime256v1 -genkey -noout -outform DER -out \$K; test \$(wc -c <\$K) -eq 121; printf 'VAPID_PUBLIC_KEY=%s\nVAPID_PRIVATE_KEY=%s\nVAPID_SUBJECT=https://%s\n' \$(tail -c 65 \$K | base64 | tr '+/' '-_' | tr -d '=\n') \$(head -c 39 \$K | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') $DOMAIN >> $ROOT/.env; rm -f \$K; echo '→ в $ROOT/.env добавлены VAPID_*'; }; chmod 600 $ROOT/.env"

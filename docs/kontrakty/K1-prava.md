@@ -87,6 +87,8 @@ export function assertCanClient(db: Db | Tx, ctx: AccessContext, action: Action,
 
 ## Реестр действий и набор ролей до Э3
 
+Э0–Э1 – таблица ниже; Э2 – подраздел «Действия Э2».
+
 `О` – Владелец (вся сеть), `Д` – Директор (своя зона), `А` – Администратор (назначенные филиалы). Пусто – запрещено.
 Набор фиксирован кодом (N-06, R-14 по умолчанию); источник каждой строки – 04 §5, если не помечено «решение».
 
@@ -124,7 +126,41 @@ export function assertCanClient(db: Db | Tx, ctx: AccessContext, action: Action,
 | `audit.view.own` | ✓ | ✓ | ✓ | branch | 04 §5 |
 | `audit.export` | ✓ | | | network | 04 §11.4 |
 | `notifications.view` (журнал отправок) | ✓ | ✓ | ✓ | branch | 01 §14 п.6 |
-Действия денег, баллов, сертификатов, зарплаты (`finance.*`, `loyalty.*`, `certificate.*`, `payroll.*`, `shift.*`, `ledger.override_limit`) в реестр Э1 **не входят** – их нет в коде, значит запрещены. Их добавит поток Э2–Э3 своим `modules/<x>/actions.ts` (ADR 0002). Решение, зафиксированное заранее для Э2: `finance.refund` – Владелец и Директор; `finance.correct` – только Владелец до ответа заказчика (вопрос к Э2: N-06 «кроме финкорректировок» против R-14 «Директор и Владелец»).
+
+### Действия Э2 (S2-01; основание – K10 §8, K15 §10, K16 §9, K17 §8)
+
+Решение (план 6.4, S2-01): действия Э2 – строки той же таблицы `MATRIX` в `core/permissions.ts`, а не `modules/<x>/actions.ts`: одно место до развилки потоков, без конфликтов слияния. Набор – умолчания Q-29 / R-14, Q-45 / R-13, Q-48 (ждут заказчика, 6.4.3 плана); меняется правкой `MATRIX`, механизм прав с датами – Э3 (N-06).
+
+| Действие (`Action`) | О | Д | А | Цель | Основание |
+|---|:-:|:-:|:-:|---|---|
+| `finance.payment.record` (оплата сеанса, проверка сертификата K16 №36) | ✓ | ✓ | ✓ | branch | K10 §8, R-14 / Q-29 |
+| `finance.payment.view` | ✓ | ✓ | ✓ | branch | K10 §8 |
+| `finance.refund` | ✓ | ✓ | | branch | K10 §8; решение Э1 |
+| `finance.view` (остатки, журнал, сводка) | ✓ | ✓ | | branch | K17 §8, 06 §14 |
+| `finance.view.day` (сутки своего филиала без остатков; дерево категорий) | ✓ | ✓ | ✓ | branch | K17 §8 |
+| `finance.expense.create` | ✓ | ✓ | ✓ | branch | K17 §8, Q-29 |
+| `finance.income.create` (ручной доход) | ✓ | ✓ | | branch | K17 §8 |
+| `finance.opening_balance` | ✓ | | | branch | K17 §8, 06 §14 |
+| `finance.withdrawal`, `finance.place_transfer` | ✓ | ✓ | | branch | K17 §8 |
+| `finance.correct` (сторно, исправление) | ✓ | | | branch | решение Э1: N-06 «кроме финкорректировок» до ответа заказчика |
+| `finance.category.manage` | ✓ | | | network | K17 §8, 06 §7.2 (справочник сети) |
+| `finance.period.close` | ✓ | | | branch | K17 §8, Q-28 |
+| `finance.shift.operate` | ✓ | ✓ | ✓ | branch | K17 §8 |
+| `finance.shift.resolve` | ✓ | ✓ | | branch | K17 §7 п.4 |
+| `loyalty.view` | ✓ | ✓ | ✓ | client | K15 §10 |
+| `loyalty.adjust` | ✓ | ✓ | | client | K15 §10, Q-48 |
+| `loyalty.adjust_below_limit` (K3 `allowBelowLimit` для баллов) | ✓ | | | client | K15 §10, 07 §3.1, §10.3 |
+| `loyalty.book_below_limit` (бронь в CRM при −50, с причиной) | ✓ | ✓ | | branch | K15 §8, Q-45 / R-13 |
+| `loyalty.goods.manage` | ✓ | ✓ | | branch | K15 §10 |
+| `loyalty.goods.issue` | ✓ | ✓ | ✓ | branch | K15 §10, 07 §7.2 |
+| `certificate.view` | ✓ | ✓ | ✓ | branch | K16 §9 |
+| `certificate.sell` | ✓ | ✓ | | branch | K16 §9, 08 §4.1 |
+| `certificate.cancel` | ✓ | ✓ | | branch | K16 §9 |
+| `certificate.correct` (корректировка остатка, перевыпуск кода) | ✓ | | | branch | K16 §9 |
+| `certificate.review` | ✓ | ✓ | | branch | K16 §9 |
+| `certificate.link` | ✓ | ✓ | ✓ | branch | K16 §9 |
+
+`ledger.override_limit` из черновика K3 не вводится: режим «ниже предела» у баллов – право `loyalty.adjust_below_limit`; у кассы и сертификатов его нет (касса проверяет минус кодом K17 §6, сертификат – `min 0` без обхода). Зарплата (`payroll.*`) и смены сотрудников (`shift.*`) – Э3, их в реестре нет, значит запрещены.
 
 ## Ошибки
 

@@ -5,7 +5,7 @@
 //  - первая откатилась (ошибка или отказ по правилу) → ключа нет, вторая выполняется заново;
 //  - тот же ключ, другой request_hash → 409 IDEMPOTENCY_KEY_REUSED.
 // Транзакцию модуль НЕ открывает: tx – соединение с уже начатой транзакцией команды.
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import type pg from 'pg';
 import { AppError } from './errors.ts';
 import type { Clock } from './time.ts';
@@ -56,6 +56,13 @@ export function canonicalJson(value: unknown): string {
     .sort()
     .map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`);
   return `{${parts.join(',')}}`;
+}
+
+/** HMAC-SHA256(value, pepper) в hex – замена секрета (код сертификата) в теле для request_hash и в базе (K16 §3).
+ *  4 цифры под чистым SHA-256 подбираются перебором мгновенно, под HMAC без pepper – нет. */
+export function secretDigest(pepper: string, value: string): string {
+  if (pepper.length < 32) throw new Error('secretDigest: pepper короче 32 символов');
+  return createHmac('sha256', pepper).update(value).digest('hex');
 }
 
 /** request_hash = SHA-256 канонического JSON от {route, params, body}. */
@@ -131,13 +138,28 @@ export async function saveResponse(
  */
 export async function runIdempotent(
   tx: Tx,
-  input: { scope: string; key: string; request: { route: string; params?: unknown; body?: unknown }; clock: Clock },
+  input: {
+    scope: string;
+    key: string;
+    request: { route: string; params?: unknown; body?: unknown };
+    clock: Clock;
+    /** S2-08 (K16 §3): вид ответа для idempotency_keys – секреты вырезаны. Первый ответ уходит целиком,
+     *  повтор отдаёт сохранённый (redact) вид: «код показан один раз». */
+    redact?: (body: unknown) => unknown;
+    /** S2-08: тело для request_hash – секретные поля заменены secretDigest, чтобы хэш не выдавал секрет перебором. */
+    hashBody?: (body: unknown) => unknown;
+  },
   command: () => Promise<IdempotentResponse>,
 ): Promise<IdempotentResult> {
   const now = input.clock.now();
-  const claim = await claimKey(tx, { scope: input.scope, key: input.key, requestHash: requestHash(input.request), now });
+  const request = input.hashBody ? { ...input.request, body: input.hashBody(input.request.body) } : input.request;
+  const claim = await claimKey(tx, { scope: input.scope, key: input.key, requestHash: requestHash(request), now });
   if (claim.kind === 'replay') return { ...claim.response, replayed: true };
   const response = await command();
+  if (input.redact) {
+    await saveResponse(tx, input, { status: response.status, body: input.redact(response.body) });
+    return { ...response, replayed: false };
+  }
   // Отдаём сохранённое (jsonb нормализует порядок ключей) – первый ответ и повтор совпадают байт в байт.
   const saved = await saveResponse(tx, input, response);
   return { ...saved, replayed: false };

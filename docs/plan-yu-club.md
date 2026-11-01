@@ -493,9 +493,9 @@ deploy/        compose, Caddy, бэкап
 | № | Файл | Таблицы | FK наружу | Отложенные FK, добавляемые здесь | Шаг |
 |---|---|---|---|---|---|
 | 0201 | `0201_ledger_limit.sql` | – (замена функции `journal.ledger_apply_balance`: нижний предел проверяется только при `NEW.amount < 0`) | – | – | S2-07 |
-| 0202 | `0202_finance.sql` | `finance_categories`, `journal.finance_operations`, `finance_opening_balances`, `finance_periods`; `ledger_accounts.kind` + `cash_branch_noncash`; посев категорий 06 §7.3 | `→ branches`, `→ staff`, `→ ledger_accounts` | – | S2-10 |
-| 0203 | `0203_loyalty.sql` | `loyalty_batches`, `journal.loyalty_batch_moves`, `loyalty_accruals`, `loyalty_penalties`, `loyalty_reserves`, `loyalty_issues` | `→ clients`, `→ ledger_accounts`, `→ ledger_entries`, `→ bookings`, `→ holds`, `→ visits`, `→ no_shows`, `→ branches` | – | S2-30 |
-| 0204 | `0204_certificates.sql` | `certificates`, `certificate_redemptions`, `journal.certificate_holder_history` | `→ branches`, `→ staff`, `→ clients`, `→ ledger_accounts`, `→ finance_operations` | – | S2-50 |
+| 0202 | `0202_finance.sql` | `finance_categories`, `journal.finance_operations`, `finance_opening_balances`, `finance_periods`; `ledger_accounts.kind` + `cash_branch_noncash`; посев категорий 06 §7.3 | `→ branches`, `→ finance_categories` (автор – без FK, model-dannyh §0) | – | S2-10 |
+| 0203 | `0203_loyalty.sql` | `loyalty_batches`, `journal.loyalty_batch_moves`, `loyalty_accruals`, `loyalty_penalties`, `loyalty_reserves`, `loyalty_issues` | `→ clients`, `→ ledger_entries`, `→ bookings`, `→ holds`, `→ visits`, `→ no_shows`, `→ branches` | – | S2-30 |
+| 0204 | `0204_certificates.sql` | `certificates`, `certificate_redemptions`, `journal.certificate_holder_history` | `→ branches`, `→ staff`, `→ clients`, `→ ledger_accounts`, `→ ledger_entries`, `→ finance_operations`, `→ bookings` | – | S2-50 |
 | 0205 | `0205_payments.sql` | `payment_sessions`, `payments`, `payment_lines`, `payment_refunds` | `→ bookings`, `→ branches`, `→ clients`, `→ finance_operations`, `→ certificates` | `certificate_redemptions.payment_id → payments`, `loyalty_accruals.payment_id → payments` (поэтому S2-20 ждёт слитых 0203 и 0204) | S2-20 |
 | 0206 | `0206_cash_shifts.sql` | `cash_shifts` | `→ branches`, `→ staff`, `→ finance_operations` | `finance_operations.shift_id → cash_shifts` | S2-16 |
 | 0207 | `0207_loyalty_goods.sql` | `loyalty_goods`, `loyalty_goods_branches`, `loyalty_goods_orders` | `→ branches`, `→ clients`, `→ ledger_entries` | – | S2-39 |

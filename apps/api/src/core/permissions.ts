@@ -8,7 +8,7 @@ import type { Actor, StaffRole } from './audit.ts';
 
 export type { Actor, StaffRole } from './audit.ts';
 
-// ---- реестр действий Э0–Э1 (K1 §Реестр). О – owner, Д – director, А – admin.
+// ---- реестр действий Э0–Э2 (K1 §Реестр, «Действия Э2»). О – owner, Д – director, А – admin.
 
 const O: readonly StaffRole[] = ['owner'];
 const OD: readonly StaffRole[] = ['owner', 'director'];
@@ -49,9 +49,37 @@ const MATRIX = {
   'audit.view.own': ODA,
   'audit.export': O,
   'notifications.view': ODA,
+  // ---- Э2 (K1 «Действия Э2»; K10 §8, K15 §10, K16 §9, K17 §8). Решение S2-01: общая MATRIX, а не actions.ts модулей.
+  // Умолчания Q-29 / R-14, Q-45 / R-13, Q-48 – меняются правкой этих строк.
+  'finance.payment.record': ODA,
+  'finance.payment.view': ODA,
+  'finance.refund': OD,
+  'finance.view': OD,
+  'finance.view.day': ODA,
+  'finance.expense.create': ODA,
+  'finance.income.create': OD,
+  'finance.opening_balance': O,
+  'finance.withdrawal': OD,
+  'finance.place_transfer': OD,
+  'finance.correct': O, // N-06 «кроме финкорректировок» – до ответа заказчика
+  'finance.category.manage': O,
+  'finance.period.close': O,
+  'finance.shift.operate': ODA,
+  'finance.shift.resolve': OD,
+  'loyalty.view': ODA,
+  'loyalty.adjust': OD,
+  'loyalty.adjust_below_limit': O,
+  'loyalty.book_below_limit': OD,
+  'loyalty.goods.manage': OD,
+  'loyalty.goods.issue': ODA,
+  'certificate.view': ODA,
+  'certificate.sell': OD,
+  'certificate.cancel': OD,
+  'certificate.correct': O,
+  'certificate.review': OD,
+  'certificate.link': ODA,
 } as const satisfies Record<string, readonly StaffRole[]>;
-// finance.*, loyalty.*, certificate.*, payroll.*, shift.* – не в Э1: их нет здесь, значит запрещены.
-// Решение для Э2 (K1): finance.refund – Владелец и Директор; finance.correct – только Владелец.
+// payroll.*, shift.* (смены сотрудников) – Э3: их нет здесь, значит запрещены.
 
 export type Action = keyof typeof MATRIX;
 export const ACTIONS = Object.keys(MATRIX) as Action[];

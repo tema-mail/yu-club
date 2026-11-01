@@ -17,6 +17,7 @@ import {
   type Target,
 } from '../../apps/api/src/core/permissions.ts';
 import { networkLookup } from '../../apps/api/src/server.ts';
+import { SETTINGS, settingDef } from '../../apps/api/src/core/settings.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 import { createTestBranch } from '../helpers/network.ts';
 
@@ -78,6 +79,34 @@ const EXPECTED: [string, string, 'network' | 'city' | 'branch' | 'client'][] = [
   ['audit.view.own', 'ОДА', 'branch'],
   ['audit.export', 'О', 'network'],
   ['notifications.view', 'ОДА', 'branch'],
+  // Э2 – K1 «Действия Э2» (K10 §8, K15 §10, K16 §9, K17 §8)
+  ['finance.payment.record', 'ОДА', 'branch'],
+  ['finance.payment.view', 'ОДА', 'branch'],
+  ['finance.refund', 'ОД', 'branch'],
+  ['finance.view', 'ОД', 'branch'],
+  ['finance.view.day', 'ОДА', 'branch'],
+  ['finance.expense.create', 'ОДА', 'branch'],
+  ['finance.income.create', 'ОД', 'branch'],
+  ['finance.opening_balance', 'О', 'branch'],
+  ['finance.withdrawal', 'ОД', 'branch'],
+  ['finance.place_transfer', 'ОД', 'branch'],
+  ['finance.correct', 'О', 'branch'],
+  ['finance.category.manage', 'О', 'network'],
+  ['finance.period.close', 'О', 'branch'],
+  ['finance.shift.operate', 'ОДА', 'branch'],
+  ['finance.shift.resolve', 'ОД', 'branch'],
+  ['loyalty.view', 'ОДА', 'client'],
+  ['loyalty.adjust', 'ОД', 'client'],
+  ['loyalty.adjust_below_limit', 'О', 'client'],
+  ['loyalty.book_below_limit', 'ОД', 'branch'],
+  ['loyalty.goods.manage', 'ОД', 'branch'],
+  ['loyalty.goods.issue', 'ОДА', 'branch'],
+  ['certificate.view', 'ОДА', 'branch'],
+  ['certificate.sell', 'ОД', 'branch'],
+  ['certificate.cancel', 'ОД', 'branch'],
+  ['certificate.correct', 'О', 'branch'],
+  ['certificate.review', 'ОД', 'branch'],
+  ['certificate.link', 'ОДА', 'branch'],
 ];
 
 const LETTER: Record<StaffRole, string> = { owner: 'О', director: 'Д', admin: 'А' };
@@ -101,8 +130,8 @@ describe('матрица K1 × роль × своя/чужая цель', () => 
     expect(can(c, action, foreign[kind]!)).toBe(allowed && role === 'owner');
   });
 
-  it('неуказанное – запрещено всем, включая Владельца; finance.* в Э1 нет', () => {
-    for (const a of ['finance.correct', 'finance.refund', 'loyalty.adjust', 'payroll.view', 'booking.delete', '']) {
+  it('неуказанное – запрещено всем, включая Владельца (payroll.*, shift.* – Э3; ledger.override_limit не вводится)', () => {
+    for (const a of ['payroll.view', 'shift.manage', 'ledger.override_limit', 'finance.export', 'booking.delete', '']) {
       expect(can(owner, a, { network: true })).toBe(false);
       expect(can(owner, a, { branchId: BR_A1 })).toBe(false);
       expect(roleAllows('owner', a)).toBe(false);
@@ -112,6 +141,66 @@ describe('матрица K1 × роль × своя/чужая цель', () => 
   it('actionsOf для меню CRM', () => {
     expect(actionsOf('admin')).not.toContain('staff.view');
     expect(actionsOf('owner')).toHaveLength(ACTIONS.length);
+  });
+});
+
+describe('S2-01: права и настройки Э2', () => {
+  it('Администратор в Э2 получает ровно 9 действий (план 6.4 S2-01)', () => {
+    const e2 = actionsOf('admin').filter((a) => /^(finance|loyalty|certificate)\./.test(a)).sort();
+    expect(e2).toEqual(
+      [
+        'certificate.link', 'certificate.view', 'finance.expense.create', 'finance.payment.record', 'finance.payment.view',
+        'finance.shift.operate', 'finance.view.day', 'loyalty.goods.issue', 'loyalty.view',
+      ].sort(),
+    );
+  });
+
+  it('Директор не получает finance.correct, finance.opening_balance, certificate.correct, loyalty.adjust_below_limit', () => {
+    for (const a of ['finance.correct', 'finance.opening_balance', 'certificate.correct', 'loyalty.adjust_below_limit']) {
+      expect(roleAllows('director', a)).toBe(false);
+      expect(roleAllows('owner', a)).toBe(true);
+    }
+    expect(() => assertCan(director, 'finance.correct', { branchId: BR_A1 })).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+    expect(() => assertCan(director, 'finance.refund', { branchId: BR_B1 })).toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+  });
+
+  it('умолчания ключей совпадают с K7 «Реестр ключей Э2», менять – только Владелец', () => {
+    const expected: Record<string, { value: unknown; levels: string[] }> = {
+      'payment.certificate_topup_enabled': { value: false, levels: ['network'] },
+      'finance.negative_balance_allowed': { value: false, levels: ['network', 'branch'] },
+      'finance.cash_shift_enabled': { value: false, levels: ['network', 'branch'] },
+      'certificate.sale_methods': { value: ['cash', 'card', 'transfer'], levels: ['network'] },
+      'certificate.nominal_min_kop': { value: null, levels: ['network'] },
+      'certificate.nominal_max_kop': { value: null, levels: ['network'] },
+      'loyalty.batch_ttl_days': { value: null, levels: ['network'] },
+      'loyalty.penalty_scope': { value: 'visit', levels: ['network'] },
+      'loyalty.penalties_from': { value: null, levels: ['network'] },
+      'loyalty.points_resource_types': { value: ['pc', 'vr_seat', 'ps_room'], levels: ['network'] },
+      'loyalty.accrue_for_points': { value: false, levels: ['network'] },
+      'loyalty.accrue_for_certificate': { value: true, levels: ['network'] },
+    };
+    for (const [key, e] of Object.entries(expected)) {
+      const d = settingDef(key);
+      expect(d.systemDefault, key).toEqual(e.value);
+      expect([...d.levels], key).toEqual(e.levels);
+      expect(d.editAction, key).toBe('settings.network.manage');
+      expect(d.schema.safeParse(d.systemDefault).success, key).toBe(true);
+    }
+    expect(Object.keys(SETTINGS).filter((k) => /^(payment|finance|certificate|loyalty)\./.test(k)).sort()).toEqual(Object.keys(expected).sort());
+  });
+
+  it('схемы ключей Э2 отсекают неверное', () => {
+    const bad: [string, unknown][] = [
+      ['certificate.sale_methods', []],
+      ['certificate.sale_methods', ['cash', 'cash']],
+      ['certificate.sale_methods', ['points']],
+      ['loyalty.penalty_scope', 'day'],
+      ['loyalty.batch_ttl_days', 0],
+      ['loyalty.penalties_from', '2026-12-01'],
+      ['certificate.nominal_min_kop', 1.5],
+    ];
+    for (const [key, v] of bad) expect(settingDef(key).schema.safeParse(v).success, `${key}=${JSON.stringify(v)}`).toBe(false);
+    expect(settingDef('loyalty.penalties_from').schema.safeParse('2026-12-01T00:00:00Z').success).toBe(true);
   });
 });
 

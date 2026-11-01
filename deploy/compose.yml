@@ -64,6 +64,8 @@ services:
       DATABASE_URL: postgres://yu_app:${YU_APP_PASSWORD}@postgres:5432/yu_club
       # секрет HMAC сессий сотрудников (K12): генерирует deploy.sh один раз на сервере, значения в репо нет
       SESSION_PEPPER: ${SESSION_PEPPER:?нет SESSION_PEPPER}
+      # секрет HMAC кода сертификата (K16 §3, S2-08): тоже генерирует deploy.sh один раз; смена = выданные коды не сходятся
+      CERT_PEPPER: ${CERT_PEPPER:?нет CERT_PEPPER}
       # пара VAPID для Web Push (S1-15): тоже генерирует deploy.sh один раз
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?нет VAPID_PUBLIC_KEY}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?нет VAPID_PRIVATE_KEY}

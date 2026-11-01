@@ -20,9 +20,16 @@ export function maskPhone(e164: string): string;
  *  Существующая карточка не переписывается; имя заполняется, только если было пустым. Аудит client.created. */
 export function findOrCreateGuest(tx: Tx, input: { phone: string; firstName: string; lastName?: string }, meta: AuditRequestMeta): Promise<ClientRef>;
 
-/** Можно ли клиенту бронировать (K5 confirm, S1-13). blocked/restricted/deletion_requested/anonymized → CLIENT_RESTRICTED.
- *  С Э2 модуль loyalty добавит проверку баланса −50 сюда же (07 §9.2); сигнатура не меняется. */
-export function assertCanBook(tx: Tx, clientId: string, at: Date): Promise<void>;
+/** Можно ли клиенту бронировать (K5 hold/attach/confirm, S1-13). blocked/restricted/deletion_requested/anonymized → CLIENT_RESTRICTED.
+ *  Э2 (S2-33): после проверки статуса вызываются зарегистрированные ворота (registerBookingGate) – loyalty проверяет −50
+ *  и бросает LOYALTY_LIMIT_REACHED (K15 §8). Необязательный opts – совместимо с вызовами Э1. */
+export function assertCanBook(tx: Tx, clientId: string, at: Date,
+  opts?: { override?: { loyaltyLimit?: { reason: string; staffId: string } } }): Promise<void>;
+
+/** Э2 (S2-33): ворота записи другого модуля; регистрирует server.ts при старте (как провайдеры ADR 0002).
+ *  Без ворот поведение Э1 не меняется. Ворота сами решают, принять ли override (loyalty – право loyalty.book_below_limit проверяет маршрут CRM). */
+export interface BookingGate { name: string; check(tx: Tx, input: { clientId: string; at: Date; override?: { reason: string; staffId: string } }): Promise<void> }
+export function registerBookingGate(gate: BookingGate): void;
 
 /** Для уведомлений (П7): настройки и наличие канала. */
 export function getNotificationPrefs(db: Db | Tx, clientId: string): Promise<{ remindersEnabled: boolean; marketingEnabled: boolean }>;
@@ -62,7 +69,7 @@ interface MeDto {
   id: string; phoneMasked: string; firstName: string | null; lastName: string | null; email: string | null; birthDate: string | null;
   status: 'active' | 'restricted';            // остальные статусы в ЛК не пускают (401 SESSION_REVOKED)
   notifications: { remindersEnabled: boolean; marketingEnabled: boolean };
-  loyalty: null; certificates: null;          // Э2; в Э1 ЛК показывает «появится позже» (план S1-17)
+  loyalty: null; certificates: null;          // остаются null и в Э2 (совместимость, решение S2-00): ЛК читает K15 GET /me/loyalty и K16 GET /me/certificates
 }
 interface MyBookingDto extends BookingDto {   // BookingDto – K5; без internal_comment (03 §8.3)
   cityName: string; roomName: string | null;
@@ -107,7 +114,8 @@ type CrmCreateBooking = {
 | `CONSENT_REQUIRED` | 422 | новый клиент без согласия на обработку ПДн |
 | `SMS_UNAVAILABLE` | 503 | провайдер ответил `rejected`/`unknown` при запросе кода; challenge сохраняется, повтор после `resendAfterSec` (без двойной отправки: `idempotencyKey = challengeId`) |
 | `AUTH_REQUIRED`, `SESSION_REVOKED` | 401 | нет / отозвана сессия |
-| `CLIENT_RESTRICTED` | 403 | `assertCanBook` |
+| `CLIENT_RESTRICTED` | 403 | `assertCanBook` (статус клиента) |
+| `LOYALTY_LIMIT_REACHED` | 403 | Э2: ворота loyalty в `assertCanBook` – баланс ≤ −50 (K15 §8, код объявляет модуль loyalty) |
 | `VALIDATION_FAILED` | 400 | телефон не разобран и т.п. |
 
 ## Проверка
