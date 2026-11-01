@@ -33,6 +33,14 @@ jobs:
       # Хелпер тестов берёт TEST_DATABASE_URL вместо embedded-postgres (tests/helpers/pg.ts).
       TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres
     steps:
+      # Тесты гонок открывают ~52 соединения в параллельных файлах, у образа по умолчанию 100.
+      # Сервисам Actions нельзя задать command – поднимаем через ALTER SYSTEM и перезапуск контейнера.
+      - name: postgres max_connections = 300
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart ${{ job.services.postgres.id }}
+          for i in $(seq 1 30); do docker exec ${{ job.services.postgres.id }} pg_isready -U postgres && break; sleep 1; done
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -Atc "SHOW max_connections" | grep -qx 300
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
