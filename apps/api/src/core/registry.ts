@@ -10,11 +10,28 @@ import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
 import { auditActions as networkAudit } from '../modules/network/audit.ts';
 import { errors as networkErrors } from '../modules/network/errors.ts';
+import { auditActions as pricingAudit } from '../modules/pricing/audit.ts';
+import { errors as pricingErrors } from '../modules/pricing/errors.ts';
 import { auditActions as staffAudit } from '../modules/staff/audit.ts';
 import { errors as staffErrors } from '../modules/staff/errors.ts';
 
-const moduleErrors = { ledger: ledgerErrors, settings: settingsErrors, staff: staffErrors, dictionaries: dictionariesErrors, network: networkErrors, clients: clientsErrors } as const;
-const moduleAudit = { settings: settingsAudit, staff: staffAudit, dictionaries: dictionariesAudit, network: networkAudit, clients: clientsAudit } as const;
+const moduleErrors = {
+  ledger: ledgerErrors,
+  settings: settingsErrors,
+  staff: staffErrors,
+  dictionaries: dictionariesErrors,
+  network: networkErrors,
+  clients: clientsErrors,
+  pricing: pricingErrors,
+} as const;
+const moduleAudit = {
+  settings: settingsAudit,
+  staff: staffAudit,
+  dictionaries: dictionariesAudit,
+  network: networkAudit,
+  clients: clientsAudit,
+  pricing: pricingAudit,
+} as const;
 
 type ModuleErrors = typeof moduleErrors;
 export type ModuleErrorCode = { [M in keyof ModuleErrors]: keyof ModuleErrors[M] }[keyof ModuleErrors];
