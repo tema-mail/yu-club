@@ -1,0 +1,43 @@
+---
+// Главная (карта сайта 3.1): пока – выбор клуба по городам. Блоки главной из CMS (12 §5) – шаг Э4.
+import Site from '../layouts/Site.astro';
+import { branchPath, findBranch } from '../lib/api.ts';
+
+const { network, choice } = Astro.locals;
+if (!network) Astro.response.status = 503;
+const mine = network && choice ? findBranch(network, choice.city, choice.branch) : null;
+---
+<Site title="Ю-Клуб – компьютерные клубы: ПК, VR и PlayStation" description="Сеть компьютерных клубов Ю-Клуб: игровые ПК, VR, PlayStation 5 и отдельные комнаты. Выберите клуб в своём городе.">
+  <section class="yu-hero">
+    <div>
+      <h1>Компьютерные клубы Ю-Клуб</h1>
+      <p class="yu-lead">Игровые ПК, VR и PlayStation 5 в одной сети. Выберите свой клуб: адрес, часы и зоны.</p>
+    </div>
+    {mine && (
+      <div>
+        <a class="yu-btn" href={branchPath(mine.city.slug, mine.branch.slug)} data-testid="my-branch">Ваш клуб: {mine.branch.name}</a>
+      </div>
+    )}
+  </section>
+
+  <section class="yu-section" id="clubs" aria-labelledby="clubs-title">
+    <h2 id="clubs-title">Клубы</h2>
+    {!network && <p class="yu-notice" role="alert">Список клубов сейчас недоступен. Обновите страницу через минуту.</p>}
+    {network?.map((c) => (
+      <div class="yu-group">
+        <h3>{c.name}</h3>
+        <ul class="yu-cards">
+          {c.branches.map((b) => (
+            <li class="yu-card">
+              <a class="yu-card__link" href={branchPath(c.slug, b.slug)}>{b.name}</a>
+              <span class="yu-card__meta">{b.address}</span>
+              {b.status === 'temporarily_closed'
+                ? <span class="yu-card__status yu-card__status--closed">Временно закрыт</span>
+                : <span class="yu-card__status">Работает</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ))}
+  </section>
+</Site>
