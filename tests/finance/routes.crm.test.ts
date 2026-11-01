@@ -119,7 +119,7 @@ describe('касса в CRM', () => {
     const shortDir = await req('director', 'POST', `/branches/${ids.lenina}/finance/expense`, { ...expense, categoryId: ids.other, amountKop: 10_000_000 });
     expect(shortDir.json().error.details).toMatchObject({ currentKop: 98_500 });
     const pv = await req('admin', 'POST', `/branches/${ids.lenina}/finance/preview`, { place: 'cash', deltaKop: -1_000_000 });
-    expect(pv.json()).toEqual({ allowed: false, reason: 'negative_forbidden' });
+    expect(pv.statusCode).toBe(403); // предпросмотр – только ролям, которые видят остаток
     const pvOwner = await req('owner', 'POST', `/branches/${ids.lenina}/finance/preview`, { place: 'cash', deltaKop: -500 });
     expect(pvOwner.json()).toEqual({ currentKop: 98_500, afterKop: 98_000, allowed: true, reason: null });
     // ручной доход, изъятие, начальный остаток, сторно – не его
@@ -128,6 +128,7 @@ describe('касса в CRM', () => {
     expect((await req('admin', 'POST', `/finance/operations/${ids.expense}/reverse`, { reason: 'x' })).statusCode).toBe(403);
     const denied = await db.client.query(`SELECT action, object_type FROM journal.audit_events WHERE actor_id = $1 AND result = 'denied' ORDER BY id`, [ids.admin]);
     expect(denied.rows).toEqual([
+      { action: 'finance.operation.created', object_type: 'branch' }, // предпросмотр
       { action: 'finance.operation.created', object_type: 'branch' },
       { action: 'finance.operation.created', object_type: 'branch' },
       { action: 'finance.operation.reversed', object_type: 'finance_operation' },
@@ -169,7 +170,7 @@ describe('касса в CRM', () => {
       reason: 'не та сумма', replacement: { kind: 'income', method: 'cash', amountKop: 300, source: 'other', occurredAt: AT },
     });
     expect(cor.statusCode).toBe(201);
-    expect(cor.json()).toMatchObject({ reversal: { reversalOf: inc.json().id }, replacement: { amountKop: 300, branchId: ids.lenina } });
+    expect(cor.json()).toMatchObject({ reversal: { reversalOf: inc.json().id }, replacement: { amountKop: 300, branchId: ids.lenina, balanceAfterKop: expect.any(Number) } });
     const close = await req('owner', 'POST', `/branches/${ids.lenina}/finance/periods/2026-10/close`);
     expect(close.statusCode).toBe(200);
     expect(close.json()).toMatchObject({ month: '2026-10-01' });

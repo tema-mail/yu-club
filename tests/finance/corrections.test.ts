@@ -152,6 +152,25 @@ describe('сторно', () => {
     expect((await balances(b)).cash).toBe(20_000);
   });
 
+  it('возврат (refund) не сторнируется и не исправляется – USE_PAYMENT_REFUND', async () => {
+    const b = await newBranch();
+    const session = await foreignIncome(b, 'session');
+    const refund = await tx((t) =>
+      postMoneyOperation(
+        t,
+        { kind: 'system', process: 'test' },
+        { branchId: b, kind: 'refund', place: 'cash', method: 'cash', amountKop: 4_000, comment: 'возврат клиенту', ref: { type: 'operation', id: session.id }, occurredAt: new Date(AT) },
+        { idempotencyKey: randomUUID() },
+        { actor: { kind: 'system', process: 'test' }, source: 'system', requestId: randomUUID() },
+        clock,
+      ),
+    );
+    await fails(run(reverseOperation, { operationId: refund.id, reason: 'x' }), 'USE_PAYMENT_REFUND');
+    const replacement = { kind: 'income', method: 'cash', amountKop: 100, source: 'other', occurredAt: AT };
+    await fails(run(correctOperation, { operationId: refund.id, reason: 'x', replacement }), 'USE_PAYMENT_REFUND');
+    expect((await balances(b)).cash).toBe(6_000);
+  });
+
   it('сторно прихода, уводящее место в минус при запрете, – CASH_INSUFFICIENT; сторно перевода проверяет место-получатель', async () => {
     const b = await newBranch();
     const inc = await income(b, 1_000);
