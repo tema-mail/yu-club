@@ -2,13 +2,16 @@
 // Единственное место, где core импортирует модули – и только их файлы реестров.
 // Дубль кода между модулями (или с core) – ошибка при загрузке, то есть при старте и в тестах.
 import { coreErrors } from './errors.ts';
+import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit.ts';
+import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
 import { auditActions as staffAudit } from '../modules/staff/audit.ts';
 import { errors as staffErrors } from '../modules/staff/errors.ts';
 
-const moduleErrors = { staff: staffErrors } as const;
-const moduleAudit = { staff: staffAudit } as const;
+const moduleErrors = { staff: staffErrors, dictionaries: dictionariesErrors } as const;
+const moduleAudit = { staff: staffAudit, dictionaries: dictionariesAudit } as const;
 
-export type ModuleErrorCode = keyof (typeof moduleErrors)[keyof typeof moduleErrors];
+type ModuleErrors = typeof moduleErrors;
+export type ModuleErrorCode = { [M in keyof ModuleErrors]: keyof ModuleErrors[M] }[keyof ModuleErrors];
 export type ModuleAuditAction = (typeof moduleAudit)[keyof typeof moduleAudit][number];
 
 /** Бросает, если один код объявлен в двух местах. Экспортируется для теста. */
