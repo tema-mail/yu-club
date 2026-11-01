@@ -114,5 +114,5 @@ describe('CLI db/migrate.ts на чистой базе', () => {
     expect(await cli('up')).toBe(`Применены: ${all.join(', ')}`);
     const role = await db.client.query("SELECT 1 FROM pg_roles WHERE rolname = 'yu_app'");
     expect(role.rowCount).toBe(1); // откат не трогает роль кластера
-  });
+  }, 60_000); // CLI запускает мигратор 5 раз отдельными процессами; под нагрузкой всего набора 5 с не хватает
 });
