@@ -21,6 +21,7 @@ import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
 import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
 import { loyaltyCrmRoutes } from './modules/loyalty/routes.crm.ts';
+import { loyaltyPublicRoutes } from './modules/loyalty/routes.public.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
 import { networkPublicRoutes, type NetworkPublicDeps } from './modules/network/routes.public.ts';
@@ -179,6 +180,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     const push = deps.notifications ?? { vapidPublicKey: null };
     void app.register(async (scope) => notificationPublicRoutes(scope, { clients, ...push }), { prefix: '/api/public/v1' });
+    // K15 §11: баллы в ЛК – баланс, история, резерв на своё удержание, каталог
+    void app.register(async (scope) => loyaltyPublicRoutes(scope, { clients }), { prefix: '/api/public/v1' });
     void app.register(
       async (scope) =>
         bookingPublicRoutes(scope, {
