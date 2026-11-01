@@ -3,13 +3,14 @@
 // записи дня, блокировки и оформления на сайте – и календарь по ресурсам (день/неделя). Филиал – из контекста
 // или ?branch=; вне зоны – 404 как у несуществующего (K1). Всё время – в зоне филиала, не браузера.
 import Crm from '../../layouts/Crm.astro';
-import BranchCalendar, { type CalendarView } from '../../islands/BranchCalendar.tsx';
+import ScheduleBoard from '../../islands/BookingForm.tsx';
+import type { CalendarView } from '../../islands/BranchCalendar.tsx';
 import { ApiError, serverCall } from '../../lib/api.ts';
 import {
   MAX_DAYS, STATUS_LABEL, addDays, fmtDay, fmtRange, inZone, isLocalDate, today, type BookingPage, type CalendarDto,
 } from '../../lib/booking.ts';
 
-const { branches, ctx, cookie } = Astro.locals;
+const { branches, ctx, cookie, me } = Astro.locals;
 const q = Astro.url.searchParams;
 const branchId = q.get('branch') ?? (ctx.kind === 'branch' ? ctx.branch.id : (branches[0]?.id ?? ''));
 const branch = branches.find((b) => b.id === branchId) ?? null;
@@ -126,7 +127,8 @@ const isToday = date === today(tz);
       </div>
 
       <div class="yc-panel">
-        <BranchCalendar client:load branchId={branch!.id} timezone={tz} view={view} date={date} initial={calendar} />
+        <ScheduleBoard client:load branchId={branch!.id} timezone={tz} view={view} date={date} initial={calendar!}
+          canCreate={me.actions.includes('booking.create')} canSearchClients={me.actions.includes('client.view.basic')} />
       </div>
     </>
   ) : (

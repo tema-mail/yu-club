@@ -411,6 +411,18 @@
 .yc-cal__legend{ display:flex; flex-wrap:wrap; gap:var(--yc-sp-2xs) var(--yc-sp-s); margin:0; padding:0; list-style:none; color:var(--yc-muted); font-size:var(--yc-fs-xs); }
 .yc-cal__legend li{ display:inline-flex; align-items:center; gap:var(--yc-sp-3xs); }
 
+/* ── Новая запись (S1-23) ───────────────────────────── */
+.yc-dialog--wide{ width:min(34rem, calc(100% - 2 * var(--yc-sp-s))); max-height:calc(100svh - 2rem); overflow:auto; }
+.yc-board__bar{ display:flex; flex-wrap:wrap; align-items:center; gap:var(--yc-sp-2xs) var(--yc-sp-s); }
+.yc-board__bar > *{ min-width:0; }
+.yc-board__search{ display:flex; gap:var(--yc-sp-2xs); }
+.yc-board__search > *{ min-width:0; }
+.yc-board__search .yc-input{ flex:1; }
+.yc-board__hits{ display:grid; }
+.yc-board__hits .yc-check{ align-items:flex-start; min-height:auto; padding:var(--yc-sp-3xs) 0; overflow-wrap:anywhere; }
+.yc-board__hits .yc-check input{ flex:none; margin-top:2px; }
+.yc-board__pair{ display:grid; gap:var(--yc-sp-s); grid-template-columns:repeat(auto-fit, minmax(9rem, 1fr)); }
+.yc-board__pair > *{ min-width:0; }
 @media (min-width:600px){
   .yc-cal__day{ --yc-cal-res:9rem; }
 }
