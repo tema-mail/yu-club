@@ -1,5 +1,6 @@
-// Мок публичного API записи для сайта – пока нет S1-08 (apps/api/src/modules/booking/routes.public.ts).
-// Повторяет K5 №1–5 (города, филиалы, ресурсы, доступность) и тело ошибки ADR 0002; статусы – K13.
+// Мок публичного API для e2e сайта. Сеть – точно по apps/api/src/modules/network/routes.public.ts (K5 №1–4:
+// города, филиалы, филиал с hoursToday, ресурсы; id – UUID, не-UUID и закрытые статусы – одинаковый 404);
+// тело ошибки – ADR 0002; статусы – K13. Доступности (K5 №5) нет: сайт её не вызывает до расписания (S1-19).
 // Филиалы 'preparing'/'archived' лежат в данных, но наружу не отдаются (K5) – так e2e проверяет 404.
 // Запуск: MOCK_PORT=4020 node tests/mock-api.ts; сайт: API_URL=http://127.0.0.1:4020.
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
@@ -9,18 +10,23 @@ type Status = 'preparing' | 'active' | 'temporarily_closed' | 'archived';
 type Zone = 'pc' | 'vr' | 'ps';
 
 const cities = [
-  { id: 'c-nsk', slug: 'novosibirsk', name: 'Новосибирск', timezone: 'Asia/Novosibirsk' },
-  { id: 'c-tsk', slug: 'tomsk', name: 'Томск', timezone: 'Asia/Tomsk' },
+  { id: '0b0c0000-0000-4000-8000-000000000001', slug: 'novosibirsk', name: 'Новосибирск', timezone: 'Asia/Novosibirsk' },
+  { id: '0b0c0000-0000-4000-8000-000000000002', slug: 'tomsk', name: 'Томск', timezone: 'Asia/Tomsk' },
   // Только готовящийся филиал – города в публичном списке нет.
-  { id: 'c-omsk', slug: 'omsk', name: 'Омск', timezone: 'Asia/Omsk' },
+  { id: '0b0c0000-0000-4000-8000-000000000003', slug: 'omsk', name: 'Омск', timezone: 'Asia/Omsk' },
 ];
 
+// hoursToday – как отдаёт API ('HH:mm' по зоне филиала); у «Красного» сегодня выходной – страница пишет «закрыто сегодня».
+const HOURS: Record<string, Array<{ start: string; end: string }>> = {
+  '0b0b0000-0000-4000-8000-000000000021': [{ start: '10:00', end: '22:00' }],
+};
+
 const branches: Array<{ id: string; cityId: string; slug: string; name: string; address: string; timezone: string; status: Status; phone: string | null }> = [
-  { id: 'b-nsk-krasny', cityId: 'c-nsk', slug: 'krasny-prospekt', name: 'Ю-Клуб на Красном', address: 'Красный проспект, 25', timezone: 'Asia/Novosibirsk', status: 'active', phone: null },
-  { id: 'b-nsk-akadem', cityId: 'c-nsk', slug: 'akademgorodok', name: 'Ю-Клуб Академгородок', address: 'Морской проспект, 2', timezone: 'Asia/Novosibirsk', status: 'temporarily_closed', phone: null },
-  { id: 'b-nsk-new', cityId: 'c-nsk', slug: 'gorskiy', name: 'Ю-Клуб Горский', address: 'Горский микрорайон, 8', timezone: 'Asia/Novosibirsk', status: 'preparing', phone: null },
-  { id: 'b-tsk-lenina', cityId: 'c-tsk', slug: 'lenina', name: 'Ю-Клуб на Ленина', address: 'проспект Ленина, 80', timezone: 'Asia/Tomsk', status: 'active', phone: null },
-  { id: 'b-omsk-1', cityId: 'c-omsk', slug: 'mira', name: 'Ю-Клуб на Мира', address: 'проспект Мира, 5', timezone: 'Asia/Omsk', status: 'preparing', phone: null },
+  { id: '0b0b0000-0000-4000-8000-000000000011', cityId: '0b0c0000-0000-4000-8000-000000000001', slug: 'krasny-prospekt', name: 'Ю-Клуб на Красном', address: 'Красный проспект, 25', timezone: 'Asia/Novosibirsk', status: 'active', phone: null },
+  { id: '0b0b0000-0000-4000-8000-000000000012', cityId: '0b0c0000-0000-4000-8000-000000000001', slug: 'akademgorodok', name: 'Ю-Клуб Академгородок', address: 'Морской проспект, 2', timezone: 'Asia/Novosibirsk', status: 'temporarily_closed', phone: null },
+  { id: '0b0b0000-0000-4000-8000-000000000013', cityId: '0b0c0000-0000-4000-8000-000000000001', slug: 'gorskiy', name: 'Ю-Клуб Горский', address: 'Горский микрорайон, 8', timezone: 'Asia/Novosibirsk', status: 'preparing', phone: null },
+  { id: '0b0b0000-0000-4000-8000-000000000021', cityId: '0b0c0000-0000-4000-8000-000000000002', slug: 'lenina', name: 'Ю-Клуб на Ленина', address: 'проспект Ленина, 80', timezone: 'Asia/Tomsk', status: 'active', phone: null },
+  { id: '0b0b0000-0000-4000-8000-000000000031', cityId: '0b0c0000-0000-4000-8000-000000000003', slug: 'mira', name: 'Ю-Клуб на Мира', address: 'проспект Мира, 5', timezone: 'Asia/Omsk', status: 'preparing', phone: null },
 ];
 
 // Пилот по макету (карта сайта п.4): 5 ПК, комната VR+PS4, комнаты PS5.
@@ -48,14 +54,6 @@ function fail(reply: FastifyReply, status: number, code: string, message: string
   return reply.code(status).send({ error: { code, message, requestId: randomUUID() } });
 }
 
-/** Локальное «HH:MM» даты филиала → ISO UTC. Смещение зоны берём у Intl на эту дату (без DST в Сибири, но честно). */
-function localToUtc(date: string, time: string, timezone: string): string {
-  const guess = new Date(`${date}T${time}:00Z`);
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'longOffset' }).formatToParts(guess);
-  const off = /GMT([+-])(\d{2}):(\d{2})/.exec(parts.find((p) => p.type === 'timeZoneName')?.value ?? '');
-  const minutes = off ? (off[1] === '-' ? -1 : 1) * (Number(off[2]) * 60 + Number(off[3])) : 0;
-  return new Date(guess.getTime() - minutes * 60_000).toISOString();
-}
 
 export function buildMock() {
   const app = Fastify({ logger: false });
@@ -74,8 +72,9 @@ export function buildMock() {
 
   app.get(`${P}/branches/:id`, async (req, reply) => {
     const b = publicBranches().find((x) => x.id === (req.params as { id: string }).id);
-    // K5 №3 + hoursToday (местное время филиала; временно закрыт – пусто), как apps/api routes.public.ts.
-    return b ? { ...toDto(b), hoursToday: b.status === 'active' ? [{ start: '10:00', end: '22:00' }] : [] } : fail(reply, 404, 'NOT_FOUND', 'Не найдено');
+    if (!b) return fail(reply, 404, 'NOT_FOUND', 'Не найдено');
+    // Временно закрытый – API отдаёт пустые часы (tempClosed действует сейчас).
+    return { ...toDto(b), hoursToday: b.status === 'active' ? (HOURS[b.id] ?? []) : [] };
   });
 
   app.get(`${P}/branches/:id/resources`, async (req, reply) => {
@@ -85,21 +84,6 @@ export function buildMock() {
     return { items: seedResources(b.id).filter((r) => !zone || r.zone === zone) };
   });
 
-  app.get(`${P}/branches/:id/availability`, async (req, reply) => {
-    const b = publicBranches().find((x) => x.id === (req.params as { id: string }).id);
-    if (!b) return fail(reply, 404, 'NOT_FOUND', 'Не найдено');
-    const { date } = req.query as { date?: string };
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return fail(reply, 400, 'VALIDATION_FAILED', 'Проверьте данные');
-    const open = b.status === 'active';
-    return {
-      branchId: b.id, date, timezone: b.timezone,
-      dayState: open ? 'open' : 'closed',
-      openIntervals: open ? [{ start: localToUtc(date, '10:00', b.timezone), end: localToUtc(date, '22:00', b.timezone) }] : [],
-      // Слоты – шаг S1-19; каркасу сайта нужны только часы дня.
-      resources: [],
-      generatedAt: new Date().toISOString(),
-    };
-  });
 
   registerClientAuth(app, P);
   return app;

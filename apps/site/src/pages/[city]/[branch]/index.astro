@@ -1,12 +1,13 @@
 ---
-// Хаб филиала /{city}/{branch}/ (карта сайта 3.1): адрес и часы – из API (12 приёмка 23), зоны – из ресурсов (K5 №4).
+// Хаб филиала /{city}/{branch}/ (карта сайта 3.1): адрес и часы сегодня – из GET /branches/{id} (hoursToday, 12 приёмка 23),
+// зоны – из ресурсов (K5 №4). Нет часов на сегодня – «закрыто сегодня», а не ошибка.
 // Нет такого города или филиала (в т.ч. 'preparing'/'archived' – K5 их не отдаёт) – 404 с кодом 404.
 // Временно закрытый – страница остаётся, плашка, без слотов и записи (12 §4.3, карта п.2.12).
 // Кнопки записи нет: запись – шаг S1-19, в меню её не показываем.
 import Site from '../../../layouts/Site.astro';
 import {
-  ApiError, ZONE_LABEL, ZONE_ORDER, findBranch, site, timeIn, todayIn,
-  type AvailabilityDto, type ResourceDto,
+  ApiError, ZONE_LABEL, ZONE_ORDER, findBranch, site,
+  type BranchDetailDto, type ResourceDto,
 } from '../../../lib/api.ts';
 
 const { city: citySlug = '', branch: branchSlug = '' } = Astro.params;
@@ -16,14 +17,11 @@ const found = network ? findBranch(network, citySlug, branchSlug) : null;
 if (network && !found) return Astro.rewrite('/404/');
 
 let resources: ResourceDto[] = [];
-let day: AvailabilityDto | null = null;
+let detail: BranchDetailDto | null = null;
 let failed = !network;
 if (found) {
   try {
-    [resources, day] = await Promise.all([
-      site.resources(found.branch.id),
-      site.availability(found.branch.id, todayIn(found.branch.timezone)),
-    ]);
+    [resources, detail] = await Promise.all([site.resources(found.branch.id), site.branch(found.branch.id)]);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return Astro.rewrite('/404/');
     console.error('site: филиал из API не загрузился', e);
@@ -33,12 +31,10 @@ if (found) {
 if (failed) Astro.response.status = 503;
 
 const city = found?.city;
-const branch = found?.branch;
+const branch = detail ?? found?.branch;
 const closed = branch?.status === 'temporarily_closed';
-const tz = branch?.timezone ?? 'UTC';
-const hoursToday = !day || day.dayState !== 'open' || day.openIntervals.length === 0
-  ? 'Сегодня не работает'
-  : day.openIntervals.map((i) => `${timeIn(i.start, tz)}–${timeIn(i.end, tz)}`).join(', ');
+const hours = detail?.hoursToday ?? [];
+const hoursToday = hours.length === 0 ? 'Закрыто сегодня' : hours.map((i) => `${i.start}–${i.end}`).join(', ');
 
 // Зоны → комнаты → места. Порядок зон фиксированный, пустые зоны не показываем.
 const zones = ZONE_ORDER.map((code) => {

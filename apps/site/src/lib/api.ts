@@ -1,5 +1,5 @@
 // Клиент публичного API записи для сайта – по контракту K5 (типы ответа, ошибки ADR 0002) и K13 (статусы филиала).
-// Публичного эндпоинта филиалов в API ещё нет (S1-08): до него сайт ходит в мок tests/mock-api.ts, подмена –
+// Маршруты – apps/api/src/modules/network/routes.public.ts; e2e ходит в мок tests/mock-api.ts с теми же ответами, подмена –
 // только переменной API_URL. Серверная часть (страницы SSR) ходит в API_URL напрямую.
 // Здесь же – режим индексации и адрес сайта для canonical/sitemap: одно место для всех страниц.
 
@@ -26,17 +26,12 @@ export type ZoneCode = 'pc' | 'vr' | 'ps';
 
 export interface ResourceDto {
   id: string; branchId: string; roomId: string | null; roomName: string | null;
-  type: 'pc' | 'vr_seat' | 'ps_room' | 'room_whole' | 'composite';
+  type: string; // API отдаёт код типа из справочника (modules/network/routes.public.ts)
   zone: ZoneCode; name: string; stepMinutes: number; selfBookable: true;
 }
 
-export interface AvailabilityDto {
-  branchId: string; date: string; timezone: string;
-  dayState: 'open' | 'closed' | 'outside_window';
-  openIntervals: { start: string; end: string }[];
-  resources: { resourceId: string; slots: { start: string; end: string; state: string }[] }[];
-  generatedAt: string;
-}
+/** K5 №3 + расширение API: часы сегодня 'HH:mm' по зоне филиала (пусто – сегодня закрыт). */
+export interface BranchDetailDto extends BranchDto { hoursToday: Array<{ start: string; end: string }> }
 
 /** Город с его филиалами – то, из чего строятся выбор, хабы и sitemap. */
 export interface CityWithBranches extends CityDto { branches: BranchDto[] }
@@ -86,8 +81,8 @@ export const site = {
     (await get<{ items: BranchDto[] }>(citySlug ? `/branches?city=${encodeURIComponent(citySlug)}` : '/branches')).items,
   resources: async (branchId: string) =>
     (await get<{ items: ResourceDto[] }>(`/branches/${encodeURIComponent(branchId)}/resources`)).items,
-  availability: (branchId: string, date: string) =>
-    get<AvailabilityDto>(`/branches/${encodeURIComponent(branchId)}/availability?date=${encodeURIComponent(date)}`),
+  branch: (branchId: string) => get<BranchDetailDto>(`/branches/${encodeURIComponent(branchId)}`),
+  // Доступность (K5 №5, слоты) – шаг S1-19: до расписания сайт её не вызывает.
 };
 
 /** Вся сеть: города (K5 №1 – только с открытыми филиалами) и их филиалы (K5 №2). Два запроса, не N. */
@@ -122,14 +117,4 @@ export function siteUrl(fallbackOrigin: string): string {
   if (url) return url.replace(/\/+$/, '');
   if (isIndexable()) throw new Error('Не задана переменная окружения PUBLIC_SITE_URL');
   return fallbackOrigin;
-}
-
-/** Сегодняшняя дата филиала 'YYYY-MM-DD' по его зоне (ADR 0003: локальные даты – по зоне филиала). */
-export function todayIn(timezone: string, now = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-}
-
-/** ISO UTC → «10:00» по зоне филиала. */
-export function timeIn(iso: string, timezone: string): string {
-  return new Intl.DateTimeFormat('ru-RU', { timeZone: timezone, hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
 }
