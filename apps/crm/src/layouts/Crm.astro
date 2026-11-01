@@ -1,0 +1,104 @@
+---
+// Оболочка CRM: шапка (контекст, сотрудник, выход), меню по правам из GET /me (K11 №1), область экрана.
+// В меню – только разделы, у которых есть экран; новые пункты добавляет шаг, который делает экран.
+import '../styles/crm.css';
+import ContextSwitcher, { type ContextGroup } from '../islands/ContextSwitcher.tsx';
+import { ROLE_LABEL } from '../lib/api.ts';
+
+interface Props {
+  title: string;
+}
+
+interface MenuItem {
+  href: string;
+  label: string;
+  action: string;
+  active: (path: string) => boolean;
+}
+
+const MENU: MenuItem[] = [
+  { href: '/', label: 'Филиалы', action: 'network.view', active: (p) => p === '/' || p.startsWith('/branches/') },
+];
+
+const { title } = Astro.props;
+const { me, branches, ctx } = Astro.locals;
+const path = Astro.url.pathname;
+const menu = MENU.filter((m) => me.actions.includes(m.action));
+
+// Группы переключателя: «Вся сеть» – только Владельцу; «Весь город» – при назначении на город; филиалы – вся зона.
+const groups: ContextGroup[] = [];
+if (me.access.network) groups.push({ label: 'Сеть', options: [{ value: 'network', label: 'Вся сеть' }] });
+const cityOrder = [...new Set(branches.map((b) => b.cityId))];
+for (const cityId of cityOrder) {
+  const inCity = branches.filter((b) => b.cityId === cityId);
+  const options = inCity.map((b) => ({ value: `branch:${b.id}`, label: b.name }));
+  if (me.access.network || me.access.cityIds.includes(cityId)) {
+    options.unshift({ value: `city:${cityId}`, label: `${inCity[0]!.cityName} – весь город` });
+  }
+  groups.push({ label: inCity[0]!.cityName, options });
+}
+const current =
+  ctx.kind === 'network' ? 'network' : ctx.kind === 'city' ? `city:${ctx.cityId}` : ctx.kind === 'branch' ? `branch:${ctx.branch.id}` : '';
+const fullName = `${me.staff.firstName} ${me.staff.lastName}`;
+---
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>{title} – CRM Ю Клуб</title>
+  </head>
+  <body class="yc yc-app">
+    <a class="yc-skip" href="#main">К содержимому</a>
+    <header class="yc-top">
+      <a class="yc-brand" href="/">Ю Клуб · CRM</a>
+      <div class="yc-top__ctx">
+        {groups.length > 0 && <ContextSwitcher client:load groups={groups} current={current} />}
+      </div>
+      <div class="yc-user">
+        <span class="yc-user__who" data-testid="staff-who">
+          <span class="yc-user__name">{fullName}</span>
+          <span class="yc-user__role">{ROLE_LABEL[me.staff.role]}</span>
+        </span>
+        <a class="yc-link" href="/account/password" aria-current={path === '/account/password' ? 'page' : undefined}>Пароль</a>
+        <button class="yc-link" type="button" id="logout">Выйти</button>
+      </div>
+    </header>
+    <div class="yc-shell">
+      <nav class="yc-nav" aria-label="Разделы">
+        <ul class="yc-nav__list">
+          {menu.map((m) => (
+            <li>
+              <a class="yc-nav__link" href={m.href} aria-current={m.active(path) ? 'page' : undefined}>{m.label}</a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <main class="yc-main" id="main" tabindex="-1">
+        <p class="yc-alert yc-alert--error" id="logout-error" role="alert"></p>
+        <slot />
+      </main>
+    </div>
+
+    <script>
+      import { ApiError, auth } from '../lib/api.ts';
+
+      const errorBox = document.getElementById('logout-error') as HTMLElement;
+      document.getElementById('logout')?.addEventListener('click', async () => {
+        errorBox.textContent = '';
+        try {
+          await auth.logout();
+        } catch (e) {
+          // 401 – сессии уже нет, это и есть выход. Иначе сессия может быть жива: не уводим молча.
+          if (!(e instanceof ApiError && e.status === 401)) {
+            const reason = e instanceof ApiError ? e.message.replace(/\.$/, '') : 'неизвестная ошибка';
+            errorBox.textContent = `Не удалось выйти: ${reason}. Повторите или закройте браузер.`;
+            return;
+          }
+        }
+        location.assign('/login');
+      });
+    </script>
+  </body>
+</html>

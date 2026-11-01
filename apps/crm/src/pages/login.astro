@@ -1,0 +1,91 @@
+---
+// Вход сотрудника (K12 №1). Ответ на неверный email и неверный пароль один и тот же – и текст здесь тоже один.
+import '../styles/crm.css';
+---
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Вход – CRM Ю Клуб</title>
+  </head>
+  <body class="yc">
+    <main class="yc-login">
+      <div class="yc-login__card">
+        <div class="yc-login__head">
+          <h1>Вход в CRM</h1>
+          <p>Ю Клуб – для сотрудников сети</p>
+        </div>
+        <form class="yc-form" id="login-form" novalidate>
+          <label class="yc-field">
+            <span class="yc-field__label">Почта</span>
+            <input class="yc-input" type="email" name="email" autocomplete="username" required autofocus />
+          </label>
+          <label class="yc-field">
+            <span class="yc-field__label">Пароль</span>
+            <input class="yc-input" type="password" name="password" autocomplete="current-password" required />
+          </label>
+          <label class="yc-field" id="totp-field" hidden>
+            <span class="yc-field__label">Код из приложения</span>
+            <input class="yc-input" type="text" name="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
+            <span class="yc-field__hint">Шесть цифр из приложения-генератора кодов</span>
+          </label>
+          <p class="yc-alert yc-alert--error" id="login-error" role="alert" aria-live="assertive"></p>
+          <button class="yc-btn" type="submit">Войти</button>
+        </form>
+      </div>
+    </main>
+
+    <script>
+      import { ApiError, auth, safeNext } from '../lib/api.ts';
+
+      const form = document.getElementById('login-form') as HTMLFormElement;
+      const errorBox = document.getElementById('login-error') as HTMLElement;
+      const totpField = document.getElementById('totp-field') as HTMLElement;
+      const button = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+
+      function message(e: unknown): string {
+        if (!(e instanceof ApiError)) return 'Не удалось войти. Повторите позже.';
+        if (e.code === 'INVALID_CREDENTIALS') return 'Неверная почта или пароль.';
+        if (e.code === 'LOGIN_LOCKED' || e.status === 429) {
+          const sec = Number(e.details?.retryAfterSec ?? 0);
+          const min = Math.max(1, Math.ceil(sec / 60));
+          return `Слишком много попыток входа. Повторите через ${min} мин.`;
+        }
+        if (e.status === 0 || e.status === 503) return e.message;
+        return 'Не удалось войти. Повторите позже.';
+      }
+
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        errorBox.textContent = '';
+        const data = new FormData(form);
+        const email = String(data.get('email') ?? '').trim();
+        const password = String(data.get('password') ?? '');
+        const totp = String(data.get('totp') ?? '').trim();
+        if (!email || !password) {
+          errorBox.textContent = 'Введите почту и пароль.';
+          return;
+        }
+        button.disabled = true;
+        button.textContent = 'Входим…';
+        try {
+          const r = await auth.login(email, password, totp || undefined);
+          if (r.totpRequired) {
+            totpField.hidden = false;
+            (form.elements.namedItem('totp') as HTMLInputElement).focus();
+            errorBox.textContent = 'Введите код из приложения.';
+            return;
+          }
+          location.assign(safeNext(new URLSearchParams(location.search).get('next'), location.origin));
+        } catch (e) {
+          errorBox.textContent = message(e);
+        } finally {
+          button.disabled = false;
+          button.textContent = 'Войти';
+        }
+      });
+    </script>
+  </body>
+</html>

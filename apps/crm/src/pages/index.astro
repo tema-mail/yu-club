@@ -1,0 +1,38 @@
+---
+// Филиалы текущего контекста: вся сеть или город. Контекст «филиал» сразу ведёт в карточку филиала.
+import Crm from '../layouts/Crm.astro';
+import { BRANCH_STATUS_LABEL } from '../lib/api.ts';
+
+const { branches, ctx } = Astro.locals;
+if (ctx.kind === 'branch') return Astro.redirect(`/branches/${encodeURIComponent(ctx.branch.id)}`);
+
+const list = ctx.kind === 'city' ? branches.filter((b) => b.cityId === ctx.cityId) : branches;
+const heading = ctx.kind === 'city' ? `Филиалы: ${ctx.cityName}` : 'Филиалы сети';
+---
+<Crm title={heading}>
+  <div class="yc-head">
+    <h1>{heading}</h1>
+    {list.length > 0 && <p>Доступно филиалов: {list.length}</p>}
+  </div>
+  <section class="yc-panel" aria-label="Список филиалов">
+    {list.length === 0 ? (
+      <p class="yc-empty">Вам пока не назначен ни один филиал. Обратитесь к директору или владельцу сети.</p>
+    ) : (
+      <table class="yc-table" data-testid="branch-list">
+        <thead>
+          <tr><th scope="col">Филиал</th><th scope="col">Город</th><th scope="col">Адрес</th><th scope="col">Статус</th></tr>
+        </thead>
+        <tbody>
+          {list.map((b) => (
+            <tr>
+              <td class="yc-table__main"><a href={`/branches/${encodeURIComponent(b.id)}`}>{b.name}</a></td>
+              <td data-label="Город">{b.cityName}</td>
+              <td data-label="Адрес">{b.address}</td>
+              <td><span class={`yc-badge yc-badge--${b.status}`}>{BRANCH_STATUS_LABEL[b.status]}</span></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )}
+  </section>
+</Crm>
