@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Выкладка тест-стенда yu-club с мака (S0-19): код из git HEAD → $ROOT/src на сервере, сборка образа API,
+# Выкладка тест-стенда yu-club с мака (S0-19): код из git HEAD → $ROOT/src на сервере, сборка образов API и CRM,
 # Postgres (роли – deploy/initdb), миграции под yu_owner, запуск API, свой блок в общем Caddy
 # (копия → замена своего блока → validate → reload; соседи проверяются до и после),
 # бэкап по расписанию 04:40 UTC (backup.sh, затем restore-check.sh), проверка снаружи.
@@ -17,7 +17,8 @@ DOMAIN=${YU_DOMAIN:-yu-club.45.12.72.227.nip.io}
 ROOT=${YU_ROOT:-/opt/yu-club}
 CADDY=${YU_CADDY:-/opt/dzenbot/Caddyfile}
 CADDY_CT=${YU_CADDY_CT:-dzenbot-caddy-1}
-NEIGHBOURS=${YU_NEIGHBOURS:-"https://gaz-mag.ru/ https://lupa.45.12.72.227.nip.io/login"}
+CRM_DOMAIN=${YU_CRM_DOMAIN:-yu-crm.45.12.72.227.nip.io}
+NEIGHBOURS=${YU_NEIGHBOURS:-"https://gaz-mag.ru/ https://lupa.45.12.72.227.nip.io/login https://teyes.45.12.72.227.nip.io/"}
 cd "$(dirname "$0")/.."
 SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$HOST")
 
@@ -38,10 +39,10 @@ git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/b
 set -euo pipefail
 cd $ROOT/src/deploy
 DC=(docker compose --env-file $ROOT/.env -f compose.yml)
-GIT_SHA=$REV "\${DC[@]}" build --pull -q api
-"\${DC[@]}" up -d --wait postgres
+GIT_SHA=$REV "\${DC[@]}" build --pull -q api crm </dev/null
+"\${DC[@]}" up -d --wait postgres </dev/null
 "\${DC[@]}" run --rm -T migrate </dev/null   # без stdin: иначе run съест остаток этого скрипта
-GIT_SHA=$REV "\${DC[@]}" up -d --wait api
+GIT_SHA=$REV "\${DC[@]}" up -d --wait api crm </dev/null
 docker image prune -f --filter label=project=yu-club >/dev/null
 echo "→ контейнеры: \$(docker ps --filter name=yu-club- --format '{{.Names}} {{.Status}}' | tr '\n' ';')"
 REMOTE
@@ -77,4 +78,6 @@ AFTER=$(codes); echo "→ соседи после: $AFTER"
 HEALTH=$(curl -sk -m 20 "https://$DOMAIN/health" || true)
 printf '%s https://%s/health %s\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$DOMAIN/health")" "$DOMAIN" "$HEALTH"
 printf '%s http://%s/health → %s\n' "$(curl -s -o /dev/null -m 20 -w '%{http_code}' "http://$DOMAIN/health")" "$DOMAIN" "$(curl -s -o /dev/null -m 20 -w '%{redirect_url}' "http://$DOMAIN/health")"
-case "$HEALTH" in *"\"version\":\"$REV\""*) echo "→ готово: https://$DOMAIN (ревизия $REV)";; *) echo "!!! /health не отдал версию $REV"; exit 1;; esac
+printf '%s https://%s/login\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$CRM_DOMAIN/login")" "$CRM_DOMAIN"
+printf '%s http://%s/login → %s\n' "$(curl -s -o /dev/null -m 20 -w '%{http_code}' "http://$CRM_DOMAIN/login")" "$CRM_DOMAIN" "$(curl -s -o /dev/null -m 20 -w '%{redirect_url}' "http://$CRM_DOMAIN/login")"
+case "$HEALTH" in *"\"version\":\"$REV\""*) echo "→ готово: https://$DOMAIN, CRM https://$CRM_DOMAIN (ревизия $REV)";; *) echo "!!! /health не отдал версию $REV"; exit 1;; esac

@@ -22,4 +22,27 @@ yu-club.45.12.72.227.nip.io {
 		format console
 	}
 }
+# CRM – целиком за входом (кука yu_staff на этом домене), API ей доступен по внутренней сети.
+http://yu-crm.45.12.72.227.nip.io {
+	redir https://yu-crm.45.12.72.227.nip.io{uri} permanent
+}
+yu-crm.45.12.72.227.nip.io {
+	tls internal
+	encode gzip zstd
+	header {
+		X-Robots-Tag "noindex, nofollow"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy yu-club-crm:4321
+	log {
+		output stdout
+		format console
+	}
+}
 # <<< yu-club
