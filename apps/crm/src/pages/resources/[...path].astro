@@ -1,11 +1,12 @@
 ---
 // Ресурсы филиала (S1-24): /resources/{branchId}/{раздел}[/new|/{id}]. Разделы: комнаты, места (ресурсы и составные
-// конфигурации). Экран – при resources.view; править – resources.manage (Владелец, Директор в зоне). Филиал вне зоны
+// конфигурации), график и исключения (правка – network.hours.manage). Экран – при resources.view; править – resources.manage (Владелец, Директор в зоне). Филиал вне зоны
 // и запись чужого филиала – 404, как несуществующие (K1). Удаления нет – архив через окно внутри записи (02 §12).
 // История комнат и мест на сервере пока открыта только Владельцу (routes.crm.ts) – остальным блок не показываем.
 import Crm from '../../layouts/Crm.astro';
 import EntityList from '../../islands/EntityList.tsx';
 import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import CalendarExceptions from '../../islands/CalendarExceptions.tsx';
 import CompositionForm, { type UnitView } from '../../islands/CompositionForm.tsx';
 import { ApiError, serverCall } from '../../lib/api.ts';
 
@@ -16,6 +17,7 @@ const RES_STATUS: Record<string, string> = { active: 'Работает', unavail
 const SECTIONS = [
   { key: 'rooms', label: 'Комнаты' },
   { key: 'resources', label: 'Места' },
+  { key: 'schedule', label: 'График' },
 ];
 
 const { me, cookie, ctx, branches } = Astro.locals;
@@ -30,7 +32,8 @@ const branch = branches.find((b) => b.id === branchKey);
 if (branch && !section) return Astro.redirect(`/resources/${branch.id}/rooms`);
 
 const manage = can('resources.manage');
-let notFound = !branch || !can('resources.view') || extra !== undefined || !SECTIONS.some((s) => s.key === section) || (key === 'new' && !manage);
+const LISTS = ['rooms', 'resources']; // разделы-справочники: у них есть /new и /{id}
+let notFound = !branch || !can('resources.view') || (!LISTS.includes(section) && key !== '') || extra !== undefined || !SECTIONS.some((s) => s.key === section) || (key === 'new' && !manage);
 
 async function load<T>(path: string): Promise<T | null> {
   try {
@@ -45,10 +48,14 @@ let row: Row | null = null;
 let rooms: Row[] = [];
 let units: UnitView[] = [];
 let types: Array<{ code: string; name: string; archivedAt: string | null }> = [];
+let resources: Row[] = [];
 if (!notFound && branch) {
   if (key && key !== 'new') {
     row = await load<Row>(`/${section}/${encodeURIComponent(key)}`);
     if (!row || row.branchId !== branch.id) notFound = true;
+  }
+  if (!notFound && section === 'schedule') {
+    [rooms, resources] = await Promise.all(['rooms', 'resources'].map((k) => load<{ items: Row[] }>(`/branches/${branch.id}/${k}?limit=100`).then((r) => r?.items ?? [])));
   }
   if (!notFound && section === 'resources') {
     [rooms, units, types] = await Promise.all([
@@ -147,6 +154,11 @@ const owner = me.access.network;
             ]}
             emptyText={manage ? 'Мест пока нет. Добавьте первое.' : 'Мест в филиале пока нет.'} />
         </section>
+      )}
+
+      {section === 'schedule' && (
+        <CalendarExceptions client:load branchId={branch!.id} timezone={branch!.timezone} canManage={can('network.hours.manage')}
+          rooms={rooms.map((r) => ({ id: r.id, name: r.name }))} resources={resources.map((r) => ({ id: r.id, name: r.name }))} />
       )}
 
       {key === 'new' && section === 'rooms' && (
