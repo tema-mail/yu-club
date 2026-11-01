@@ -2,7 +2,7 @@
 // resources/routes.ts (комнаты, ресурсы, единицы, состав с dryRun), booking/blocks.ts (блокировки),
 // network/routes.ts + calendar.ts (недельный график и исключения: предпросмотр → применение с confirmedAffected),
 // pricing/routes.ts + tariff.ts (тарифы: цена неизменна, конфликт приоритета – до сохранения).
-// Помещений (spaces) экран не использует – их маршрутов в моке нет. Брони – засев (будущие, для «затронутых»).
+// Помещений (spaces) экран не использует – их маршрутов в моке нет. Брони для «затронутых» – из mock-booking.ts (syncOps).
 // Подключается из mock-api.ts (registerOps), resetOps() – в POST /__test/reset.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
@@ -105,6 +105,22 @@ let db = seed();
 export function resetOps(): void {
   db = seed();
 }
+
+/** Часы объекта на дату с учётом исключений: null – закрыто. */
+function hoursOn(branchId: string, date: string, rows: Hours[], exs: Exception[], unitIds: string[]): { open: string; close: string } | null {
+  const roomIds = new Set(db.units.filter((u) => unitIds.includes(u.id)).map((u) => u.roomId));
+  const resIds = new Set(Object.entries(db.composition).filter(([, us]) => us.some((u) => unitIds.includes(u))).map(([r]) => r));
+  const ex = exs.filter((e) => e.status === 'active' && e.branchId === branchId && e.date === date &&
+    (e.scope.type === 'branch' || (e.scope.type === 'room' && roomIds.has(e.scope.id)) || (e.scope.type === 'resource' && resIds.has(e.scope.id))));
+  if (ex.some((e) => CLOSING.has(e.kind))) return null;
+  const special = ex.find((e) => e.open && e.close);
+  if (special) return { open: special.open!, close: special.close! };
+  const w = rows.filter((r) => r.weekday === weekdayOf(date) && r.validFrom <= date && (!r.validTo || r.validTo >= date)).sort((a, b) => b.validFrom.localeCompare(a.validFrom))[0];
+  return w && !w.closed && w.open && w.close ? { open: w.open, close: w.close } : null;
+}
+/** Для мока броней (mock-booking.ts): состояние и часы работы объекта на дату по графику и исключениям. */
+export const opsState = () => db;
+export const opsHoursOn = (branchId: string, date: string, unitIds: string[]) => hoursOn(branchId, date, db.hours[branchId] ?? [], db.exceptions, unitIds);
 
 const sortIds = (ids: string[]) => [...new Set(ids)].sort();
 const same = (a: string[], b: string[]) => JSON.stringify(sortIds(a)) === JSON.stringify(sortIds(b));
@@ -400,18 +416,6 @@ export function registerOps(app: FastifyInstance, P: string, d: OpsDeps): void {
 
   // ---- недельный график и исключения (network/calendar.ts)
 
-  /** Часы объекта на дату с учётом исключений: null – закрыто. */
-  function hoursOn(branchId: string, date: string, rows: Hours[], exs: Exception[], unitIds: string[]): { open: string; close: string } | null {
-    const roomIds = new Set(db.units.filter((u) => unitIds.includes(u.id)).map((u) => u.roomId));
-    const resIds = new Set(Object.entries(db.composition).filter(([, us]) => us.some((u) => unitIds.includes(u))).map(([r]) => r));
-    const ex = exs.filter((e) => e.status === 'active' && e.branchId === branchId && e.date === date &&
-      (e.scope.type === 'branch' || (e.scope.type === 'room' && roomIds.has(e.scope.id)) || (e.scope.type === 'resource' && resIds.has(e.scope.id))));
-    if (ex.some((e) => CLOSING.has(e.kind))) return null;
-    const special = ex.find((e) => e.open && e.close);
-    if (special) return { open: special.open!, close: special.close! };
-    const w = rows.filter((r) => r.weekday === weekdayOf(date) && r.validFrom <= date && (!r.validTo || r.validTo >= date)).sort((a, b) => b.validFrom.localeCompare(a.validFrom))[0];
-    return w && !w.closed && w.open && w.close ? { open: w.open, close: w.close } : null;
-  }
   const outside = (b: Booking, h: { open: string; close: string } | null) => !h || b.start < h.open || b.end > h.close;
 
   type Change =

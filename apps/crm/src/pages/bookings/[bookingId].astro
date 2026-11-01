@@ -1,0 +1,38 @@
+---
+// Карточка брони (S1-23, K11 №5): GET /bookings/{id} с хронологией. Вне зоны или нет такой – 404 с одинаковым
+// текстом (K1). Причины отмены и неявки – из справочника (домены booking_cancel_club / _client, no_show).
+import Crm from '../../layouts/Crm.astro';
+import BookingCard, { type Reason } from '../../islands/BookingCard.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+import type { BookingCard as Card } from '../../lib/booking.ts';
+
+const { cookie, me } = Astro.locals;
+const id = Astro.params.bookingId ?? '';
+let card: Card | null = null;
+let reasons: Reason[] = [];
+try {
+  const domains = ['booking_cancel_club', 'booking_cancel_client', 'no_show'];
+  const [c, ...lists] = await Promise.all([
+    serverCall<Card>(cookie, `/bookings/${encodeURIComponent(id)}`),
+    ...domains.map((d) => serverCall<{ items: Array<Reason & { archivedAt: string | null; sortOrder: number }> }>(cookie, `/dictionaries/reasons?domain=${d}`)),
+  ]);
+  card = c as Card;
+  reasons = (lists as Array<{ items: Array<Reason & { archivedAt: string | null; sortOrder: number }> }>).flatMap((l) => l.items)
+    .filter((r) => !r.archivedAt).sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)).map((r) => ({ id: r.id, name: r.name, domain: r.domain }));
+} catch (e) {
+  if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 403)) throw e;
+  Astro.response.status = 404;
+}
+const title = card ? `Запись №${card.number}` : 'Запись не найдена';
+---
+<Crm title={title}>
+  {card ? (
+    <BookingCard client:load initial={card} reasons={reasons} canComment={me.actions.includes('booking.create')} />
+  ) : (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Запись не найдена</h1>
+      <p>Такой записи нет или она в филиале вне вашей зоны доступа. Проверьте ссылку или откройте расписание.</p>
+      <p><a href="/schedule">К расписанию</a></p>
+    </div>
+  )}
+</Crm>

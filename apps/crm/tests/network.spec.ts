@@ -172,7 +172,7 @@ test('Директор: филиалы своего города без созд
 
   const admin = await (await browser.newContext()).newPage();
   await login(admin, 'admin@yu.test');
-  await expect(admin.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Филиалы', 'Клиенты', 'Ресурсы']);
+  await expect(admin.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Расписание', 'Филиалы', 'Клиенты', 'Ресурсы']);
   const r = await admin.goto('/network/branches/b-nsk-krasny');
   expect(r?.status()).toBe(404);
   await expect(admin.getByTestId('not-found')).toBeVisible();
