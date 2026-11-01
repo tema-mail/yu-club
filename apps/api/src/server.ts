@@ -7,6 +7,7 @@ import './core/registry.ts'; // проверка реестров модулей
 import { blockRoutes } from './modules/booking/blocks.ts';
 import { blockListRoutes } from './modules/booking/blocks.routes.list.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
+import { registerBookingGate } from './modules/clients/index.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
@@ -16,6 +17,7 @@ import { bookingsProvider, clientBranchLinks } from './modules/booking/providers
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { loyaltyGate } from './modules/loyalty/gate.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
 import { networkPublicRoutes, type NetworkPublicDeps } from './modules/network/routes.public.ts';
@@ -40,10 +42,19 @@ export interface ServerDeps {
   logStream?: NodeJS.WritableStream;
 }
 
+/** Ворота записи (K9, S2-33): реестр clients – на процесс, а buildServer зовут повторно (тесты) – регистрируем один раз. */
+let gatesRegistered = false;
+function registerGates(): void {
+  if (gatesRegistered) return;
+  registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
+  gatesRegistered = true;
+}
+
 /** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
 export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
+  registerGates();
   // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
   const app = Fastify({
     logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream } : { level: config.LOG_LEVEL },
