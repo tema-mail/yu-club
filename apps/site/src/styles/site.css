@@ -19,6 +19,7 @@
   --yu-on-accent: #0b0d12;
   --yu-warn: #f2b84b;
   --yu-warn-soft: rgb(242 184 75 / 0.12);
+  --yu-danger: #ff9b8f;
 
   /* Шрифты: системный стек, пока нет шрифтов макета */
   --yu-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -146,7 +147,7 @@ a { color: inherit; }
   color: var(--yu-on-accent);
   font-size: var(--yu-fs-m);
 }
-.yu-nav { min-width: 0; }
+.yu-nav { display: none; } /* на телефоне единственный пункт «Клубы» = знак-ссылка на главную */
 .yu-nav__list { display: flex; gap: var(--yu-sp-3xs); margin: 0; padding: 0; list-style: none; }
 .yu-nav__link {
   display: inline-flex;
@@ -162,6 +163,21 @@ a { color: inherit; }
 }
 .yu-nav__link:hover, .yu-nav__link[aria-current="page"] { color: var(--yu-text); background: var(--yu-surface-2); }
 .yu-header__picker { margin-inline-start: auto; }
+.yu-header__account {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--yu-tap);
+  padding-inline: var(--yu-sp-xs);
+  border-radius: var(--yu-r-s);
+  background: var(--yu-accent);
+  color: var(--yu-on-accent);
+  font-size: var(--yu-fs-s);
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.yu-header__account:hover { filter: brightness(1.08); }
 
 /* ── Выбор клуба (остров BranchPicker) ──────────────────── */
 .yu-picker { position: relative; }
@@ -284,6 +300,9 @@ a { color: inherit; }
 
 .yu-btn {
   display: inline-flex;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
   align-items: center;
   justify-content: center;
   min-height: var(--yu-tap);
@@ -304,6 +323,54 @@ a { color: inherit; }
 .yu-error { display: grid; gap: var(--yu-sp-s); justify-items: start; padding-block: var(--yu-sp-xl); }
 .yu-error__code { font-size: var(--yu-fs-xs); font-weight: 800; color: var(--yu-accent); }
 
+/* ── Вход и кабинет ─────────────────────────────────────── */
+.yu-auth { display: grid; gap: var(--yu-sp-s); max-width: 440px; }
+.yu-auth > * { min-width: 0; }
+.yu-auth h1 { font-size: var(--yu-fs-2xl); }
+.yu-form { display: grid; gap: var(--yu-sp-s); }
+.yu-form[hidden] { display: none; }
+.yu-form > * { min-width: 0; }
+.yu-field { display: grid; gap: var(--yu-sp-3xs); }
+.yu-field__label { font-size: var(--yu-fs-s); font-weight: 700; }
+.yu-input {
+  width: 100%;
+  min-height: var(--yu-tap);
+  padding: var(--yu-sp-2xs) var(--yu-sp-xs);
+  border: 1px solid var(--yu-line);
+  border-radius: var(--yu-r-s);
+  background: var(--yu-surface);
+  color: var(--yu-text);
+  font: inherit;
+  font-size: max(16px, var(--yu-fs-m)); /* iOS не увеличивает страницу при фокусе */
+  letter-spacing: 0.02em;
+}
+.yu-input::placeholder { color: var(--yu-dim); }
+.yu-input:focus { outline: 2px solid var(--yu-accent); outline-offset: 1px; border-color: transparent; }
+.yu-check { display: flex; align-items: flex-start; gap: var(--yu-sp-2xs); font-size: var(--yu-fs-s); color: var(--yu-muted); cursor: pointer; }
+.yu-check input { flex: none; width: 22px; height: 22px; margin: 1px 0 0; accent-color: var(--yu-accent); cursor: pointer; }
+.yu-check a { color: var(--yu-text); }
+.yu-form__aside { display: flex; flex-wrap: wrap; gap: var(--yu-sp-3xs) var(--yu-sp-s); }
+.yu-link-btn {
+  min-height: var(--yu-tap);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--yu-muted);
+  font: inherit;
+  font-size: var(--yu-fs-s);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.yu-link-btn:hover:not(:disabled) { color: var(--yu-text); }
+.yu-link-btn:disabled { color: var(--yu-dim); text-decoration: none; cursor: default; }
+.yu-btn:disabled { background: var(--yu-surface-2); color: var(--yu-dim); cursor: not-allowed; filter: none; transform: none; }
+.yu-btn--ghost { background: none; color: var(--yu-text); border: 1px solid var(--yu-line); }
+.yu-alert { margin: 0; color: var(--yu-danger); font-size: var(--yu-fs-s); }
+.yu-alert:empty { display: none; }
+.yu-account { display: grid; gap: var(--yu-sp-m); max-width: 720px; }
+.yu-account > * { min-width: 0; }
+
 /* ── Подвал ─────────────────────────────────────────────── */
 .yu-footer { border-top: 1px solid var(--yu-line-soft); background: var(--yu-surface); font-size: var(--yu-fs-s); color: var(--yu-muted); }
 .yu-footer__row { display: grid; gap: var(--yu-sp-m); padding-block: var(--yu-sp-l); }
@@ -317,6 +384,7 @@ a { color: inherit; }
 /* ── Брейкпоинты ────────────────────────────────────────── */
 @media (min-width: 600px) {
   :root { --yu-gutter: 24px; }
+  .yu-nav { display: block; }
   .yu-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .yu-footer__row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
