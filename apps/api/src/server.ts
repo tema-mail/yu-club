@@ -4,6 +4,7 @@ import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
 import { AppError } from './core/errors.ts';
 import './core/registry.ts'; // проверка реестров модулей на дубли – при старте (ADR 0002)
+import { blockRoutes } from './modules/booking/blocks.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
@@ -11,6 +12,7 @@ import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
+import { resourcesRoutes } from './modules/resources/routes.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 import { staffAdminRoutes } from './modules/staff/routes.staff.ts';
@@ -67,6 +69,24 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(
       async (scope) =>
         networkRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    void app.register(
+      async (scope) =>
+        resourcesRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    void app.register(
+      async (scope) =>
+        blockRoutes(scope, {
           pool: staff.pool,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
