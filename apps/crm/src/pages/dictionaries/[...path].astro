@@ -1,0 +1,141 @@
+---
+// Справочники (S0-15 поверх S0-13): типы ресурсов, типы помещений, причины. Маршруты API – точно по
+// apps/api/src/modules/dictionaries/routes.ts: список целиком (без курсора), PATCH без rowVersion, архив/возврат,
+// DELETE всегда 409. Системный код не удаляется, не архивируется и не меняется; пользовательское значение – архив.
+// Экран – только Владельцу (dictionary.manage), остальным – 404, как у несуществующей страницы.
+import Crm from '../../layouts/Crm.astro';
+import EntityList, { type ListColumn } from '../../islands/EntityList.tsx';
+import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+
+type Kind = 'reasons' | 'space-types' | 'resource-types';
+interface Row { id?: string; code: string; name: string; isSystem: boolean; archivedAt?: string | null; [k: string]: unknown }
+
+const KINDS: Record<Kind, { title: string; one: string; table: string; archivable: boolean; creatable: boolean }> = {
+  reasons: { title: 'Причины', one: 'Причина', table: 'app.dict_reasons', archivable: true, creatable: true },
+  'space-types': { title: 'Типы помещений', one: 'Тип помещения', table: 'app.dict_space_types', archivable: true, creatable: true },
+  'resource-types': { title: 'Типы ресурсов', one: 'Тип ресурса', table: 'app.dict_resource_types', archivable: false, creatable: false },
+};
+const DOMAIN_LABEL: Record<string, string> = {
+  booking_cancel_club: 'Отмена брони клубом',
+  booking_cancel_client: 'Отмена брони по просьбе клиента',
+  no_show: 'Неявка',
+  visit_correction: 'Исправление посещения',
+  resource_block: 'Блокировка ресурса',
+  ledger_correction: 'Исправление в учёте',
+};
+const DOMAINS = Object.entries(DOMAIN_LABEL).map(([value, label]) => ({ value, label }));
+const CODE_HINT = 'Для программы: латиница в нижнем регистре, цифры и _. После создания не меняется';
+
+const { me, cookie } = Astro.locals;
+const [kindRaw = '', key = '', extra] = (Astro.params.path ?? '').split('/');
+if (me.actions.includes('dictionary.manage') && !kindRaw) return Astro.redirect('/dictionaries/reasons');
+
+const kind = kindRaw as Kind;
+const spec = KINDS[kind] as (typeof KINDS)[Kind] | undefined;
+let notFound = !me.actions.includes('dictionary.manage') || !spec || extra !== undefined || (key === 'new' && !spec.creatable);
+
+let row: Row | null = null;
+if (!notFound && key && key !== 'new') {
+  try {
+    const r = await serverCall<{ items: Row[] }>(cookie, `/dictionaries/${kind}?includeArchived=true`);
+    row = r.items.find((x) => (kind === 'reasons' ? x.id : x.code) === key) ?? null;
+  } catch (e) {
+    if (!(e instanceof ApiError && (e.status === 404 || e.status === 403))) throw e;
+  }
+  if (!row) notFound = true;
+}
+if (notFound) Astro.response.status = 404;
+
+const editing = Boolean(row);
+const fields: CardField[] = [
+  ...(kind === 'reasons' ? [{ kind: 'select' as const, name: 'domain', label: 'Где применяется', required: true, readOnly: editing, options: DOMAINS }] : []),
+  { kind: 'text', name: 'code', label: 'Код', required: true, readOnly: editing, hint: CODE_HINT },
+  { kind: 'text', name: 'name', label: 'Название', required: true, hint: 'Так значение видят сотрудники' },
+  ...(kind === 'reasons' ? [{ kind: 'checkbox' as const, name: 'requiresComment', label: 'Требовать комментарий' }] : []),
+  ...(kind === 'resource-types'
+    ? [
+        { kind: 'number' as const, name: 'stepMinutes', label: 'Шаг записи, минут', required: true, min: 1, max: 1440, hint: 'Делит сутки без остатка: 15, 30, 60…' },
+        { kind: 'checkbox' as const, name: 'bookable', label: 'Можно бронировать' },
+      ]
+    : []),
+  { kind: 'number', name: 'sortOrder', label: 'Порядок в списках', hint: 'Меньше – выше' },
+];
+
+const COLUMNS: Record<Kind, ListColumn[]> = {
+  reasons: [
+    { key: 'name', label: 'Причина', main: true }, { key: 'domain', label: 'Где применяется', labels: DOMAIN_LABEL },
+    { key: 'code', label: 'Код' }, { key: 'requiresComment', label: 'Комментарий', yesNo: true },
+  ],
+  'space-types': [{ key: 'name', label: 'Тип помещения', main: true }, { key: 'code', label: 'Код' }, { key: 'sortOrder', label: 'Порядок' }],
+  'resource-types': [
+    { key: 'name', label: 'Тип ресурса', main: true }, { key: 'code', label: 'Код' },
+    { key: 'stepMinutes', label: 'Шаг, мин' }, { key: 'bookable', label: 'Бронируется', yesNo: true },
+  ],
+};
+
+const blocked = !row
+  ? undefined
+  : row.isSystem
+    ? 'Системное значение: его код использует программа. Удалить, отправить в архив или поменять код нельзя – можно поменять только название и порядок.'
+    : !spec?.archivable
+      ? 'Типы ресурсов не удаляются и не уходят в архив: на них держатся ресурсы и тарифы. Можно поменять название, шаг и порядок.'
+      : undefined;
+const ref = row ? (kind === 'reasons' ? row.id! : row.code) : '';
+const archived = Boolean(row?.archivedAt);
+const title = notFound ? 'Не найдено' : row ? row.name : key === 'new' ? `${spec!.one}: новое значение` : 'Справочники';
+---
+<Crm title={title}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такой страницы нет или она вам недоступна. Проверьте ссылку.</p>
+      <p><a href="/">На главную</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        {key && <p class="yc-crumbs"><a href={`/dictionaries/${kind}`}>{spec!.title}</a> / {title}</p>}
+        <h1>{title}</h1>
+        {row?.isSystem && <p><span class="yc-badge yc-badge--system">Системное</span> Код: {row.code}</p>}
+      </div>
+
+      {!key && (
+        <>
+          <nav class="yc-tabs" aria-label="Справочники">
+            {(Object.keys(KINDS) as Kind[]).map((k) => (
+              <a class="yc-tabs__link" href={`/dictionaries/${k}`} aria-current={k === kind ? 'page' : undefined}>{KINDS[k].title}</a>
+            ))}
+            {spec!.creatable && <a class="yc-btn yc-tabs__action" href={`/dictionaries/${kind}/new`}>Добавить значение</a>}
+          </nav>
+          {!spec!.creatable && <p class="yc-empty">Типы ресурсов задаёт программа: новые не добавляются, у имеющихся меняются название, шаг и порядок.</p>}
+          <section class="yc-panel" aria-label={spec!.title}>
+            <EntityList client:load testId={`dict-${kind}`} endpoint={`/dictionaries/${kind}`} columns={COLUMNS[kind]}
+              rowHref={kind === 'reasons' ? '/dictionaries/reasons/{id}' : `/dictionaries/${kind}/{code}`}
+              query={spec!.archivable ? { includeArchived: 'true' } : {}}
+              search={{ label: 'Поиск по названию и коду', fields: ['name', 'code'] }}
+              archive={spec!.archivable ? { field: 'archivedAt' } : undefined} systemField="isSystem"
+              filters={kind === 'reasons' ? [{ param: 'domain', label: 'Где применяется', options: [{ value: '', label: 'Все' }, ...DOMAINS] }] : []}
+              emptyText="Значений пока нет." />
+          </section>
+        </>
+      )}
+
+      {key === 'new' && (
+        <EntityCard client:load fields={fields} values={{ domain: DOMAINS[0]!.value, sortOrder: 0, requiresComment: false }}
+          save={{ method: 'POST', path: `/dictionaries/${kind}`, label: 'Добавить', redirect: kind === 'reasons' ? '/dictionaries/reasons/{id}' : `/dictionaries/${kind}/{code}` }} />
+      )}
+
+      {row && (
+        <EntityCard client:load fields={fields} values={row}
+          save={archived ? undefined : { method: 'PATCH', path: `/dictionaries/${kind}/${encodeURIComponent(ref)}`, label: 'Сохранить' }}
+          remove={{
+            what: 'Значение', archived, blocked,
+            archivePath: `/dictionaries/${kind}/${encodeURIComponent(ref)}/archive`,
+            restorePath: `/dictionaries/${kind}/${encodeURIComponent(ref)}/restore`,
+          }}
+          history={{ objectType: 'dictionary', objectId: `${spec!.table}:${ref}` }} />
+      )}
+    </>
+  )}
+</Crm>
