@@ -1,0 +1,53 @@
+---
+// Личный кабинет (S1-17, карта сайта 3.6): целиком за входом – сессию проверяет middleware через GET /me (K9).
+// Сейчас: профиль и выход. Переключателей «Напоминания» и «Реклама» нет: API отдаёт их значения в /me, но ручки
+// изменения ещё нет – без неё переключатель был бы заглушкой. «Мои записи» – когда появится API броней (S1-08).
+import Site from '../../layouts/Site.astro';
+
+const me = Astro.locals.client!;
+const name = [me.firstName, me.lastName].filter(Boolean).join(' ');
+---
+<Site title="Личный кабинет – Ю-Клуб" noindex>
+  <section class="yu-account" aria-labelledby="account-title">
+    <h1 id="account-title">Личный кабинет</h1>
+    {me.status === 'restricted' && (
+      <p class="yu-notice" role="status">Онлайн-запись для вас сейчас ограничена. Подробности – у администратора клуба.</p>
+    )}
+    <dl class="yu-facts" data-testid="profile">
+      <div>
+        <dt>Имя</dt>
+        <dd data-testid="profile-name">{name || 'Не указано'}</dd>
+      </div>
+      <div>
+        <dt>Телефон</dt>
+        <dd data-testid="profile-phone">{me.phoneMasked}</dd>
+      </div>
+    </dl>
+    <div>
+      <button class="yu-btn yu-btn--ghost" type="button" id="logout">Выйти</button>
+    </div>
+    <p class="yu-alert" id="logout-error" role="alert"></p>
+  </section>
+
+  <script>
+    import { ClientApiError, clientAuth, errorText } from '../../lib/client.ts';
+
+    const errorBox = document.getElementById('logout-error') as HTMLElement;
+    const button = document.getElementById('logout') as HTMLButtonElement;
+    button.addEventListener('click', async () => {
+      errorBox.textContent = '';
+      button.disabled = true;
+      try {
+        await clientAuth.logout();
+      } catch (e) {
+        // 401 – сессии уже нет, это и есть выход. Иначе сессия может быть жива: не уводим молча.
+        if (!(e instanceof ClientApiError && e.status === 401)) {
+          errorBox.textContent = `Не удалось выйти. ${errorText(e)}`;
+          button.disabled = false;
+          return;
+        }
+      }
+      location.assign('/');
+    });
+  </script>
+</Site>
