@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import { diffFields, writeAudit, type AuditAction, type AuditObjectType, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { can, roleAllows, type AccessContext } from '../../core/permissions.ts';
+import { can, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { getBranch, isUuid } from '../network/index.ts';
 
@@ -150,10 +150,7 @@ async function guardBranch(db: Db | Tx, ctx: AccessContext, branchId: string, ac
     DENIALS.set(err, { ...d, reason: `${code}: tariff.manage` });
     throw err;
   };
-  if (!b) {
-    if (!roleAllows(ctx.role, 'tariff.manage')) deny('FORBIDDEN');
-    throw notFound();
-  }
+  if (!b) return deny('NOT_FOUND'); // несуществующий – 404 до проверки роли, как чужой
   if (!can(ctx, 'network.view', { branchId: b.id })) deny('NOT_FOUND');
   if (!can(ctx, 'tariff.manage', { branchId: b.id })) deny('FORBIDDEN');
   return { cityId: b.cityId };
@@ -261,12 +258,10 @@ export async function createTariff(tx: Tx, ctx: AccessContext, raw: unknown, met
 async function lockTariff(tx: Tx, ctx: AccessContext, tariffId: string, action: AuditAction): Promise<{ t: Tariff; cityId: string }> {
   const r = isUuid(tariffId) ? await tx.query<TariffRow>(`SELECT ${COLUMNS} FROM app.tariffs WHERE id = $1 FOR UPDATE`, [tariffId]) : { rows: [] };
   if (!r.rows[0]) {
-    if (!roleAllows(ctx.role, 'tariff.manage')) {
-      const err = new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'tariff.manage' });
-      DENIALS.set(err, { action, object: { type: 'tariff', id: isUuid(tariffId) ? tariffId : null }, branchId: null, cityId: null, reason: 'FORBIDDEN: tariff.manage' });
-      throw err;
-    }
-    throw notFound();
+    // несуществующий – 404 до проверки роли, как чужой
+    const err = notFound();
+    DENIALS.set(err, { action, object: { type: 'tariff', id: isUuid(tariffId) ? tariffId : null }, branchId: null, cityId: null, reason: 'NOT_FOUND: tariff.manage' });
+    throw err;
   }
   const t = toTariff(r.rows[0]);
   const { cityId } = await guardBranch(tx, ctx, t.branchId, action, t.id);

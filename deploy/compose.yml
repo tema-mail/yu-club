@@ -71,6 +71,24 @@ services:
     networks: [internal, caddy]
     logging: *log
 
+  # CRM (S0-14/15): Astro SSR; браузер ходит только в CRM, та проксирует /api/crm/v1/* в API по внутренней сети.
+  crm:
+    build:
+      context: ..
+      dockerfile: apps/crm/Dockerfile
+    image: yu-club-crm:local
+    container_name: yu-club-crm
+    restart: unless-stopped
+    environment:
+      API_URL: ${CRM_API_URL:-http://yu-club-api:3000}
+      # Caddy общего сервера приходит из сети Docker – его X-Forwarded-For принимаем (lib/client-ip.ts)
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
+    depends_on:
+      api: { condition: service_healthy }
+    mem_limit: 192m
+    networks: [internal, caddy]
+    logging: *log
+
 networks:
   internal:
     name: yu-club-internal

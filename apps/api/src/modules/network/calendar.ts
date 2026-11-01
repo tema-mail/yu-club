@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { writeAudit, type AuditAction, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { can, roleAllows, type AccessContext } from '../../core/permissions.ts';
+import { can, type AccessContext } from '../../core/permissions.ts';
 import {
   addDays,
   branchDay,
@@ -345,12 +345,8 @@ async function branchForChange(db: Db | Tx, ctx: AccessContext, branchId: string
       )
     : { rows: [] };
   const row = r.rows[0];
-  if (!row) {
-    if (!roleAllows(ctx.role, 'network.hours.manage')) {
-      deny('FORBIDDEN', { action, object: { type: 'branch', id: isUuidLike(branchId) ? branchId : null }, branchId: null, cityId: null });
-    }
-    throw notFound();
-  }
+  // Несуществующий – 404 до проверки роли, как чужой (ревизия сети, commands.ts).
+  if (!row) deny('NOT_FOUND', { action, object: { type: 'branch', id: isUuidLike(branchId) ? branchId : null }, branchId: null, cityId: null });
   const d = { action, object: { type: 'branch' as const, id: row.id }, branchId: row.id, cityId: row.city_id };
   if (!can(ctx, 'network.view', { branchId: row.id })) deny('NOT_FOUND', d);
   if (!can(ctx, 'network.hours.manage', { branchId: row.id })) deny('FORBIDDEN', d);

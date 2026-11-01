@@ -28,7 +28,10 @@ export interface CardProps {
   rowVersion?: number;
   /** blocked – удалить и архивировать нельзя (системное значение), текст – почему. */
   remove?: { archived: boolean; archivePath?: string; restorePath?: string; blocked?: string; versioned?: boolean; what: string };
-  history?: { objectType: string; objectId: string; timezone?: string };
+  /** omit – ключи, которых нет в истории (ПДн без права client.view.full). */
+  history?: { objectType: string; objectId: string; timezone?: string; omit?: string[] };
+  /** Только история: fields – подписи полей в ней, форма не рисуется (данные показывает страница). */
+  historyOnly?: boolean;
 }
 
 type Hours = { weekday: number; open: string | null; close: string | null };
@@ -53,6 +56,7 @@ function show(f: CardField | undefined, v: unknown): string {
   if (v === null || v === undefined || v === '') return '–';
   if (f?.kind === 'weekly') return hoursText(v);
   if (typeof v === 'boolean') return v ? 'Да' : 'Нет';
+  if (Array.isArray(v)) return v.length ? v.map((x) => f?.labels?.[String(x)] ?? String(x)).join(', ') : '–';
   const opt = f?.options?.find((o) => o.value === String(v));
   if (opt) return opt.label;
   if (f?.labels?.[String(v)]) return f.labels[String(v)]!;
@@ -189,7 +193,8 @@ interface AuditView {
 
 const ACTION_LABEL: Record<string, string> = {
   created: 'Создание', updated: 'Изменение', archived: 'В архив', status_changed: 'Смена статуса', hours_changed: 'Изменение графика',
-  changed: 'Изменение',
+  changed: 'Изменение', blocked: 'Блокировка', unblocked: 'Разблокировка', contacts_changed: 'Изменение контактов',
+  role_changed: 'Смена роли', scope_changed: 'Смена назначений',
 };
 const REASON_LABEL: Record<string, string> = { create: 'Создание', update: 'Изменение', archive: 'В архив', restore: 'Из архива' };
 
@@ -229,13 +234,14 @@ function History({ h, fields, reloadKey }: { h: NonNullable<CardProps['history']
       {items.length > 0 && (
         <ol class="yc-history">
           {items.map((e) => {
-            const keys = Object.keys({ ...(e.before ?? {}), ...(e.after ?? {}) });
+            const keys = Object.keys({ ...(e.before ?? {}), ...(e.after ?? {}) }).filter((k) => !h.omit?.includes(k));
             return (
               <li class="yc-history__item" key={e.id}>
                 <p class="yc-history__head">
                   <strong>{title(e)}</strong> · {fmt.format(new Date(e.at))} ·{' '}
                   {e.actor ? `${e.actor.name}${e.actor.role ? ` (${ROLE_LABEL[e.actor.role]})` : ''}` : 'Система'}
                 </p>
+                {e.reason && !REASON_LABEL[e.reason] && <p class="yc-history__reason">Причина: {e.reason}</p>}
                 {keys.length > 0 && (
                   <ul class="yc-history__changes">
                     {keys.map((k) => {
@@ -352,7 +358,7 @@ export default function EntityCard(props: CardProps) {
 
   return (
     <>
-      <section class="yc-panel" aria-label="Карточка">
+      {!props.historyOnly && <section class="yc-panel" aria-label="Карточка">
         <form class="yc-form yc-form--wide" ref={form} data-guard={save ? '' : undefined} novalidate onSubmit={onSubmit}>
           {fields.map((f) => (
             <Field key={f.name} f={save ? f : { ...f, readOnly: true }} value={props.values[f.name]} error={errors[f.name]} />
@@ -368,7 +374,7 @@ export default function EntityCard(props: CardProps) {
             </div>
           )}
         </form>
-      </section>
+      </section>}
 
       {remove && (
         <section class="yc-panel" aria-labelledby="remove-title">

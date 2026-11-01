@@ -191,7 +191,7 @@ describe('права и аудит', () => {
     const e = await fails(create({ resourceType: 'vr_seat', name: 'x', priority: 5 }, director), 'FORBIDDEN');
     expect(tariffDenialOf(e)).toMatchObject({ action: 'tariff.created', branchId: ids.arbat, reason: 'FORBIDDEN: tariff.manage' });
     await fails(tx((t) => archiveTariff(t, ctx('admin', [ids.arbat!]), ids.pc!, meta(owner), clock)), 'FORBIDDEN');
-    await fails(tx((t) => archiveTariff(t, director, randomUUID(), meta(director), clock)), 'FORBIDDEN');
+    await fails(tx((t) => archiveTariff(t, director, randomUUID(), meta(director), clock)), 'NOT_FOUND'); // несуществующий – 404 до роли
     await fails(create({ branchId: randomUUID() }), 'NOT_FOUND');
     await fails(create({ resourceType: 'нет-такого', name: 'x', priority: 7 }), 'VALIDATION_FAILED');
   });

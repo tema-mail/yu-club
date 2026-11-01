@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Выкладка тест-стенда yu-club с мака (S0-19): код из git HEAD → $ROOT/src на сервере, сборка образа API,
+# Выкладка тест-стенда yu-club с мака (S0-19): код из git HEAD → $ROOT/src на сервере, сборка образов API и CRM,
 # Postgres (роли – deploy/initdb), миграции под yu_owner, запуск API, свой блок в общем Caddy
 # (копия → замена своего блока → validate → reload; соседи проверяются до и после),
 # бэкап по расписанию 04:40 UTC (backup.sh, затем restore-check.sh), проверка снаружи.
@@ -17,16 +17,34 @@ DOMAIN=${YU_DOMAIN:-yu-club.45.12.72.227.nip.io}
 ROOT=${YU_ROOT:-/opt/yu-club}
 CADDY=${YU_CADDY:-/opt/dzenbot/Caddyfile}
 CADDY_CT=${YU_CADDY_CT:-dzenbot-caddy-1}
-NEIGHBOURS=${YU_NEIGHBOURS:-"https://gaz-mag.ru/ https://lupa.45.12.72.227.nip.io/login"}
+CRM_DOMAIN=${YU_CRM_DOMAIN:-yu-crm.45.12.72.227.nip.io}
+NEIGHBOURS=${YU_NEIGHBOURS:-"https://gaz-mag.ru/ https://lupa.45.12.72.227.nip.io/login https://teyes.45.12.72.227.nip.io/"}
 cd "$(dirname "$0")/.."
 SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$HOST")
+
+RESET=0
+case "${1:-}" in
+  --reset-stage) RESET=1 ;;
+  "") ;;
+  *) echo "Неизвестный аргумент: $1 (есть только --reset-stage)"; exit 1 ;;
+esac
 
 [ -z "$(git status --porcelain -- apps db deploy package.json package-lock.json .dockerignore)" ] || { echo "Есть незакоммиченные правки – сначала коммит"; exit 1; }
 REV=$(git rev-parse --short HEAD)
 echo "→ выкладываю $REV на $DOMAIN"
+# --reset-stage (ADR 0001): база стенда пересоздаётся – бэкап → drop/create → миграции с нуля → deploy/seed-stand.sh.
+# Только на сервере с APP_ENV=stage; на проде миграции идут лишь по порядку.
+if [ "$RESET" = 1 ]; then
+  "${SSH[@]}" "grep -qx 'APP_ENV=stage' $ROOT/.env" || { echo "!!! --reset-stage только для APP_ENV=stage в $ROOT/.env – отказ"; exit 1; }
+  echo "→ режим --reset-stage: база стенда будет пересоздана"
+fi
 
 # 1. код
 git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/backups; chmod 700 $ROOT/backups; rm -rf $ROOT/src.new; mkdir $ROOT/src.new; tar -x -C $ROOT/src.new; rm -rf $ROOT/src.old; [ -d $ROOT/src ] && mv $ROOT/src $ROOT/src.old; mv $ROOT/src.new $ROOT/src; echo $REV > $ROOT/src/REVISION"
+# CRM собирается здесь (дерево чистое = HEAD): на стенде astro build не помещается в память
+PATH="$HOME/.local/node/bin:$PATH" npm run -s build -w @yu/crm >/dev/null
+tar -C apps/crm -cf - dist | "${SSH[@]}" "set -e; mkdir -p $ROOT/src/apps/crm; tar -x -C $ROOT/src/apps/crm"
+echo "→ CRM собрана на маке и отправлена"
 
 # 2. окружение – один раз, пароли генерируются на сервере
 "${SSH[@]}" "set -e; test -f $ROOT/.env || { umask 077; printf 'APP_ENV=stage\nPUBLIC_SITE_URL=https://%s\nPOSTGRES_PASSWORD=%s\nYU_OWNER_PASSWORD=%s\nYU_APP_PASSWORD=%s\nDATA_DIR=%s/data\nBACKUP_DIR=%s/backups\nBACKUP_RETENTION_DAYS=14\nCADDY_NETWORK=dzenbot_default\n' $DOMAIN \$(openssl rand -hex 24) \$(openssl rand -hex 24) \$(openssl rand -hex 24) $ROOT $ROOT > $ROOT/.env; echo '→ создан $ROOT/.env (600)'; }; chmod 600 $ROOT/.env"
@@ -38,13 +56,33 @@ git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/b
 set -euo pipefail
 cd $ROOT/src/deploy
 DC=(docker compose --env-file $ROOT/.env -f compose.yml)
-GIT_SHA=$REV "\${DC[@]}" build --pull -q api
-"\${DC[@]}" up -d --wait postgres
-"\${DC[@]}" run --rm -T migrate </dev/null   # без stdin: иначе run съест остаток этого скрипта
-GIT_SHA=$REV "\${DC[@]}" up -d --wait api
+GIT_SHA=$REV "\${DC[@]}" build --pull -q api </dev/null   # по одному образу – меньше пик памяти
+"\${DC[@]}" build --pull -q crm </dev/null
+"\${DC[@]}" up -d --wait postgres </dev/null
+if [ "$RESET" = 1 ]; then
+  grep -qx 'APP_ENV=stage' $ROOT/.env || { echo "!!! не stage – отказ"; exit 1; }
+  BACKUP_DB=yu_club bash $ROOT/src/deploy/backup.sh </dev/null
+  "\${DC[@]}" stop crm api </dev/null
+  docker exec yu-club-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
+    -c "DROP DATABASE IF EXISTS yu_club WITH (FORCE)" -c "CREATE DATABASE yu_club OWNER yu_owner" \
+    -c "REVOKE ALL ON DATABASE yu_club FROM PUBLIC"
+  echo "→ база yu_club пересоздана (бэкап выше)"
+fi
+# без stdin: иначе run съест остаток этого скрипта
+if ! OUT=\$("\${DC[@]}" run --rm -T migrate </dev/null 2>&1); then
+  echo "\$OUT" | tail -5
+  if echo "\$OUT" | grep -q 'порядок нарушен'; then
+    echo "!!! порядок миграций на стенде нарушен (миграция из параллельной ветки) – нужен deploy/deploy.sh --reset-stage"
+  fi
+  exit 1
+fi
+echo "\$OUT" | grep -E 'Применены|Нечего' || true
+GIT_SHA=$REV "\${DC[@]}" up -d --wait api crm </dev/null
 docker image prune -f --filter label=project=yu-club >/dev/null
 echo "→ контейнеры: \$(docker ps --filter name=yu-club- --format '{{.Names}} {{.Status}}' | tr '\n' ';')"
 REMOTE
+# после пересоздания – засев: Владелец с текущим паролем с мака (без обязательной смены), демо-данные
+[ "$RESET" = 1 ] && YU_OWNER_READY=1 deploy/seed-stand.sh
 
 # 4. общий Caddy – только свой блок
 codes() { for u in $NEIGHBOURS; do printf '%s ' "$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$u")"; done; }
@@ -77,4 +115,6 @@ AFTER=$(codes); echo "→ соседи после: $AFTER"
 HEALTH=$(curl -sk -m 20 "https://$DOMAIN/health" || true)
 printf '%s https://%s/health %s\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$DOMAIN/health")" "$DOMAIN" "$HEALTH"
 printf '%s http://%s/health → %s\n' "$(curl -s -o /dev/null -m 20 -w '%{http_code}' "http://$DOMAIN/health")" "$DOMAIN" "$(curl -s -o /dev/null -m 20 -w '%{redirect_url}' "http://$DOMAIN/health")"
-case "$HEALTH" in *"\"version\":\"$REV\""*) echo "→ готово: https://$DOMAIN (ревизия $REV)";; *) echo "!!! /health не отдал версию $REV"; exit 1;; esac
+printf '%s https://%s/login\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$CRM_DOMAIN/login")" "$CRM_DOMAIN"
+printf '%s http://%s/login → %s\n' "$(curl -s -o /dev/null -m 20 -w '%{http_code}' "http://$CRM_DOMAIN/login")" "$CRM_DOMAIN" "$(curl -s -o /dev/null -m 20 -w '%{redirect_url}' "http://$CRM_DOMAIN/login")"
+case "$HEALTH" in *"\"version\":\"$REV\""*) echo "→ готово: https://$DOMAIN, CRM https://$CRM_DOMAIN (ревизия $REV)";; *) echo "!!! /health не отдал версию $REV"; exit 1;; esac

@@ -2,11 +2,13 @@
 // Повторяет контракты: K12 (вход, сессия, пароль), K11 №1 GET /me, K11 №18 сеть (список и карточка филиала),
 // K1 (роли и зоны: объект вне зоны – 404 с телом, как у несуществующего), ADR 0002 (тело ошибки).
 // S0-15: города и филиалы (создание, правка с rowVersion, архив), хронология аудита (K2), справочники –
-// точно по apps/api/src/modules/dictionaries/routes.ts.
+// точно по apps/api/src/modules/dictionaries/routes.ts. S1-25: поиск и карточка клиента – по clients/routes.crm.ts.
+// S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts).
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
 
 type Role = 'owner' | 'director' | 'admin';
 
@@ -67,15 +69,13 @@ const ACTIONS: Record<Role, string[]> = {
   ],
 };
 
-interface MockStaff {
-  id: string; email: string; password: string; firstName: string; lastName: string; role: Role;
-  cityIds: string[]; branchIds: string[]; mustChangePassword?: boolean;
-}
+type MockStaff = StaffRecord;
 
 const staff: MockStaff[] = [
   { id: 's-owner', email: 'owner@yu.test', password: MOCK_PASSWORD, firstName: 'Ольга', lastName: 'Владимирова', role: 'owner', cityIds: [], branchIds: [] },
   { id: 's-director', email: 'director@yu.test', password: MOCK_PASSWORD, firstName: 'Денис', lastName: 'Директоров', role: 'director', cityIds: ['c-nsk'], branchIds: [] },
-  { id: 's-admin', email: 'admin@yu.test', password: MOCK_PASSWORD, firstName: 'Анна', lastName: 'Админова', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'] },
+  { id: 's-admin', email: 'admin@yu.test', password: MOCK_PASSWORD, firstName: 'Анна', lastName: 'Админова', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], phone: '+79130000001' },
+  { id: 's-admin-tsk', email: 'tomsk@yu.test', password: MOCK_PASSWORD, firstName: 'Тимур', lastName: 'Томский', role: 'admin', cityIds: [], branchIds: ['b-tsk-lenina'] },
   // После засева/сброса: сервер пускает только в session, password, logout (K12).
   { id: 's-fresh', email: 'fresh@yu.test', password: MOCK_PASSWORD, firstName: 'Фёдор', lastName: 'Новиков', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], mustChangePassword: true },
 ];
@@ -116,9 +116,10 @@ function currentStaff(req: FastifyRequest): MockStaff | null {
 
 interface AuditEvent {
   id: string; at: string; objectType: string; objectId: string; action: string;
-  actor: { id: string; name: string; role: Role }; before: Record<string, unknown>; after: Record<string, unknown>; reason: string | null;
+  actor: { id: string; name: string; role: Role } | null; before: Record<string, unknown>; after: Record<string, unknown>; reason: string | null;
 }
 let audit: AuditEvent[] = [];
+// Засев аудита клиентов (seedClientAudit) – в buildMock и /__test/reset: данные клиентов объявлены ниже.
 
 function diff(before: Record<string, unknown>, after: Record<string, unknown>) {
   const b: Record<string, unknown> = {};
@@ -356,8 +357,13 @@ function registerNetwork(app: FastifyInstance, P: string) {
     if (!can(s, 'audit.view') && !can(s, 'audit.view.own')) return forbidden(reply);
     if (q.objectType === 'branch' && !access(s).branchIds.includes(q.objectId ?? '')) return notFound(reply);
     if (q.objectType === 'city' && !zoneCityIds(s).includes(q.objectId ?? '')) return notFound(reply);
+    if (q.objectType === 'staff' && !staffTimelineVisible({ access, can }, s, q.objectId ?? '')) return notFound(reply);
+    if (q.objectType === 'client') {
+      const c = clients.find((x) => x.id === q.objectId);
+      if (!c || !clientInZone(s, c)) return notFound(reply);
+    }
     const all = audit
-      .filter((e) => e.objectType === q.objectType && e.objectId === q.objectId && (can(s, 'audit.view') || e.actor.id === s.id))
+      .filter((e) => e.objectType === q.objectType && e.objectId === q.objectId && (can(s, 'audit.view') || e.actor?.id === s.id))
       .reverse();
     return page(all, q);
   });
@@ -490,9 +496,122 @@ function registerDictionaries(app: FastifyInstance, P: string) {
   }
 }
 
+// ---- клиенты: точно по apps/api/src/modules/clients/routes.crm.ts (K11 №15–16, S1-11)
+// Связь клиент – филиал (брони, S1-07) в моке – поле links: так не-Владелец видит клиентов своей зоны.
+// Пока бронирования нет, настоящий бэкенд связей не даёт (noBranchLinks) – находит только по точному телефону.
+
+const CLIENT_STATUSES = ['guest', 'active', 'restricted', 'blocked', 'deletion_requested', 'anonymized'] as const;
+type ClientStatus = (typeof CLIENT_STATUSES)[number];
+interface MockClient {
+  id: string; status: ClientStatus; firstName: string | null; lastName: string | null; phoneE164: string | null;
+  email: string | null; birthDate: string | null; statusReason: string | null; statusUntil: string | null;
+  registrationSource: string | null; phoneVerifiedAt: string | null; registeredAt: string | null; createdAt: string;
+  lastLoginAt: string | null; rowVersion: number; links: string[];
+}
+
+const clientId = (n: number) => `c0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+function seedClients(): MockClient[] {
+  const base = { email: null, birthDate: null, statusReason: null, statusUntil: null, registrationSource: null, lastLoginAt: null, rowVersion: 1 };
+  return [
+    { ...base, id: clientId(1), status: 'active', firstName: 'Ольга', lastName: 'Смирнова', phoneE164: '+79131234567', email: 'olga@yu.test',
+      birthDate: '1995-04-12', registrationSource: 'site', phoneVerifiedAt: '2026-10-01T05:00:00.000Z', registeredAt: '2026-10-01T05:00:00.000Z',
+      createdAt: '2026-09-28T09:30:00.000Z', lastLoginAt: '2026-10-30T12:15:00.000Z', rowVersion: 3, links: ['b-nsk-krasny'] },
+    { ...base, id: clientId(2), status: 'guest', firstName: 'Иван', lastName: 'Петров', phoneE164: '+79139876543',
+      phoneVerifiedAt: null, registeredAt: null, createdAt: '2026-10-15T11:00:00.000Z', links: ['b-nsk-krasny'] },
+    { ...base, id: clientId(3), status: 'blocked', firstName: 'Мария', lastName: 'Кузнецова', phoneE164: '+79230001122', email: 'maria@yu.test',
+      statusReason: 'Нарушение правил клуба', registrationSource: 'site', phoneVerifiedAt: '2026-08-01T05:00:00.000Z',
+      registeredAt: '2026-08-01T05:00:00.000Z', createdAt: '2026-08-01T05:00:00.000Z', links: ['b-tsk-lenina'] },
+    { ...base, id: clientId(4), status: 'anonymized', firstName: null, lastName: null, phoneE164: null,
+      phoneVerifiedAt: null, registeredAt: null, createdAt: '2026-01-10T05:00:00.000Z', links: ['b-nsk-krasny'] },
+  ];
+}
+let clients = seedClients();
+
+// Аудит клиента пишется уже маскированным (K2 redact: PD_KEYS) – так его отдаёт и хронология.
+function seedClientAudit(): AuditEvent[] {
+  const sys = null as unknown as AuditEvent['actor'];
+  return [
+    { id: randomUUID(), at: '2026-09-28T09:30:00.000Z', objectType: 'client', objectId: clientId(1), action: 'client.created', actor: sys,
+      before: {}, after: { status: 'guest', phoneE164: '+7******4567', firstName: 'О***', lastName: 'С***' }, reason: null },
+    { id: randomUUID(), at: '2026-10-01T05:00:00.000Z', objectType: 'client', objectId: clientId(1), action: 'client.status_changed', actor: sys,
+      before: { status: 'guest' }, after: { status: 'active' }, reason: null },
+  ];
+}
+
+const maskPhone = (e164: string | null) =>
+  !e164 ? '' : e164.startsWith('+7') && e164.length === 12 ? `+7 ••• ••• ••-${e164.slice(-2)}` : `${e164.slice(0, 2)} ••• ${e164.slice(-2)}`;
+const clientRef = (c: MockClient) => ({ id: c.id, status: c.status, firstName: c.firstName, lastName: c.lastName, phoneMasked: maskPhone(c.phoneE164) });
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Упрощённый normalizePhone (clients/index.ts): РФ по умолчанию, неверный – null. */
+function normalizePhone(t: string): string | null {
+  const raw = t.trim().replace(/[\s().-]/g, '');
+  const digits = raw.startsWith('+') ? raw.slice(1) : raw;
+  if (!/^\d+$/.test(digits)) return null;
+  if (raw.startsWith('+')) return /^[1-9]\d{7,14}$/.test(digits) && (!digits.startsWith('7') || digits.length === 11) ? `+${digits}` : null;
+  if (digits.length === 11 && (digits[0] === '8' || digits[0] === '7')) return `+7${digits.slice(1)}`;
+  return digits.length === 10 ? `+7${digits}` : null;
+}
+
+/** Клиент в зоне сотрудника: Владелец – все, остальные – по связи с филиалами зоны. */
+const clientInZone = (s: MockStaff, c: MockClient) => access(s).network || c.links.some((b) => access(s).branchIds.includes(b));
+
+function registerClients(app: FastifyInstance, P: string) {
+  app.get(`${P}/clients`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    if (!can(s, 'client.view.basic')) return fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав', { action: 'client.view.basic' });
+    const q = req.query as { q?: string; branchId?: string; status?: string; cursor?: string; limit?: string };
+    const t = (q.q ?? '').trim();
+    const status = (q.status ?? '').split(',').filter((x) => x !== '');
+    const limit = q.limit === undefined ? 50 : Number(q.limit);
+    if ((q.q ?? '').length > 100 || status.some((x) => !(CLIENT_STATUSES as readonly string[]).includes(x)) || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return invalid(reply, [{ path: 'query', message: 'Неверные данные запроса' }]);
+    }
+    let match: (c: MockClient) => boolean = () => true;
+    let byPhone = false;
+    if (UUID.test(t)) match = (c) => c.id === t.toLowerCase();
+    else if (/^[+\d\s().-]+$/.test(t)) {
+      const digits = t.replace(/\D/g, '');
+      if (digits.length < 4) return fail(reply, 400, 'VALIDATION_FAILED', 'Для поиска по телефону нужно от 4 цифр', { field: 'q' });
+      const e164 = digits.length === 4 ? null : normalizePhone(t);
+      byPhone = e164 !== null;
+      match = digits.length === 4 ? (c) => (c.phoneE164 ?? '').endsWith(digits) : e164 ? (c) => c.phoneE164 === e164 : (c) => (c.phoneE164 ?? '').includes(digits);
+    } else if (t.includes('@')) match = (c) => c.email === t.toLowerCase();
+    else if (t) {
+      const words = t.toLowerCase().split(/\s+/).slice(0, 3);
+      match = (c) => words.every((w) => (c.lastName ?? '').toLowerCase().startsWith(w) || (c.firstName ?? '').toLowerCase().startsWith(w));
+    }
+    const zone = access(s);
+    if (q.branchId && !zone.branchIds.includes(q.branchId)) return notFound(reply);
+    const key = (c: MockClient) => `${(c.lastName ?? '').toLowerCase()}\u0000${(c.firstName ?? '').toLowerCase()}\u0000${c.id}`;
+    const all = clients
+      .filter((c) => match(c) && (byPhone || clientInZone(s, c)) && (!q.branchId || c.links.includes(q.branchId)))
+      .filter((c) => (status.length ? status.includes(c.status) : c.status !== 'anonymized'))
+      .sort((a, b) => (key(a) < key(b) ? -1 : 1))
+      .map((c) => ({ ...clientRef(c), lastVisitAt: null, lastBranchId: null }));
+    return page(all, { ...q, limit: String(limit) });
+  });
+
+  app.get(`${P}/clients/:clientId`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    if (!can(s, 'client.view.basic')) return fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав', { action: 'client.view.basic' });
+    const c = clients.find((x) => x.id === (req.params as { clientId: string }).clientId);
+    if (!c || !clientInZone(s, c)) return notFound(reply);
+    return {
+      ...clientRef(c), isGuest: c.status === 'guest', phoneVerified: c.phoneVerifiedAt !== null, registeredAt: c.registeredAt,
+      full: can(s, 'client.view.full')
+        ? { phoneE164: c.phoneE164, email: c.email, birthDate: c.birthDate, statusReason: c.statusReason, statusUntil: c.statusUntil,
+            registrationSource: c.registrationSource, createdAt: c.createdAt, lastLoginAt: c.lastLoginAt }
+        : null,
+      rowVersion: c.rowVersion,
+    };
+  });
+}
+
 export function buildMock() {
   const app = Fastify({ logger: false });
   const P = '/api/crm/v1';
+  audit = seedClientAudit();
 
   app.addHook('preHandler', async (req, reply) => {
     if (req.url.startsWith(`${P}/auth/login`) || req.url === '/__test/reset') return;
@@ -509,7 +628,7 @@ export function buildMock() {
     const email = String(body.email ?? '').trim().toLowerCase();
     const s = staff.find((x) => x.email === email);
     // K12: неверный email и неверный пароль – один и тот же ответ.
-    if (!s || s.password !== body.password) return fail(reply, 401, 'INVALID_CREDENTIALS', 'Неверная почта или пароль');
+    if (!s || s.password !== body.password || s.status === 'blocked') return fail(reply, 401, 'INVALID_CREDENTIALS', 'Неверная почта или пароль');
     const token = randomBytes(32).toString('base64url');
     sessions.set(token, s.id);
     reply.header('set-cookie', `yu_staff=${token}; HttpOnly; SameSite=Strict; Path=/`);
@@ -547,13 +666,20 @@ export function buildMock() {
   app.post('/__test/reset', async () => {
     cities = seedCities();
     branches = seedBranches(cities);
-    audit = [];
     dict = seedDictionaries();
+    clients = seedClients();
+    audit = seedClientAudit();
+    resetStaff();
     return { ok: true };
   });
 
   registerNetwork(app, P);
   registerDictionaries(app, P);
+  registerClients(app, P);
+  registerStaff(app, P, {
+    staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
+    endSessions: (id) => { for (const [t, sid] of sessions) if (sid === id) sessions.delete(t); },
+  });
   return app;
 }
 

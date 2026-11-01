@@ -3,9 +3,9 @@
 // authenticate() – общий вход для всех CRM-маршрутов: кука → сессия → loadAccess на каждый запрос (K1).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { writeDenied, type AuditRequestMeta } from '../../core/audit.ts';
+import { AUDIT_OBJECT_TYPES, objectTimeline, writeDenied, type AuditRequestMeta } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { actionsOf, assertCanManageStaff, loadAccess, noNetwork, type AccessContext, type NetworkLookup, type StaffOp } from '../../core/permissions.ts';
+import { actionsOf, assertCan, assertCanManageStaff, loadAccess, noNetwork, roleAllows, type AccessContext, type NetworkLookup, type StaffOp } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import {
   changePassword,
@@ -153,6 +153,82 @@ export async function staffMeRoutes(app: FastifyInstance, deps: StaffDeps): Prom
       actions: actionsOf(access.role),
     };
   });
+
+  // Хронология объекта (K2 objectTimeline). В K11 маршрута нет – формат взят из мока CRM (S0-15).
+  app.get('/audit/timeline', async (request, reply) => {
+    const { access } = await authenticate(deps, request, reply);
+    const q = parse(timelineQuery, request.query);
+    const full = roleAllows(access.role, 'audit.view');
+    if (!full && !roleAllows(access.role, 'audit.view.own')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав');
+    await assertTimelineObject(deps, access, q.objectType, q.objectId);
+    const page = await objectTimeline(
+      deps.pool,
+      { objectType: q.objectType, objectId: q.objectId, ...(full ? {} : { onlyActorId: access.actor.staffId }) },
+      { limit: q.limit, ...(q.cursor ? { cursor: q.cursor } : {}) },
+    );
+    const staffIds = [...new Set(page.items.flatMap((e) => (e.actorType === 'staff' && e.actorId ? [e.actorId] : [])))];
+    const names = new Map<string, string>();
+    if (staffIds.length) {
+      const r = await deps.pool.query<{ id: string; name: string }>(
+        "SELECT id, first_name || ' ' || last_name AS name FROM app.staff WHERE id = ANY($1::uuid[])",
+        [staffIds],
+      );
+      for (const x of r.rows) names.set(x.id, x.name);
+    }
+    reply.header('cache-control', 'no-store');
+    return {
+      items: page.items.map((e) => ({
+        id: e.id,
+        at: e.at.toISOString(),
+        objectType: e.objectType,
+        objectId: e.objectId,
+        action: e.action,
+        result: e.result,
+        actor: {
+          type: e.actorType,
+          id: e.actorId,
+          name: e.actorType === 'staff' ? (names.get(e.actorId ?? '') ?? 'Сотрудник') : ACTOR_NAMES[e.actorType],
+          role: e.actorRole,
+        },
+        before: e.before ?? {},
+        after: e.after ?? {},
+        reason: e.reason,
+      })),
+      nextCursor: page.nextCursor,
+    };
+  });
+}
+
+const ACTOR_NAMES = { client: 'Клиент', system: 'Система', anonymous: 'Посетитель', staff: 'Сотрудник' } as const;
+
+const timelineQuery = z.object({
+  objectType: z.enum(AUDIT_OBJECT_TYPES),
+  objectId: z.string().min(1).max(200),
+  cursor: z.string().regex(/^\d{1,18}$/).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+/** Видит ли сотрудник объект хронологии. Вне зоны – NOT_FOUND (как несуществующий), сеть у не-Владельца – 403. */
+async function assertTimelineObject(deps: StaffDeps, ctx: AccessContext, type: (typeof AUDIT_OBJECT_TYPES)[number], id: string) {
+  if (ctx.network) return;
+  if (type === 'branch') return assertCan(ctx, 'audit.view.own', { branchId: id });
+  if (type === 'city') return assertCan(ctx, 'audit.view.own', { cityId: id });
+  if (type === 'dictionary' || type === 'setting') return assertCan(ctx, 'audit.view.own', { network: true });
+  if (type === 'staff') {
+    if (id === ctx.actor.staffId) return;
+    if (!roleAllows(ctx.role, 'staff.view') || !z.uuid().safeParse(id).success) throw new AppError('NOT_FOUND', 404, 'Не найдено');
+    const a = await deps.pool.query<{ city_id: string | null; branch_id: string | null }>(
+      'SELECT city_id, branch_id FROM app.staff_assignments WHERE staff_id = $1 AND revoked_at IS NULL',
+      [id],
+    );
+    const inZone =
+      a.rows.length > 0 &&
+      a.rows.every((x) => (x.branch_id ? ctx.branchIds.has(x.branch_id) : x.city_id ? ctx.cityIds.has(x.city_id) : false));
+    if (!inZone) throw new AppError('NOT_FOUND', 404, 'Не найдено');
+    return;
+  }
+  // Брони, ресурсы и прочее – модули Э1 дадут свою проверку объекта; до тех пор – только Владельцу.
+  throw new AppError('NOT_FOUND', 404, 'Не найдено');
 }
 
 export async function staffAuthRoutes(app: FastifyInstance, deps: StaffDeps): Promise<void> {

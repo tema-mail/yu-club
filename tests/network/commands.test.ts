@@ -22,6 +22,7 @@ import {
   type BranchCard,
   type CityInfo,
 } from '../../apps/api/src/modules/network/commands.ts';
+import { setSetting } from '../../apps/api/src/core/settings.ts';
 import { getBranch, openIntervals } from '../../apps/api/src/modules/network/index.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -98,6 +99,19 @@ describe('Владелец создаёт город и филиал', () => {
     expect(h.rows.every((r) => r.o === '10:00' && r.c === '22:00' && r.f === '2026-11-14')).toBe(true);
   });
 
+  it('часы нового филиала – из настройки branch.default_hours города (K7), без неё – системные 10–22', async () => {
+    await tx((t) =>
+      setSetting(t, owner, { key: 'branch.default_hours', scope: { cityId: nsk.id }, value: { open: '09:00', close: '21:00' }, validFrom: clock.now() }, meta(owner), clock),
+    );
+    const b = await tx((t) => createBranch(t, owner, { cityId: nsk.id, slug: 'hours', name: 'Часы', address: 'a' }, meta(owner), clock));
+    const h = await db.client.query(
+      `SELECT DISTINCT to_char(open_time,'HH24:MI') o, to_char(close_time,'HH24:MI') c FROM app.branch_weekly_hours WHERE branch_id = $1`,
+      [b.id],
+    );
+    expect(h.rows).toEqual([{ o: '09:00', c: '21:00' }]);
+    await tx((t) => archiveBranch(t, owner, b.id, { rowVersion: 1 }, meta(owner), clock)); // не мешать спискам ниже
+  });
+
   it('аудит city.created и branch.created с автором и филиалом', async () => {
     const a = await db.client.query(`SELECT action, actor_id, branch_id, city_id, after FROM journal.audit_events WHERE object_id = $1`, [krasny.id]);
     expect(a.rows).toHaveLength(1);
@@ -167,14 +181,14 @@ describe('статус, архив, зона', () => {
   });
 
   it('архив вместо удаления: город с филиалами не архивируется; филиал – в архив, строка остаётся; архивный не редактируется', async () => {
-    await fails(tx((t) => archiveCity(t, owner, msk.id, meta(owner), clock)), 'CITY_HAS_ACTIVE_BRANCHES');
+    await fails(tx((t) => archiveCity(t, owner, msk.id, { rowVersion: 1 }, meta(owner), clock)), 'CITY_HAS_ACTIVE_BRANCHES');
     const dir = ctx('director', { cityIds: [msk.id], branchIds: [arbat.id] });
     await fails(tx((t) => archiveBranch(t, dir, arbat.id, { rowVersion: 1 }, meta(dir), clock)), 'FORBIDDEN');
     const b = await tx((t) => archiveBranch(t, owner, arbat.id, { rowVersion: 1 }, meta(owner), clock));
     expect(b).toMatchObject({ status: 'archived', archivedAt: clock.now() });
     expect((await getBranch(pool, arbat.id))?.status).toBe('archived');
     await fails(tx((t) => updateBranch(t, owner, arbat.id, { rowVersion: b.rowVersion, name: 'X' }, meta(owner), clock)), 'BRANCH_ARCHIVED');
-    const c = await tx((t) => archiveCity(t, owner, msk.id, meta(owner), clock));
+    const c = await tx((t) => archiveCity(t, owner, msk.id, { rowVersion: 1 }, meta(owner), clock));
     expect(c.status).toBe('archived');
     await fails(tx((t) => createBranch(t, owner, { cityId: msk.id, slug: 'new', name: 'N', address: 'a' }, meta(owner), clock)), 'CITY_ARCHIVED');
     await expect(pool.query('DELETE FROM app.branches WHERE id = $1', [arbat.id])).rejects.toMatchObject({ code: '42501' });
@@ -217,7 +231,7 @@ describe('списки по зоне и курсору', () => {
     expect(p2.nextCursor).toBeNull();
     expect([...p1.items, ...p2.items].map((b) => b.slug)).toEqual(['akadem', 'krasny']);
     const all = await listBranches(pool, owner, { includeArchived: 'true' });
-    expect(all.items.map((b) => b.slug)).toEqual(['arbat', 'akadem', 'krasny']);
+    expect(all.items.map((b) => b.slug)).toEqual(['arbat', 'akadem', 'hours', 'krasny']);
   });
 
   it('Администратор видит только свой филиал и свой город; мусорный курсор – VALIDATION_FAILED', async () => {

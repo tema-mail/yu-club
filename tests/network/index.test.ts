@@ -92,6 +92,25 @@ describe('0008: схема сети', () => {
   });
 });
 
+describe('0011: связи с сетью', () => {
+  it('назначение, счёт и проводка на несуществующий город/филиал – 23503', async () => {
+    const ghost = '11111111-1111-4111-8111-111111111111';
+    const st = await db.client.query<{ id: string }>(
+      `INSERT INTO app.staff (first_name, last_name, email, role, password_hash) VALUES ('А', 'Б', 'fk@yu.test', 'admin', 'x') RETURNING id`,
+    );
+    const sid = st.rows[0]!.id;
+    for (const [col, kind] of [['branch_id', 'branch'], ['city_id', 'city']]) {
+      await expect(
+        db.client.query(`INSERT INTO app.staff_assignments (staff_id, scope_type, ${col}, valid_from, created_by) VALUES ($1, $2, $3, '2026-01-01', $1)`, [sid, kind, ghost]),
+      ).rejects.toMatchObject({ code: '23503' });
+    }
+    await expect(
+      db.client.query(`INSERT INTO app.ledger_accounts (kind, unit, branch_id, owner_type, owner_id) VALUES ('cash_branch', 'RUB_KOP', $1, 'branch', $1)`, [ghost]),
+    ).rejects.toMatchObject({ code: '23503' });
+    await db.client.query(`INSERT INTO app.staff_assignments (staff_id, scope_type, branch_id, valid_from, created_by) VALUES ($1, 'branch', $2, '2026-01-01', $1)`, [sid, ids['nsk-1']]);
+  });
+});
+
 describe('K13: чтение', () => {
   it('getBranch: поля BranchInfo; нет или не uuid → null', async () => {
     const b = await getBranch(db.client, ids['nsk-1']!);

@@ -1,0 +1,335 @@
+/* Сайт Ю-Клуб: единственный источник стилей (S1-18).
+   Макет заказчика пока недоступен (N-03): сейчас нейтральная тёмная тема. Переделка под макет – замена значений
+   в блоке «Токены» ниже; компоненты берут цвета, шрифты, отступы и радиусы только из переменных.
+   Mobile-first: только min-width, брейкпоинты 600 / 900 / 1100. */
+
+/* ── Токены ─────────────────────────────────────────────── */
+:root {
+  /* Цвет */
+  --yu-bg: #0b0d12;
+  --yu-surface: #12161e;
+  --yu-surface-2: #1a1f2a;
+  --yu-line: rgb(255 255 255 / 0.11);
+  --yu-line-soft: rgb(255 255 255 / 0.06);
+  --yu-text: #eef1f6;
+  --yu-muted: #a7b0c0;
+  --yu-dim: #8a93a5;
+  --yu-accent: #a9e34b;
+  --yu-accent-soft: rgb(169 227 75 / 0.12);
+  --yu-on-accent: #0b0d12;
+  --yu-warn: #f2b84b;
+  --yu-warn-soft: rgb(242 184 75 / 0.12);
+
+  /* Шрифты: системный стек, пока нет шрифтов макета */
+  --yu-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --yu-font-display: var(--yu-font);
+
+  /* Кегли: 320 → 1240 px */
+  --yu-fs-xs: clamp(0.8125rem, 0.79rem + 0.11vw, 0.875rem);
+  --yu-fs-s: clamp(0.875rem, 0.85rem + 0.13vw, 0.9375rem);
+  --yu-fs-m: clamp(1rem, 0.97rem + 0.13vw, 1.0625rem);
+  --yu-fs-l: clamp(1.125rem, 1.08rem + 0.24vw, 1.3125rem);
+  --yu-fs-xl: clamp(1.375rem, 1.29rem + 0.43vw, 1.6875rem);
+  --yu-fs-2xl: clamp(1.625rem, 1.47rem + 0.76vw, 2.0625rem);
+  --yu-fs-3xl: clamp(2rem, 1.74rem + 1.3vw, 2.75rem);
+  --yu-lh-tight: 1.12;
+  --yu-lh-head: 1.2;
+  --yu-lh-body: 1.65;
+
+  /* Отступы */
+  --yu-sp-3xs: clamp(0.25rem, 0.24rem + 0.05vw, 0.3125rem);
+  --yu-sp-2xs: clamp(0.5rem, 0.48rem + 0.11vw, 0.5625rem);
+  --yu-sp-xs: clamp(0.75rem, 0.72rem + 0.16vw, 0.875rem);
+  --yu-sp-s: clamp(1rem, 0.96rem + 0.22vw, 1.125rem);
+  --yu-sp-m: clamp(1.5rem, 1.43rem + 0.33vw, 1.75rem);
+  --yu-sp-l: clamp(2rem, 1.87rem + 0.65vw, 2.5rem);
+  --yu-sp-xl: clamp(2.75rem, 2.49rem + 1.3vw, 4rem);
+
+  /* Геометрия: кнопки и поля – r-s, карточки – r-m */
+  --yu-r-s: 10px;
+  --yu-r-m: 16px;
+  --yu-gutter: 16px; /* поля 16 px на телефоне – правило владельца */
+  --yu-max: 1180px;
+  --yu-measure: 68ch;
+  --yu-tap: 44px;
+  --yu-header-h: 64px;
+  --yu-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  color-scheme: dark;
+}
+
+/* ── База ───────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--yu-bg);
+  color: var(--yu-text);
+  font-family: var(--yu-font);
+  font-size: var(--yu-fs-m);
+  line-height: var(--yu-lh-body);
+  -webkit-font-smoothing: antialiased;
+}
+img, svg { display: block; max-width: 100%; height: auto; }
+p { margin: 0 0 var(--yu-sp-s); }
+h1, h2, h3 { margin: 0; font-family: var(--yu-font-display); font-weight: 800; letter-spacing: -0.02em; text-wrap: balance; }
+h1 { font-size: var(--yu-fs-3xl); line-height: var(--yu-lh-tight); letter-spacing: -0.03em; }
+h2 { font-size: var(--yu-fs-2xl); line-height: var(--yu-lh-head); margin-block-end: var(--yu-sp-s); }
+h3 { font-size: var(--yu-fs-l); line-height: var(--yu-lh-head); margin-block-end: var(--yu-sp-2xs); }
+a { color: inherit; }
+:where(a, button, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--yu-accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.yu-skip {
+  position: absolute;
+  left: var(--yu-gutter);
+  top: -100px;
+  padding: var(--yu-sp-2xs) var(--yu-sp-s);
+  background: var(--yu-accent);
+  color: var(--yu-on-accent);
+  border-radius: var(--yu-r-s);
+  z-index: 30;
+}
+.yu-skip:focus { top: var(--yu-sp-2xs); }
+
+.yu-page {
+  width: 100%;
+  max-width: var(--yu-max);
+  margin-inline: auto;
+  padding-inline: var(--yu-gutter);
+}
+.yu-main { flex: 1 0 auto; padding-block: var(--yu-sp-l) var(--yu-sp-xl); }
+.yu-main:focus { outline: none; }
+.yu-body { max-width: var(--yu-measure); color: var(--yu-muted); text-wrap: pretty; }
+.yu-lead { max-width: var(--yu-measure); font-size: var(--yu-fs-l); line-height: 1.55; color: var(--yu-muted); }
+
+/* ── Шапка ──────────────────────────────────────────────── */
+.yu-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgb(11 13 18 / 0.92);
+  border-bottom: 1px solid var(--yu-line-soft);
+  backdrop-filter: blur(10px);
+}
+.yu-header__row {
+  display: flex;
+  align-items: center;
+  gap: var(--yu-sp-xs);
+  min-height: var(--yu-header-h);
+}
+.yu-header__row > * { min-width: 0; }
+.yu-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--yu-sp-2xs);
+  min-height: var(--yu-tap);
+  font-weight: 800;
+  font-size: var(--yu-fs-l);
+  letter-spacing: -0.02em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.yu-brand__mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--yu-r-s);
+  background: var(--yu-accent);
+  color: var(--yu-on-accent);
+  font-size: var(--yu-fs-m);
+}
+.yu-nav { min-width: 0; }
+.yu-nav__list { display: flex; gap: var(--yu-sp-3xs); margin: 0; padding: 0; list-style: none; }
+.yu-nav__link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--yu-tap);
+  padding-inline: var(--yu-sp-xs);
+  border-radius: var(--yu-r-s);
+  color: var(--yu-muted);
+  font-size: var(--yu-fs-s);
+  font-weight: 600;
+  text-decoration: none;
+  transition: color 0.2s var(--yu-ease), background-color 0.2s var(--yu-ease);
+}
+.yu-nav__link:hover, .yu-nav__link[aria-current="page"] { color: var(--yu-text); background: var(--yu-surface-2); }
+.yu-header__picker { margin-inline-start: auto; }
+
+/* ── Выбор клуба (остров BranchPicker) ──────────────────── */
+.yu-picker { position: relative; }
+.yu-picker__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--yu-sp-2xs);
+  max-width: 100%;
+  min-height: var(--yu-tap);
+  padding: 0 var(--yu-sp-xs);
+  border: 1px solid var(--yu-line);
+  border-radius: var(--yu-r-s);
+  background: var(--yu-surface);
+  color: var(--yu-text);
+  font: inherit;
+  font-size: var(--yu-fs-s);
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.2s var(--yu-ease);
+}
+.yu-picker__toggle:hover { border-color: var(--yu-accent); }
+.yu-picker__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yu-picker__chevron { flex: none; width: 8px; height: 8px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-2px) rotate(45deg); }
+.yu-picker__panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--yu-sp-2xs));
+  width: min(340px, calc(100vw - 2 * var(--yu-gutter)));
+  max-height: min(70dvh, 520px);
+  overflow-y: auto;
+  padding: var(--yu-sp-s);
+  border: 1px solid var(--yu-line);
+  border-radius: var(--yu-r-m);
+  background: var(--yu-surface);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.45);
+}
+.yu-picker__panel[hidden] { display: none; }
+.yu-picker__title { margin: 0 0 var(--yu-sp-xs); padding-inline: var(--yu-sp-xs); font-size: var(--yu-fs-s); color: var(--yu-muted); font-weight: 600; }
+.yu-picker__city { margin: 0; padding: 0; border: 0; }
+.yu-picker__city + .yu-picker__city { margin-block-start: var(--yu-sp-xs); }
+.yu-picker__city-name { padding: 0 var(--yu-sp-xs); margin-block-end: var(--yu-sp-3xs); font-size: var(--yu-fs-xs); color: var(--yu-dim); font-weight: 700; }
+.yu-picker__option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  min-height: var(--yu-tap);
+  padding: var(--yu-sp-2xs) var(--yu-sp-xs);
+  border: 1px solid transparent;
+  border-radius: var(--yu-r-s);
+  background: none;
+  color: var(--yu-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.yu-picker__option:hover { background: var(--yu-surface-2); }
+.yu-picker__option[aria-current="true"] { border-color: var(--yu-accent); background: var(--yu-accent-soft); }
+.yu-picker__option-name { font-size: var(--yu-fs-s); font-weight: 700; }
+.yu-picker__option-meta { font-size: var(--yu-fs-xs); color: var(--yu-muted); }
+.yu-picker__empty { margin: 0; color: var(--yu-muted); font-size: var(--yu-fs-s); }
+
+/* ── Общие блоки страниц ────────────────────────────────── */
+.yu-crumbs { margin: 0 0 var(--yu-sp-s); padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: var(--yu-sp-3xs) var(--yu-sp-2xs); font-size: var(--yu-fs-xs); color: var(--yu-dim); }
+.yu-crumbs li + li::before { content: "/"; margin-inline-end: var(--yu-sp-2xs); color: var(--yu-line); }
+.yu-crumbs a { color: var(--yu-muted); text-decoration: none; }
+.yu-crumbs a:hover { color: var(--yu-text); text-decoration: underline; }
+
+.yu-hero { display: grid; gap: var(--yu-sp-m); padding-block-end: var(--yu-sp-l); border-bottom: 1px solid var(--yu-line-soft); }
+.yu-hero > * { min-width: 0; }
+.yu-hero > :only-child { grid-column: 1 / -1; }
+.yu-hero h1 { margin-block-end: var(--yu-sp-xs); }
+
+.yu-facts { display: grid; gap: var(--yu-sp-xs); margin: 0; }
+.yu-facts > div { min-width: 0; padding: var(--yu-sp-s); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); }
+.yu-facts dt { font-size: var(--yu-fs-xs); color: var(--yu-dim); font-weight: 700; }
+.yu-facts dd { margin: var(--yu-sp-3xs) 0 0; font-size: var(--yu-fs-m); font-weight: 600; overflow-wrap: break-word; }
+
+.yu-notice {
+  margin-block: 0 var(--yu-sp-s);
+  padding: var(--yu-sp-xs) var(--yu-sp-s);
+  border: 1px solid var(--yu-warn);
+  border-radius: var(--yu-r-s);
+  background: var(--yu-warn-soft);
+  color: var(--yu-text);
+  font-size: var(--yu-fs-s);
+  max-width: var(--yu-measure);
+}
+
+.yu-section { padding-block-start: var(--yu-sp-l); }
+
+.yu-zones { display: grid; gap: var(--yu-sp-s); grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
+.yu-zone { min-width: 0; padding: var(--yu-sp-m); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); }
+.yu-zone__rooms { margin: var(--yu-sp-xs) 0 0; padding: 0; list-style: none; display: grid; gap: var(--yu-sp-2xs); }
+.yu-zone__room { display: grid; gap: var(--yu-sp-3xs); }
+.yu-zone__room-name { font-weight: 700; font-size: var(--yu-fs-s); }
+.yu-chips { display: flex; flex-wrap: wrap; gap: var(--yu-sp-3xs); margin: 0; padding: 0; list-style: none; }
+.yu-chip { padding: 2px var(--yu-sp-2xs); border: 1px solid var(--yu-line); border-radius: var(--yu-r-s); font-size: var(--yu-fs-xs); color: var(--yu-muted); }
+
+.yu-cards { display: grid; gap: var(--yu-sp-s); grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); margin: 0; padding: 0; list-style: none; }
+.yu-card {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  gap: var(--yu-sp-3xs);
+  padding: var(--yu-sp-m);
+  border: 1px solid var(--yu-line-soft);
+  border-radius: var(--yu-r-m);
+  background: var(--yu-surface);
+  transition: border-color 0.2s var(--yu-ease), transform 0.2s var(--yu-ease);
+}
+.yu-card:hover { border-color: var(--yu-accent); }
+.yu-card__link { font-size: var(--yu-fs-l); font-weight: 800; text-decoration: none; }
+.yu-card__link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.yu-card__meta { color: var(--yu-muted); font-size: var(--yu-fs-s); }
+.yu-card__status { justify-self: start; margin-block-start: var(--yu-sp-2xs); padding: 2px var(--yu-sp-2xs); border-radius: var(--yu-r-s); font-size: var(--yu-fs-xs); font-weight: 700; background: var(--yu-accent-soft); color: var(--yu-accent); }
+.yu-card__status--closed { background: var(--yu-warn-soft); color: var(--yu-warn); }
+
+.yu-group + .yu-group { margin-block-start: var(--yu-sp-l); }
+
+.yu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--yu-tap);
+  max-width: 100%;
+  padding: var(--yu-sp-2xs) var(--yu-sp-m);
+  border-radius: var(--yu-r-s);
+  background: var(--yu-accent);
+  color: var(--yu-on-accent);
+  font-size: var(--yu-fs-s);
+  font-weight: 800;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: filter 0.2s var(--yu-ease), transform 0.2s var(--yu-ease);
+}
+.yu-btn:hover { filter: brightness(1.08); }
+.yu-btn:active { transform: scale(0.985); }
+
+.yu-error { display: grid; gap: var(--yu-sp-s); justify-items: start; padding-block: var(--yu-sp-xl); }
+.yu-error__code { font-size: var(--yu-fs-xs); font-weight: 800; color: var(--yu-accent); }
+
+/* ── Подвал ─────────────────────────────────────────────── */
+.yu-footer { border-top: 1px solid var(--yu-line-soft); background: var(--yu-surface); font-size: var(--yu-fs-s); color: var(--yu-muted); }
+.yu-footer__row { display: grid; gap: var(--yu-sp-m); padding-block: var(--yu-sp-l); }
+.yu-footer__row > * { min-width: 0; }
+.yu-footer__title { margin: 0 0 var(--yu-sp-2xs); font-size: var(--yu-fs-xs); color: var(--yu-dim); font-weight: 700; }
+.yu-footer__list { margin: 0; padding: 0; list-style: none; display: grid; }
+.yu-footer__link { display: inline-flex; align-items: center; min-height: var(--yu-tap); color: var(--yu-muted); text-decoration: none; }
+.yu-footer__link:hover { color: var(--yu-text); text-decoration: underline; }
+.yu-footer__copy { margin: 0; color: var(--yu-dim); font-size: var(--yu-fs-xs); }
+
+/* ── Брейкпоинты ────────────────────────────────────────── */
+@media (min-width: 600px) {
+  :root { --yu-gutter: 24px; }
+  .yu-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .yu-footer__row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 900px) {
+  .yu-hero { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); align-items: end; }
+  .yu-footer__row { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+@media (min-width: 1100px) {
+  :root { --yu-gutter: 32px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
