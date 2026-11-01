@@ -12,13 +12,34 @@ import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
 import { auditActions as networkAudit } from '../modules/network/audit.ts';
 import { errors as networkErrors } from '../modules/network/errors.ts';
+import { auditActions as pricingAudit } from '../modules/pricing/audit.ts';
+import { errors as pricingErrors } from '../modules/pricing/errors.ts';
 import { auditActions as resourcesAudit } from '../modules/resources/audit.ts';
 import { errors as resourcesErrors } from '../modules/resources/errors.ts';
 import { auditActions as staffAudit } from '../modules/staff/audit.ts';
 import { errors as staffErrors } from '../modules/staff/errors.ts';
 
-const moduleErrors = { ledger: ledgerErrors, settings: settingsErrors, staff: staffErrors, dictionaries: dictionariesErrors, network: networkErrors, clients: clientsErrors, resources: resourcesErrors, booking: bookingErrors } as const;
-const moduleAudit = { settings: settingsAudit, staff: staffAudit, dictionaries: dictionariesAudit, network: networkAudit, clients: clientsAudit, resources: resourcesAudit, booking: bookingAudit } as const;
+const moduleErrors = {
+  ledger: ledgerErrors,
+  settings: settingsErrors,
+  staff: staffErrors,
+  dictionaries: dictionariesErrors,
+  network: networkErrors,
+  clients: clientsErrors,
+  resources: resourcesErrors,
+  booking: bookingErrors,
+  pricing: pricingErrors,
+} as const;
+const moduleAudit = {
+  settings: settingsAudit,
+  staff: staffAudit,
+  dictionaries: dictionariesAudit,
+  network: networkAudit,
+  clients: clientsAudit,
+  resources: resourcesAudit,
+  booking: bookingAudit,
+  pricing: pricingAudit,
+} as const;
 
 type ModuleErrors = typeof moduleErrors;
 export type ModuleErrorCode = { [M in keyof ModuleErrors]: keyof ModuleErrors[M] }[keyof ModuleErrors];
