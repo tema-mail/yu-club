@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "migrate": "node migrate.ts"
+    "migrate": "node migrate.ts",
+    "seed:dev": "node seed/dev.ts"
   },
   "dependencies": {
     "pg": "^8.23.1"
