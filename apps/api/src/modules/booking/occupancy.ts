@@ -9,12 +9,13 @@
 // сохраняется: FOR UPDATE в createBlock конфликтует с FOR NO KEY UPDATE так же, как с FOR SHARE.
 // 40P01/40001 – повтор всей команды один раз (runOccupancyCommand), вторая неудача → SLOT_HELD.
 // client_time (запрет пересечений клиента по сети, 0108): одна строка на позицию, одним INSERT после occupancy;
-// перед ним – строка клиента FOR NO KEY UPDATE (порядок замков «ресурсы → единицы → клиент»): команды одного клиента
-// идут по очереди, взаимного ожидания на EXCLUDE client_time нет.
+// перед ним – строка клиента FOR NO KEY UPDATE (clients.lockClients): команды одного клиента идут по очереди, взаимного
+// ожидания на EXCLUDE client_time нет. Команды клиента берут этот замок раньше ресурсов (hold.ts lockOwner) – здесь повтор.
 import type pg from 'pg';
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { toPgRange, type Interval } from '../../core/time.ts';
+import { lockClients } from '../clients/index.ts';
 import { lockCompositions, type UnitSet } from '../resources/index.ts';
 import { assertNotBlocked } from './blocks.ts';
 
@@ -103,8 +104,7 @@ export type ClientTimeSource = { type: 'hold_item'; id: string; holdExpiresAt: D
  *  вызывающий (occupyMany, attach) откатывает до своей точки. */
 export async function insertClientTime(tx: Tx, rows: Array<{ clientId: string; period: Interval; source: ClientTimeSource }>): Promise<void> {
   if (rows.length === 0) return;
-  const clients = unitOrder(rows.map((r) => r.clientId));
-  await tx.query('SELECT id FROM app.clients WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE', [clients]);
+  await lockClients(tx, rows.map((r) => r.clientId));
   try {
     await tx.query(
       `INSERT INTO app.client_time (client_id, period, source_type, source_id, hold_expires_at)
@@ -147,13 +147,14 @@ export async function releaseSources(
   }
 }
 
-/** Строки единиц FOR NO KEY UPDATE по id – перед ЛЮБОЙ записью в occupancy (occupy, convertHoldItem, перенос;
- *  ревизия S1-02 п.2). Нет единицы в филиале / архив → RESOURCE_UNAVAILABLE. */
-export async function lockUnitsForWrite(tx: Tx, branchId: string, unitIds: string[]): Promise<void> {
+/** Строки единиц FOR NO KEY UPDATE по id – перед ЛЮБОЙ записью в occupancy (occupy, convertHoldItem, перенос, отмена;
+ *  ревизия S1-02 п.2). Нет единицы в филиале / архив → RESOURCE_UNAVAILABLE. forRelease – для гашения строк (отмена,
+ *  старая версия при переносе): единица в архиве не мешает освободить её строки. */
+export async function lockUnitsForWrite(tx: Tx, branchId: string, unitIds: string[], opts: { forRelease?: boolean } = {}): Promise<void> {
   const all = unitOrder(unitIds);
   const locked = await tx.query(
-    `SELECT id FROM app.occupancy_units WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND status = 'active' ORDER BY id FOR NO KEY UPDATE`,
-    [all, branchId],
+    `SELECT id FROM app.occupancy_units WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND ($3 OR status = 'active') ORDER BY id FOR NO KEY UPDATE`,
+    [all, branchId, opts.forRelease === true],
   );
   if (locked.rowCount !== all.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
 }

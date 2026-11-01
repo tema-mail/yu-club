@@ -10,8 +10,9 @@ import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './m
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
+import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
-import { bookingsProvider, clientBranchLinks } from './modules/booking/providers.ts';
+import { bookingLookup, bookingsProvider, clientBranchLinks } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
@@ -105,6 +106,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
       async (scope) =>
         resourcesRoutes(scope, {
           pool: staff.pool,
+          usage: bookingsProvider,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
         }),
@@ -113,6 +115,15 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(
       async (scope) =>
         blockRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    void app.register(
+      async (scope) =>
+        bookingCrmRoutes(scope, {
           pool: staff.pool,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
@@ -182,7 +193,7 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
     deps.clients = { pool, auth: clientAuthConfig(config.SESSION_PEPPER), sms };
   }
   // Диспетчер уведомлений работает и без VAPID: строки получают статус «нет канала» и остаются в ЛК.
-  return { deps, close: () => pool.end(), sender: { pool, vapid } };
+  return { deps, close: () => pool.end(), sender: { pool, vapid, bookings: bookingLookup } }; // проверки 1–4 по таблице броней
 }
 
 async function main(): Promise<void> {

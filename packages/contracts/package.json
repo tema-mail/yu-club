@@ -1,0 +1,14 @@
+{
+  "name": "@yu/contracts",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./booking": "./src/booking.ts"
+  },
+  "scripts": {
+    "openapi": "node src/booking.ts > openapi/booking.json"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  }
+}

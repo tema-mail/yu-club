@@ -13,6 +13,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { assertSlotAligned, contains, durationMinutes, fromPgRange, instantToLocal, isDateInWindow, systemClock, toPgRange, type Clock, type Interval } from '../../core/time.ts';
 import { getBranch, isAcceptingBookings, openIntervals, type BranchInfo } from '../network/index.ts';
 import { quote } from '../pricing/tariff.ts';
+import { lockClients } from '../clients/index.ts';
 import { assertBookable, expandToUnits, getResource } from '../resources/index.ts';
 import { insertClientTime, occupyMany, releaseSources, type OccupyItem } from './occupancy.ts';
 
@@ -98,8 +99,9 @@ function itemError(err: unknown, index: number, item: HoldItemInput): never {
   throw err;
 }
 
-/** Проверки позиции 01 §8.2 (кроме пересечений – их даёт база): ресурс, окно, шаг, график → развёрнутые единицы. */
-async function checkItem(tx: Tx, branch: BranchInfo, now: Date, maxDays: number, item: HoldItemInput) {
+/** Проверки позиции 01 §8.2 (кроме пересечений – их даёт база): ресурс, окно, шаг, график → развёрнутые единицы.
+ *  Те же проверки – у переноса и брони администратором (change.ts, 01 §10.2, §11). */
+export async function checkItem(tx: Tx, branch: BranchInfo, now: Date, maxDays: number, item: HoldItemInput) {
   const r = await getResource(tx, item.resourceId);
   if (!r || r.branchId !== branch.id) throw notFound();
   assertBookable(r);
@@ -133,6 +135,14 @@ async function lockHold(tx: Tx, holdId: string, owner: HoldOwner): Promise<HoldR
 
 const isLive = (h: HoldRow, now: Date) => h.status === 'active' && h.expires_at.getTime() > now.getTime();
 
+/** Замок владельца до проверки «одно активное удержание на филиал» (ревизия S1-06 п.3): клиент – строка клиента
+ *  FOR NO KEY UPDATE (clients.lockClients), посетитель – advisory-замок транзакции по visitor_id. Порядок замков
+ *  всех команд клиента: удержание/бронь → клиент → ресурсы → единицы; повторный захват в insertClientTime – no-op. */
+export async function lockOwner(tx: Tx, owner: HoldOwner): Promise<void> {
+  if (owner.clientId !== null) await lockClients(tx, [owner.clientId]);
+  else if (owner.visitorId !== null) await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended('hold-visitor:' || $1, 0))`, [owner.visitorId]);
+}
+
 /** Активное (не истёкшее) удержание владельца в филиале. */
 async function ownActiveHold(tx: Tx, branchId: string, owner: HoldOwner, now: Date): Promise<string | null> {
   const r = await tx.query<{ id: string }>(
@@ -151,12 +161,13 @@ async function occupyItems(tx: Tx, branch: BranchInfo, owner: HoldOwner, now: Da
   for (const [k, item] of items.entries()) checked.push(await checkItem(tx, branch, now, maxDays, item).catch((e) => itemError(e, k, item)));
   for (const c of checked) await releaseExpiredHolds(tx, now, { unitIds: c.units.unitIds, clientId: owner.clientId ?? undefined, period: c.period });
   for (const [k, c] of checked.entries()) {
-    await tx.query(`INSERT INTO app.hold_items (id, hold_id, resource_id, period, unit_ids) VALUES ($1, $2, $3, $4, $5)`, [
+    await tx.query(`INSERT INTO app.hold_items (id, hold_id, resource_id, period, unit_ids, created_at) VALUES ($1, $2, $3, $4, $5, $6)`, [
       ids[k],
       holdId,
       c.resource.id,
       toPgRange(c.period),
       c.units.unitIds,
+      now,
     ]);
   }
   const occ: OccupyItem[] = checked.map((c, k) => ({ units: c.units, period: c.period, source: { type: 'hold_item', id: ids[k]!, holdExpiresAt: expiresAt }, clientId: owner.clientId }));
@@ -174,11 +185,14 @@ export async function createHold(tx: Tx, owner: HoldOwner, input: { branchId: st
   const now = clock.now();
   const branch = await activeBranch(tx, input.branchId, now);
   const s = await holdSettings(tx, branch.id, now);
+  await lockOwner(tx, owner);
   if (input.items.length === 0) throw new AppError('VALIDATION_FAILED', 400, 'Нет позиций', { field: 'items' });
   if (input.items.length > s.maxItems) throw new AppError('HOLD_LIMIT_REACHED', 422, 'Слишком много слотов в одной записи', { max: s.maxItems });
   const existing = await ownActiveHold(tx, branch.id, owner, now);
   if (existing) throw new AppError('HOLD_ALREADY_ACTIVE', 409, 'Уже есть активное удержание – добавьте слот в него', { holdId: existing });
   if (owner.clientId === null) {
+    // потолок анонимных (ревизия S1-06 п.4): счёт под advisory-замком филиала – параллельные не проскочат вдвоём
+    await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended('anon-holds:' || $1, 0))`, [branch.id]);
     const n = await tx.query<{ n: number }>(`SELECT count(*)::int n FROM app.holds WHERE branch_id = $1 AND status = 'active' AND expires_at > $2 AND client_id IS NULL`, [branch.id, now]);
     if (n.rows[0]!.n >= s.maxAnon) throw new AppError('RATE_LIMITED', 429, 'Слишком много запросов, подождите минуту', { reason: 'anonymous_holds' });
   }
@@ -214,6 +228,7 @@ export async function addHoldItem(tx: Tx, owner: HoldOwner, holdId: string, item
   const now = clock.now();
   const h = await lockHold(tx, holdId, owner);
   if (!isLive(h, now)) throw holdExpired();
+  if (h.client_id !== null) await lockClients(tx, [h.client_id]);
   const branch = await activeBranch(tx, h.branch_id, now);
   const s = await holdSettings(tx, branch.id, now);
   const current = await activeItemIds(tx, h.id);
@@ -269,10 +284,13 @@ export async function attachHold(tx: Tx, clientId: string, visitorId: string | n
   const h = await lockHold(tx, holdId, { clientId, visitorId });
   if (h.client_id === clientId) return holdDto(tx, h.id, now);
   if (!isLive(h, now)) throw holdExpired();
+  await lockOwner(tx, { clientId, visitorId: null });
   const other = await ownActiveHold(tx, h.branch_id, { clientId, visitorId: null }, now);
   if (other) throw new AppError('HOLD_ALREADY_ACTIVE', 409, 'Уже есть активное удержание в этом филиале', { holdId: other });
   await tx.query('UPDATE app.holds SET client_id = $2 WHERE id = $1', [h.id, clientId]);
   const items = await tx.query<{ id: string; period: string }>(`SELECT id, period::text FROM app.hold_items WHERE hold_id = $1 AND status = 'active' ORDER BY id`, [h.id]);
+  // истёкшие удержания клиента на эти периоды ещё держат client_time – гасим до вставки (ревизия S1-06 п.7)
+  for (const i of items.rows) await releaseExpiredHolds(tx, now, { clientId, period: fromPgRange(i.period) });
   await insertClientTime(
     tx,
     items.rows.map((i) => ({ clientId, period: fromPgRange(i.period), source: { type: 'hold_item' as const, id: i.id, holdExpiresAt: h.expires_at } })),
@@ -382,7 +400,7 @@ export async function ownHoldItems(db: Db | Tx, branchId: string, viewer: { visi
   const r = await db.query<{ id: string }>(
     `SELECT hi.id FROM app.hold_items hi JOIN app.holds h ON h.id = hi.hold_id
      WHERE h.branch_id = $1 AND h.status = 'active' AND h.expires_at > $2 AND hi.status = 'active'
-       AND (h.client_id = $3::uuid OR h.visitor_id = $4::uuid)`,
+       AND (h.client_id = $3::uuid OR (h.client_id IS NULL AND h.visitor_id = $4::uuid))`,
     [branchId, now, viewer.clientId ?? null, viewer.visitorId ?? null],
   );
   return new Set(r.rows.map((x) => x.id));

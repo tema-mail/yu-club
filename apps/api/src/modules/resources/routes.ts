@@ -12,13 +12,15 @@ import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../co
 import { can, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { getBranch } from '../network/index.ts';
-import { attachInitialUnits, changeComposition, compositionAt, insertUnit, listUnits } from './composite.ts';
+import { attachInitialUnits, changeComposition, compositionAt, insertUnit, listUnits, type ResourceUsageProvider } from './composite.ts';
 import { getResource, isUuid } from './index.ts';
 
 export interface ResourcesDeps {
   pool: Db & { connect(): Promise<pg.PoolClient> };
   authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<{ access: AccessContext; meta: AuditRequestMeta }>;
   clock?: Clock;
+  /** Будущие брони и удержания ресурса для смены состава (booking/providers.ts, ADR 0002 п.1). */
+  usage: ResourceUsageProvider;
 }
 
 // ---- права и отказы
@@ -357,11 +359,11 @@ export async function createUnit(tx: Tx, ctx: AccessContext, branchId: string, r
   return unit;
 }
 
-export async function setComposition(tx: Tx, ctx: AccessContext, resourceId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock) {
+export async function setComposition(tx: Tx, ctx: AccessContext, resourceId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock, usage: ResourceUsageProvider) {
   const action = 'resource.composition_changed' as const;
   const cur = await lockForCommand(tx, ctx, DEFS.resource, resourceId, action);
   const input = parse(compositionInput, raw);
-  return changeComposition(tx, { resourceId: cur.id, unitIds: input.unitIds, validFrom: new Date(input.validFrom), ...(input.dryRun ? { dryRun: true } : {}) }, meta, clock);
+  return changeComposition(tx, { resourceId: cur.id, unitIds: input.unitIds, validFrom: new Date(input.validFrom), ...(input.dryRun ? { dryRun: true } : {}) }, meta, clock, usage);
 }
 
 // ---- HTTP
@@ -433,5 +435,5 @@ export async function resourcesRoutes(app: FastifyInstance, deps: ResourcesDeps)
     return { items: await listUnits(deps.pool, branchId), nextCursor: null };
   });
   app.post('/branches/:branchId/units', commandHandler(deps, 'unit.create', createUnit, 201));
-  app.post('/resources/:resourceId/composition', commandHandler(deps, 'resource.composition', setComposition));
+  app.post('/resources/:resourceId/composition', commandHandler(deps, 'resource.composition', (tx, ctx, id, body, meta, c) => setComposition(tx, ctx, id, body, meta, c, deps.usage)));
 }

@@ -161,6 +161,14 @@ export async function findOrCreateGuest(
   return toRef(upd.rows[0]!);
 }
 
+/** Строки клиентов FOR NO KEY UPDATE в порядке id (K6: замок «… → единицы → клиент»): команды одного клиента
+ *  (client_time, удержание) идут по очереди. Таблица clients – модуля clients (ADR 0002 п.1), booking зовёт отсюда. */
+export async function lockClients(tx: Tx, clientIds: string[]): Promise<void> {
+  const ids = [...new Set(clientIds.map((s) => s.toLowerCase()))].sort();
+  if (ids.length === 0) return;
+  await tx.query('SELECT id FROM app.clients WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE', [ids]);
+}
+
 /** Можно ли клиенту бронировать (K5 confirm, S1-13). blocked / restricted (пока не истёк срок) /
  *  deletion_requested / anonymized → CLIENT_RESTRICTED. С Э2 loyalty добавит проверку баланса сюда же. */
 export async function assertCanBook(tx: Tx, clientId: string, at: Date): Promise<void> {
@@ -361,6 +369,15 @@ export interface ClientCard extends ClientRef {
     lastLoginAt: Date | null;
   } | null;
   rowVersion: number;
+}
+
+/** Ссылки на клиентов по id (имя, маскированный телефон, статус) – для строк броней в CRM (K11 CrmBookingRow).
+ *  Права на брони проверяет вызывающий (booking); полный телефон не отдаётся (03 §14). */
+export async function getClientRefs(db: Db | Tx, ids: string[]): Promise<Map<string, ClientRef>> {
+  const uniq = [...new Set(ids)];
+  if (uniq.length === 0) return new Map();
+  const r = await db.query<ClientRow>(`SELECT ${REF_COLS} FROM app.clients c WHERE c.id = ANY($1::uuid[])`, [uniq]);
+  return new Map(r.rows.map((x) => [x.id, toRef(x)]));
 }
 
 /** Карточка: не-Владельцу – только клиент, связанный с его зоной (иначе NOT_FOUND, как несуществующий). */
