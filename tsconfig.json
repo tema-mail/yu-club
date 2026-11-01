@@ -13,5 +13,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["apps/*/src", "db", "tests", "*.ts"]
+  "include": ["apps/*/src", "db", "tests", "*.ts"],
+  "exclude": ["apps/crm"]
 }

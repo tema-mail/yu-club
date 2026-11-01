@@ -24,9 +24,11 @@
     "@embedded-postgres/darwin-arm64@16.15.0-beta.19": true
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && npm run check -w @yu/crm",
     "test": "vitest run",
     "dev:api": "node apps/api/src/server.ts",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "build:crm": "npm run build -w @yu/crm",
+    "test:crm": "npm run test:e2e -w @yu/crm"
   }
 }
