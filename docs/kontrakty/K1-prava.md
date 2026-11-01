@@ -48,7 +48,8 @@ export function can(ctx: AccessContext, action: Action, target: Target): boolean
 
 /** Бросает:
  *  - NOT_FOUND (404), если цель вне зоны (не раскрываем существование, ADR 0005 п.7);
- *  - FORBIDDEN (403), если цель в зоне, но действие роли не разрешено.
+ *  - FORBIDDEN (403), если цель в зоне, но действие роли не разрешено;
+ *  - FORBIDDEN (403) для сетевой цели (network) у не-Владельца: о существовании сети знают все, скрывать нечего (решение 01.11 по ревизии S0-10).
  *  В обоих случаях пишет audit result='denied' отдельной транзакцией (K2 `writeDenied`). */
 export function assertCan(ctx: AccessContext, action: Action, target: Target, objectRef?: { type: string; id: string }): void;
 
