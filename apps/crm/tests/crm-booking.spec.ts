@@ -82,3 +82,130 @@ test('пересечение – понятный отказ, ввод сохр�
   await dialog.getByRole('button', { name: 'Записать' }).click();
   await expect(page.getByTestId('booking-created')).toContainText('Ольга Смирнова');
 });
+
+const card = (page: Page, id: string) => page.goto(`/bookings/${id}`);
+const timeline = (page: Page) => page.getByTestId('booking-timeline').locator('li');
+const STARTED = 'b0000000-0000-4000-8000-000000000001'; // идёт сейчас (ПК 2)
+const ENDED = 'b0000000-0000-4000-8000-000000000002'; // прошёл без отметки (VR1)
+
+test('отмена без комментария невозможна; окно «было → станет»; после отмены кнопок нет', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await card(page, 'bk-pc1-evening');
+  await expect(page.getByTestId('booking-status')).toHaveText('Подтверждена');
+  await page.getByRole('button', { name: 'Отменить запись…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Отменить запись?' });
+  await expect(dialog.getByTestId('before-after')).toContainText('Подтверждена · ПК 1');
+  await expect(dialog.getByTestId('before-after')).toContainText('Отменена клубом');
+  await dialog.getByRole('button', { name: 'Отменить запись' }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('Укажите комментарий – без него отмену не сохранить.');
+  await expect(page.getByTestId('booking-status')).toHaveText('Подтверждена');
+  // и сервер не принимает пустой комментарий
+  const b = (await (await page.request.get('/api/crm/v1/bookings/bk-pc1-evening')).json()) as { rowVersion: number };
+  const r = await page.request.post('/api/crm/v1/bookings/bk-pc1-evening/cancel', {
+    headers: { 'idempotency-key': crypto.randomUUID() }, data: { rowVersion: b.rowVersion, initiator: 'club', reasonId: '00000000-0000-4000-8000-000000000007', comment: '  ' },
+  });
+  expect(r.status()).toBe(422);
+  expect(((await r.json()) as { error: { code: string } }).error.code).toBe('COMMENT_REQUIRED');
+
+  await dialog.getByLabel('Клиент по телефону').check();
+  await expect(dialog.getByTestId('before-after')).toContainText('Отменена клиентом');
+  await expect(dialog.getByLabel('Причина *')).toHaveValue(/.+/); // первая причина нужного домена выбрана сама
+  await dialog.getByLabel('Причина *').selectOption({ label: 'Изменились планы' });
+  await dialog.getByLabel('Комментарий *').fill('Позвонил, заболел');
+  await dialog.getByRole('button', { name: 'Отменить запись' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByTestId('booking-status')).toHaveText('Отменена клиентом');
+  await expect(page.getByTestId('booking-cancel')).toContainText('Изменились планы · «Позвонил, заболел»');
+  await expect(page.getByTestId('booking-actions')).toHaveCount(0);
+  await expect(timeline(page).first()).toContainText('Запись отменена');
+  await expect(timeline(page).first()).toContainText('Причина: Позвонил, заболел');
+});
+
+test('приход дважды – одно посещение; завершение', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await card(page, STARTED);
+  await expect(page.getByRole('button', { name: 'Неявка…' })).toBeVisible(); // сеанс начался
+  await page.getByRole('button', { name: 'Отметить приход' }).dblclick();
+  await expect(page.getByTestId('booking-status')).toHaveText('Пришёл');
+  await expect(page.getByTestId('booking-visit')).toContainText('пришёл в');
+  await expect(timeline(page).filter({ hasText: 'Отмечен приход' })).toHaveCount(1);
+  // повтор с другой вкладки (новый ключ, свежая версия) – отказ, посещение одно
+  const b = (await (await page.request.get(`/api/crm/v1/bookings/${STARTED}`)).json()) as { rowVersion: number; timeline: Array<{ action: string }> };
+  const again = await page.request.post(`/api/crm/v1/bookings/${STARTED}/arrive`, { headers: { 'idempotency-key': crypto.randomUUID() }, data: { rowVersion: b.rowVersion } });
+  expect(again.status()).toBe(409);
+  expect(b.timeline.filter((e) => e.action === 'visit.confirmed')).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Отметить приход' })).toHaveCount(0); // только разрешённые действия
+  await page.getByRole('button', { name: 'Завершить сеанс' }).click();
+  await expect(page.getByTestId('booking-status')).toHaveText('Завершена');
+  await expect(page.getByTestId('booking-visit')).toContainText('завершено в');
+});
+
+test('неявка у прошедшей записи; исправление с причиной – у Директора, у Администратора кнопки нет', async ({ page, browser }) => {
+  await login(page, 'admin@yu.test');
+  await card(page, ENDED);
+  await expect(page.getByText('Требует решения')).toBeVisible();
+  await page.getByRole('button', { name: 'Неявка…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Отметить неявку?' });
+  await expect(dialog.getByTestId('before-after')).toContainText('Неявка · посещение не создаётся');
+  await dialog.getByRole('button', { name: 'Отметить неявку' }).click();
+  await expect(page.getByTestId('booking-status')).toHaveText('Неявка');
+  await expect(page.getByRole('button', { name: 'Исправить отметку…' })).toHaveCount(0); // нет booking.visit.correct
+
+  const director = await (await browser.newContext()).newPage();
+  await login(director, 'director@yu.test');
+  await card(director, ENDED);
+  await director.getByRole('button', { name: 'Исправить отметку…' }).click();
+  const fix = director.getByRole('dialog', { name: 'Исправить отметку?' });
+  await fix.getByRole('button', { name: 'Исправить' }).click();
+  await expect(fix.getByRole('alert')).toHaveText('Укажите причину исправления.');
+  await fix.getByLabel('Причина исправления *').fill('Клиент пришёл, отметили по ошибке');
+  await fix.getByRole('button', { name: 'Исправить' }).click();
+  await expect(director.getByTestId('booking-status')).toHaveText('Подтверждена');
+  await expect(timeline(director).first()).toContainText('Отметка неявки исправлена');
+  await expect(timeline(director).first()).toContainText('Директор');
+  await expect(director.getByRole('button', { name: 'Отметить приход' })).toBeVisible();
+  await director.context().close();
+});
+
+test('409 по rowVersion – понятное сообщение и обновлённая карточка; повтор проходит', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await card(page, 'bk-vrroom');
+  // другой сотрудник успел поменять запись
+  const r = await page.request.patch('/api/crm/v1/bookings/bk-vrroom', { headers: { 'idempotency-key': crypto.randomUUID() }, data: { rowVersion: 1, internalComment: 'Просили два геймпада' } });
+  expect(r.status()).toBe(200);
+  await page.getByRole('button', { name: 'Отменить запись…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Отменить запись?' });
+  await dialog.getByLabel('Комментарий *').fill('Ремонт VR');
+  await dialog.getByRole('button', { name: 'Отменить запись' }).click();
+  await expect(page.getByTestId('booking-notice')).toHaveText('Запись уже изменил другой сотрудник. Карточка обновлена – проверьте данные и повторите действие.');
+  await expect(page.getByLabel('Служебный комментарий')).toHaveValue('Просили два геймпада');
+  await expect(page.getByTestId('booking-status')).toHaveText('Подтверждена');
+  await page.getByRole('button', { name: 'Отменить запись…' }).click();
+  await dialog.getByLabel('Комментарий *').fill('Ремонт VR');
+  await dialog.getByRole('button', { name: 'Отменить запись' }).click();
+  await expect(page.getByTestId('booking-status')).toHaveText('Отменена клубом');
+});
+
+test('Администратор чужого филиала – 404 на карточку и действия', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  expect((await card(page, 'bk-tsk'))?.status()).toBe(404);
+  await expect(page.getByTestId('not-found')).toBeVisible();
+  const r = await page.request.post('/api/crm/v1/bookings/bk-tsk/arrive', { headers: { 'idempotency-key': crypto.randomUUID() }, data: { rowVersion: 1 } });
+  expect(r.status()).toBe(404);
+});
+
+test('снимки карточки и окна отмены 1440 и 390 без горизонтальной прокрутки', async ({ browser, request }) => {
+  expect((await request.post(`${MOCK}/__test/reset`)).ok()).toBe(true);
+  for (const [w, h] of [[1440, 900], [390, 844]] as const) {
+    const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: w === 390 ? 2 : 1, timezoneId: TZ, locale: 'ru-RU' });
+    const page = await ctx.newPage();
+    await login(page, 'admin@yu.test');
+    await card(page, 'bk-pc1-evening');
+    await expect(page.getByTestId('booking-props')).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/booking-card-${w}.png`, fullPage: true });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(w);
+    await page.getByRole('button', { name: 'Отменить запись…' }).click();
+    await page.screenshot({ path: `${SHOTS}/booking-cancel-${w}.png` });
+    await ctx.close();
+  }
+});

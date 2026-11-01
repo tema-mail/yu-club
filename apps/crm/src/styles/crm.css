@@ -423,6 +423,10 @@
 .yc-board__hits .yc-check input{ flex:none; margin-top:2px; }
 .yc-board__pair{ display:grid; gap:var(--yc-sp-s); grid-template-columns:repeat(auto-fit, minmax(9rem, 1fr)); }
 .yc-board__pair > *{ min-width:0; }
+.yc-bk__actions{ display:flex; flex-wrap:wrap; gap:var(--yc-sp-2xs); }
+.yc-bk__actions > *{ min-width:0; }
+.yc-bk__diff{ padding:var(--yc-sp-xs); border-radius:var(--yc-r-s); background:var(--yc-surface-2); }
+.yc-dialog textarea.yc-input{ resize:vertical; font:inherit; font-size:max(16px,var(--yc-fs-m)); }
 @media (min-width:600px){
   .yc-cal__day{ --yc-cal-res:9rem; }
 }
