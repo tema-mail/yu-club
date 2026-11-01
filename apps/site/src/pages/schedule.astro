@@ -1,0 +1,74 @@
+---
+// Расписание и онлайн-запись /schedule/ (карта сайта 3.3, п.2.9–2.10): один адрес на сеть, клуб – параметром
+// ?branch={город}/{филиал} или из выбора посетителя (кука yu_branch); ?zone= – фильтр. canonical – без параметров.
+// Клуб не выбран – список клубов. Временно закрытый – плашка без записи (12 §4.3). Сетка и удержание – остров Schedule.
+import Schedule from '../islands/Schedule.tsx';
+import Site from '../layouts/Site.astro';
+import { ApiError, ZONE_ORDER, findBranch, parseBranchCookie, site, type BranchDetailDto, type ResourceDto, type ZoneCode } from '../lib/api.ts';
+import { todayIn } from '../lib/booking.ts';
+
+const { network, choice } = Astro.locals;
+const raw = Astro.url.searchParams.get('branch');
+const asked = parseBranchCookie(raw);
+// Пустой ?branch= – «другой клуб»: показать список, даже если выбор в куке есть.
+const pick = raw === '' ? null : (asked ?? choice);
+const found = network && pick ? findBranch(network, pick.city, pick.branch) : null;
+const zoneParam = Astro.url.searchParams.get('zone');
+const zone = ZONE_ORDER.includes(zoneParam as ZoneCode) ? (zoneParam as ZoneCode) : null;
+
+let detail: BranchDetailDto | null = null;
+let resources: ResourceDto[] = [];
+let failed = !network;
+if (found && found.branch.status === 'active') {
+  try {
+    [detail, resources] = await Promise.all([site.branch(found.branch.id), site.resources(found.branch.id)]);
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) console.error('site: расписание – филиал из API не загрузился', e);
+    failed = true;
+  }
+}
+if (failed) Astro.response.status = 503;
+const branch = detail ?? found?.branch;
+---
+<Site title={branch ? `Расписание и запись – ${branch.name}` : 'Расписание и онлайн-запись – Ю-Клуб'} description="Свободное время в клубах Ю-Клуб: игровые ПК, VR и PlayStation. Выберите клуб, день и время – запись онлайн за минуту.">
+  <ol class="yu-crumbs" aria-label="Навигация">
+    <li><a href="/">Главная</a></li>
+    <li aria-current="page">Расписание</li>
+  </ol>
+  <section class="yu-schedule-page" aria-labelledby="schedule-title">
+    <h1 id="schedule-title">Расписание и запись</h1>
+    {failed ? (
+      <p class="yu-notice" role="status">Расписание сейчас недоступно: сервис не ответил. Обновите страницу через минуту.</p>
+    ) : !found || !branch ? (
+      <>
+        <p class="yu-lead">{raw ? 'Такого клуба нет в списке. Выберите клуб:' : 'Выберите клуб – покажем свободное время.'}</p>
+        <ul class="yu-cards" data-testid="schedule-branches">
+          {(network ?? []).flatMap((c) => c.branches.map((b) => (
+            <li class="yu-card">
+              <a class="yu-card__link" href={`/schedule/?branch=${c.slug}/${b.slug}`}>{b.name}</a>
+              <span class="yu-card__meta">{c.name}, {b.address}</span>
+              {b.status === 'temporarily_closed' && <span class="yu-card__status yu-card__status--closed">Временно закрыт</span>}
+            </li>
+          )))}
+        </ul>
+      </>
+    ) : (
+      <>
+        <p class="yu-lead" data-testid="schedule-branch">
+          {branch.name}, {branch.address}. <a href="/schedule/?branch=" class="yu-inline-link">Другой клуб</a>
+        </p>
+        {branch.status !== 'active' ? (
+          <p class="yu-notice" role="status" data-testid="schedule-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>
+        ) : (
+          <Schedule
+            client:load
+            branch={{ id: branch.id, name: branch.name, timezone: branch.timezone, bookingWindow: branch.bookingWindow }}
+            resources={resources.map((r) => ({ id: r.id, name: r.name, zone: r.zone, stepMinutes: r.stepMinutes, roomName: r.roomName }))}
+            today={todayIn(branch.timezone)}
+            zone={zone}
+          />
+        )}
+      </>
+    )}
+  </section>
+</Site>
