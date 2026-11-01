@@ -4,13 +4,18 @@ import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
 import { AppError } from './core/errors.ts';
 import './core/registry.ts'; // проверка реестров модулей на дубли – при старте (ADR 0002)
+import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { authenticate, staffAuthRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 
 export interface ServerDeps {
   staff?: StaffDeps;
 }
+
+/** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
+export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
   const app = Fastify({ logger: { level: config.LOG_LEVEL } });
@@ -34,7 +39,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   app.get('/health', async () => ({ status: 'ok', version: config.GIT_SHA }));
 
   if (deps.staff) {
-    const staff = deps.staff;
+    const staff: StaffDeps = { network: networkLookup, ...deps.staff };
     void app.register(async (scope) => staffAuthRoutes(scope, staff), { prefix: '/api/crm/v1/auth' });
     void app.register(
       async (scope) =>
