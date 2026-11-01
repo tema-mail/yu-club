@@ -17,7 +17,9 @@ import { bookingsProvider, clientBranchLinks } from './modules/booking/providers
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
+import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
 import { networkPublicRoutes, type NetworkPublicDeps } from './modules/network/routes.public.ts';
@@ -42,19 +44,21 @@ export interface ServerDeps {
   logStream?: NodeJS.WritableStream;
 }
 
-/** Ворота записи (K9, S2-33): реестр clients – на процесс, а buildServer зовут повторно (тесты) – регистрируем один раз. */
-let gatesRegistered = false;
-function registerGates(): void {
-  if (gatesRegistered) return;
+/** Реестры модулей на процесс (ворота записи K9, способы оплаты K10 §5), а buildServer зовут повторно (тесты) –
+ *  регистрируем один раз. Модули друг друга не импортируют (ADR 0002): связывает их только этот файл. */
+let hooksRegistered = false;
+function registerModuleHooks(): void {
+  if (hooksRegistered) return;
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
-  gatesRegistered = true;
+  registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
+  hooksRegistered = true;
 }
 
 /** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
 export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
-  registerGates();
+  registerModuleHooks();
   // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
   const app = Fastify({
     logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream } : { level: config.LOG_LEVEL },
