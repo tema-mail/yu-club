@@ -43,3 +43,24 @@ jobs:
       - run: npm run lint
       - run: npm run build:crm
       - run: npm test
+
+  crm-e2e:
+    # CRM на моке API (apps/crm/tests/mock-api.ts): база и бэкенд не нужны.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/crm
+      - run: npm run test:crm
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: crm-playwright
+          path: apps/crm/test-results/
+          retention-days: 7

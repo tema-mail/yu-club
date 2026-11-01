@@ -76,19 +76,28 @@ const fullName = `${me.staff.firstName} ${me.staff.lastName}`;
         </ul>
       </nav>
       <main class="yc-main" id="main" tabindex="-1">
+        <p class="yc-alert yc-alert--error" id="logout-error" role="alert"></p>
         <slot />
       </main>
     </div>
 
     <script>
-      import { auth } from '../lib/api.ts';
+      import { ApiError, auth } from '../lib/api.ts';
 
+      const errorBox = document.getElementById('logout-error') as HTMLElement;
       document.getElementById('logout')?.addEventListener('click', async () => {
+        errorBox.textContent = '';
         try {
           await auth.logout();
-        } finally {
-          location.assign('/login');
+        } catch (e) {
+          // 401 – сессии уже нет, это и есть выход. Иначе сессия может быть жива: не уводим молча.
+          if (!(e instanceof ApiError && e.status === 401)) {
+            const reason = e instanceof ApiError ? e.message.replace(/\.$/, '') : 'неизвестная ошибка';
+            errorBox.textContent = `Не удалось выйти: ${reason}. Повторите или закройте браузер.`;
+            return;
+          }
         }
+        location.assign('/login');
       });
     </script>
   </body>

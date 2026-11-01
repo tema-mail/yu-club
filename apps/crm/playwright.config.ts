@@ -13,7 +13,8 @@ export default defineConfig({
   webServer: [
     {
       command: `node tests/mock-api.ts`,
-      env: { MOCK_PORT: String(MOCK_PORT) },
+      // Страница по 2 филиала: Владелец (3 филиала) проверяет проход курсора до конца.
+      env: { MOCK_PORT: String(MOCK_PORT), MOCK_PAGE_SIZE: '2' },
       url: `http://127.0.0.1:${MOCK_PORT}/api/crm/v1/me`,
       reuseExistingServer: false,
     },

@@ -147,3 +147,31 @@ test('снимки 1440 и 390, без горизонтальной прокру
     await ctx.close();
   }
 });
+
+test('возврат после входа не уводит на чужой сайт', async ({ page }) => {
+  await page.goto('/login?next=/%09/evil.com');
+  await page.getByLabel('Почта').fill('owner@yu.test');
+  await page.getByLabel('Пароль', { exact: true }).fill(MOCK_PASSWORD);
+  await page.getByRole('button', { name: 'Войти' }).click();
+  await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+
+  // Уже вошедший открывает /login?next=… – сервер отвечает 302 только на свой путь.
+  for (const next of ['/%09/evil.com', '/%0A/evil.com', '/%0D/evil.com', '/%5Cevil.com', '//evil.com', 'https://evil.com']) {
+    const r = await page.request.get(`/login?next=${next}`, { maxRedirects: 0 });
+    expect(r.status(), next).toBe(302);
+    expect(r.headers().location, next).toBe('/');
+  }
+  const ok = await page.request.get(`/login?next=${encodeURIComponent('/branches/1?x=1#a')}`, { maxRedirects: 0 });
+  expect(ok.headers().location).toBe('/branches/1?x=1#a');
+});
+
+test('неудачный выход – ошибка на экране, не молчаливый уход', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await expect(page).toHaveURL(/\/$/);
+  await page.route('**/api/crm/v1/auth/logout', (r) =>
+    r.fulfill({ status: 503, json: { error: { code: 'SERVICE_UNAVAILABLE', message: 'Сервер CRM не отвечает.' } } }),
+  );
+  await page.getByRole('button', { name: 'Выйти' }).click();
+  await expect(page.locator('#logout-error')).toHaveText('Не удалось выйти: Сервер CRM не отвечает. Повторите или закройте браузер.');
+  await expect(page).toHaveURL(/\/$/);
+});

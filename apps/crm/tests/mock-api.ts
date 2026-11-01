@@ -135,9 +135,15 @@ export function buildMock() {
     return { staff: publicStaff(s), access: access(s), actions: ACTIONS[s.role] };
   });
 
+  // Курсорная пагинация K11; MOCK_PAGE_SIZE ужимает страницу, чтобы e2e проходили по курсору до конца.
   app.get(`${P}/branches`, async (req) => {
     const ids = new Set(access(currentStaff(req)!).branchIds);
-    return { items: branches.filter((b) => ids.has(b.id)), nextCursor: null };
+    const q = req.query as { cursor?: string; limit?: string };
+    const size = Math.min(Number(q.limit ?? 50), Number(process.env.MOCK_PAGE_SIZE ?? 100));
+    const all = branches.filter((b) => ids.has(b.id));
+    const from = q.cursor ? Number(q.cursor) : 0;
+    const items = all.slice(from, from + size);
+    return { items, nextCursor: from + size < all.length ? String(from + size) : null };
   });
 
   app.get(`${P}/branches/:branchId`, async (req, reply) => {
