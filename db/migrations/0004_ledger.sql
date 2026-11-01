@@ -29,7 +29,14 @@ CREATE TABLE journal.ledger_entries (
   account_id       uuid NOT NULL REFERENCES app.ledger_accounts(id),
   amount           bigint NOT NULL CHECK (amount <> 0),
   balance_after    bigint NOT NULL,               -- ставит триггер, значение из INSERT игнорируется
-  entry_type       text NOT NULL,
+  entry_type       text NOT NULL CONSTRAINT ledger_entry_type_known CHECK (entry_type IN (
+    'cash.opening_balance','cash.income','cash.expense','cash.transfer_out','cash.transfer_in',
+    'cash.withdrawal','cash.correction','cash.refund',
+    'loyalty.accrual','loyalty.penalty','loyalty.spend_time','loyalty.spend_goods',
+    'loyalty.return','loyalty.expire','loyalty.manual',
+    'certificate.issue','certificate.redeem','certificate.expire','certificate.correction',
+    'payroll.accrual','payroll.penalty','payroll.payout','payroll.correction',
+    'reversal')),  -- реестр K3; новый тип – новая миграция
   basis            text,
   branch_id        uuid,
   ref_type         text,
@@ -42,9 +49,11 @@ CREATE TABLE journal.ledger_entries (
   author_type      text NOT NULL CHECK (author_type IN ('staff','client','system')),
   author_id        uuid,
   limit_override   boolean NOT NULL DEFAULT false,
+  limit_override_reason text,                    -- причина режима «ниже предела» (K3 allowBelowLimit.reason)
   CHECK (reversal_of IS NULL OR basis IS NOT NULL),
   CHECK ((reversal_of IS NULL) = (entry_type <> 'reversal')),
-  CHECK (NOT limit_override OR (basis IS NOT NULL AND author_type = 'staff'))
+  CHECK (NOT limit_override OR (basis IS NOT NULL AND author_type = 'staff')),
+  CHECK (limit_override = (limit_override_reason IS NOT NULL))
 );
 CREATE INDEX ledger_entries_account_idx ON journal.ledger_entries (account_id, occurred_at, id);
 CREATE INDEX ledger_entries_ref_idx ON journal.ledger_entries (ref_type, ref_id);

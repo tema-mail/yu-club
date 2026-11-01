@@ -333,18 +333,19 @@ async function insertEntry(
     idempotencyKey: string;
     occurredAt: Date;
     author: PostingInput['author'];
-    limitOverride: boolean;
+    /** Причина режима «ниже предела»; null – режим не включён. */
+    limitOverrideReason: string | null;
   },
 ): Promise<PostedEntry> {
   const res = await tx.query<EntryRow>(
     `INSERT INTO journal.ledger_entries
        (posting_id, account_id, amount, balance_after, entry_type, basis, branch_id, ref_type, ref_id, refs,
-        reversal_of, idempotency_key, occurred_at, author_type, author_id, limit_override)
-     VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15)
+        reversal_of, idempotency_key, occurred_at, author_type, author_id, limit_override, limit_override_reason)
+     VALUES ($1, $2, $3, 0, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16)
      RETURNING ${ENTRY_COLS}`,
     [
       v.postingId, v.accountId, v.amount, v.type, v.basis, v.branchId, v.ref?.type ?? null, v.ref?.id ?? null,
-      JSON.stringify(v.refs), v.reversalOf, v.idempotencyKey, v.occurredAt, v.author.type, v.author.id, v.limitOverride,
+      JSON.stringify(v.refs), v.reversalOf, v.idempotencyKey, v.occurredAt, v.author.type, v.author.id, v.limitOverrideReason !== null, v.limitOverrideReason,
     ],
   );
   return toEntry(res.rows[0]!);
@@ -399,7 +400,7 @@ export async function post(tx: Tx, input: PostingInput): Promise<PostingResult> 
           idempotencyKey: `${key}#${i}`,
           occurredAt: e.occurredAt,
           author: input.author,
-          limitOverride: overrideReason !== null,
+          limitOverrideReason: overrideReason,
         }),
       );
     }
@@ -451,7 +452,7 @@ export async function reverse(
       idempotencyKey: `${key}#0`,
       occurredAt: input.occurredAt,
       author: input.author,
-      limitOverride: false,
+      limitOverrideReason: null,
     });
     return { postingId, entries: [entry], replayed: false };
   } catch (err) {

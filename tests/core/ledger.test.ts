@@ -263,15 +263,28 @@ describe('S0-07 проводки', () => {
     ).rejects.toMatchObject({ code: 'LIMIT_OVERRIDE_NOT_ALLOWED' });
     const ok = await inTx((tx) =>
       post(tx, {
-        entries: [entry(ref, -6000, 'loyalty.penalty')],
+        entries: [entry(ref, -6000, 'loyalty.penalty', { basis: 'неявка 15.11' })],
         idempotencyKey: randomUUID(),
         author: staff,
         allowBelowLimit: { reason: 'решение директора' },
       }),
     );
     expect(await getBalance(pool, acc.id)).toBe(-6000);
-    const row = await pool.query('SELECT limit_override, basis FROM journal.ledger_entries WHERE id = $1', [ok.entries[0]!.id]);
-    expect(row.rows[0]).toEqual({ limit_override: true, basis: 'решение директора' });
+    const row = await pool.query('SELECT limit_override, limit_override_reason, basis FROM journal.ledger_entries WHERE id = $1', [
+      ok.entries[0]!.id,
+    ]);
+    expect(row.rows[0]).toEqual({ limit_override: true, limit_override_reason: 'решение директора', basis: 'неявка 15.11' });
+  });
+
+  it('тип записи вне реестра K3 – отказ базы', async () => {
+    const acc = await open(cash(), 'RUB_KOP', null);
+    await expect(
+      pool.query(
+        `INSERT INTO journal.ledger_entries (posting_id, account_id, amount, balance_after, entry_type, occurred_at, author_type)
+         VALUES ($1, $2, 100, 0, 'cash.gift', $3, 'system')`,
+        [randomUUID(), acc.id, at],
+      ),
+    ).rejects.toMatchObject({ code: '23514', constraint: 'ledger_entry_type_known' });
   });
 
   it('закрытый счёт – ACCOUNT_CLOSED', async () => {
