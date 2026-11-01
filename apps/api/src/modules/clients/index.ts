@@ -371,6 +371,15 @@ export interface ClientCard extends ClientRef {
   rowVersion: number;
 }
 
+/** Ссылки на клиентов по id (имя, маскированный телефон, статус) – для строк броней в CRM (K11 CrmBookingRow).
+ *  Права на брони проверяет вызывающий (booking); полный телефон не отдаётся (03 §14). */
+export async function getClientRefs(db: Db | Tx, ids: string[]): Promise<Map<string, ClientRef>> {
+  const uniq = [...new Set(ids)];
+  if (uniq.length === 0) return new Map();
+  const r = await db.query<ClientRow>(`SELECT ${REF_COLS} FROM app.clients c WHERE c.id = ANY($1::uuid[])`, [uniq]);
+  return new Map(r.rows.map((x) => [x.id, toRef(x)]));
+}
+
 /** Карточка: не-Владельцу – только клиент, связанный с его зоной (иначе NOT_FOUND, как несуществующий). */
 export async function getClientCard(
   db: Db,

@@ -5,14 +5,15 @@
 // при отмене комнаты и наоборот) не трогаются (18 §5.3 п.5–6). Перенос – новая версия брони: строки старой гасятся
 // ('rescheduled') и вставляются строки новой в той же транзакции; ошибка занятия откатывает всё, старая версия
 // действует (01 §11 п.2–3). Комментарий сотрудника обязателен (01 §12); клиенту причина не обязательна (K5 №13).
+import { randomUUID } from 'node:crypto';
 import { writeAudit, type AuditRequestMeta, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { can, type AccessContext, type Action } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { durationMinutes, systemClock, toPgRange, type Clock, type Interval } from '../../core/time.ts';
-import { lockClients } from '../clients/index.ts';
-import { getBranch, type BranchInfo } from '../network/index.ts';
+import { assertCanBook, findOrCreateGuest, lockClients } from '../clients/index.ts';
+import { getBranch, isAcceptingBookings, type BranchInfo } from '../network/index.ts';
 import { quote } from '../pricing/tariff.ts';
 import { lockCompositions } from '../resources/index.ts';
 import type { BookingStatus } from './confirm.ts';
@@ -92,7 +93,7 @@ export async function lockBooking(tx: Tx, bookingId: string): Promise<LockedBook
 
 export interface StaffDenial {
   action: string;
-  bookingId: string;
+  bookingId: string | null;
   branchId: string;
   reason: string;
 }
@@ -101,7 +102,7 @@ const DENIED = new WeakMap<AppError, StaffDenial>();
 export const staffDenialOf = (err: unknown): StaffDenial | undefined => (err instanceof AppError ? DENIED.get(err) : undefined);
 
 /** Вне зоны (нет schedule.view на филиал брони) – 404 как у несуществующей; в зоне без права – 403. */
-export function guardStaff(ctx: AccessContext, b: { id: string; branchId: string }, action: Action, auditAction: string): void {
+export function guardStaff(ctx: AccessContext, b: { id: string | null; branchId: string }, action: Action, auditAction: string): void {
   const fail = (err: AppError, why: string): never => {
     DENIED.set(err, { action: auditAction, bookingId: b.id, branchId: b.branchId, reason: `${err.code}: ${why}` });
     throw err;
@@ -272,4 +273,75 @@ export async function rescheduleBooking(tx: Tx, bookingId: string, input: Resche
     payload: { bookingId: b.id, number: b.number, branchId: b.branchId, branchTimezone: branch.timezone, clientId: b.clientId, previous, current },
   });
   return { ...b, currentVersion: version, resourceId: c.resource.id, start: period.start, end: period.end, priceKop: q.priceKop, rowVersion: b.rowVersion + 1, unitIds: c.units.unitIds, resourceType: c.resource.type, timezone: branch.timezone };
+}
+
+// ---- бронь администратором (K11 №4, K9 «Бронь администратором без профиля», S1-13)
+
+export interface StaffCreateInput {
+  ctx: AccessContext;
+  branchId: string;
+  resourceId: string;
+  start: Date;
+  end: Date;
+  client: { clientId: string } | { phone: string; firstName: string; lastName?: string | undefined };
+  internalComment?: string | undefined;
+}
+
+/** Те же проверки, что K5 confirm, без удержания (01 §9 п.6, §10.2): ресурс, окно, шаг, график, блокировки,
+ *  ограничения клиента, пересечения по базе (occupancy и client_time) – принудительного исключения нет. Клиент без
+ *  профиля – findOrCreateGuest по телефону: пересечение «по телефону» ловит client_time той же карточки (Q-09).
+ *  Порядок замков: клиент → ресурсы → единицы. Событие booking.confirmed (source 'crm') – уведомления как у сайта. */
+export async function createStaffBooking(tx: Tx, input: StaffCreateInput, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<string> {
+  const now = clock.now();
+  const branch = UUID_RE.test(input.branchId) ? await getBranch(tx, input.branchId) : null;
+  if (!branch) throw notFound();
+  guardStaff(input.ctx, { id: null, branchId: branch.id }, 'booking.create', 'booking.created');
+  if (!isAcceptingBookings(branch, now)) throw new AppError('BRANCH_NOT_ACTIVE', 409, 'Филиал сейчас не принимает записи');
+  let clientId: string;
+  if ('clientId' in input.client) {
+    if (!UUID_RE.test(input.client.clientId)) throw new AppError('VALIDATION_FAILED', 400, 'Клиент не найден', { field: 'client.clientId' });
+    clientId = input.client.clientId.toLowerCase(); // нет карточки – NOT_FOUND из assertCanBook
+  } else {
+    clientId = (await findOrCreateGuest(tx, input.client, meta, clock)).id;
+  }
+  await lockClients(tx, [clientId]);
+  await assertCanBook(tx, clientId, now);
+  const maxDays = (await resolveSetting(tx, 'booking.window_max_days', { branchId: branch.id }, now)).value;
+  const c = await checkItem(tx, branch, now, maxDays, { resourceId: input.resourceId, start: input.start, end: input.end });
+  const q = await quote(tx, { branchId: branch.id, resourceType: c.resource.type, start: c.period.start, durationMinutes: durationMinutes(c.period) });
+  await releaseExpiredHolds(tx, now, { unitIds: c.units.unitIds, clientId, period: c.period });
+  const bookingId = randomUUID();
+  await occupyMany(tx, branch.id, [{ units: c.units, period: c.period, source: { type: 'booking', id: bookingId, version: 1 }, clientId }]);
+  const checkoutId = randomUUID();
+  const staffId = input.ctx.actor.staffId;
+  const comment = input.internalComment?.trim() ? input.internalComment.trim() : null;
+  const b = await tx.query<{ number: string }>(
+    `INSERT INTO app.bookings (id, checkout_id, branch_id, client_id, resource_id, period, price_kop, source, internal_comment, created_by_type, created_by_id, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'crm', $8, 'staff', $9, $10) RETURNING number`,
+    [bookingId, checkoutId, branch.id, clientId, c.resource.id, toPgRange(c.period), q.priceKop, comment, staffId, now],
+  );
+  await tx.query(
+    `INSERT INTO journal.booking_versions (booking_id, version, resource_id, period, branch_timezone, unit_ids, resource_snapshot, tariff_id, price_kop, price_snapshot, created_by_type, created_by_id, created_at)
+     VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 'staff', $10, $11)`,
+    [bookingId, c.resource.id, toPgRange(c.period), branch.timezone, c.units.unitIds, JSON.stringify(resourceSnapshot(c.resource, branch)), q.tariffId, q.priceKop, JSON.stringify(q.snapshot), staffId, now],
+  );
+  await writeAudit(
+    tx,
+    meta,
+    { action: 'booking.created', object: { type: 'booking', id: bookingId }, branchId: branch.id, after: { clientId, resourceId: c.resource.id, start: c.period.start, end: c.period.end, priceKop: q.priceKop, source: 'crm' } },
+    clock,
+  );
+  await publish(tx as OutboxTx, {
+    type: 'booking.confirmed',
+    aggregateType: 'booking',
+    aggregateId: bookingId,
+    aggregateVersion: 1,
+    branchId: branch.id,
+    occurredAt: now,
+    payload: {
+      bookingId, number: Number(b.rows[0]!.number), checkoutId, branchId: branch.id, branchTimezone: branch.timezone, clientId, resourceId: c.resource.id,
+      resourceName: c.resource.name, start: c.period.start.toISOString(), end: c.period.end.toISOString(), priceKop: q.priceKop, source: 'crm', bookingVersion: 1,
+    },
+  });
+  return bookingId;
 }

@@ -10,6 +10,7 @@ import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './m
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
+import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingsProvider, clientBranchLinks } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
@@ -114,6 +115,15 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(
       async (scope) =>
         blockRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    void app.register(
+      async (scope) =>
+        bookingCrmRoutes(scope, {
           pool: staff.pool,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
