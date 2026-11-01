@@ -2,7 +2,7 @@
 // Порядок замков у всех команд один: удержание FOR UPDATE → ресурсы FOR SHARE → единицы FOR NO KEY UPDATE → клиент.
 // 8 повторных проверок 01 §8.2: филиал, график, ресурс, пересечения (строки удержания живы – convertHoldItem),
 // активность удержания, блокировки, ограничения клиента (clients.assertCanBook), совместимость состава.
-// Цена – pricing.quote на каждую бронь (нет тарифа → TARIFF_NOT_CONFIGURED, не 0 ₽). Позиции одного ресурса встык –
+// Цена – pricing.quote на каждую позицию, у слитой брони – сумма (нет тарифа → TARIFF_NOT_CONFIGURED, не 0 ₽). Позиции одного ресурса встык –
 // одна бронь; остальные – отдельные брони с общим checkoutId. Снимок зоны, состава, ресурса и цены – booking_versions v1.
 // Повтор подтверждения уже переведённого удержания тем же клиентом – прежний результат (повтор без ключа, K5).
 // В транзакции – только запись, аудит и outbox (K4): внешних вызовов нет.
@@ -143,9 +143,20 @@ export async function confirmHold(tx: Tx, clientId: string, holdId: string, cloc
     const first = group[0]!;
     const period: Interval = { start: first.s, end: group.at(-1)!.e };
     const r = (await getResource(tx, first.resource_id))!;
-    const q = await quote(tx, { branchId: branch.id, resourceType: r.type, start: period.start, durationMinutes: durationMinutes(period) }).catch((e) =>
-      itemError(e, items.indexOf(first), first),
-    );
+    // K5 №12 п.3: цена – по каждой позиции (как totalKop удержания), у слитой брони – сумма позиций.
+    const quotes = [];
+    for (const i of group) {
+      quotes.push(
+        await quote(tx, { branchId: branch.id, resourceType: r.type, start: i.s, durationMinutes: durationMinutes({ start: i.s, end: i.e }) }).catch((e) =>
+          itemError(e, items.indexOf(i), i),
+        ),
+      );
+    }
+    const q = {
+      tariffId: quotes[0]!.tariffId,
+      priceKop: quotes.reduce((a, x) => a + x.priceKop, 0),
+      snapshot: quotes.length === 1 ? quotes[0]!.snapshot : { items: quotes.map((x) => ({ tariffId: x.tariffId, priceKop: x.priceKop, ...x.snapshot })) },
+    };
     const bookingId = randomUUID();
     for (const i of group) await convertHoldItem(tx, now, { id: i.id, unitIds: i.unit_ids, clientId }, { id: bookingId, version: 1 });
     const b = await tx.query<{ number: string }>(

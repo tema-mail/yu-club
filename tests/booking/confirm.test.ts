@@ -240,3 +240,22 @@ describe('повторные проверки и отказы (01 §8.2)', () =>
     expect(Number(after)).toBe(40000);
   });
 });
+
+describe('цена по позициям (K5 №12 п.3, ревизия S1-07 п.2)', () => {
+  it('ступенчатый тариф: две позиции по 30 мин встык – сумма цен позиций, равна totalKop удержания', async () => {
+    const ps = await resource(ids.b2!, null, 'ps_room', 'PS5-b2', [await unit(ids.b2!, null, 'PS5')]);
+    await db.client.query(
+      `INSERT INTO app.tariffs (branch_id, resource_type, name, unit_minutes, price_per_unit_kop, duration_from_min, duration_to_min, valid_from, status, created_by)
+       VALUES ($1, 'ps_room', 'до часа', 30, 30000, 0, 60, '2026-01-01', 'active', $2), ($1, 'ps_room', 'от часа', 30, 20000, 60, NULL, '2026-01-01', 'active', $2)`,
+      [ids.b2, SYS],
+    );
+    const n = await client('+79130000011');
+    const h = await hold(n.id, ids.b2!, [span(ps, '2026-11-23T07:00:00Z', 30), span(ps, '2026-11-23T07:30:00Z', 30)]);
+    expect(h.totalKop).toBe(60000);
+    const r = await confirm(n.id, h.id);
+    expect(r.bookings.map((b) => [b.durationMinutes, b.priceKop])).toEqual([[60, 60000]]);
+    const v = await one<{ price_kop: string; price_snapshot: { items: unknown[] } }>('SELECT price_kop, price_snapshot FROM journal.booking_versions WHERE booking_id = $1', [r.bookings[0]!.id]);
+    expect(Number(v.price_kop)).toBe(60000);
+    expect(v.price_snapshot.items).toHaveLength(2);
+  });
+});
