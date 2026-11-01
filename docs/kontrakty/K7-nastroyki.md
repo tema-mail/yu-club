@@ -61,6 +61,7 @@ export function settingHistory(db: Db, key: SettingKey, scope: SettingScope): Pr
 | `booking.hold_minutes` | int 5..60 | 15 | network | `settings.network.manage` | 01 §4; 15 §7.3 «доступно владельцу» |
 | `booking.buffer_minutes` | int 0..60 | 0 | network, branch | `settings.branch.manage` | 15 §7.6, Q-19 – выключено |
 | `booking.max_hold_items` | int 1..20 | 10 | network | `settings.network.manage` | решение (K5 `HOLD_LIMIT_REACHED`) |
+| `booking.max_anonymous_holds_per_branch` | int 0..500 | 30 | network, branch | `settings.branch.manage` | решение по ревью (K5, защита от бота) |
 | `booking.client_cancel_enabled` | boolean | true | network | `settings.network.manage` | R-12 по умолчанию |
 | `notifications.reminder_day_before_time` | `HH:mm` | `"21:00"` | network | `settings.network.manage` | 01 §14, 09 §6.1 |
 | `notifications.reminder_before_minutes` | int 5..120 | 15 | network | `settings.network.manage` | 01 §14, 09 §6.2 |

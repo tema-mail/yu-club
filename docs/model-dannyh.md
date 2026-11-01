@@ -1,6 +1,6 @@
 # Модель данных этапов 0 и 1
 
-Версия 1 от 01.11.2026 (шаг S0-00). Основа: план 3.3–3.4, 6.1–6.2; ADR 0001–0005.
+Версия 2 от 01.11.2026 (шаг S0-00, правки по architecture-reviewer; сверено с закоммиченными `db/migrations/0001_init.sql`, `db/migrate.ts`, `tests/helpers/pg.ts`). Основа: план 3.3–3.4, 6.1–6.2; ADR 0001–0005.
 Факты ТЗ – со ссылкой «файл §пункт». Мои решения помечены «решение».
 DDL ниже – нормативный: имена таблиц, столбцов, ограничений и их смысл – контракт для миграций. Порядок столбцов и индексы для скорости исполнитель может дополнять.
 
@@ -16,7 +16,11 @@ DDL ниже – нормативный: имена таблиц, столбцо
 | Автор | `created_by_type text, created_by_id uuid` – без FK (решение: журналы не зависят от порядка миграций и живут дольше актора) |
 | Коды статусов | `text` + CHECK со списком системных кодов; подписи – в словаре `dict_statuses` (15 §16: системный код неизменен) |
 | Филиальная привязка | у операционных таблиц `branch_id uuid NOT NULL` (04 §8.1) – по нему работает `scopeFilter` (K1) |
-| Журнальные таблицы | `audit_events`, `ledger_entries`, `booking_versions`, `client_consents` – `yu_app` только `SELECT, INSERT` |
+| Схемы | `app` – рабочие таблицы (у `yu_app` SELECT/INSERT/UPDATE/DELETE), `journal` – журнальные: `audit_events`, `ledger_entries`, `booking_versions`, `client_consents` (у `yu_app` только SELECT/INSERT) – права выдают default privileges из `0001_init.sql`. Каждая таблица в DDL – с именем схемы. `public` – только `schema_migrations` раннера |
+| search_path рантайма | пул `yu_app` открывает соединения с `options: '-c search_path=app,journal'` (`apps/api/src/core/db.ts`, решение: не `ALTER ROLE` – миграции не должны требовать CREATEROLE от мигратора). SQL в коде модулей может писать имена без схемы |
+| Формат миграции | один файл `NNNN_name.sql` с секциями `-- migrate:up` / `-- migrate:down`, каждая – в своей транзакции (`db/migrate.ts`); имя строго `^\d{4}_[a-z0-9_]+\.sql$` – суффиксов вроде `0002a` нет |
+| Регистр email | без `citext` (решение: расширение не ставим ради двух столбцов): `email text` + `CHECK (email = lower(email))`, приложение приводит к нижнему регистру, уникальность – по столбцу |
+| «Сейчас» | бизнес-моменты (`expires_at`, `hold_expires_at`, `occurred_at`, `released_at`, `planned_at`, `arrived_at` …) команда передаёт явно из `Clock` (`$now`, ADR 0003 п.10); `DEFAULT now()` оставлен только у технических `created_at`/`recorded_at`. `now()` в WHERE команд не используется |
 
 **Владельцы таблиц** (ADR 0002): столбец «Модуль» в каждом разделе. Чужие таблицы – только через `modules/<x>/index.ts`.
 
@@ -26,7 +30,7 @@ FK, которые смотрят «вперёд» (на таблицу из б�
 
 | № | Файл | Таблицы | FK наружу (на что) | Отложенные FK, добавляемые здесь |
 |---|---|---|---|---|
-| 0001 | `0001_init.sql` | – (расширения `btree_gist`, `citext`; проверка ролей `yu_owner`, `yu_app`; `schema_migrations`) | – | – |
+| 0001 | `0001_init.sql` (закоммичен) | – (`btree_gist`; проверка роли `yu_app`; схемы `app`, `journal`; default privileges; `journal.make_append_only`, `journal.append_only_violations`) | – | – |
 | 0002 | `0002_idempotency.sql` | `idempotency_keys` | – | – |
 | 0003 | `0003_audit.sql` | `audit_events` | – (без FK, решение) | – |
 | 0004 | `0004_ledger.sql` | `ledger_accounts`, `ledger_entries` | `ledger_entries → ledger_accounts`, `→ ledger_entries` (сторно) | – |
@@ -58,32 +62,23 @@ FK, которые смотрят «вперёд» (на таблицу из б�
 
 ### 0001 – init
 
-```sql
-CREATE EXTENSION IF NOT EXISTS btree_gist;
-CREATE EXTENSION IF NOT EXISTS citext;
--- роли создаёт deploy/initdb; миграция падает, если их нет
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yu_app') THEN RAISE EXCEPTION 'role yu_app missing'; END IF;
-END $$;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO yu_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO yu_app;
-```
-Журнальные таблицы в своих миграциях делают `REVOKE UPDATE, DELETE, TRUNCATE ON <t> FROM yu_app`.
+Файл уже в репозитории – источник истины он, а не этот документ. Кратко: `btree_gist`, проверка роли `yu_app` (создаёт initdb / globalSetup тестов), `CREATE SCHEMA app, journal`, default privileges (app – SELECT/INSERT/UPDATE/DELETE; journal – SELECT/INSERT), функции `journal.make_append_only(regclass)` и `journal.append_only_violations()`. Таблица учёта – `public.schema_migrations` (создаёт раннер).
+Каждая следующая миграция, создающая журнальную таблицу, в тесте проверяет `SELECT * FROM journal.append_only_violations()` – пусто.
 
 ### 0002 – idempotency_keys (core)
 
 ```sql
-CREATE TABLE idempotency_keys (
+CREATE TABLE app.idempotency_keys (
   scope           text        NOT NULL,          -- '<actorType>:<actorId>:<operation>'
   key             uuid        NOT NULL,
   request_hash    text        NOT NULL,          -- sha256 hex
   response_status smallint,                      -- NULL до фиксации не бывает: пишется в той же транзакции
   response_body   jsonb,
-  created_at      timestamptz NOT NULL DEFAULT now(),
-  expires_at      timestamptz NOT NULL,
+  created_at      timestamptz NOT NULL,              -- $now из Clock
+  expires_at      timestamptz NOT NULL,              -- $now + 72 ч
   PRIMARY KEY (scope, key)
 );
-CREATE INDEX idempotency_keys_expires_idx ON idempotency_keys (expires_at);
+CREATE INDEX idempotency_keys_expires_idx ON app.idempotency_keys (expires_at);
 ```
 Правила – ADR 0004 §2 (16 §2.2, §15.2).
 
@@ -92,9 +87,9 @@ CREATE INDEX idempotency_keys_expires_idx ON idempotency_keys (expires_at);
 Поля – ровно 04 §11.2.
 
 ```sql
-CREATE TABLE audit_events (
+CREATE TABLE journal.audit_events (
   id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  occurred_at   timestamptz NOT NULL DEFAULT now(),
+  occurred_at   timestamptz NOT NULL,                   -- $now из Clock
   actor_type    text NOT NULL CHECK (actor_type IN ('staff','client','system','anonymous')),
   actor_id      uuid,                                   -- NULL для system/anonymous
   actor_role    text CHECK (actor_role IN ('owner','director','admin')),  -- на момент действия
@@ -113,16 +108,16 @@ CREATE TABLE audit_events (
   ip            inet,
   CHECK ((actor_type IN ('staff','client')) = (actor_id IS NOT NULL))
 );
-CREATE INDEX audit_object_idx ON audit_events (object_type, object_id, occurred_at);
-CREATE INDEX audit_branch_time_idx ON audit_events (branch_id, occurred_at);
-CREATE INDEX audit_actor_idx ON audit_events (actor_type, actor_id, occurred_at);
-REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM yu_app;   -- 04 §11.4
+CREATE INDEX audit_object_idx ON journal.audit_events (object_type, object_id, occurred_at);
+CREATE INDEX audit_branch_time_idx ON journal.audit_events (branch_id, occurred_at);
+CREATE INDEX audit_actor_idx ON journal.audit_events (actor_type, actor_id, occurred_at);
+-- journal.audit_events: yu_app только SELECT/INSERT (default privileges 0001); тест – journal.append_only_violations() пуст
 ```
 
 ### 0004 – ledger (core)
 
 ```sql
-CREATE TABLE ledger_accounts (
+CREATE TABLE app.ledger_accounts (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   kind         text NOT NULL CHECK (kind IN ('cash_branch','loyalty_client','certificate','staff_payroll')),
   unit         text NOT NULL CHECK (unit IN ('RUB_KOP','POINT_CENTI')),
@@ -133,42 +128,57 @@ CREATE TABLE ledger_accounts (
   min_balance  bigint,                 -- NULL = без нижней границы
   status       text NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),
   created_at   timestamptz NOT NULL DEFAULT now(),
-  CHECK (min_balance IS NULL OR balance >= min_balance),
+  -- нижняя граница проверяется триггером проводки (ниже), а не CHECK: нужен явный режим «ниже предела»
   CHECK ((kind = 'loyalty_client') = (unit = 'POINT_CENTI')),
   UNIQUE (kind, owner_type, owner_id)
 );
 
-CREATE TABLE ledger_entries (
+CREATE TABLE journal.ledger_entries (
   id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   posting_id       uuid NOT NULL,                 -- общий у записей одной проводки
-  account_id       uuid NOT NULL REFERENCES ledger_accounts(id),
+  account_id       uuid NOT NULL REFERENCES app.ledger_accounts(id),
   amount           bigint NOT NULL CHECK (amount <> 0),
-  balance_after    bigint NOT NULL,
+  balance_after    bigint NOT NULL,               -- ставит триггер, значение из INSERT игнорируется
   entry_type       text NOT NULL,                 -- реестр K3
   basis            text,                          -- основание/комментарий (06 §8: обязателен у расхода)
   branch_id        uuid,                          -- филиал операции; FK → branches в 0008
   ref_type         text,                          -- 'booking' | 'visit' | 'event' | 'repair' | 'certificate' | ...
   ref_id           uuid,
   refs             jsonb NOT NULL DEFAULT '{}',   -- дополнительные ссылки {bookingId, eventId, ...}
-  reversal_of      bigint UNIQUE REFERENCES ledger_entries(id),  -- второе сторно невозможно
+  reversal_of      bigint UNIQUE REFERENCES journal.ledger_entries(id),  -- второе сторно невозможно
   idempotency_key  text UNIQUE,                   -- навсегда, ADR 0004
   occurred_at      timestamptz NOT NULL,          -- дата факта (может быть ≤ recorded_at)
   recorded_at      timestamptz NOT NULL DEFAULT now(),
   author_type      text NOT NULL CHECK (author_type IN ('staff','client','system')),
   author_id        uuid,
-  CHECK (reversal_of IS NULL OR basis IS NOT NULL)          -- сторно с причиной (16 §2.7)
+  limit_override   boolean NOT NULL DEFAULT false,  -- явный режим «ниже предела» (K3 post({ allowBelowLimit }))
+  CHECK (reversal_of IS NULL OR basis IS NOT NULL),         -- сторно с причиной (16 §2.7)
+  CHECK (NOT limit_override OR (basis IS NOT NULL AND author_type = 'staff'))
 );
-CREATE INDEX ledger_entries_account_idx ON ledger_entries (account_id, occurred_at, id);  -- стабильный порядок (06 §10)
-CREATE INDEX ledger_entries_ref_idx ON ledger_entries (ref_type, ref_id);
-REVOKE UPDATE, DELETE, TRUNCATE ON ledger_entries FROM yu_app;
--- триггер ledger_reversal_check BEFORE INSERT: если reversal_of задан –
---   исходная запись того же account_id, amount = -исходной, исходная сама не сторно (reversal_of IS NULL)
+CREATE INDEX ledger_entries_account_idx ON journal.ledger_entries (account_id, occurred_at, id);  -- стабильный порядок (06 §10)
+CREATE INDEX ledger_entries_ref_idx ON journal.ledger_entries (ref_type, ref_id);
+-- journal.ledger_entries: yu_app только SELECT/INSERT (default privileges 0001)
+
+-- Баланс меняет ТОЛЬКО триггер проводки: у yu_app нет UPDATE на ledger_accounts, кроме столбца status.
+REVOKE UPDATE ON app.ledger_accounts FROM yu_app;
+GRANT UPDATE (status) ON app.ledger_accounts TO yu_app;
+
+-- Два BEFORE INSERT триггера; порядок срабатывания – по имени.
+-- ledger_entries_10_check_reversal (единственное имя триггера сторно; так же в ADR 0004 и K3):
+--   если reversal_of задан – исходная того же account_id, amount = −исходной, исходная сама не сторно.
+-- ledger_entries_20_apply_balance (функция SECURITY DEFINER владельца, search_path зафиксирован):
+--   SELECT balance, min_balance, status FROM app.ledger_accounts WHERE id = NEW.account_id FOR UPDATE;
+--   status = 'closed' → RAISE 'ACCOUNT_CLOSED';
+--   new := balance + NEW.amount;
+--   min_balance IS NOT NULL AND new < min_balance AND NOT NEW.limit_override
+--     → RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'ledger_balance_below_limit';
+--   NEW.balance_after := new; UPDATE app.ledger_accounts SET balance = new WHERE id = NEW.account_id;
 ```
 
 ### 0005 – outbox (core)
 
 ```sql
-CREATE TABLE outbox_events (
+CREATE TABLE app.outbox_events (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),   -- = eventId в K4
   event_type     text NOT NULL,           -- 'booking.confirmed'
   event_version  smallint NOT NULL,
@@ -177,14 +187,14 @@ CREATE TABLE outbox_events (
   branch_id      uuid,
   payload        jsonb NOT NULL,
   dedupe_key     text NOT NULL UNIQUE,    -- '<event_type>:<aggregate_id>:<aggregate_version>'
-  occurred_at    timestamptz NOT NULL DEFAULT now(),
+  occurred_at    timestamptz NOT NULL,    -- $now из Clock
   dispatched_at  timestamptz              -- поставлено в pg-boss
 );
-CREATE INDEX outbox_undispatched_idx ON outbox_events (occurred_at) WHERE dispatched_at IS NULL;
+CREATE INDEX outbox_undispatched_idx ON app.outbox_events (occurred_at) WHERE dispatched_at IS NULL;
 
-CREATE TABLE processed_events (
+CREATE TABLE app.processed_events (
   handler      text NOT NULL,             -- 'notifications.onBookingConfirmed'
-  event_id     uuid NOT NULL REFERENCES outbox_events(id),
+  event_id     uuid NOT NULL REFERENCES app.outbox_events(id),
   processed_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (handler, event_id)
 );
@@ -193,15 +203,16 @@ CREATE TABLE processed_events (
 ### 0006 – staff (staff)
 
 ```sql
-CREATE TABLE staff (
+CREATE TABLE app.staff (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   first_name         text NOT NULL,
   last_name          text NOT NULL,
-  email              citext NOT NULL UNIQUE,          -- логин (N-05)
+  email              text NOT NULL UNIQUE CHECK (email = lower(email)),   -- логин (N-05)
   phone_e164         text,
   role               text NOT NULL CHECK (role IN ('owner','director','admin')),   -- 04 §3.2
   status             text NOT NULL DEFAULT 'active' CHECK (status IN ('active','blocked','archived')),
   password_hash      text NOT NULL,                   -- argon2id (17 §7.5)
+  must_change_password boolean NOT NULL DEFAULT false, -- после сброса (K12)
   totp_secret_enc    text,                            -- 2FA по желанию (N-05), шифр AES-GCM ключом из окружения
   last_login_at      timestamptz,
   rights_changed_at  timestamptz,                     -- 04 §3.1
@@ -209,11 +220,11 @@ CREATE TABLE staff (
   created_at         timestamptz NOT NULL DEFAULT now(),
   row_version        int NOT NULL DEFAULT 1
 );
-CREATE UNIQUE INDEX staff_single_owner_idx ON staff ((true)) WHERE role = 'owner' AND status = 'active';  -- решение: один активный Владелец
+CREATE UNIQUE INDEX staff_single_owner_idx ON app.staff ((true)) WHERE role = 'owner' AND status = 'active';  -- решение: один активный Владелец
 
-CREATE TABLE staff_sessions (
+CREATE TABLE app.staff_sessions (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  staff_id       uuid NOT NULL REFERENCES staff(id),
+  staff_id       uuid NOT NULL REFERENCES app.staff(id),
   token_hash     text NOT NULL UNIQUE,                -- HMAC-SHA256(token, SESSION_PEPPER)
   created_at     timestamptz NOT NULL DEFAULT now(),
   last_seen_at   timestamptz NOT NULL DEFAULT now(),
@@ -223,26 +234,26 @@ CREATE TABLE staff_sessions (
   ip             inet,
   user_agent     text
 );
-CREATE INDEX staff_sessions_active_idx ON staff_sessions (staff_id) WHERE revoked_at IS NULL;
+CREATE INDEX staff_sessions_active_idx ON app.staff_sessions (staff_id) WHERE revoked_at IS NULL;
 
-CREATE TABLE staff_login_attempts (
+CREATE TABLE app.staff_login_attempts (
   id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  email_norm  citext NOT NULL,
+  email_norm  text NOT NULL CHECK (email_norm = lower(email_norm)),
   staff_id    uuid,
   ip          inet,
   success     boolean NOT NULL,
   at          timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX staff_login_attempts_idx ON staff_login_attempts (email_norm, at);
+CREATE INDEX staff_login_attempts_idx ON app.staff_login_attempts (email_norm, at);
 ```
 Блокировка сотрудника завершает все его сессии в той же транзакции (`revoke_reason = 'blocked'`, 04 §6.3, 17 §7.4).
 
 ### 0007 – staff_assignments (core/permissions)
 
 ```sql
-CREATE TABLE staff_assignments (
+CREATE TABLE app.staff_assignments (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  staff_id     uuid NOT NULL REFERENCES staff(id),
+  staff_id     uuid NOT NULL REFERENCES app.staff(id),
   scope_type   text NOT NULL CHECK (scope_type IN ('network','city','branch')),
   city_id      uuid,          -- FK → cities в 0008
   branch_id    uuid,          -- FK → branches в 0008
@@ -268,7 +279,7 @@ CREATE TABLE staff_assignments (
 ### 0008 – network (network)
 
 ```sql
-CREATE TABLE cities (
+CREATE TABLE app.cities (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code        text NOT NULL UNIQUE,                    -- внутренний идентификатор (02 §5.1)
   slug        text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9-]+$'),   -- ЧПУ /{city}/ (решение)
@@ -282,9 +293,9 @@ CREATE TABLE cities (
   row_version int NOT NULL DEFAULT 1
 );
 
-CREATE TABLE branches (
+CREATE TABLE app.branches (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  city_id            uuid NOT NULL REFERENCES cities(id),
+  city_id            uuid NOT NULL REFERENCES app.cities(id),
   code               text NOT NULL UNIQUE,
   slug               text NOT NULL CHECK (slug ~ '^[a-z0-9-]+$'),
   name               text NOT NULL,
@@ -310,9 +321,9 @@ CREATE TABLE branches (
   CHECK (status <> 'temporarily_closed' OR (temp_closed_from IS NOT NULL AND temp_close_reason IS NOT NULL))
 );
 
-CREATE TABLE branch_weekly_hours (            -- регулярный график (01 §4.1, 15 §6.1)
+CREATE TABLE app.branch_weekly_hours (            -- регулярный график (01 §4.1, 15 §6.1)
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id   uuid NOT NULL REFERENCES branches(id),
+  branch_id   uuid NOT NULL REFERENCES app.branches(id),
   weekday     smallint NOT NULL CHECK (weekday BETWEEN 1 AND 7),   -- ISO: 1 = Пн
   open_time   time,                                                -- NULL + is_closed = выходной
   close_time  time,
@@ -326,10 +337,10 @@ CREATE TABLE branch_weekly_hours (            -- регулярный графи
 );
 -- новый филиал: 7 строк 10:00–22:00 (01 §4 п.1)
 
-ALTER TABLE staff_assignments ADD FOREIGN KEY (city_id) REFERENCES cities(id);
-ALTER TABLE staff_assignments ADD FOREIGN KEY (branch_id) REFERENCES branches(id);
-ALTER TABLE ledger_accounts  ADD FOREIGN KEY (branch_id) REFERENCES branches(id);
-ALTER TABLE ledger_entries   ADD FOREIGN KEY (branch_id) REFERENCES branches(id);
+ALTER TABLE app.staff_assignments ADD FOREIGN KEY (city_id) REFERENCES app.cities(id);
+ALTER TABLE app.staff_assignments ADD FOREIGN KEY (branch_id) REFERENCES app.branches(id);
+ALTER TABLE app.ledger_accounts  ADD FOREIGN KEY (branch_id) REFERENCES app.branches(id);
+ALTER TABLE journal.ledger_entries   ADD FOREIGN KEY (branch_id) REFERENCES app.branches(id);
 ```
 Смена графика – новая строка с `valid_from` и закрытие старой (`valid_to`), прошлое не переписывается. Сокращение часов – до сохранения список затронутых броней (15 §6.5), с Э1.
 Архив города запрещён, пока есть неархивные филиалы (02 §5.2) – проверка в коде + аудит.
@@ -337,12 +348,12 @@ ALTER TABLE ledger_entries   ADD FOREIGN KEY (branch_id) REFERENCES branches(id)
 ### 0009 – settings_values (core/settings)
 
 ```sql
-CREATE TABLE settings_values (
+CREATE TABLE app.settings_values (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   key         text NOT NULL,                                     -- реестр K7
   level       text NOT NULL CHECK (level IN ('network','city','branch')),   -- 'system' – значение в коде (K7)
-  city_id     uuid REFERENCES cities(id),
-  branch_id   uuid REFERENCES branches(id),
+  city_id     uuid REFERENCES app.cities(id),
+  branch_id   uuid REFERENCES app.branches(id),
   value       jsonb NOT NULL,
   valid_from  timestamptz NOT NULL,
   valid_to    timestamptz,                                       -- NULL = бессрочно; закрытие = возврат к наследованию
@@ -363,7 +374,7 @@ CREATE TABLE settings_values (
 ### 0010 – dictionaries (dictionaries)
 
 ```sql
-CREATE TABLE dict_resource_types (           -- 02 §8.2, 15 §8.1
+CREATE TABLE app.dict_resource_types (           -- 02 §8.2, 15 §8.1
   code          text PRIMARY KEY,           -- системный код неизменен: 'pc','vr_seat','ps_room','room_whole','composite'
   name          text NOT NULL,
   step_minutes  smallint NOT NULL CHECK (step_minutes > 0 AND 1440 % step_minutes = 0),   -- VR 15, ПК/PS 30 (01 §4)
@@ -372,23 +383,23 @@ CREATE TABLE dict_resource_types (           -- 02 §8.2, 15 §8.1
   archived_at   timestamptz,
   sort_order    int NOT NULL DEFAULT 0
 );
-CREATE TABLE dict_space_types (             -- 02 §7.1
+CREATE TABLE app.dict_space_types (             -- 02 §7.1
   code text PRIMARY KEY, name text NOT NULL, is_system boolean NOT NULL DEFAULT false,
   archived_at timestamptz, sort_order int NOT NULL DEFAULT 0
 );
-CREATE TABLE dict_statuses (                -- 15 §16: подписи системных статусов
+CREATE TABLE app.dict_statuses (                -- 15 §16: подписи системных статусов
   domain     text NOT NULL,                 -- 'booking','branch','room','client','hold','notification',...
   code       text NOT NULL,
   name       text NOT NULL,
   PRIMARY KEY (domain, code)
 );
-CREATE TABLE dict_status_transitions (      -- допустимые переходы (15 §16)
+CREATE TABLE app.dict_status_transitions (      -- допустимые переходы (15 §16)
   domain text NOT NULL, from_code text NOT NULL, to_code text NOT NULL,
   PRIMARY KEY (domain, from_code, to_code),
-  FOREIGN KEY (domain, from_code) REFERENCES dict_statuses(domain, code),
-  FOREIGN KEY (domain, to_code)   REFERENCES dict_statuses(domain, code)
+  FOREIGN KEY (domain, from_code) REFERENCES app.dict_statuses(domain, code),
+  FOREIGN KEY (domain, to_code)   REFERENCES app.dict_statuses(domain, code)
 );
-CREATE TABLE dict_reasons (                 -- причины: отмена, неявка, блокировка, корректировка ...
+CREATE TABLE app.dict_reasons (                 -- причины: отмена, неявка, блокировка, корректировка ...
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   domain      text NOT NULL CHECK (domain IN ('booking_cancel_club','booking_cancel_client','no_show','visit_correction',
                                               'resource_block','ledger_correction')),
@@ -410,18 +421,18 @@ CREATE TABLE dict_reasons (                 -- причины: отмена, н�
 ### 0101 – resources (resources)
 
 ```sql
-CREATE TABLE spaces (                        -- помещение (02 §3.3, §7.1)
+CREATE TABLE app.spaces (                        -- помещение (02 §3.3, §7.1)
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  space_type text NOT NULL REFERENCES dict_space_types(code),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  space_type text NOT NULL REFERENCES app.dict_space_types(code),
   name text NOT NULL, description text, internal_comment text,
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','unavailable','repair','closed','archived')),
   sort_order int NOT NULL DEFAULT 0, archived_at timestamptz, row_version int NOT NULL DEFAULT 1
 );
-CREATE TABLE rooms (                         -- 02 §7.2
+CREATE TABLE app.rooms (                         -- 02 §7.2
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  space_id uuid REFERENCES spaces(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  space_id uuid REFERENCES app.spaces(id),
   slug text NOT NULL CHECK (slug ~ '^[a-z0-9-]+$'),
   name text NOT NULL, capacity smallint CHECK (capacity > 0),
   public_description text, internal_description text,
@@ -431,11 +442,11 @@ CREATE TABLE rooms (                         -- 02 §7.2
   sort_order int NOT NULL DEFAULT 0, archived_at timestamptz, row_version int NOT NULL DEFAULT 1,
   UNIQUE (branch_id, slug)
 );
-CREATE TABLE resources (                     -- ресурс бронирования (02 §8.1): то, что выбирает клиент
+CREATE TABLE app.resources (                     -- ресурс бронирования (02 §8.1): то, что выбирает клиент
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  room_id uuid REFERENCES rooms(id),
-  resource_type text NOT NULL REFERENCES dict_resource_types(code),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  room_id uuid REFERENCES app.rooms(id),
+  resource_type text NOT NULL REFERENCES app.dict_resource_types(code),
   name text NOT NULL,
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','unavailable','archived')),
   self_bookable boolean NOT NULL DEFAULT true,      -- «признак самостоятельной брони» (02 §8.1)
@@ -450,28 +461,28 @@ CREATE TABLE resources (                     -- ресурс бронирова�
 ### 0102 – occupancy (resources: единицы и состав; booking: строки занятости)
 
 ```sql
-CREATE TABLE occupancy_units (               -- физическая единица занятости (K6): VR1, VR2, PS4, ПК-3
+CREATE TABLE app.occupancy_units (               -- физическая единица занятости (K6): VR1, VR2, PS4, ПК-3
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  room_id uuid REFERENCES rooms(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  room_id uuid REFERENCES app.rooms(id),
   code text NOT NULL,                       -- 'VR1'
   name text NOT NULL,
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
   UNIQUE (branch_id, code)
 );
-CREATE TABLE resource_units (                -- состав: ресурс → единицы, с периодом действия (02 §8.4)
-  resource_id uuid NOT NULL REFERENCES resources(id),
-  unit_id uuid NOT NULL REFERENCES occupancy_units(id),
+CREATE TABLE app.resource_units (                -- состав: ресурс → единицы, с периодом действия (02 §8.4)
+  resource_id uuid NOT NULL REFERENCES app.resources(id),
+  unit_id uuid NOT NULL REFERENCES app.occupancy_units(id),
   valid_from timestamptz NOT NULL,
   valid_to timestamptz,
   PRIMARY KEY (resource_id, unit_id, valid_from),
   CHECK (valid_to IS NULL OR valid_to > valid_from),
   EXCLUDE USING gist (resource_id WITH =, unit_id WITH =, tstzrange(valid_from, valid_to, '[)') WITH &&)
 );
-CREATE TABLE occupancy (                     -- кто занимает единицу на интервал
+CREATE TABLE app.occupancy (                     -- кто занимает единицу на интервал
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  unit_id uuid NOT NULL REFERENCES occupancy_units(id),
-  branch_id uuid NOT NULL REFERENCES branches(id),
+  unit_id uuid NOT NULL REFERENCES app.occupancy_units(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
   period tstzrange NOT NULL,
   source_type text NOT NULL CHECK (source_type IN ('hold_item','booking','event')),   -- 'event' – Э3
   source_id uuid NOT NULL,                   -- hold_items.id | bookings.id | events.id
@@ -485,22 +496,22 @@ CREATE TABLE occupancy (                     -- кто занимает един
   CONSTRAINT occupancy_no_overlap
     EXCLUDE USING gist (unit_id WITH =, period WITH &&) WHERE (active)            -- 01 §8, 17 §10
 );
-CREATE INDEX occupancy_source_idx ON occupancy (source_type, source_id) WHERE active;
-CREATE INDEX occupancy_branch_period_idx ON occupancy USING gist (branch_id, period) WHERE active;
-CREATE INDEX occupancy_hold_expiry_idx ON occupancy (hold_expires_at) WHERE active AND source_type = 'hold_item';
+CREATE INDEX occupancy_source_idx ON app.occupancy (source_type, source_id) WHERE active;
+CREATE INDEX occupancy_branch_period_idx ON app.occupancy USING gist (branch_id, period) WHERE active;
+CREATE INDEX occupancy_hold_expiry_idx ON app.occupancy (hold_expires_at) WHERE active AND source_type = 'hold_item';
 ```
 Ключевое правило (01 §5.2, 17 §10; R-01 по умолчанию): бронь «комната целиком» пишет строки на VR1, VR2, PS4; место VR – на свою единицу. Любые две активные строки одной единицы с пересечением отвергает `occupancy_no_overlap` – TC-01…TC-03 гарантирует база.
-Истёкшее удержание: `EXCLUDE` не умеет `now()`, поэтому каждая команда занятия **в начале своей транзакции** гасит истёкшие строки на нужных единицах (K6 `releaseExpiredHolds`), а задача pg-boss гасит остальные раз в 15 с.
+Истёкшее удержание: `EXCLUDE` не умеет время, поэтому каждая команда занятия **в начале своей транзакции** гасит истёкшие строки на нужных единицах (K6 `releaseExpiredHolds`, с `$now` из Clock), а задача pg-boss гасит остальные раз в 15 с. Все строки команды вставляются одним INSERT в порядке `unit_id` (K6, ADR 0004 §3).
 
 ### 0103 – calendar_exceptions (network)
 
 ```sql
-CREATE TABLE calendar_exceptions (           -- 15 §6.2–6.3, 01 §4.1 п.3
+CREATE TABLE app.calendar_exceptions (           -- 15 §6.2–6.3, 01 §4.1 п.3
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
   scope_type text NOT NULL CHECK (scope_type IN ('branch','room','resource')),
-  room_id uuid REFERENCES rooms(id),
-  resource_id uuid REFERENCES resources(id),
+  room_id uuid REFERENCES app.rooms(id),
+  resource_id uuid REFERENCES app.resources(id),
   local_date date NOT NULL,                   -- дата филиала
   kind text NOT NULL CHECK (kind IN ('closed','short_day','special_hours','holiday','technical')),
   open_time time, close_time time,            -- для short_day / special_hours
@@ -521,39 +532,39 @@ CREATE TABLE calendar_exceptions (           -- 15 §6.2–6.3, 01 §4.1 п.3
 ### 0104 – resource_blocks (booking)
 
 ```sql
-CREATE TABLE resource_blocks (               -- 01 §13
+CREATE TABLE app.resource_blocks (               -- 01 §13
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
   target_type text NOT NULL CHECK (target_type IN ('unit','resource','room','resources')),
   target_ids uuid[] NOT NULL,                   -- что выбрал сотрудник (для показа)
   period tstzrange NOT NULL,
-  reason_id uuid NOT NULL REFERENCES dict_reasons(id),   -- domain 'resource_block'
+  reason_id uuid NOT NULL REFERENCES app.dict_reasons(id),   -- domain 'resource_block'
   comment text,
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','lifted')),
   created_by uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
   lifted_at timestamptz, lifted_by uuid, lift_comment text,
   row_version int NOT NULL DEFAULT 1
 );
-CREATE TABLE resource_block_units (          -- развёрнутые единицы на момент создания
-  block_id uuid NOT NULL REFERENCES resource_blocks(id),
-  unit_id uuid NOT NULL REFERENCES occupancy_units(id),
+CREATE TABLE app.resource_block_units (          -- развёрнутые единицы на момент создания
+  block_id uuid NOT NULL REFERENCES app.resource_blocks(id),
+  unit_id uuid NOT NULL REFERENCES app.occupancy_units(id),
   period tstzrange NOT NULL,
   active boolean NOT NULL DEFAULT true,
   PRIMARY KEY (block_id, unit_id)
 );
-CREATE INDEX resource_block_units_gist ON resource_block_units USING gist (unit_id, period) WHERE active;
+CREATE INDEX resource_block_units_gist ON app.resource_block_units USING gist (unit_id, period) WHERE active;
 ```
-Блокировка **не** входит в `occupancy` и не конфликтует с бронями: ложится поверх и возвращает список затронутых (01 §13). Новые удержания/брони на заблокированную единицу отвергает проверка K6 в той же транзакции (`SELECT ... FOR SHARE` по `resource_block_units`, решение).
+Блокировка **не** входит в `occupancy` и не конфликтует с бронями: ложится поверх и возвращает список затронутых (01 §13). Новые удержания/брони на заблокированную единицу отвергает проверка K6 в той же транзакции. Гонку «блокировка ↔ удержание» сериализует строка единицы: `occupy` берёт `occupancy_units ... FOR SHARE`, создание блокировки – `FOR UPDATE` (K6 `createBlock`).
 
 ### 0105 – clients (clients)
 
 ```sql
-CREATE TABLE clients (                       -- 03 §4.1
+CREATE TABLE app.clients (                       -- 03 §4.1
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone_e164 text NOT NULL UNIQUE CHECK (phone_e164 ~ '^\+[1-9][0-9]{7,14}$'),   -- одна карточка на телефон (03 §3 п.1)
+  phone_e164 text UNIQUE CHECK (phone_e164 ~ '^\+[1-9][0-9]{7,14}$'),   -- одна карточка на телефон (03 §3 п.1); NULL только после обезличивания
   phone_verified_at timestamptz,               -- до подтверждения – неподтверждённый (03 §5.2)
   first_name text, last_name text,
-  email citext,
+  email text CHECK (email = lower(email)),
   birth_date date,
   status text NOT NULL DEFAULT 'guest'
     CHECK (status IN ('guest','active','restricted','blocked','deletion_requested','anonymized')),   -- 03 §4.2 + 'guest' (решение, Q-09)
@@ -563,12 +574,13 @@ CREATE TABLE clients (                       -- 03 §4.1
   last_login_at timestamptz, last_activity_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   created_by_type text NOT NULL, created_by_id uuid,
-  row_version int NOT NULL DEFAULT 1
+  row_version int NOT NULL DEFAULT 1,
+  CHECK (phone_e164 IS NOT NULL OR status = 'anonymized')      -- 03 §13, 152-ФЗ (ревью п.11)
 );
-CREATE INDEX clients_name_idx ON clients (lower(last_name), lower(first_name));
-CREATE TABLE client_consents (               -- согласия и отказы, только вставка (03 §10, N-01)
+CREATE INDEX clients_name_idx ON app.clients (lower(last_name), lower(first_name));
+CREATE TABLE journal.client_consents (               -- согласия и отказы, только вставка (03 §10, N-01)
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  client_id uuid NOT NULL REFERENCES clients(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
   kind text NOT NULL CHECK (kind IN ('pd_processing','marketing','reminders')),
   granted boolean NOT NULL,
   document_version text,                      -- версия текста согласия/политики
@@ -576,9 +588,9 @@ CREATE TABLE client_consents (               -- согласия и отказы
   at timestamptz NOT NULL DEFAULT now(),
   actor_type text NOT NULL, actor_id uuid
 );
-REVOKE UPDATE, DELETE, TRUNCATE ON client_consents FROM yu_app;
-CREATE TABLE client_notification_prefs (     -- текущее состояние (09 §5)
-  client_id uuid PRIMARY KEY REFERENCES clients(id),
+-- journal.client_consents: yu_app только SELECT/INSERT (default privileges 0001); тест – journal.append_only_violations() пуст
+CREATE TABLE app.client_notification_prefs (     -- текущее состояние (09 §5)
+  client_id uuid PRIMARY KEY REFERENCES app.clients(id),
   reminders_enabled boolean NOT NULL DEFAULT true,
   marketing_enabled boolean NOT NULL DEFAULT false,      -- без подтверждения согласия реклама выключена (09 §5.1)
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -589,7 +601,7 @@ CREATE TABLE client_notification_prefs (     -- текущее состояни�
 ### 0106 – client_auth (clients)
 
 ```sql
-CREATE TABLE client_otp_challenges (         -- 03 §5.2
+CREATE TABLE app.client_otp_challenges (         -- 03 §5.2
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   phone_e164 text NOT NULL,
   code_hash text NOT NULL,                     -- HMAC-SHA256(code, SESSION_PEPPER); код в базе и логах не хранится
@@ -601,12 +613,12 @@ CREATE TABLE client_otp_challenges (         -- 03 §5.2
   ip inet,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX client_otp_one_live_idx ON client_otp_challenges (phone_e164)
+CREATE UNIQUE INDEX client_otp_one_live_idx ON app.client_otp_challenges (phone_e164)
   WHERE consumed_at IS NULL AND superseded_at IS NULL;
-CREATE INDEX client_otp_rate_idx ON client_otp_challenges (phone_e164, created_at);
-CREATE TABLE client_sessions (
+CREATE INDEX client_otp_rate_idx ON app.client_otp_challenges (phone_e164, created_at);
+CREATE TABLE app.client_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  client_id uuid NOT NULL REFERENCES clients(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
   token_hash text NOT NULL UNIQUE,
   created_at timestamptz NOT NULL DEFAULT now(),
   last_seen_at timestamptz NOT NULL DEFAULT now(),
@@ -620,10 +632,10 @@ CREATE TABLE client_sessions (
 ### 0107 – tariffs (pricing)
 
 ```sql
-CREATE TABLE tariffs (                       -- 15 §9.1–9.3, база Э1: филиал × тип ресурса × длительность
+CREATE TABLE app.tariffs (                       -- 15 §9.1–9.3, база Э1: филиал × тип ресурса × длительность
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  resource_type text NOT NULL REFERENCES dict_resource_types(code),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  resource_type text NOT NULL REFERENCES app.dict_resource_types(code),
   name text NOT NULL,
   unit_minutes smallint NOT NULL CHECK (unit_minutes > 0),     -- единица расчёта
   price_per_unit_kop bigint NOT NULL CHECK (price_per_unit_kop >= 0),
@@ -646,10 +658,10 @@ CREATE TABLE tariffs (                       -- 15 §9.1–9.3, база Э1: ф
 ### 0108 – holds (booking)
 
 ```sql
-CREATE TABLE holds (                         -- предварительное удержание (01 §7)
+CREATE TABLE app.holds (                         -- предварительное удержание (01 §7)
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  client_id uuid REFERENCES clients(id),       -- NULL, пока посетитель не вошёл
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  client_id uuid REFERENCES app.clients(id),       -- NULL, пока посетитель не вошёл
   visitor_id uuid,                             -- кука посетителя сайта (K5)
   created_by_type text NOT NULL CHECK (created_by_type IN ('client','visitor','staff')),
   created_by_id uuid,
@@ -660,19 +672,19 @@ CREATE TABLE holds (                         -- предварительное �
   closed_at timestamptz,
   CHECK (client_id IS NOT NULL OR visitor_id IS NOT NULL)
 );
-CREATE INDEX holds_active_expiry_idx ON holds (expires_at) WHERE status = 'active';
-CREATE TABLE hold_items (
+CREATE INDEX holds_active_expiry_idx ON app.holds (expires_at) WHERE status = 'active';
+CREATE TABLE app.hold_items (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  hold_id uuid NOT NULL REFERENCES holds(id),
-  resource_id uuid NOT NULL REFERENCES resources(id),
+  hold_id uuid NOT NULL REFERENCES app.holds(id),
+  resource_id uuid NOT NULL REFERENCES app.resources(id),
   period tstzrange NOT NULL,
   unit_ids uuid[] NOT NULL,                    -- развёрнутый состав на момент удержания
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','removed','converted','expired')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE client_time (                   -- время клиента: запрет пересечений по сети (01 §9, 15 §7.4)
+CREATE TABLE app.client_time (                   -- время клиента: запрет пересечений по сети (01 §9, 15 §7.4)
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  client_id uuid NOT NULL REFERENCES clients(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
   period tstzrange NOT NULL,
   source_type text NOT NULL CHECK (source_type IN ('hold_item','booking')),
   source_id uuid NOT NULL,
@@ -682,26 +694,26 @@ CREATE TABLE client_time (                   -- время клиента: за�
   CONSTRAINT client_time_no_overlap
     EXCLUDE USING gist (client_id WITH =, period WITH &&) WHERE (active)
 );
-CREATE INDEX client_time_source_idx ON client_time (source_type, source_id) WHERE active;
+CREATE INDEX client_time_source_idx ON app.client_time (source_type, source_id) WHERE active;
 ```
 Почему отдельная `client_time`, а не `EXCLUDE` по `client_id` в `occupancy` (решение, уточнение плана 3.3): бронь комнаты пишет три строки занятости одного клиента на один интервал – такое ограничение конфликтовало бы с самим собой. Одна строка `client_time` на позицию удержания / бронь. Свои позиции одного удержания идут встык или раздельно (01 §6.4 п.4) и не пересекаются – иначе `CLIENT_OVERLAP`.
 
 ### 0109 – bookings (booking)
 
 ```sql
-CREATE SEQUENCE booking_number_seq;
-CREATE TABLE bookings (
+CREATE SEQUENCE app.booking_number_seq;
+CREATE TABLE app.bookings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  number bigint NOT NULL UNIQUE DEFAULT nextval('booking_number_seq'),   -- номер для показа (01 §10.1)
+  number bigint NOT NULL UNIQUE DEFAULT nextval('app.booking_number_seq'),   -- номер для показа (01 §10.1)
   checkout_id uuid NOT NULL,                  -- общий у броней одного подтверждения (одно намерение)
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  client_id uuid NOT NULL REFERENCES clients(id),
-  hold_id uuid REFERENCES holds(id),          -- NULL у созданной администратором без удержания
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  hold_id uuid REFERENCES app.holds(id),          -- NULL у созданной администратором без удержания
   status text NOT NULL DEFAULT 'confirmed'
     CHECK (status IN ('confirmed','arrived','completed','no_show','cancelled_by_client','cancelled_by_club')),   -- Q-07
   current_version int NOT NULL DEFAULT 1,
   -- денормализация текущей версии для списков и календаря:
-  resource_id uuid NOT NULL REFERENCES resources(id),
+  resource_id uuid NOT NULL REFERENCES app.resources(id),
   period tstzrange NOT NULL,
   price_kop bigint NOT NULL,
   source text NOT NULL CHECK (source IN ('site','crm')),
@@ -709,24 +721,24 @@ CREATE TABLE bookings (
   created_by_type text NOT NULL, created_by_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
   cancelled_at timestamptz, cancelled_by_type text, cancelled_by_id uuid,
-  cancel_reason_id uuid REFERENCES dict_reasons(id), cancel_comment text,
+  cancel_reason_id uuid REFERENCES app.dict_reasons(id), cancel_comment text,
   row_version int NOT NULL DEFAULT 1,
   CHECK (status NOT IN ('cancelled_by_club') OR cancel_comment IS NOT NULL),   -- комментарий Администратора обязателен (01 §12)
   CHECK (status NOT LIKE 'cancelled%' OR cancelled_at IS NOT NULL)
 );
-CREATE INDEX bookings_branch_period_idx ON bookings USING gist (branch_id, period);
-CREATE INDEX bookings_client_idx ON bookings (client_id, created_at);
-CREATE INDEX bookings_checkout_idx ON bookings (checkout_id);
+CREATE INDEX bookings_branch_period_idx ON app.bookings USING gist (branch_id, period);
+CREATE INDEX bookings_client_idx ON app.bookings (client_id, created_at);
+CREATE INDEX bookings_checkout_idx ON app.bookings (checkout_id);
 
-CREATE TABLE booking_versions (              -- версии: перенос не меняет старую (01 §11, 16 §9); только вставка
-  booking_id uuid NOT NULL REFERENCES bookings(id),
+CREATE TABLE journal.booking_versions (              -- версии: перенос не меняет старую (01 §11, 16 §9); только вставка
+  booking_id uuid NOT NULL REFERENCES app.bookings(id),
   version int NOT NULL,
-  resource_id uuid NOT NULL REFERENCES resources(id),
+  resource_id uuid NOT NULL REFERENCES app.resources(id),
   period tstzrange NOT NULL,
   branch_timezone text NOT NULL,               -- снимок зоны (ADR 0003 п.8)
   unit_ids uuid[] NOT NULL,                    -- снимок состава конфигурации (02 §8.4, K6)
   resource_snapshot jsonb NOT NULL,            -- {name, type, roomName, branchName, branchAddress} на дату (15 §5.4)
-  tariff_id uuid REFERENCES tariffs(id),
+  tariff_id uuid REFERENCES app.tariffs(id),
   price_kop bigint NOT NULL CHECK (price_kop >= 0),
   price_snapshot jsonb NOT NULL,               -- {tariffName, unitMinutes, pricePerUnitKop, units}
   reason text,                                 -- причина переноса
@@ -734,7 +746,7 @@ CREATE TABLE booking_versions (              -- версии: перенос н�
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (booking_id, version)
 );
-REVOKE UPDATE, DELETE, TRUNCATE ON booking_versions FROM yu_app;
+-- journal.booking_versions: yu_app только SELECT/INSERT (default privileges 0001); тест – journal.append_only_violations() пуст
 ```
 Перенос в одной транзакции: гасит `occupancy`/`client_time` старой версии (`release_reason = 'rescheduled'`) → вставляет строки новой → вставляет `booking_versions(v+1)` → обновляет денормализацию `bookings`. Ошибка любой вставки откатывает всё – старая версия остаётся действующей (01 §11 п.2–3).
 Переходы статусов (`dict_status_transitions`, domain `booking`): `confirmed → arrived | no_show | cancelled_by_client | cancelled_by_club`; `arrived → completed`; исправления с причиной: `arrived → confirmed`, `no_show → confirmed` (S1-10).
@@ -742,11 +754,11 @@ REVOKE UPDATE, DELETE, TRUNCATE ON booking_versions FROM yu_app;
 ### 0110 – visits (booking)
 
 ```sql
-CREATE TABLE visits (                         -- посещение (16 §5)
+CREATE TABLE app.visits (                         -- посещение (16 §5)
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  booking_id uuid NOT NULL REFERENCES bookings(id),
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  client_id uuid NOT NULL REFERENCES clients(id),
+  booking_id uuid NOT NULL REFERENCES app.bookings(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
   arrived_at timestamptz NOT NULL,
   completed_at timestamptz,
   marked_by uuid NOT NULL,
@@ -754,27 +766,27 @@ CREATE TABLE visits (                         -- посещение (16 §5)
   reverted_at timestamptz, reverted_by uuid, revert_reason text,
   CHECK (status = 'active' OR (reverted_at IS NOT NULL AND revert_reason IS NOT NULL))
 );
-CREATE UNIQUE INDEX visits_one_active_idx ON visits (booking_id) WHERE status = 'active';   -- повторная отметка не плодит (S1-10)
-CREATE TABLE no_shows (                       -- неявка вручную (R-08, 16 §6)
+CREATE UNIQUE INDEX visits_one_active_idx ON app.visits (booking_id) WHERE status = 'active';   -- повторная отметка не плодит (S1-10)
+CREATE TABLE app.no_shows (                       -- неявка вручную (R-08, 16 §6)
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  booking_id uuid NOT NULL REFERENCES bookings(id),
-  branch_id uuid NOT NULL REFERENCES branches(id),
-  client_id uuid NOT NULL REFERENCES clients(id),
+  booking_id uuid NOT NULL REFERENCES app.bookings(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
   marked_at timestamptz NOT NULL, marked_by uuid NOT NULL,
-  reason_id uuid REFERENCES dict_reasons(id),
+  reason_id uuid REFERENCES app.dict_reasons(id),
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','reverted')),
   reverted_at timestamptz, reverted_by uuid, revert_reason text
 );
-CREATE UNIQUE INDEX no_shows_one_active_idx ON no_shows (booking_id) WHERE status = 'active';   -- один штраф на бронь (07 §8.4)
+CREATE UNIQUE INDEX no_shows_one_active_idx ON app.no_shows (booking_id) WHERE status = 'active';   -- один штраф на бронь (07 §8.4)
 ```
 Взаимоисключение «посещение / неявка» держит статус брони (переход только из `confirmed`) под `SELECT ... FOR UPDATE` строки `bookings`.
 
 ### 0111 – notifications (notifications)
 
 ```sql
-CREATE TABLE push_subscriptions (            -- Web Push (Q-30)
+CREATE TABLE app.push_subscriptions (            -- Web Push (Q-30)
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  client_id uuid NOT NULL REFERENCES clients(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
   endpoint text NOT NULL UNIQUE,
   p256dh text NOT NULL, auth text NOT NULL,    -- ключи подписки: в аудит и логи не попадают
   user_agent text,
@@ -782,15 +794,15 @@ CREATE TABLE push_subscriptions (            -- Web Push (Q-30)
   revoked_at timestamptz, revoke_reason text CHECK (revoke_reason IN ('unsubscribed','gone','logout')),
   last_success_at timestamptz, last_error text
 );
-CREATE INDEX push_subscriptions_client_idx ON push_subscriptions (client_id) WHERE revoked_at IS NULL;
-CREATE TABLE notifications (                 -- 09 §9
+CREATE INDEX push_subscriptions_client_idx ON app.push_subscriptions (client_id) WHERE revoked_at IS NULL;
+CREATE TABLE app.notifications (                 -- 09 §9
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  client_id uuid NOT NULL REFERENCES clients(id),
-  branch_id uuid REFERENCES branches(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  branch_id uuid REFERENCES app.branches(id),
   category text NOT NULL CHECK (category IN ('service','reminder','marketing','event_cancel','personal')),   -- 09 §3
   kind text NOT NULL CHECK (kind IN ('booking_confirmed','booking_cancelled','booking_rescheduled',
                                      'reminder_day_before','reminder_before_start')),
-  booking_id uuid REFERENCES bookings(id),
+  booking_id uuid REFERENCES app.bookings(id),
   booking_version int,
   source text NOT NULL CHECK (source IN ('system','staff')),
   initiator_id uuid,
@@ -804,8 +816,8 @@ CREATE TABLE notifications (                 -- 09 §9
   dedupe_key text NOT NULL UNIQUE,             -- '<kind>:<booking_id>:<booking_version>' – один этап на версию (09 §6.4 п.7)
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX notifications_due_idx ON notifications (planned_at) WHERE status = 'planned';
-CREATE INDEX notifications_booking_idx ON notifications (booking_id);
+CREATE INDEX notifications_due_idx ON app.notifications (planned_at) WHERE status = 'planned';
+CREATE INDEX notifications_booking_idx ON app.notifications (booking_id);
 ```
 
 ---
@@ -817,10 +829,10 @@ CREATE INDEX notifications_booking_idx ON notifications (booking_id);
 | Один слот – одна бронь, комната против места | 01 §8, §5.2; 17 §10 | `occupancy_no_overlap` |
 | Клиент без пересечений по сети | 01 §9, 15 §7.4 | `client_time_no_overlap` |
 | Истёкшее удержание не держит слот | 01 §7.3–7.4 | гашение в транзакции + задача (K6) |
-| Аудит не правится | 04 §11.4 | `REVOKE UPDATE, DELETE` |
+| Аудит и журналы не правятся | 04 §11.4 | схема `journal` + default privileges 0001, тест `journal.append_only_violations()` |
 | Сторно ровно одно | 06 §4.4, 16 §2.7 | `UNIQUE(reversal_of)` + триггер |
 | Повтор не создаёт дубль | 16 §2.2 | `idempotency_keys` PK, `ledger_entries.idempotency_key`, `notifications.dedupe_key`, `visits_one_active_idx` |
-| Остаток не уходит ниже границы | 07 §3.1, 08 §6.3 | `ledger_accounts` CHECK `balance >= min_balance` |
+| Остаток не уходит ниже границы | 07 §3.1, 08 §6.3 | триггер `ledger_entries_20_apply_balance` под `FOR UPDATE` счёта; обход – только `limit_override` с причиной от сотрудника; `yu_app` не может писать `balance` напрямую |
 | Два тарифа одного приоритета | 15 §20 | `tariffs_same_priority_overlap` |
 | Пересечение дат настройки | 15 §20 | EXCLUDE в `settings_values` |
 | Перенос не трогает старую версию | 01 §11 | одна транзакция + `booking_versions` только вставка |

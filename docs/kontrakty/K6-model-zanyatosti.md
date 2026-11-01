@@ -32,35 +32,64 @@ export interface UnitSet { resourceId: string; unitIds: string[] }   // отсо
  *  Ошибки: ресурс/комната не active, self_bookable=false, пустой состав → RESOURCE_UNAVAILABLE. */
 export function expandToUnits(tx: Tx, resourceId: string, at: Date): Promise<UnitSet>;
 
-/** resources: изменить состав с даты. Старые брони хранят unit_ids снимком и не меняются (02 §8.4).
- *  Возвращает будущие брони и удержания, у которых снимок отличается от нового состава – CRM показывает их. */
-export function changeComposition(tx: Tx, input: { resourceId: string; unitIds: string[]; validFrom: Date }, meta: AuditRequestMeta):
-  Promise<{ affectedBookingIds: string[] }>;
+/** resources: изменить состав с даты. Прошлые брони хранят unit_ids снимком и не меняются (02 §8.4).
+ *  Если есть активные брони/удержания ресурса с end > validFrom – ОТКАЗ COMPOSITION_HAS_FUTURE_BOOKINGS
+ *  со списком (details.bookingIds, details.holdIds): каждую сотрудник решает вручную (перенос/отмена), по духу
+ *  01 §12–13 «не удалять и не переносить автоматически». Потом – повтор или validFrom после последней брони.
+ *  Можно вызвать с dryRun: true – только список, без изменений (CRM показывает его до сохранения, 15 §8.3). */
+export function changeComposition(tx: Tx, input: { resourceId: string; unitIds: string[]; validFrom: Date; dryRun?: boolean }, meta: AuditRequestMeta):
+  Promise<{ affectedBookingIds: string[]; affectedHoldIds: string[]; applied: boolean }>;
 
 /** booking: погасить истёкшие удержания на единицах/клиенте в ТЕКУЩЕЙ транзакции, до вставки новых строк.
- *  UPDATE occupancy SET active=false, released_at=now(), release_reason='expired'
- *    WHERE active AND source_type='hold_item' AND hold_expires_at <= now() AND unit_id = ANY($1) AND period && $2;
- *  то же для client_time по client_id; затронутые holds → status 'expired' + hold.expired (K4). */
-export function releaseExpiredHolds(tx: Tx, scope: { unitIds?: string[]; clientId?: string; period: Interval }): Promise<{ expiredHoldIds: string[] }>;
+ *  1) найти кандидатов и заблокировать удержания по id:
+ *     SELECT h.id FROM holds h WHERE h.status='active' AND h.expires_at <= $now AND h.id IN (
+ *       SELECT hi.hold_id FROM occupancy o JOIN hold_items hi ON hi.id = o.source_id
+ *        WHERE o.active AND o.source_type='hold_item' AND o.unit_id = ANY($units) AND o.period && $period
+ *       UNION SELECT hi.hold_id FROM client_time ct JOIN hold_items hi ON hi.id = ct.source_id
+ *        WHERE ct.active AND ct.source_type='hold_item' AND ct.client_id = $client AND ct.period && $period)
+ *     ORDER BY h.id FOR UPDATE SKIP LOCKED;
+ *     (заблокированное другим – его сейчас подтверждают или гасят; не ждём, конфликт вставки даст SLOT_HELD)
+ *  2) для найденных: occupancy и client_time их позиций → active=false, released_at=$now, release_reason='expired';
+ *     hold_items → 'expired'; holds → status 'expired', closed_at=$now; hold.expired (K4) на каждое.
+ *  $now – из Clock команды (ADR 0003 п.10), не now(). */
+export function releaseExpiredHolds(tx: Tx, now: Date, scope: { unitIds?: string[]; clientId?: string; period: Interval }): Promise<{ expiredHoldIds: string[] }>;
 
-/** booking: занять единицы. Все строки одной позиции – одним INSERT; 23P01 по occupancy_no_overlap
- *  переводится в SLOT_TAKEN | SLOT_HELD (по source_type конфликтующей строки, без раскрытия её владельца),
- *  по client_time_no_overlap – в CLIENT_OVERLAP. */
+/** booking: занять единицы. Порядок внутри:
+ *  1) SELECT id FROM occupancy_units WHERE id = ANY($units) ORDER BY id FOR SHARE – видимость против блокировок (ниже);
+ *  2) assertNotBlocked;
+ *  3) ВСЕ строки команды (всех позиций) – одним INSERT ... SELECT ... ORDER BY unit_id; затем client_time одним INSERT;
+ *  4) 23P01 по occupancy_no_overlap → SLOT_TAKEN | SLOT_HELD (по source_type конфликтующей строки, без раскрытия
+ *     владельца); по client_time_no_overlap → CLIENT_OVERLAP; 40P01/40001 → повтор команды один раз, затем SLOT_HELD
+ *     (ADR 0004 §3). */
 export function occupy(tx: Tx, input: {
   branchId: string; units: UnitSet; period: Interval;
   source: { type: 'hold_item'; id: string; holdExpiresAt: Date } | { type: 'booking'; id: string; version: number } | { type: 'event'; id: string };
   clientId: string | null;            // null → client_time не пишется (посетитель без входа, мероприятие без клиента)
 }): Promise<void>;
 
-/** booking: проверка блокировок на единицах (FOR SHARE по resource_block_units). Есть пересечение → RESOURCE_BLOCKED. */
+/** booking: проверка блокировок на единицах (после FOR SHARE на occupancy_units). Есть пересечение → RESOURCE_BLOCKED. */
 export function assertNotBlocked(tx: Tx, unitIds: string[], period: Interval): Promise<void>;
+
+/** booking: создать блокировку (S1-04). Порядок: SELECT ... FROM occupancy_units WHERE id = ANY($units) ORDER BY id
+ *  FOR UPDATE → INSERT resource_blocks + resource_block_units → список затронутых активных строк occupancy
+ *  (брони и удержания) на этих единицах. FOR UPDATE против FOR SHARE из occupy сериализует гонку
+ *  «удержание против блокировки»: либо блокировка видит новую бронь в списке затронутых, либо удержание видит
+ *  блокировку и получает RESOURCE_BLOCKED. Брони не трогаются (01 §13). */
+export function createBlock(tx: Tx, ctx: AccessContext, input: {
+  branchId: string; target: { type: 'unit' | 'resource' | 'room' | 'resources'; ids: string[] }; period: Interval;
+  reasonId: string; comment?: string;
+}, meta: AuditRequestMeta): Promise<{ blockId: string; affectedBookingIds: string[]; affectedHoldIds: string[] }>;
 
 /** booking: освободить строки источника (отмена, перенос, удаление позиции). */
 export function release(tx: Tx, source: { type: 'hold_item' | 'booking' | 'event'; id: string },
   reason: 'released' | 'cancelled' | 'rescheduled' | 'converted'): Promise<void>;
 
-/** booking: перевести строки удержания в бронь без окна свободного слота (K5 confirm, шаг 5). */
-export function convertHoldItem(tx: Tx, holdItemId: string, booking: { id: string; version: 1 }): Promise<void>;
+/** booking: перевести строки удержания в бронь без окна свободного слота (K5 confirm, шаг 5).
+ *  UPDATE occupancy SET source_type='booking', source_id=$booking, booking_version=1, hold_expires_at=NULL
+ *   WHERE active AND source_type='hold_item' AND source_id=$item AND hold_expires_at > $now RETURNING unit_id;
+ *  число строк < hold_items.unit_ids.length (часть погашена истечением) → HOLD_EXPIRED, вся транзакция откатывается.
+ *  Так же client_time (ожидается ровно 1 строка, если у удержания есть клиент). */
+export function convertHoldItem(tx: Tx, now: Date, holdItemId: string, booking: { id: string; version: 1 }): Promise<void>;
 
 /** booking: сетка доступности для K5 №5 и CRM-календаря. Без записи, читает снимок на момент запроса. */
 export function availability(db: Db, input: {
@@ -80,7 +109,7 @@ export function availability(db: Db, input: {
 | `held` | пересечение с активной `hold_item` другого владельца и `hold_expires_at > now` |
 | `free` | иначе |
 
-Строки удержаний с `hold_expires_at <= now` при расчёте игнорируются (даже если задача ещё не погасила их).
+Строки удержаний с `hold_expires_at <= $now` при расчёте игнорируются (даже если задача ещё не погасила их).
 
 ## Цена (pricing, S1-14)
 
@@ -104,8 +133,8 @@ export function quote(tx: Tx, input: { branchId: string; resourceType: string; s
 
 ## Ошибки
 
-`SLOT_TAKEN`, `SLOT_HELD`, `CLIENT_OVERLAP`, `RESOURCE_UNAVAILABLE`, `RESOURCE_BLOCKED`, `COMPOSITE_CHANGED`, `TARIFF_NOT_CONFIGURED`, `TARIFF_AMBIGUOUS` – значения и HTTP по K5.
+`SLOT_TAKEN`, `SLOT_HELD`, `CLIENT_OVERLAP`, `RESOURCE_UNAVAILABLE`, `RESOURCE_BLOCKED`, `COMPOSITE_CHANGED`, `HOLD_EXPIRED`, `TARIFF_NOT_CONFIGURED`, `TARIFF_AMBIGUOUS` – значения и HTTP по K5. `COMPOSITION_HAS_FUTURE_BOOKINGS` – 409, `details: { bookingIds, holdIds }`.
 
 ## Проверка
 
-6 тестов VR + PS4 (план 8, 18 §5.3) – интеграционные на настоящей Postgres, параллельными соединениями; после каждого прогона SQL-проверка «нет двух активных строк одной единицы с пересечением». Удержание истекло в момент подтверждения → `HOLD_EXPIRED`, слот свободен для следующего.
+6 тестов VR + PS4 (план 8, 18 §5.3) – интеграционные на настоящей Postgres, параллельными соединениями; после каждого прогона SQL-проверка «нет двух активных строк одной единицы с пересечением». Удержание истекло в момент подтверждения → `HOLD_EXPIRED`, слот свободен для следующего. 50 параллельных подтверждений одного слота – на пуле ≥ 50 соединений, ровно одна бронь. Гонка «блокировка ↔ удержание» 100 раз: каждая пара даёт либо `RESOURCE_BLOCKED`, либо бронь в `affectedBookingIds`.

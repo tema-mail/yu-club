@@ -34,9 +34,19 @@ export function writeAudit(tx: Tx, meta: AuditRequestMeta, input: AuditInput): P
 /** Отдельная транзакция (основная откатилась): отказ в доступе или ошибка. Без before/after. */
 export function writeDenied(db: Db, meta: AuditRequestMeta, input: Omit<AuditInput, 'before' | 'after'> & { result: 'denied' | 'error' }): Promise<void>;
 
-/** Маскирование: ключи (без учёта регистра, на любой глубине) из SECRET_KEYS → '***'.
- *  Телефон → '+7******1234', email → 'i***@domain'. Экспортируется для тестов. */
+/** Маскирование до записи, на любой глубине, имена ключей без учёта регистра:
+ *  - SECRET_KEYS → '***' (значение не сохраняется вовсе);
+ *  - PD_KEYS (ПДн, 152-ФЗ) → маска по типу: телефон '+7******4567', email 'i***@domain', ФИО – первая буква + '***',
+ *    дата рождения – '****-**-**'. В аудите остаётся ИМЯ поля и факт изменения, не значение.
+ *  Правило по явному списку ключей, не по угадыванию содержимого. Экспортируется для тестов. */
 export function redact(value: unknown): unknown;
+export const PD_KEYS: Readonly<Record<string, 'phone' | 'email' | 'name' | 'date'>> = {
+  phone: 'phone', phoneE164: 'phone', guestPhone: 'phone',
+  email: 'email',
+  firstName: 'name', lastName: 'name', guestName: 'name',
+  birthDate: 'date',
+};
+// Новое поле с ПДн в карточке = строка в PD_KEYS того же коммита (ревью проверяет).
 export const SECRET_KEYS: readonly string[] = [
   'password', 'passwordHash', 'otp', 'otpCode', 'codeHash', 'token', 'tokenHash', 'secret',
   'totpSecret', 'p256dh', 'auth', 'apiKey', 'authorization', 'cookie',
@@ -78,7 +88,7 @@ export function objectTimeline(db: Db, ctx: AccessContext, object: { type: Audit
 1. Аудит – часть команды: успешная команда без `writeAudit` не проходит ревью. Тест модуля проверяет запись аудита.
 2. Секреты не пишутся ни в `before/after`, ни в `reason` (04 §11.2): тест S0-06 кладёт `{password:'x', otpCode:'1234', nested:{token:'t'}}` и ждёт `***`, а `{code:'NSK-1'}` – без изменений.
 3. Роль `yu_app` не может `UPDATE`/`DELETE` (тест: обе операции падают с `42501`).
-4. Срок хранения – не задаём, удаления нет (04 §11.6).
+4. Срок хранения – не задаём, удаления нет (04 §11.6). Срок хранения `ip` и `user_agent` (аудит, сессии) – вопрос юристу заказчика вместе с N-01; до ответа храним, в выдаче CRM IP показываем только Владельцу (решение). Передать в `voprosy-zakazchiku.md` – правит оркестратор.
 5. Выдача аудита пользователю – через `scopeFilter(ctx, 'audit.view')`; Администратору – `audit.view.own` (`actor_id = свой`).
 
 ## Ошибки

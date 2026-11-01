@@ -84,7 +84,7 @@ interface MyBookingDto extends BookingDto {   // BookingDto – K5; без inter
 
 ## Бронь администратором без профиля (S1-13)
 
-Маршрут CRM `POST /api/crm/v1/branches/{branchId}/bookings` (`Idempotency-Key`, право `booking.create`):
+Полный контракт маршрута – K11 №4; здесь – часть, которая касается клиента. Маршрут CRM `POST /api/crm/v1/branches/{branchId}/bookings` (`Idempotency-Key`, право `booking.create`):
 
 ```ts
 type CrmCreateBooking = {

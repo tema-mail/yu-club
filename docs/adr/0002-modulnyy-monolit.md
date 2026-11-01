@@ -29,13 +29,30 @@ packages/contracts/src/   Zod-схемы HTTP и событий (общие дл
 7. HTTP-слой тонкий: разбор Zod-схемы, вызов функции модуля, перевод `AppError` в ответ. Бизнес-правила в маршрутах не живут.
 8. Фронт ничего не считает: остатки, доступность, статусы, цены приходят с сервера (20 §3, D-21).
 
+## Реестры по модулям – против конфликтов слияния (решение)
+
+Параллельные потоки не правят один общий файл. Каждый модуль держит свои реестры, `core` их только собирает:
+
+```
+apps/api/src/modules/<x>/actions.ts   export const actions = ['booking.create', ...] as const        // K1
+apps/api/src/modules/<x>/errors.ts    export const errors = { SLOT_TAKEN: 409, ... } as const          // коды ошибок
+apps/api/src/modules/<x>/audit.ts     export const auditActions = ['booking.created', ...] as const   // K2
+packages/contracts/src/events/<x>.ts  Zod-схемы событий модуля-производителя                          // K4
+apps/api/src/core/registry.ts         import всех modules/*/{actions,errors,audit}.ts → типы Action, ErrorCode, AuditAction;
+                                      дубль кода между модулями – ошибка при старте и в тесте
+```
+
+- Префикс кода = имя модуля (`booking.*`, `clients.*`); общие коды (`VALIDATION_FAILED`, `NOT_FOUND`, `FORBIDDEN`, `AUTH_REQUIRED`, `INTERNAL`, `IDEMPOTENCY_*`, `RATE_LIMITED`) – только в `core/errors.ts`.
+- `packages/contracts` – единственное место общих типов фронта и бэка: HTTP-схемы (`<x>.ts`), события (`events/<x>.ts`), общие примитивы (`common.ts`: `Iso`, `LocalDate`, `Cursor`, `ErrorBody`). Бэкенд-типы БД туда не попадают.
+- Правило границ (п.1–2 выше) сначала проверяет ревью; CI-шаг (`eslint` с `no-restricted-imports` + скрипт «модуль не упоминает чужие таблицы в `sql`») внедрит поток платформы отдельным шагом.
+
 ## Единый тип ошибки (решение)
 
 ```ts
 // apps/api/src/core/errors.ts
 export class AppError extends Error {
   constructor(
-    readonly code: ErrorCode,          // стабильный машинный код, см. K5 §Ошибки
+    readonly code: ErrorCode,          // стабильный машинный код; тип собирается из modules/*/errors.ts
     readonly httpStatus: 400 | 401 | 403 | 404 | 409 | 410 | 422 | 429 | 500 | 503,
     message: string,                   // безопасный текст для человека, по-русски
     readonly details?: Record<string, unknown>, // без ПДн чужих клиентов, без стека

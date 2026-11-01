@@ -37,7 +37,8 @@ export function addDays(date: LocalDate, days: number): LocalDate;
 // ---- сутки и окно
 /** Сутки филиала [00:00 даты, 00:00 следующей даты) по зоне. В день перехода длина ≠ 24 ч – это правильно. */
 export function branchDay(date: LocalDate, tz: TimeZone): Interval;
-/** Окно записи (01 §4, 15 §7.1): даты [today, today + days). days=7 → сегодня и 6 следующих (решение). */
+/** Окно записи (01 §4, 15 §7.1): даты [today, today + days). days=7 → сегодня и 6 следующих; days=30 → сегодня и 29
+ *  следующих (одна семантика для обоих, решение по ревью). Момент start ≤ now – прошлое, вне окна даже сегодня. */
 export function bookingWindow(clock: Clock, tz: TimeZone, days: number): { from: LocalDate; toExclusive: LocalDate };
 export function isDateInWindow(date: LocalDate, clock: Clock, tz: TimeZone, days: number): boolean;
 

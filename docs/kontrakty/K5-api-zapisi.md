@@ -6,12 +6,12 @@
 ## Общее
 
 - База: `${API_URL}/api/public/v1`. JSON, UTF-8. Время – ISO 8601 UTC с `Z` (`2026-11-15T07:00:00Z`); локальные даты филиала – `YYYY-MM-DD`; деньги – целые копейки (`priceKop`).
-- **Кто вызывает.** Кука `yu_visitor` (HttpOnly, Secure, SameSite=Lax, 1 год, uuid) – ставится сервером при первом запросе к `/holds`, если её нет. Кука `yu_client` – сессия клиента (K9). Удержание принадлежит посетителю или клиенту; при входе удержание посетителя переходит к клиенту (`POST /holds/{id}/attach`, ниже).
+- **Кто вызывает.** Кука `yu_visitor` (HttpOnly, Secure, SameSite=Lax, 1 год, uuid) ставится сервером на `GET /branches/{id}` и `GET /branches/{id}/availability`, если её нет (чтобы состояние `mine` и удержание работали с первого клика). `POST /holds` без куки → `400 VISITOR_REQUIRED` (сайт повторяет после GET; решение по ревью п.6). Кука `yu_client` – сессия клиента (K9). Удержание принадлежит посетителю или клиенту; при входе удержание посетителя переходит к клиенту (`POST /holds/{id}/attach`, ниже).
 - **Идемпотентность**: заголовок `Idempotency-Key: <uuid>` обязателен у всех `POST` этого контракта (ADR 0004). Повтор → тот же ответ и `Idempotent-Replay: true`; тот же ключ с другим телом → `409 IDEMPOTENCY_KEY_REUSED`. Клиент сайта генерирует ключ на одно нажатие и повторяет **с тем же ключом** при обрыве сети (16 §15.1).
 - **CSRF**: для `POST/DELETE` с кукой – заголовок `X-Requested-With: yu-site` + проверка `Origin ∈ {PUBLIC_SITE_URL}` (решение).
 - **Ошибка**: `{ "error": { "code": string, "message": string, "details"?: object, "requestId": string } }`.
 - Чужие данные не раскрываются: занятость показывается состоянием слота без «кем» (17 §7.2).
-- Лимит частоты: `/holds*` – 30 запросов/мин на посетителя, иначе `429 RATE_LIMITED` (решение).
+- Лимиты (решение по ревью п.6): `/holds*` – 30 запросов/мин на посетителя **и** 60/мин на IP (кука сбрасывается, IP – нет); `/availability` – 120/мин на IP; иначе `429 RATE_LIMITED`. Потолок одновременных **анонимных** удержаний на филиал – `booking.max_anonymous_holds_per_branch` (K7, по умолчанию 30): сверх → `429 RATE_LIMITED` для новых анонимных, у вошедших клиентов потолка нет (у них ≤ 1 удержания на филиал). Так бот без входа не займёт всё расписание.
 
 ## Типы ответа (TypeScript, выводятся из Zod)
 
@@ -83,15 +83,16 @@ interface ConfirmResultDto { checkoutId: string; bookings: BookingDto[] }
 | 12 | `POST /holds/{holdId}/confirm` | client | `{ comment?: string ≤ 500 }` (клиентский комментарий не нужен в MVP – поле зарезервировано) | `201 ConfirmResultDto` |
 | 13 | `POST /bookings/{bookingId}/cancel` | client – только своя | `{ reason?: string ≤ 300 }` (01 §12: причина клиенту не обязательна) | `200 BookingDto` `status:'cancelled_by_client'` |
 
-Списки ЛК («мои записи») – в K9.
+Списки ЛК («мои записи») – в K9. Маршруты CRM (календарь, бронь/отмена/перенос администратором) – в K11.
 
 ### Поведение ключевых маршрутов
 
 **6. `POST /holds`** – одна транзакция:
-1. Филиал `active` (иначе `BRANCH_NOT_ACTIVE`); каждая позиция: ресурс самостоятельный, `active`, комната `active`; дата в окне `[сегодня, сегодня + maxDays)` по зоне филиала (K8); `start`, `end` выровнены по шагу, `end − start ≥ шаг`, не через полночь (ADR 0003); внутри открытых интервалов дня (K6 + календарь).
-2. `releaseExpiredHolds` на затрагиваемых единицах (K6).
-3. Блокировки на единицах – `RESOURCE_BLOCKED`.
-4. Вставка `holds`, `hold_items`, `occupancy` (по развёрнутым единицам, `hold_expires_at = expiresAt`), при известном клиенте – `client_time`.
+0. `const now = clock.now()` – один раз на команду (ADR 0003 п.10).
+1. Филиал `active` (иначе `BRANCH_NOT_ACTIVE`); каждая позиция: ресурс самостоятельный, `active`, комната `active`; локальная дата начала в окне `[сегодня, сегодня + maxDays)` по зоне филиала (K8: `maxDays=30` → сегодня и 29 следующих; так же `defaultDays=7` → сегодня + 6 для показа по умолчанию) и `start > now` – иначе `OUTSIDE_BOOKING_WINDOW`; `start`, `end` выровнены по шагу, `end − start ≥ шаг`, не через полночь (ADR 0003); внутри открытых интервалов дня (K6 + календарь).
+2. `releaseExpiredHolds(tx, now, …)` на затрагиваемых единицах (K6).
+3. `occupy` (K6): `FOR SHARE` единиц → блокировки (`RESOURCE_BLOCKED`) → один INSERT всех строк в порядке `unit_id`.
+4. Вставка `holds` (`expires_at = now + ttl`), `hold_items`, строки `occupancy` (`hold_expires_at = expiresAt`), при известном клиенте – `client_time`.
 5. Нарушение `occupancy_no_overlap` → выясняем, с чем конфликт: `SLOT_TAKEN` (бронь/мероприятие) или `SLOT_HELD` (чужое удержание); нарушение `client_time_no_overlap` → `CLIENT_OVERLAP`. Всё откатывается, `details.items[]` называет каждую неудачную позицию.
 6. `hold.created` (K4).
 У клиента одновременно ≤ 1 активного удержания на филиал: новое `POST /holds` при активном → `HOLD_ALREADY_ACTIVE` с `details.holdId` (решение – слоты добавляются в существующее через №8).
@@ -99,11 +100,11 @@ interface ConfirmResultDto { checkoutId: string; bookings: BookingDto[] }
 **8. Добавить слот** – как п.1–5 для одной позиции; при успехе `expiresAt = now + ttl` у удержания и **всех** его строк `occupancy`/`client_time` (01 §7.2). При отказе уже удержанные позиции и их таймер не меняются (01 §7.2 абзац 2), ответ – ошибка с `details.items[0]`.
 
 **12. Подтвердить** – одна транзакция, `SELECT holds ... FOR UPDATE`:
-1. Удержание `active` и `expiresAt > now` (иначе `HOLD_EXPIRED`; если уже `converted` тем же клиентом – вернуть прежний результат, это повтор без ключа).
+1. Удержание `active` и `expiresAt > $now` (иначе `HOLD_EXPIRED`; если уже `converted` тем же клиентом – вернуть прежний результат, это повтор без ключа).
 2. Восемь проверок 01 §8.2 заново по каждой позиции: филиал, график, ресурс, пересечения с бронями (строки удержания живы), активность удержания, блокировки и ремонт, ограничения клиента (`clients.assertCanBook`: статус `blocked`/`restricted` → `CLIENT_RESTRICTED`; с Э2 – баланс −50, 07 §9.2), совместимость состава (`unit_ids` удержания = текущий состав ресурса, иначе `COMPOSITE_CHANGED`).
 3. Цена – `pricing.quote` по каждой позиции (K6 §Цена: тариф филиал × тип × длительность) → нет тарифа `TARIFF_NOT_CONFIGURED`, два применимых – `TARIFF_AMBIGUOUS` (15 §9.3).
 4. Позиции одного ресурса, идущие встык, сливаются в одну бронь; остальные – отдельные брони с общим `checkoutId` (решение).
-5. Строки `occupancy` удержания переводятся в `source_type='booking'` (UPDATE `source_type`, `source_id`, `booking_version=1`, `hold_expires_at=NULL`) – без окна, где слот свободен; так же `client_time`. `hold.status='converted'`.
+5. Строки удержания переводятся в бронь `convertHoldItem` (K6): UPDATE … `RETURNING`, строк меньше, чем единиц, → `HOLD_EXPIRED` и откат – без окна, где слот свободен. `hold.status='converted'`.
 6. `booking_versions(v1)` со снимками, аудит `booking.created`, событие `booking.confirmed` на каждую бронь.
 Успех показывается на сайте **только после** `201` (D-07).
 
@@ -116,11 +117,12 @@ interface ConfirmResultDto { checkoutId: string; bookings: BookingDto[] }
 | Код | HTTP | Когда | Текст для клиента (пример) | Проверка 01 §8.2 |
 |---|---|---|---|---|
 | `VALIDATION_FAILED` | 400 | тело не по схеме | «Проверьте данные» + `details.fields` | – |
+| `VISITOR_REQUIRED` | 400 | `POST /holds` без куки `yu_visitor` | – (сайт повторяет после GET) | – |
 | `IDEMPOTENCY_KEY_REQUIRED` | 400 | нет заголовка | – | – |
 | `AUTH_REQUIRED` | 401 | confirm/attach/cancel без сессии клиента | «Войдите, чтобы завершить запись» | – |
 | `NOT_FOUND` | 404 | филиал/ресурс/удержание/бронь нет или чужое | «Не найдено» | – |
 | `BRANCH_NOT_ACTIVE` | 409 | филиал не `active` | «Филиал сейчас не принимает записи» | филиал |
-| `OUTSIDE_BOOKING_WINDOW` | 422 | дата вне окна или в прошлом | «Запись доступна на N дней вперёд» | – |
+| `OUTSIDE_BOOKING_WINDOW` | 422 | дата вне окна или `start ≤ now` | «Запись доступна на N дней вперёд» | – |
 | `OUTSIDE_SCHEDULE` | 409 | вне рабочих часов / день закрыт | «В это время филиал не работает» | график |
 | `INVALID_DURATION` | 422 | не кратно шагу, короче шага, через полночь, `end ≤ start` | «Выберите время кратно 15/30 минутам» | – |
 | `RESOURCE_UNAVAILABLE` | 409 | ресурс/комната не `active`, несамостоятельный (PS4, 01 §5.2), состав пуст | «Это место недоступно для записи» | ресурс |

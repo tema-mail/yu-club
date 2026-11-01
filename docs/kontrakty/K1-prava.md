@@ -27,7 +27,8 @@ export interface AccessContext {
 export type Target =
   | { network: true }                  // действие над сетью целиком (создать город, сетевые настройки)
   | { cityId: string }
-  | { branchId: string };
+  | { branchId: string }
+  | { clientId: string };              // клиент один на сеть (03 §3): зона проверяется через его брони (ниже)
 
 export type BranchScope =
   | { kind: 'all' }
@@ -66,12 +67,16 @@ export function assertCanManageStaff(
 
 /** Клиент работает только со своим (03 §3 п.4). Чужой → NOT_FOUND. */
 export function assertOwnClient(actor: Actor, clientId: string): void;
+
+/** Сотрудник и карточка клиента (цель { clientId }). */
+export function assertCanClient(db: Db | Tx, ctx: AccessContext, action: Action, clientId: string): Promise<void>;
 ```
 
 Правила `can` для цели:
 - `{ network: true }` – только `ctx.network`;
 - `{ cityId }` – `ctx.network` или `cityIds.has(cityId)`;
 - `{ branchId }` – `ctx.network` или `branchIds.has(branchId)`.
+- `{ clientId }` – `ctx.network`, или у клиента есть бронь (любого статуса) в филиале из `branchIds`, или клиент создан сотрудником этой зоны (04 §8.3: минимум для обслуживания). Это не чистая проверка – поэтому для клиента `can` не используется, вызывается асинхронная `assertCanClient(db, ctx, action, clientId)` с тем же результатом `NOT_FOUND`/`FORBIDDEN`. Поиск по точному телефону для новой записи – отдельное правило K9 `searchClients`.
 
 `assertCanManageStaff` (бросает `FORBIDDEN`):
 1. `target.staffId === ctx.actor.staffId` и op ∈ {`change_role`, `change_scope`} – запрещено всем (04 §3.2, §5).
@@ -104,10 +109,10 @@ export function assertOwnClient(actor: Actor, clientId: string): void;
 | `booking.visit.mark` (приход, завершение, неявка) | ✓ | ✓ | ✓ | branch | 04 §5 |
 | `booking.visit.correct` (исправление прихода/неявки с причиной) | ✓ | ✓ | | branch | решение: исправление факта – руководитель |
 | `block.manage` (создать, снять блокировку) | ✓ | ✓ | ✓ | branch | 04 §4.3 «если право предоставлено»; R-14: «блокировка ресурса – Администратор по праву» → решение: выдано по умолчанию |
-| `client.view.basic` (имя, маскированный телефон, записи своего филиала) | ✓ | ✓ | ✓ | branch | 04 §8.3, 03 §15 |
-| `client.view.full` (полный телефон, сетевая история) | ✓ | ✓ | | branch | 04 §8.3; Д – в зоне |
-| `client.update.limited` (имя, комментарий) | ✓ | ✓ | ✓ | branch | 04 §5 «Ограниченные поля» |
-| `client.update` (телефон, статус) | ✓ | ✓ | | branch | 03 §12, решение |
+| `client.view.basic` (имя, маскированный телефон, записи своего филиала) | ✓ | ✓ | ✓ | client | 04 §8.3, 03 §15 |
+| `client.view.full` (полный телефон, сетевая история) | ✓ | ✓ | | client | 04 §8.3; Д – в зоне |
+| `client.update.limited` (имя, комментарий) | ✓ | ✓ | ✓ | client | 04 §5 «Ограниченные поля» |
+| `client.update` (телефон, статус) | ✓ | ✓ | | client | 03 §12, решение |
 | `client.merge` | ✓ | | | network | R-14: «объединение клиентов – Владелец» |
 | `client.export` / `export.pd` | ✓ | | | network | 04 §5 «по отдельным правам»; N-06: Директору экспорт ПДн нельзя |
 | `tariff.manage` | ✓ | | | branch | 17 §7.3, решение |
@@ -118,12 +123,7 @@ export function assertOwnClient(actor: Actor, clientId: string): void;
 | `audit.view.own` | ✓ | ✓ | ✓ | branch | 04 §5 |
 | `audit.export` | ✓ | | | network | 04 §11.4 |
 | `notifications.view` (журнал отправок) | ✓ | ✓ | ✓ | branch | 01 §14 п.6 |
-| `finance.view` | ✓ | ✓ | ✓* | branch | 04 §5; * Администратор – только кассу своего филиала за смену (R-14) – Э2 |
-| `finance.operation.create` (оплата сеанса, расход своего филиала) | ✓ | ✓ | ✓ | branch | R-14 – Э2 |
-| `finance.correct` / `finance.refund` | ✓ | ✓ | | branch | R-14, N-06 «кроме финкорректировок» → решение: Директору – да по регламенту зоны (04 §5), N-06 читаем как «без делегирования Владельцу» |
-| `payroll.view`, `loyalty.adjust`, `certificate.sell`, `certificate.redeem`, `shift.manage` | – | – | – | – | Э2–Э3, набор задаётся в своём контракте; до этого действия в реестре нет = запрещено |
-
-Строка `finance.correct` для Директора – спорная (N-06 против 04 §5), вынесена в итоговый список.
+Действия денег, баллов, сертификатов, зарплаты (`finance.*`, `loyalty.*`, `certificate.*`, `payroll.*`, `shift.*`, `ledger.override_limit`) в реестр Э1 **не входят** – их нет в коде, значит запрещены. Их добавит поток Э2–Э3 своим `modules/<x>/actions.ts` (ADR 0002). Решение, зафиксированное заранее для Э2: `finance.refund` – Владелец и Директор; `finance.correct` – только Владелец до ответа заказчика (вопрос к Э2: N-06 «кроме финкорректировок» против R-14 «Директор и Владелец»).
 
 ## Ошибки
 

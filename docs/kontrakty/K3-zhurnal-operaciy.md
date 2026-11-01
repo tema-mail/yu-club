@@ -54,6 +54,10 @@ export interface PostingInput {
   entries: EntryInput[];               // 1..N; все в одной транзакции, общий posting_id
   idempotencyKey: string;              // ключ НАМЕРЕНИЯ, напр. 'visit-accrual:<visitId>'; у записи i → `${key}#${i}`
   author: { type: 'staff' | 'client' | 'system'; id: string | null };
+  /** Явный режим «ниже предела» (07 §3.1 «без специального разрешения»): только author.type='staff',
+   *  вызывающий модуль заранее проверил право (Э2: `ledger.override_limit` в своём actions.ts), basis обязателен.
+   *  Пишется в запись (limit_override=true) и в аудит. */
+  allowBelowLimit?: { reason: string };
 }
 
 export interface PostedEntry {
@@ -72,13 +76,25 @@ export interface PostingResult { postingId: string; entries: PostedEntry[]; repl
 export function ensureAccount(tx: Tx, ref: AccountRef, opts: { unit: Unit; branchId: string | null; minBalance: Minor | null }): Promise<Account>;
 
 /** Проводка. Внутри:
- *  1) SELECT ... FROM ledger_accounts WHERE id IN (...) ORDER BY id FOR UPDATE   – порядок id против взаимоблокировок;
+ *  1) lockAccounts(tx, ids) – FOR UPDATE в порядке id (против взаимоблокировок);
  *  2) если запись с idempotency_key `${key}#0` уже есть → вернуть сохранённые записи, replayed=true (сравнить
  *     account/amount/type; расхождение → IDEMPOTENCY_KEY_REUSED);
- *  3) INSERT записей с balance_after; UPDATE ledger_accounts SET balance = balance + Σ;
- *  4) CHECK balance >= min_balance нарушен → BALANCE_BELOW_LIMIT (ошибка 23514 переводится).
+ *  3) INSERT записей; balance_after и balance ставит ТОЛЬКО триггер ledger_entries_20_apply_balance
+ *     (model-dannyh 0004) – код баланс не пишет, у yu_app нет на это права;
+ *  4) 23514 с constraint 'ledger_balance_below_limit' → BALANCE_BELOW_LIMIT.
  *  Транзакцию НЕ открывает: вызывающий модуль передаёт tx своей команды. */
 export function post(tx: Tx, input: PostingInput): Promise<PostingResult>;
+
+/** Заблокировать счета до проводки (FOR UPDATE, порядок id). Нужна модулю, который до post() читает
+ *  связанные данные под той же блокировкой (партии баллов, остаток сертификата). Возвращает счета. */
+export function lockAccounts(tx: Tx, accountIds: string[]): Promise<Account[]>;
+
+/** Баллы за минуты (07 §4.2): минуты ÷ 6, вниз до 0,5 балла = до 50 сотых.
+ *  pointsForMinutes(15) = 250, (20) = 300, (30) = 500, (45) = 750, (50) = 800. Целочисленно, без float:
+ *  Math.floor(minutes * 100 / 6 / 50) * 50 → через целые: Math.floor((minutes * 100) / 300) * 50. */
+export function pointsForMinutes(minutes: number): Minor;
+// Расходится с Q-41 по умолчанию («храним точно, не округляем»): принято 07 §4.2 «с точностью 0,5 балла» (ревью п.7).
+// Хранение – сотые, поэтому смена правила округления позже не требует миграции. Q-41 в voprosy поправит оркестратор.
 
 /** Сторно одной записи: та же сумма с обратным знаком, тот же счёт, reversal_of = id.
  *  reason обязателен. Повторное сторно → ALREADY_REVERSED; сторно сторно → CANNOT_REVERSE_REVERSAL. */
@@ -106,7 +122,8 @@ export function listEntries(db: Db, accountId: string, page: { after?: { occurre
 
 | Код | HTTP | Когда |
 |---|---|---|
-| `BALANCE_BELOW_LIMIT` | 409 | баланс ушёл бы ниже `min_balance` (`details: { accountKind, balance, minBalance, attempted }`) |
+| `BALANCE_BELOW_LIMIT` | 409 | баланс ушёл бы ниже `min_balance` без `allowBelowLimit` (`details: { accountKind, balance, minBalance, attempted }`) |
+| `LIMIT_OVERRIDE_NOT_ALLOWED` | 403 | `allowBelowLimit` от не-сотрудника или без причины |
 | `ALREADY_REVERSED` | 409 | у записи уже есть сторно |
 | `CANNOT_REVERSE_REVERSAL` | 409 | попытка сторнировать сторно |
 | `UNIT_MISMATCH` | 422 | разные единицы в проводке |
@@ -120,4 +137,6 @@ export function listEntries(db: Db, accountId: string, page: { after?: { occurre
 - сторно → новая запись, исходная не изменилась; второе сторно → `ALREADY_REVERSED` (ловит `UNIQUE`, а не только код).
 - 20 параллельных `post` с одним ключом → одна проводка, 19 `replayed=true`.
 - два параллельных списания с сертификата, каждое укладывается в остаток, вместе – нет → одно `BALANCE_BELOW_LIMIT`.
-- `UPDATE ledger_entries` от `yu_app` → ошибка прав.
+- `UPDATE ledger_entries` и `UPDATE ledger_accounts SET balance` от `yu_app` → ошибка прав (`42501`).
+- `pointsForMinutes`: 15 → 250, 20 → 300 (3,0 балла), 30 → 500, 45 → 750, 60 → 1000.
+- `allowBelowLimit` с причиной от сотрудника → баланс ниже границы, `limit_override=true`, запись аудита.
