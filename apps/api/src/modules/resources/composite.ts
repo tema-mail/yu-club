@@ -262,3 +262,23 @@ export async function lockCompositions(tx: Tx, items: Array<{ resourceId: string
     }
   }
 }
+
+export interface CompositionRow {
+  unitId: string;
+  validFrom: Date;
+  validTo: Date | null;
+}
+
+/** Состав многих ресурсов за интервал одним запросом – для сетки доступности (S1-05): строки, действующие в [from, to). */
+export async function compositionsDuring(db: Tx, resourceIds: string[], from: Date, to: Date): Promise<Map<string, CompositionRow[]>> {
+  const out = new Map<string, CompositionRow[]>(resourceIds.map((id) => [id, []]));
+  const ids = resourceIds.filter(isUuid);
+  if (ids.length === 0) return out;
+  const r = await db.query<{ resource_id: string; unit_id: string; valid_from: Date; valid_to: Date | null }>(
+    `SELECT resource_id, unit_id, valid_from, valid_to FROM app.resource_units
+     WHERE resource_id = ANY($1::uuid[]) AND valid_from < $3 AND (valid_to IS NULL OR valid_to > $2) ORDER BY resource_id, unit_id`,
+    [ids, from, to],
+  );
+  for (const row of r.rows) out.get(row.resource_id)?.push({ unitId: row.unit_id, validFrom: row.valid_from, validTo: row.valid_to });
+  return out;
+}
