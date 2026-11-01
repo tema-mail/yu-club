@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['.claude/', 'node_modules/', 'dist/', 'docs/', 'tz/', 'apps/crm/dist/', 'apps/crm/.astro/', 'apps/crm/test-results/', 'apps/crm/playwright-report/'] },
+  { ignores: ['.claude/', 'node_modules/', 'dist/', 'docs/', 'tz/', 'apps/crm/dist/', 'apps/crm/.astro/', 'apps/crm/test-results/', 'apps/crm/playwright-report/', 'apps/site/dist/', 'apps/site/.astro/', 'apps/site/test-results/', 'apps/site/playwright-report/'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
 );
