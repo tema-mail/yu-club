@@ -235,6 +235,10 @@ export async function rescheduleBooking(tx: Tx, bookingId: string, input: Resche
   checkRowVersion(b, input.rowVersion);
   const reason = requireText(input.reason, 'reason');
   if (b.status !== 'confirmed') throw new AppError('INVALID_STATUS_TRANSITION', 409, 'Перенести можно только подтверждённую запись', { from: b.status, to: 'rescheduled' });
+  // сеанс уже начался – переносить нечего: приход/неявка/отмена, а не новая версия (ревизия S1-08..13)
+  if (b.start.getTime() <= now.getTime()) {
+    throw new AppError('INVALID_STATUS_TRANSITION', 409, 'Сеанс уже начался – перенос невозможен', { from: b.status, to: 'rescheduled', startedAt: b.start.toISOString() });
+  }
   if (b.resourceId === input.resourceId.toLowerCase() && b.start.getTime() === input.start.getTime() && b.end.getTime() === input.end.getTime()) return b;
   const branch = await getBranch(tx, b.branchId);
   if (!branch) throw notFound();

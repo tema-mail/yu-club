@@ -12,7 +12,7 @@ import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from '.
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
-import { bookingLookup, bookingsProvider, clientBranchLinks } from './modules/booking/providers.ts';
+import { bookingsProvider, clientBranchLinks } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
@@ -193,7 +193,8 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
     deps.clients = { pool, auth: clientAuthConfig(config.SESSION_PEPPER), sms };
   }
   // Диспетчер уведомлений работает и без VAPID: строки получают статус «нет канала» и остаются в ЛК.
-  return { deps, close: () => pool.end(), sender: { pool, vapid, bookings: bookingLookup } }; // проверки 1–4 по таблице броней
+  // sender здесь – только для предупреждения о VAPID при старте; отправляет worker (startWorkerTasks, с bookingLookup)
+  return { deps, close: () => pool.end(), sender: { pool, vapid } };
 }
 
 async function main(): Promise<void> {

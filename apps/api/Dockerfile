@@ -9,9 +9,10 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/
 COPY apps/crm/package.json apps/crm/
 COPY apps/site/package.json apps/site/
+COPY packages/contracts/package.json packages/contracts/
 COPY db/package.json db/
 # только рабочие зависимости API и db (CRM – свой образ), скрипты пакетов не запускаем
-RUN npm ci -w @yu/api -w @yu/db --include-workspace-root=false --omit=dev --ignore-scripts --no-audit --no-fund
+RUN npm ci -w @yu/api -w @yu/db -w @yu/contracts --include-workspace-root=false --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM node:26-alpine
 LABEL project=yu-club
@@ -24,6 +25,7 @@ COPY apps/api/src apps/api/src
 COPY db/package.json db/migrate.ts db/
 COPY db/migrations db/migrations
 COPY db/seed db/seed
+COPY packages/contracts/src packages/contracts/src
 ARG GIT_SHA=dev
 ENV GIT_SHA=$GIT_SHA
 USER node
