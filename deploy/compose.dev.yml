@@ -1,0 +1,24 @@
+# Postgres 16 для сервера/CI-стенда разработки. На маке Docker нет –
+# там тесты поднимают embedded-postgres (tests/helpers/pg.ts).
+# Пароль только из окружения/.env рядом (в git не кладётся):
+#   POSTGRES_PASSWORD=... docker compose -f deploy/compose.dev.yml up -d
+# Миграции: DATABASE_URL=postgres://postgres:$POSTGRES_PASSWORD@127.0.0.1:5432/yu_club node db/migrate.ts up
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: yu_club
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d yu_club"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  pgdata:
