@@ -90,7 +90,7 @@ interface LoyaltyReserve {
 ## 5. Штраф за неявку (07 §8, §9.1, 16 §6, TC-10)
 
 - Срабатывает на `no_show.marked` (K4). Не срабатывает: на наступление времени, на отмену клубом (07 §8.2–8.3, TC-11 – события неявки нет).
-- **Только новые неявки:** неявки, отмеченные раньше `loyalty.penalties_from` (K7, дата запуска Э2), пропускаются (план 4.3 п.10).
+- **Только новые неявки:** неявки, отмеченные раньше `loyalty.penalties_from` (K7, дата запуска Э2), пропускаются (план 4.3 п.10). Пока дата не задана (`null`, решение D2-03), штрафы не начисляются: строка `loyalty_penalties` со статусом `skipped`.
 - **Номинал −5** (07 §8.1, константа подтверждённого правила). **Обрезка у предела** под блокировкой счёта: `applied = min(0, max(−500, −5000 − balance))` (правка по ревью 02.11: без `min(0, …)` при балансе −52 «штраф» дал бы +2). Баланс −43 → −48; −48 → штраф −2 → −50; −50 и ниже (ниже – только после корректировки Владельца, по умолчанию, ждёт заказчика (Q-103)) → `applied = 0`: запись K3 не создаётся (K3 запрещает нулевую сумму), строка `loyalty_penalties` с `applied_centi = 0` сохраняет событие (07 §9.1 «событие неявки фиксируется»).
 - **Один штраф на бронь** (07 §8.4): ключ K3 `loyalty-penalty:<noShowId>` + `UNIQUE (booking_id) WHERE status = 'active'` в `loyalty_penalties`.
 - **Штраф за визит или за бронь** – `loyalty.penalty_scope` (K7): `'visit'` – по умолчанию, ждёт заказчика (Q-44 / R-07): брони клиента подряд без перерыва в одном филиале (конец одной = начало следующей, цепочку отдаёт `booking.adjacentChain`) = один штраф; вторая неявка цепочки пишет строку `merged` с `applied = 0` и `group_booking_id`. `'booking'` – штраф на каждую бронь.
@@ -189,7 +189,7 @@ export function adjust(tx: Tx, ctx: AccessContext, input: { clientId: string; de
 |---|---|---|---|
 | `loyalty.batch_ttl_days` | `int \| null`, сеть | `null` – бессрочно | Q-43 / R-05 |
 | `loyalty.penalty_scope` | `'visit' \| 'booking'`, сеть | `'visit'` | Q-44 / R-07 |
-| `loyalty.penalties_from` | дата-время, сеть | дата запуска Э2 | план 4.3 п.10 |
+| `loyalty.penalties_from` | дата-время \| null, сеть | `null` – штрафы выключены; дату запуска Э2 ставит Владелец (D2-03) | план 4.3 п.10 |
 | `loyalty.points_resource_types` | `string[]`, сеть | `['pc','vr_seat','ps_room']` | Q-42 |
 | `loyalty.accrue_for_points` | `boolean`, сеть | `false` | Q-40 / R-06 |
 | `loyalty.accrue_for_certificate` | `boolean`, сеть | `true` | Q-40 / R-06 |

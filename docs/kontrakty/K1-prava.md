@@ -126,6 +126,7 @@ export function assertCanClient(db: Db | Tx, ctx: AccessContext, action: Action,
 | `audit.view.own` | ✓ | ✓ | ✓ | branch | 04 §5 |
 | `audit.export` | ✓ | | | network | 04 §11.4 |
 | `notifications.view` (журнал отправок) | ✓ | ✓ | ✓ | branch | 01 §14 п.6 |
+
 ### Действия Э2 (S2-01; основание – K10 §8, K15 §10, K16 §9, K17 §8)
 
 Решение (план 6.4, S2-01): действия Э2 – строки той же таблицы `MATRIX` в `core/permissions.ts`, а не `modules/<x>/actions.ts`: одно место до развилки потоков, без конфликтов слияния. Набор – умолчания Q-29 / R-14, Q-45 / R-13, Q-48 (ждут заказчика, 6.4.3 плана); меняется правкой `MATRIX`, механизм прав с датами – Э3 (N-06).
