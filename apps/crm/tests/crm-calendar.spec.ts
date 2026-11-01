@@ -104,6 +104,28 @@ test('Администратор чужого филиала – 404, Томск
   await expect(page.getByTestId('cal-lane-res-tsk-pc1')).toBeVisible();
 });
 
+test('лента дня на 1440 открывается с начала работы филиала (или с часа до «сейчас» в часы работы)', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: TZ, locale: 'ru-RU' });
+  const page = await ctx.newPage();
+  await login(page, 'admin@yu.test');
+  for (const date of [day(0), day(1)]) {
+    await page.goto(`/schedule?date=${date}`);
+    const scroll = page.getByTestId('calendar-scroll');
+    await expect(scroll).toBeVisible();
+    // часы засева 10:00–22:00; сегодня в часы работы – час до текущего, не раньше открытия
+    const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: 'numeric', hourCycle: 'h23' }).format(new Date()));
+    const expected = date === day(0) && hour >= 10 && hour < 22 ? `${String(Math.max(10, hour - 1)).padStart(2, '0')}:00` : '10:00';
+    // первый час, чья подпись не спрятана под колонкой ресурсов
+    const first = await scroll.evaluate((el) => {
+      const edge = el.querySelector('.yc-cal__corner')!.getBoundingClientRect().right;
+      const spans = [...el.querySelectorAll('.yc-cal__hours span')] as HTMLElement[];
+      return spans.find((x) => x.getBoundingClientRect().left >= edge - 1)?.textContent ?? null;
+    });
+    expect(first, `дата ${date}`).toBe(expected);
+  }
+  await ctx.close();
+});
+
 test('снимки календаря день/неделя 1440 и 390: страница без горизонтальной прокрутки, лента – внутри блока', async ({ browser }) => {
   for (const [w, h] of [[1440, 900], [390, 844]] as const) {
     const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: w === 390 ? 2 : 1, timezoneId: TZ, locale: 'ru-RU' });

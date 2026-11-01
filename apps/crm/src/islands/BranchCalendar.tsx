@@ -56,6 +56,14 @@ function minutesIn(at: string, date: string, tz: string): number {
   return z.minutes;
 }
 
+/** Минута, с которой видна лента дня: открытие филиала; сейчас внутри часов работы – час до «сейчас», не раньше открытия. */
+export function scrollTarget(open: ReadonlyArray<readonly [number, number]>, nowMin: number | null, fallback: number): number {
+  const sorted = [...open].sort((a, b) => a[0] - b[0]);
+  const cur = nowMin === null ? undefined : sorted.find(([s, e]) => nowMin >= s && nowMin < e);
+  if (cur && nowMin !== null) return Math.max(cur[0], Math.floor(nowMin / 60) * 60 - 60);
+  return sorted[0]?.[0] ?? fallback;
+}
+
 export default function BranchCalendar(props: BranchCalendarProps) {
   const { branchId, timezone: tz, mode = 'browse' } = props;
   const [view, setView] = useState<CalendarView>(props.view);
@@ -171,18 +179,22 @@ function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight }: DayProps
   const nowMs = Date.now();
   const isToday = nowLocal.date === date;
   const canPick = !!onSlot;
-  // Лента открывается на текущем часе (сегодня) или на открытии филиала – на телефоне не надо листать от полуночи.
+  // Лента открывается на открытии филиала, а если филиал сейчас работает – на часе до «сейчас» (не раньше открытия).
+  // Короткий хвост ленты не дал бы докрутить до открытия – добавляем справа пустое поле (pad) под нужную прокрутку.
   const scroller = useRef<HTMLDivElement>(null);
+  const [pad, setPad] = useState(0);
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
-    const target = isToday ? nowLocal.minutes - 60 : (open[0]?.[0] ?? range.start);
-    el.scrollLeft = Math.max(0, x(target));
-  }, [date, range.start]);
+    const want = Math.max(0, x(scrollTarget(open, isToday ? nowLocal.minutes : null, range.start)));
+    const lack = Math.ceil(want - (el.scrollWidth - el.clientWidth));
+    if (lack > 0) setPad((p) => p + lack);
+    else el.scrollLeft = want;
+  }, [date, range.start, pad]);
 
   return (
     <div class="yc-cal__scroll" ref={scroller} tabIndex={0} aria-label="Лента дня, прокручивается по горизонтали" data-testid="calendar-scroll">
-      <div class="yc-cal__day" style={{ '--yc-cal-w': `${width}px` }}>
+      <div class="yc-cal__day" style={{ '--yc-cal-w': `${width + pad}px` }}>
         <div class="yc-cal__corner">Ресурс</div>
         <div class="yc-cal__hours" aria-hidden="true">
           {hours.map((m) => <span style={{ left: `${x(m)}px` }}>{hmOf(m)}</span>)}
@@ -197,6 +209,7 @@ function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight }: DayProps
               </div>
               <div class="yc-cal__lane" data-testid={`cal-lane-${r.id}`}>
                 {closed.map(([s, e]) => <span class="yc-cal__closed" style={{ left: `${x(s)}px`, width: `${x(e) - x(s)}px` }} aria-hidden="true" />)}
+                {pad > 0 && <span class="yc-cal__closed" style={{ left: `${width}px`, width: `${pad}px` }} aria-hidden="true" />}
                 {hours.map((m) => <span class="yc-cal__tick" style={{ left: `${x(m)}px` }} aria-hidden="true" />)}
                 {canPick && slots.map((m) => {
                   const past = zonedMs(date, hmOf(m), tz) <= nowMs;
