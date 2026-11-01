@@ -142,19 +142,60 @@ describe('права: Администратор чужого филиала', (
     expect((await req('director', 'PATCH', `/branches/${ids.akadem}`, { rowVersion: 1, address: 'x' })).json().error.code).toBe('VERSION_CONFLICT');
     expect((await req('director', 'GET', `/branches/${ids.lenina}`)).statusCode).toBe(404);
   });
+
+  it('несуществующий id = чужой id (код и тело) для Администратора и Директора на всех командах филиала', async () => {
+    const cases: Array<[string, (id: string) => [string, object]]> = [
+      ['PATCH', (id) => [`/branches/${id}`, { rowVersion: 1, name: 'Взлом' }]],
+      ['POST', (id) => [`/branches/${id}/status`, { rowVersion: 1, status: 'active' }]],
+      ['POST', (id) => [`/branches/${id}/archive`, { rowVersion: 1 }]],
+      ['POST', (id) => [`/branches/${id}/timezone`, { rowVersion: 1, timezone: 'Asia/Omsk' }]],
+    ];
+    for (const who of ['admin', 'director']) {
+      for (const [method, mk] of cases) {
+        const [fu, fb] = mk(ids.lenina!);
+        const [mu, mb] = mk(randomUUID());
+        const foreign = await req(who, method as 'PATCH' | 'POST', fu, fb);
+        const missing = await req(who, method as 'PATCH' | 'POST', mu, mb);
+        expect([who, fu, foreign.statusCode]).toEqual([who, fu, 404]);
+        expect(missing.statusCode).toBe(404);
+        expect(bodyWithoutRequestId(foreign.json())).toEqual(bodyWithoutRequestId(missing.json()));
+      }
+      const foreignCity = await req(who, 'POST', '/branches', { cityId: ids.tsk, slug: 'hack', name: 'H', address: 'a' });
+      const missingCity = await req(who, 'POST', '/branches', { cityId: randomUUID(), slug: 'hack', name: 'H', address: 'a' });
+      expect(foreignCity.statusCode).toBe(404);
+      expect(bodyWithoutRequestId(foreignCity.json())).toEqual(bodyWithoutRequestId(missingCity.json()));
+    }
+    // своя зона без права – 403 (существование не секрет): Администратор и создание в своём городе
+    expect((await req('admin', 'POST', '/branches', { cityId: ids.nsk, slug: 'hack', name: 'H', address: 'a' })).statusCode).toBe(403);
+    expect((await req('owner', 'GET', `/branches/${ids.lenina}`)).json()).toMatchObject({ name: 'Ю Клуб на Ленина', status: 'preparing', rowVersion: 1 });
+  });
+
+  it('мусорный курсор (не base64, не JSON, неверные типы) – 400, не 500', async () => {
+    const bad = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
+    for (const c of ['мусор', bad({ a: 1 }), bad(['x', 'не число', 'y', 'не uuid']), bad(['x', 1, 'y', 'zzz']), bad(['x', 1.5, 'y', randomUUID()])]) {
+      const r = await req('owner', 'GET', `/branches?cursor=${encodeURIComponent(c)}`);
+      expect([c, r.statusCode, r.json().error.code]).toEqual([c, 400, 'VALIDATION_FAILED']);
+    }
+    expect((await req('owner', 'GET', `/cities?cursor=${bad(['x', 'не uuid'])}`)).statusCode).toBe(400);
+  });
+
+  it('архив города – с rowVersion: без версии 400, устаревшая – VERSION_CONFLICT', async () => {
+    expect((await req('owner', 'POST', `/cities/${ids.tsk}/archive`, {})).json().error.code).toBe('VALIDATION_FAILED');
+    expect((await req('owner', 'POST', `/cities/${ids.tsk}/archive`, { rowVersion: 7 })).json().error.code).toBe('VERSION_CONFLICT');
+  });
 });
 
 describe('архив и зона', () => {
   it('DELETE нет; архив филиала – запись остаётся, видна с includeArchived; город с филиалами – 409', async () => {
     expect((await req('owner', 'DELETE', `/branches/${ids.lenina}`)).statusCode).toBe(404);
-    expect((await req('owner', 'POST', `/cities/${ids.tsk}/archive`, {})).json().error.code).toBe('CITY_HAS_ACTIVE_BRANCHES');
+    expect((await req('owner', 'POST', `/cities/${ids.tsk}/archive`, { rowVersion: 1 })).json().error.code).toBe('CITY_HAS_ACTIVE_BRANCHES');
     const r = await req('owner', 'POST', `/branches/${ids.lenina}/archive`, { rowVersion: 1 });
     expect(r.json()).toMatchObject({ status: 'archived' });
     const visible = (await req('owner', 'GET', '/branches')).json().items.map((b: { id: string }) => b.id);
     expect(visible).not.toContain(ids.lenina);
     const withArchived = (await req('owner', 'GET', '/branches?includeArchived=true')).json().items.map((b: { id: string }) => b.id);
     expect(withArchived).toContain(ids.lenina);
-    expect((await req('owner', 'POST', `/cities/${ids.tsk}/archive`, {})).json()).toMatchObject({ status: 'archived' });
+    expect((await req('owner', 'POST', `/cities/${ids.tsk}/archive`, { rowVersion: 1 })).json()).toMatchObject({ status: 'archived' });
   });
 
   it('смена зоны: прошлые моменты на месте, в аудите было/стало зоны', async () => {

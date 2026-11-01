@@ -97,5 +97,5 @@ export async function networkRoutes(app: FastifyInstance, deps: NetworkDeps): Pr
   );
   app.post('/cities', command('city.create', (tx, ctx, _id, body, meta, c) => createCity(tx, ctx, body, meta, c), 201));
   app.patch('/cities/:cityId', command('city.update', updateCity));
-  app.post('/cities/:cityId/archive', command('city.archive', (tx, ctx, id, _body, meta, c) => archiveCity(tx, ctx, id, meta, c)));
+  app.post('/cities/:cityId/archive', command('city.archive', archiveCity));
 }
