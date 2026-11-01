@@ -52,6 +52,8 @@ export const AUDIT_OBJECT_TYPES = [
   'tariff',
   'notification',
   'export',
+  'finance_category', // Э2, K17 §5 (K2 «Деньги»)
+  'finance_operation', // Э2, K17 §3–§4
 ] as const;
 export type AuditObjectType = (typeof AUDIT_OBJECT_TYPES)[number];
 
