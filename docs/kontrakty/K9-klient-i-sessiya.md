@@ -78,7 +78,8 @@ interface MyBookingDto extends BookingDto {   // BookingDto – K5; без inter
 | `GET /me/visits?cursor=` | `200 { items: [{ bookingId, number, branchName, resourceName, plannedStart, plannedEnd, arrivedAt, status: 'visited' }], nextCursor }` – только фактические посещения (03 §8.4) |
 | `PUT /me/notification-settings` `{ remindersEnabled: boolean, marketingEnabled: boolean }` (`Idempotency-Key`) | `200 MeDto`; пишет `client_consents` (`reminders`, `marketing`) и `client_notification_prefs`; включение рекламы = согласие с `documentVersion` (09 §5.1); событие `client.notification_prefs_changed` (K4); сервисные сообщения не выключаются (09 §5.3) |
 | `POST /me/push-subscriptions` `{ endpoint, keys: { p256dh, auth }, userAgent? }` | `201 { id }`; тот же `endpoint` у другого клиента → переносится на текущего (устройство сменило владельца, решение) |
-| `DELETE /me/push-subscriptions/{id}` | `204`, `revoke_reason='unsubscribed'` |
+| `DELETE /me/push-subscriptions/{id}` | `204` всегда (чужой, отозванный и несуществующий id неотличимы); своя активная – `revoke_reason='unsubscribed'` |
+| `GET /push/vapid-public-key` (без входа) | `200 { publicKey }` – открытый ключ VAPID (base64url) для `pushManager.subscribe`; ключей на сервере нет – `503 PUSH_NOT_CONFIGURED`. Endpoint подписки – только известных push-сервисов (`422 PUSH_ENDPOINT_NOT_ALLOWED`, защита от SSRF); повтор той же подписки – `200` с тем же `id` (S1-15) |
 
 Курсор: base64url от `(start, id)` – стабильный порядок, `limit` 20 (17 §4.4).
 

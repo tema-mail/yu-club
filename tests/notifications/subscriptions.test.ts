@@ -8,7 +8,7 @@ import {
   DEFAULT_PUSH_HOSTS,
   MAX_ACTIVE_SUBSCRIPTIONS,
   getNotificationSettings,
-  removePushSubscription,
+  removePushSubscriptionById,
   revokeClientSubscriptions,
   savePushSubscription,
   updateNotificationSettings,
@@ -98,10 +98,10 @@ describe('подписка', () => {
     const c = await client();
     const other = await client();
     const s = sub();
-    await savePushSubscription(pool, clock, c.id, s, DEFAULT_PUSH_HOSTS, c.meta);
-    expect(await removePushSubscription(pool, clock, other.id, s.endpoint, other.meta)).toBe(false);
-    expect(await removePushSubscription(pool, clock, c.id, s.endpoint, c.meta)).toBe(true);
-    expect(await removePushSubscription(pool, clock, c.id, s.endpoint, c.meta)).toBe(false);
+    const { id } = await savePushSubscription(pool, clock, c.id, s, DEFAULT_PUSH_HOSTS, c.meta);
+    expect(await removePushSubscriptionById(pool, clock, other.id, id, other.meta)).toBe(false);
+    expect(await removePushSubscriptionById(pool, clock, c.id, id, c.meta)).toBe(true);
+    expect(await removePushSubscriptionById(pool, clock, c.id, id, c.meta)).toBe(false);
     expect(await active(c.id)).toBe(0);
     await savePushSubscription(pool, clock, c.id, s, DEFAULT_PUSH_HOSTS, c.meta);
     expect(await active(c.id)).toBe(1);

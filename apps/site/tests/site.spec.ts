@@ -69,6 +69,12 @@ test('страница филиала: адрес и часы из API, врем
   await expect(page.getByTestId('zone-ps')).toContainText('Комната PS5 3');
   await expect(page.getByTestId('branch-closed')).toHaveCount(0);
 
+  // Работающий филиал без часов на сегодня (hoursToday: []) – «закрыто сегодня», страница 200, не 503.
+  const res = await page.goto('/novosibirsk/krasny-prospekt/');
+  expect(res?.status()).toBe(200);
+  await expect(page.getByTestId('branch-hours')).toHaveText('Закрыто сегодня');
+  await expect(page.getByTestId('zone-pc')).toBeVisible();
+
   await page.goto('/novosibirsk/akademgorodok/');
   await expect(page.getByTestId('branch-closed')).toBeVisible();
   await expect(page.getByTestId('branch-hours')).toHaveText('Временно закрыт');

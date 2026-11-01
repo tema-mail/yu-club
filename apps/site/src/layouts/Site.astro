@@ -1,7 +1,7 @@
 ---
 // Оболочка сайта: шапка (знак, навигация, выбор клуба), подвал (юридические ссылки), canonical и robots по режиму.
 // Данные сети и выбор посетителя кладёт middleware (src/middleware.ts) – здесь только показ.
-// В меню – только разделы, у которых уже есть страница: ЛК и запись добавят свои шаги (S1-19…S1-21, П5).
+// В меню – только разделы, у которых уже есть страница; запись добавит свой шаг (S1-19…S1-21). «Войти / Кабинет» – по куке сессии.
 import '../styles/site.css';
 import BranchPicker, { type PickerCity } from '../islands/BranchPicker.tsx';
 
@@ -13,7 +13,7 @@ interface Props {
 }
 
 const { title, description, noindex = false } = Astro.props;
-const { network, choice, indexable, origin } = Astro.locals;
+const { network, choice, indexable, origin, hasSession } = Astro.locals;
 const path = Astro.url.pathname;
 // canonical – адрес без параметров (карта сайта п.2.10).
 const canonical = `${origin}${path}`;
@@ -62,6 +62,12 @@ const year = new Date().getFullYear();
         <div class="yu-header__picker">
           <BranchPicker client:load cities={pickerCities} current={choice} />
         </div>
+        <a
+          class="yu-header__account"
+          href={hasSession ? '/account/' : '/login/'}
+          aria-current={path.startsWith('/account/') || path === '/login/' ? 'page' : undefined}
+          data-testid="header-account"
+        >{hasSession ? 'Кабинет' : 'Войти'}</a>
       </div>
     </header>
 

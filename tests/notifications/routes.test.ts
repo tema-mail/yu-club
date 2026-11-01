@@ -1,4 +1,4 @@
-// S1-15: HTTP /api/public/v1/push/* и /notification-settings за сессией клиента; endpoint и ключи не попадают в лог.
+// S1-15: HTTP /api/public/v1/me/push-subscriptions, /me/notification-settings, /push/vapid-public-key за сессией клиента; endpoint и ключи не попадают в лог.
 import { randomUUID } from 'node:crypto';
 import { Writable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
@@ -66,49 +66,55 @@ describe('открытый ключ VAPID', () => {
 
 describe('подписка', () => {
   it('без сессии – 401 AUTH_REQUIRED', async () => {
-    const res = await app.inject({ method: 'POST', url: `${BASE}/push/subscription`, payload: subscription });
+    const res = await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, payload: subscription });
     expect([res.statusCode, res.json().error.code]).toEqual([401, 'AUTH_REQUIRED']);
   });
 
   it('201 при первой, 200 с тем же id при повторе; чужой хост – 422; кривое тело – 400', async () => {
-    const first = await app.inject({ method: 'POST', url: `${BASE}/push/subscription`, headers: { cookie }, payload: subscription });
+    const first = await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie }, payload: subscription });
     expect(first.statusCode).toBe(201);
-    const again = await app.inject({ method: 'POST', url: `${BASE}/push/subscription`, headers: { cookie }, payload: subscription });
+    const again = await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie }, payload: subscription });
     expect([again.statusCode, again.json().id]).toEqual([200, first.json().id]);
-    const evil = await app.inject({ method: 'POST', url: `${BASE}/push/subscription`, headers: { cookie }, payload: { ...subscription, endpoint: 'https://evil.example/x' } });
+    const evil = await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie }, payload: { ...subscription, endpoint: 'https://evil.example/x' } });
     expect([evil.statusCode, evil.json().error.code]).toEqual([422, 'PUSH_ENDPOINT_NOT_ALLOWED']);
-    const bad = await app.inject({ method: 'POST', url: `${BASE}/push/subscription`, headers: { cookie }, payload: { endpoint: subscription.endpoint } });
+    const bad = await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie }, payload: { endpoint: subscription.endpoint } });
     expect([bad.statusCode, bad.json().error.code]).toEqual([400, 'VALIDATION_FAILED']);
-    const settings = await app.inject({ method: 'GET', url: `${BASE}/notification-settings`, headers: { cookie } });
+    const settings = await app.inject({ method: 'GET', url: `${BASE}/me/notification-settings`, headers: { cookie } });
     expect(settings.json().pushSubscriptions).toBe(1);
   });
 
   it('на сервере без VAPID подписка – 503, не сохраняется', async () => {
-    const res = await bare.inject({ method: 'POST', url: `${BASE}/push/subscription`, headers: { cookie }, payload: { ...subscription, endpoint: `${subscription.endpoint}-x` } });
+    const res = await bare.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie }, payload: { ...subscription, endpoint: `${subscription.endpoint}-x` } });
     expect(res.statusCode).toBe(503);
   });
 
-  it('DELETE – 204, повтор тоже 204', async () => {
-    for (let i = 0; i < 2; i++) {
-      const res = await app.inject({ method: 'DELETE', url: `${BASE}/push/subscription`, headers: { cookie }, payload: { endpoint: subscription.endpoint } });
+  it('DELETE /{id} – 204, повтор, чужой и кривой id тоже 204', async () => {
+    const { id } = (await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie }, payload: subscription })).json();
+    const other = await login('+79135550102');
+    const foreign = await app.inject({ method: 'DELETE', url: `${BASE}/me/push-subscriptions/${id}`, headers: { cookie: other } });
+    expect(foreign.statusCode).toBe(204);
+    const still = await app.inject({ method: 'GET', url: `${BASE}/me/notification-settings`, headers: { cookie } });
+    expect(still.json().pushSubscriptions).toBe(1);
+    for (const target of [id, id, 'not-a-uuid']) {
+      const res = await app.inject({ method: 'DELETE', url: `${BASE}/me/push-subscriptions/${target}`, headers: { cookie } });
       expect(res.statusCode).toBe(204);
     }
-    const settings = await app.inject({ method: 'GET', url: `${BASE}/notification-settings`, headers: { cookie } });
+    const settings = await app.inject({ method: 'GET', url: `${BASE}/me/notification-settings`, headers: { cookie } });
     expect(settings.json().pushSubscriptions).toBe(0);
   });
 });
 
 describe('настройки', () => {
   it('GET – умолчания; PUT без Idempotency-Key – 400; PUT меняет, повтор ключа – idempotent-replay', async () => {
-    const get = await app.inject({ method: 'GET', url: `${BASE}/notification-settings`, headers: { cookie } });
+    const get = await app.inject({ method: 'GET', url: `${BASE}/me/notification-settings`, headers: { cookie } });
     expect(get.json()).toEqual({ remindersEnabled: true, marketingEnabled: false, serviceAlwaysOn: true, pushSubscriptions: 0 });
     const payload = { remindersEnabled: true, marketingEnabled: true };
-    const noKey = await app.inject({ method: 'PUT', url: `${BASE}/notification-settings`, headers: { cookie }, payload });
+    const noKey = await app.inject({ method: 'PUT', url: `${BASE}/me/notification-settings`, headers: { cookie }, payload });
     expect(noKey.json().error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
     const key = randomUUID();
-    const put = await app.inject({ method: 'PUT', url: `${BASE}/notification-settings`, headers: { cookie, 'idempotency-key': key }, payload });
+    const put = await app.inject({ method: 'PUT', url: `${BASE}/me/notification-settings`, headers: { cookie, 'idempotency-key': key }, payload });
     expect([put.statusCode, put.json().marketingEnabled]).toEqual([200, true]);
-    const replay = await app.inject({ method: 'PUT', url: `${BASE}/notification-settings`, headers: { cookie, 'idempotency-key': key }, payload });
+    const replay = await app.inject({ method: 'PUT', url: `${BASE}/me/notification-settings`, headers: { cookie, 'idempotency-key': key }, payload });
     expect(replay.headers['idempotent-replay']).toBe('true');
     const me = await app.inject({ method: 'GET', url: `${BASE}/me`, headers: { cookie } });
     expect(me.json().notifications).toEqual({ remindersEnabled: true, marketingEnabled: true });

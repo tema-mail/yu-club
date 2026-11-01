@@ -78,6 +78,7 @@ export function objectTimeline(db: Db, ctx: AccessContext, object: { type: Audit
 | Клиенты | `client.created`, `client.updated`, `client.status_changed`, `client.merged`, `client.consent_changed`, `client.notification_prefs_changed` | `client` |
 | Настройки | `setting.changed`, `setting.reset_to_inherited`, `dictionary.changed`, `tariff.created`, `tariff.updated`, `tariff.archived` | `setting` / `dictionary` / `tariff` |
 | Уведомления | `notification.sent`, `notification.failed`, `notification.skipped` (системные, результат отправки) | `notification` |
+| Уведомления | `notification.push_subscribed`, `notification.push_unsubscribed` (клиент в ЛК; endpoint – только маска хоста, ключи не пишутся) | `client` |
 | Экспорт | `export.created` | `export` |
 | Э2–Э3 | `ledger.posted`, `ledger.reversed`, `loyalty.adjusted`, `certificate.*`, `repair.*`, `shift.*` | – |
 

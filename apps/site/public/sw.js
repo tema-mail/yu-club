@@ -59,35 +59,26 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
-// Браузер сменил подписку (истекла, ключи обновлены): подписаться заново тем же ключом VAPID и сообщить серверу.
-// Нет сессии клиента (401) – новая подписка сохранится при следующем входе через lib/push.ts.
+// Браузер сменил подписку (истекла, ключи обновлены): подписаться заново тем же ключом VAPID и сообщить серверу (K9).
+// Старую сервер отзовёт сам по 404/410 при следующей отправке. Нет сессии (401) – lib/push.ts сохранит её после входа.
 self.addEventListener('pushsubscriptionchange', (event) => {
   event.waitUntil(
     (async () => {
-      const old = event.oldSubscription;
       let sub = event.newSubscription;
       if (!sub) {
-        const res = await fetch(`${API}/push/vapid-public-key`, { credentials: 'same-origin' });
+        const res = await fetch(`${API}/push/vapid-public-key/`, { credentials: 'same-origin', headers: { accept: 'application/json' } });
         if (!res.ok) return;
         const { publicKey } = await res.json();
         const raw = atob(publicKey.replace(/-/g, '+').replace(/_/g, '/'));
         const key = Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
         sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
       }
-      await fetch(`${API}/push/subscription`, {
+      await fetch(`${API}/me/push-subscriptions/`, {
         method: 'POST',
         credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', accept: 'application/json', 'x-requested-with': 'yu-site' },
         body: JSON.stringify(sub.toJSON()),
       });
-      if (old && old.endpoint !== sub.endpoint) {
-        await fetch(`${API}/push/subscription`, {
-          method: 'DELETE',
-          credentials: 'same-origin',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ endpoint: old.endpoint }),
-        });
-      }
     })(),
   );
 });

@@ -93,6 +93,27 @@ services:
     networks: [internal, caddy]
     logging: *log
 
+  # Публичный сайт (S1-18+): Astro SSR, данные сети – из API на сервере (API_URL), браузер в API ходит
+  # через прокси сайта (/api/public/v1/*). APP_ENV не prod – noindex на всём и robots.txt Disallow: /.
+  site:
+    build:
+      context: ..
+      dockerfile: apps/site/Dockerfile
+    image: yu-club-site:local
+    container_name: yu-club-site
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-stage}
+      API_URL: ${SITE_API_URL:-http://yu-club-api:3000}
+      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
+      # прокси /api/public/v1/* сайта: X-Forwarded-For принимаем только от Caddy (сети Docker)
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
+    depends_on:
+      api: { condition: service_healthy }
+    mem_limit: 160m
+    networks: [internal, caddy]
+    logging: *log
+
 networks:
   internal:
     name: yu-club-internal

@@ -16,7 +16,14 @@ yu-club.45.12.72.227.nip.io {
 	request_body {
 		max_size 2MB
 	}
-	reverse_proxy yu-club-api:3000
+	# только проверка живости – в api напрямую. Всё остальное, включая /api/public/v1/*, – в site:
+	# его прокси проверяет X-Requested-With и Origin (защита от подделки запросов) и сам ходит в API по API_URL.
+	handle /health {
+		reverse_proxy yu-club-api:3000
+	}
+	handle {
+		reverse_proxy yu-club-site:4341
+	}
 	log {
 		output stdout
 		format console

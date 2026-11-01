@@ -4,6 +4,7 @@ import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
 import { AppError } from './core/errors.ts';
 import './core/registry.ts'; // проверка реестров модулей на дубли – при старте (ADR 0002)
+import { blockRoutes } from './modules/booking/blocks.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
@@ -11,6 +12,9 @@ import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
+import { networkPublicRoutes, type NetworkPublicDeps } from './modules/network/routes.public.ts';
+import { resourcesRoutes } from './modules/resources/routes.ts';
+import { pricingRoutes } from './modules/pricing/routes.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
 import { startDispatcher, type SenderDeps } from './modules/notifications/sender.ts';
@@ -22,6 +26,8 @@ import { staffAdminRoutes } from './modules/staff/routes.staff.ts';
 export interface ServerDeps {
   staff?: StaffDeps;
   clients?: ClientPublicDeps;
+  /** Публичная сеть для сайта (K5 №1–4) – без входа, нужна только база. */
+  network?: NetworkPublicDeps;
   /** Web Push (S1-15): открытый ключ VAPID (null – не настроен, подписка 503) и разрешённые push-сервисы. Нужны clients. */
   notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[] };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
@@ -81,9 +87,41 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     );
     void app.register(
       async (scope) =>
+        pricingRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    void app.register(
+      async (scope) =>
+        resourcesRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    void app.register(
+      async (scope) =>
+        blockRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    void app.register(
+      async (scope) =>
         clientCrmRoutes(scope, { pool: staff.pool, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
     );
+  }
+
+  if (deps.network) {
+    const network = deps.network;
+    void app.register(async (scope) => networkPublicRoutes(scope, network), { prefix: '/api/public/v1' });
   }
 
   if (deps.clients) {
@@ -101,7 +139,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
 export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void>; sender?: SenderDeps } {
   if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
-  const deps: ServerDeps = {};
+  const deps: ServerDeps = { network: { pool } };
   // Пара VAPID проверяется здесь: несовпадение ключей – ошибка запуска, а не тихий отказ всех отправок.
   const vapid =
     config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY && config.VAPID_SUBJECT

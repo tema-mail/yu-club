@@ -11,3 +11,4 @@ tests
 **/dist
 **/.astro
 !apps/crm/dist
+!apps/site/dist

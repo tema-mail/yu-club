@@ -125,20 +125,21 @@ export async function savePushSubscription(
   });
 }
 
-/** DELETE подписки: только своей и активной; повтор и чужая – без изменений (ответ всё равно 204). */
-export async function removePushSubscription(pool: Pool, clock: Clock, clientId: string, endpoint: string, meta: AuditRequestMeta): Promise<boolean> {
+/** DELETE подписки (K9 /me/push-subscriptions/{id}): только своей и активной; повтор и чужая – false (ответ всё равно 204). */
+export async function removePushSubscriptionById(pool: Pool, clock: Clock, clientId: string, id: string, meta: AuditRequestMeta): Promise<boolean> {
   return withTx(pool, async (tx) => {
     const now = clock.now();
-    const r = await tx.query(
+    const r = await tx.query<{ endpoint: string }>(
       `UPDATE app.push_subscriptions SET revoked_at = $3, revoke_reason = 'unsubscribed', updated_at = $3
-       WHERE endpoint = $1 AND client_id = $2 AND revoked_at IS NULL`,
-      [endpoint, clientId, now],
+       WHERE id = $1 AND client_id = $2 AND revoked_at IS NULL RETURNING endpoint`,
+      [id, clientId, now],
     );
-    if (!r.rowCount) return false;
+    const row = r.rows[0];
+    if (!row) return false;
     await writeAudit(
       tx,
       meta,
-      { action: 'notification.push_unsubscribed', object: { type: 'client', id: clientId }, after: { endpoint: maskEndpoint(endpoint), reason: 'unsubscribed' } },
+      { action: 'notification.push_unsubscribed', object: { type: 'client', id: clientId }, after: { endpoint: maskEndpoint(row.endpoint), reason: 'unsubscribed' } },
       clock,
     );
     return true;
@@ -171,7 +172,7 @@ export async function getNotificationSettings(db: Tx, clientId: string): Promise
   return { ...prefs, serviceAlwaysOn: true, pushSubscriptions: n.rows[0]?.n ?? 0 };
 }
 
-export const SETTINGS_ROUTE = 'PUT /api/public/v1/notification-settings';
+export const SETTINGS_ROUTE = 'PUT /api/public/v1/me/notification-settings';
 
 /**
  * PUT настроек (Idempotency-Key). Изменённая настройка → строка journal.client_consents (kind reminders / marketing),

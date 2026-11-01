@@ -8,6 +8,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/
 COPY apps/crm/package.json apps/crm/
+COPY apps/site/package.json apps/site/
 COPY db/package.json db/
 # только рабочие зависимости API и db (CRM – свой образ), скрипты пакетов не запускаем
 RUN npm ci -w @yu/api -w @yu/db --include-workspace-root=false --omit=dev --ignore-scripts --no-audit --no-fund

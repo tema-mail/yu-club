@@ -1,9 +1,22 @@
 // K13. Публичный вход модуля network: города, филиалы, график. Другие модули читают сеть только отсюда
-// (ADR 0002 п.1–2). Таблицы – 0008_network.sql. Время – только через core/time.ts (K8).
-// Исключения графика (calendar_exceptions, 0103) появятся в S1-03: пока openIntervals = недельный график;
-// roomId/resourceId принимаются по контракту и учитываются, когда будут исключения комнат и ресурсов.
+// (ADR 0002 п.1–2). Таблицы – 0008_network.sql, 0103_calendar.sql. Время – только через core/time.ts (K8).
+// График и исключения (openIntervals с приоритетом ресурс → комната → филиал → неделя, изменение графика
+// со списком затронутых броней) – calendar.ts (S1-03), отсюда только реэкспорт.
 import type { Db, Tx } from '../../core/audit.ts';
-import { hoursToInterval, isValidTimeZone, type Interval, type LocalDate, type LocalTime, type TimeZone } from '../../core/time.ts';
+import { isValidTimeZone, type TimeZone } from '../../core/time.ts';
+
+export {
+  applyHoursChange,
+  noAffectedBookings,
+  openIntervals,
+  openIntervalsBulk,
+  previewHoursChange,
+  unconnectedTargets,
+  type AffectedBookingsProvider,
+  type CalendarTargets,
+  type FutureBooking,
+  type HoursChange,
+} from './calendar.ts';
 
 export type BranchStatus = 'preparing' | 'active' | 'temporarily_closed' | 'archived';
 
@@ -115,54 +128,4 @@ export async function timezonesOf(db: Db | Tx, input: { cityIds: string[]; branc
   );
   for (const row of r.rows) out.set(row.id, zone(row.timezone));
   return out;
-}
-
-// ---- график
-
-interface HoursRow {
-  open_time: string | null;
-  close_time: string | null;
-  is_closed: boolean;
-}
-
-/** Строка недельного графика, действующая на локальную дату филиала (valid_to включительно). */
-async function weeklyFor(db: Db | Tx, branchId: string, date: LocalDate): Promise<{ tz: TimeZone; row: HoursRow | null } | null> {
-  if (!isUuid(branchId)) return null;
-  const r = await db.query<HoursRow & { timezone: string; has_row: boolean }>(
-    `SELECT b.timezone, h.id IS NOT NULL AS has_row,
-            to_char(h.open_time, 'HH24:MI') AS open_time, to_char(h.close_time, 'HH24:MI') AS close_time, h.is_closed
-     FROM app.branches b
-     LEFT JOIN app.branch_weekly_hours h ON h.branch_id = b.id
-       AND h.weekday = extract(isodow FROM $2::date)
-       AND h.valid_from <= $2::date AND (h.valid_to IS NULL OR h.valid_to >= $2::date)
-     WHERE b.id = $1`,
-    [branchId, date],
-  );
-  const row = r.rows[0];
-  if (!row) return null;
-  return { tz: zone(row.timezone), row: row.has_row ? row : null };
-}
-
-function toIntervals(date: LocalDate, tz: TimeZone, row: HoursRow | null): Interval[] {
-  if (!row || row.is_closed || row.open_time === null || row.close_time === null) return [];
-  return [hoursToInterval(date, row.open_time as LocalTime, row.close_time as LocalTime, tz)];
-}
-
-/** Открытые интервалы дня (UTC) по зоне филиала. Нет филиала или строки графика → []. */
-export async function openIntervals(
-  db: Db | Tx,
-  input: { branchId: string; date: LocalDate; roomId?: string | null; resourceId?: string },
-): Promise<Interval[]> {
-  const w = await weeklyFor(db, input.branchId, input.date);
-  return w ? toIntervals(input.date, w.tz, w.row) : [];
-}
-
-/** Для сетки сразу по многим ресурсам одного дня – один запрос. */
-export async function openIntervalsBulk(
-  db: Db | Tx,
-  input: { branchId: string; date: LocalDate; resources: Array<{ resourceId: string; roomId: string | null }> },
-): Promise<Map<string, Interval[]>> {
-  const w = await weeklyFor(db, input.branchId, input.date);
-  const base = w ? toIntervals(input.date, w.tz, w.row) : [];
-  return new Map(input.resources.map((r) => [r.resourceId, base.map((i) => ({ ...i }))]));
 }
