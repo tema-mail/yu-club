@@ -12,6 +12,7 @@ import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
+import { networkPublicRoutes, type NetworkPublicDeps } from './modules/network/routes.public.ts';
 import { resourcesRoutes } from './modules/resources/routes.ts';
 import { pricingRoutes } from './modules/pricing/routes.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
@@ -21,6 +22,8 @@ import { staffAdminRoutes } from './modules/staff/routes.staff.ts';
 export interface ServerDeps {
   staff?: StaffDeps;
   clients?: ClientPublicDeps;
+  /** Публичная сеть для сайта (K5 №1–4) – без входа, нужна только база. */
+  network?: NetworkPublicDeps;
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
 }
@@ -110,6 +113,11 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     );
   }
 
+  if (deps.network) {
+    const network = deps.network;
+    void app.register(async (scope) => networkPublicRoutes(scope, network), { prefix: '/api/public/v1' });
+  }
+
   if (deps.clients) {
     const clients = deps.clients;
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
@@ -123,7 +131,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
 export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void> } {
   if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
-  const deps: ServerDeps = {};
+  const deps: ServerDeps = { network: { pool } };
   if (config.SESSION_PEPPER) {
     deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
     const sms =
