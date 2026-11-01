@@ -10,7 +10,8 @@
 // Применённый файл менять нельзя: контрольная сумма не совпадёт, раннер остановится.
 // Параллельные запуски сериализуются advisory-блокировкой.
 //
-// CLI: DATABASE_URL=... node db/migrate.ts up | down [N] | status
+// CLI: MIGRATION_DATABASE_URL=... node db/migrate.ts up | down [N] | status
+// (учётка владельца объектов yu_owner, см. docs/adr/0001-stek.md; DATABASE_URL – рантайм yu_app).
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -64,6 +65,7 @@ interface Applied {
 
 async function withLock<T>(client: pg.ClientBase, fn: () => Promise<T>): Promise<T> {
   await client.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
+  let result: T;
   try {
     await client.query(`CREATE TABLE IF NOT EXISTS public.schema_migrations (
       version text PRIMARY KEY,
@@ -71,10 +73,14 @@ async function withLock<T>(client: pg.ClientBase, fn: () => Promise<T>): Promise
       checksum text NOT NULL,
       applied_at timestamptz NOT NULL DEFAULT now()
     )`);
-    return await fn();
-  } finally {
-    await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]);
+    result = await fn();
+  } catch (err) {
+    // Не перекрываем исходную ошибку ошибкой разблокировки (например, при обрыве связи).
+    await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]).catch(() => undefined);
+    throw err;
   }
+  await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]);
+  return result;
 }
 
 async function applied(client: pg.ClientBase): Promise<Applied[]> {
@@ -88,7 +94,7 @@ async function inTx(client: pg.ClientBase, fn: () => Promise<void>): Promise<voi
     await fn();
     await client.query('COMMIT');
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => undefined);
     throw err;
   }
 }
@@ -100,10 +106,12 @@ export async function migrateUp(client: pg.ClientBase, dir: string = MIGRATIONS_
     const done = new Map((await applied(client)).map((a) => [a.version, a.checksum]));
     for (const [version, checksum] of done) {
       const file = migrations.find((m) => m.version === version);
-      if (file && file.checksum !== checksum) {
-        throw new Error(`Применённая миграция ${version} изменена после применения`);
-      }
+      if (!file) throw new Error(`Применённая миграция ${version} отсутствует в ${dir}`);
+      if (file.checksum !== checksum) throw new Error(`Применённая миграция ${version} изменена после применения`);
     }
+    const lastApplied = [...done.keys()].sort().at(-1);
+    const late = migrations.find((m) => !done.has(m.version) && lastApplied !== undefined && m.version < lastApplied);
+    if (late) throw new Error(`Миграция ${late.version} старше применённой ${lastApplied}: порядок нарушен`);
     const ran: string[] = [];
     for (const mig of migrations) {
       if (done.has(mig.version)) continue;
@@ -131,6 +139,7 @@ export async function migrateDown(client: pg.ClientBase, steps = 1, dir: string 
     for (const target of targets) {
       const mig = migrations.find((m) => m.version === target.version);
       if (!mig) throw new Error(`Нет файла для отката применённой миграции ${target.version}`);
+      if (mig.checksum !== target.checksum) throw new Error(`Применённая миграция ${mig.version} изменена после применения`);
       await inTx(client, async () => {
         await client.query(mig.down);
         await client.query('DELETE FROM public.schema_migrations WHERE version = $1', [mig.version]);
@@ -153,8 +162,8 @@ export async function migrationStatus(
 
 async function cli(argv: string[]): Promise<void> {
   const [command, arg] = argv;
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error('Нужен DATABASE_URL (учётка мигратора, не yu_app)');
+  const url = process.env.MIGRATION_DATABASE_URL;
+  if (!url) throw new Error('Нужен MIGRATION_DATABASE_URL (учётка владельца объектов, не yu_app)');
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {

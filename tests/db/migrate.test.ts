@@ -68,3 +68,25 @@ describe('раннер миграций', () => {
     await expect(migrateUp(db.client, dir)).rejects.toThrow(/migrate:up/);
   });
 });
+
+describe('раннер миграций: порядок и целостность', () => {
+  it('пропавший файл применённой миграции останавливает раннер', async () => {
+    await migrateUp(db.client, dir);
+    await rm(path.join(dir, '0002_b.sql'));
+    await expect(migrateUp(db.client, dir)).rejects.toThrow(/0002 отсутствует/);
+  });
+
+  it('новая миграция с номером меньше применённого – ошибка порядка', async () => {
+    await rm(path.join(dir, '0001_a.sql'));
+    await migrateUp(db.client, dir);
+    await writeMig('0001_a.sql', 'CREATE TABLE a (id int);', 'DROP TABLE a;');
+    await expect(migrateUp(db.client, dir)).rejects.toThrow(/порядок нарушен/);
+  });
+
+  it('откат изменённой миграции запрещён', async () => {
+    await migrateUp(db.client, dir);
+    await writeMig('0002_b.sql', 'CREATE TABLE b (id int);', 'DROP TABLE a;');
+    await expect(migrateDown(db.client, 1, dir)).rejects.toThrow(/0002 изменена/);
+    expect(await tables()).toEqual(['a', 'b']);
+  });
+});

@@ -1,9 +1,13 @@
 // Общий хелпер тестов с настоящей Postgres.
 //
-// globalSetup (vitest.config.ts): если задан DATABASE_URL (CI, сервис postgres:16) –
-// берём его как админское подключение; иначе поднимаем embedded-postgres 16
+// globalSetup (vitest.config.ts): если задан TEST_DATABASE_URL (CI, сервис postgres:16) –
+// берём его как админское подключение (суперпользователь одноразового кластера);
+// DATABASE_URL намеренно не читаем: это рантайм-учётка yu_app (ADR 0001), а тесты
+// создают и удаляют базы. Иначе поднимаем embedded-postgres 16
 // во временной папке и гасим после прогона. Каждый тест-файл создаёт себе
 // отдельную базу через createTestDatabase() – тесты не мешают друг другу.
+// Роли кластера (yu_app) на сервере создаёт скрипт инициализации, а не миграция –
+// здесь это делает globalSetup, чтобы миграции работали так же, как на сервере.
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -31,9 +35,22 @@ function freePort(): Promise<number> {
   });
 }
 
+async function ensureClusterRoles(adminUrl: string): Promise<void> {
+  const c = new pg.Client({ connectionString: adminUrl });
+  await c.connect();
+  try {
+    await c.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yu_app') THEN CREATE ROLE yu_app NOLOGIN; END IF;
+    END $$`);
+  } finally {
+    await c.end();
+  }
+}
+
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
-  const external = process.env.DATABASE_URL;
+  const external = process.env.TEST_DATABASE_URL;
   if (external) {
+    await ensureClusterRoles(external);
     project.provide('pgAdminUrl', external);
     return async () => {};
   }
@@ -51,7 +68,9 @@ export default async function setup(project: TestProject): Promise<() => Promise
   });
   await server.initialise();
   await server.start();
-  project.provide('pgAdminUrl', `postgres://postgres:${password}@127.0.0.1:${port}/postgres`);
+  const adminUrl = `postgres://postgres:${password}@127.0.0.1:${port}/postgres`;
+  await ensureClusterRoles(adminUrl);
+  project.provide('pgAdminUrl', adminUrl);
   return async () => {
     await server.stop();
     await rm(dir, { recursive: true, force: true });
