@@ -5,11 +5,13 @@ import { coreErrors } from './errors.ts';
 import { ledgerErrors } from './ledger.ts';
 import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit.ts';
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
+import { auditActions as networkAudit } from '../modules/network/audit.ts';
+import { errors as networkErrors } from '../modules/network/errors.ts';
 import { auditActions as staffAudit } from '../modules/staff/audit.ts';
 import { errors as staffErrors } from '../modules/staff/errors.ts';
 
-const moduleErrors = { ledger: ledgerErrors, staff: staffErrors, dictionaries: dictionariesErrors } as const;
-const moduleAudit = { staff: staffAudit, dictionaries: dictionariesAudit } as const;
+const moduleErrors = { ledger: ledgerErrors, staff: staffErrors, dictionaries: dictionariesErrors, network: networkErrors } as const;
+const moduleAudit = { staff: staffAudit, dictionaries: dictionariesAudit, network: networkAudit } as const;
 
 type ModuleErrors = typeof moduleErrors;
 export type ModuleErrorCode = { [M in keyof ModuleErrors]: keyof ModuleErrors[M] }[keyof ModuleErrors];
