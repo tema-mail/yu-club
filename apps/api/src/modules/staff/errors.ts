@@ -3,4 +3,5 @@ export const errors = {
   INVALID_CREDENTIALS: 401, // неверный email/пароль/TOTP – один ответ на всё
   LOGIN_LOCKED: 429, // перебор
   PASSWORD_TOO_WEAK: 422, // новый пароль не по правилу
+  PASSWORD_CHANGE_REQUIRED: 403, // must_change_password: до смены – только session, password, logout
 } as const;

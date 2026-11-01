@@ -62,8 +62,14 @@ export function reqInfo(request: FastifyRequest): ReqInfo {
   return info;
 }
 
-/** Кука → сессия → контекст доступа. Нет куки – AUTH_REQUIRED; отозвана/истекла/блок – SESSION_REVOKED. */
-export async function authenticate(deps: StaffDeps, request: FastifyRequest, reply: FastifyReply): Promise<StaffRequestContext> {
+/** Кука → сессия → контекст доступа. Нет куки – AUTH_REQUIRED; отозвана/истекла/блок – SESSION_REVOKED.
+ *  Пока must_change_password – всё, кроме маршрутов с allowPasswordChange, получает PASSWORD_CHANGE_REQUIRED. */
+export async function authenticate(
+  deps: StaffDeps,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  opts: { allowPasswordChange?: boolean } = {},
+): Promise<StaffRequestContext> {
   const clock = deps.clock ?? systemClock;
   const token = readCookie(request.headers.cookie, STAFF_COOKIE);
   if (!token) throw new AppError('AUTH_REQUIRED', 401, 'Нужно войти');
@@ -71,6 +77,9 @@ export async function authenticate(deps: StaffDeps, request: FastifyRequest, rep
   if (!session) {
     clearSessionCookie(reply);
     throw new AppError('SESSION_REVOKED', 401, 'Сессия завершена, войдите снова');
+  }
+  if (session.mustChangePassword && !opts.allowPasswordChange) {
+    throw new AppError('PASSWORD_CHANGE_REQUIRED', 403, 'Сначала смените пароль');
   }
   const actor = { kind: 'staff' as const, staffId: session.staffId, sessionId: session.sessionId };
   const access = await loadAccess(deps.pool, actor, clock.now(), deps.network ?? noNetwork);
@@ -153,16 +162,16 @@ export async function staffAuthRoutes(app: FastifyInstance, deps: StaffDeps): Pr
   });
 
   app.get('/session', async (request, reply) => {
-    const { session } = await authenticate(deps, request, reply);
+    const { session } = await authenticate(deps, request, reply, { allowPasswordChange: true });
     const staff = await getStaffPublic(deps.pool, session.staffId);
     if (!staff) throw new AppError('SESSION_REVOKED', 401, 'Сессия завершена, войдите снова');
     return { staff, expiresAt: session.expiresAt.toISOString(), idleExpiresAt: session.idleExpiresAt.toISOString() };
   });
 
   app.post('/password', async (request, reply) => {
-    const { session, meta } = await authenticate(deps, request, reply);
+    const { session, meta } = await authenticate(deps, request, reply, { allowPasswordChange: true });
     const body = parse(passwordBody, request.body);
-    await changePassword(deps.pool, clock, meta, { staffId: session.staffId, sessionId: session.sessionId, ...body });
+    await changePassword(deps.pool, deps.auth, clock, meta, { staffId: session.staffId, sessionId: session.sessionId, ...body });
     return reply.code(204).send();
   });
 

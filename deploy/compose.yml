@@ -62,6 +62,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgres://yu_app:${YU_APP_PASSWORD}@postgres:5432/yu_club
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
     depends_on:
       postgres: { condition: service_healthy }
     mem_limit: 160m

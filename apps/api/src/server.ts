@@ -13,7 +13,8 @@ export interface ServerDeps {
 }
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
-  const app = Fastify({ logger: { level: config.LOG_LEVEL } });
+  // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
+  const app = Fastify({ logger: { level: config.LOG_LEVEL }, trustProxy: config.TRUSTED_PROXIES });
 
   // Тело ошибки (ADR 0002): { error: { code, message, details?, requestId } }. Стек и SQL – только в лог.
   app.setErrorHandler((err: FastifyError | AppError, request, reply) => {

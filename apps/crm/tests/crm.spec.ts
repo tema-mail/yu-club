@@ -101,7 +101,7 @@ test('несохранённая форма при смене контекста
 
   await page.goto('/account/password');
   const select = page.getByLabel('Контекст');
-  const field = page.getByLabel('Текущий пароль');
+  const field = page.locator('input[name="currentPassword"]');
   await field.fill('черновик');
 
   await select.selectOption({ label: 'Ю Клуб Академгородок' });
@@ -174,4 +174,18 @@ test('неудачный выход – ошибка на экране, не м�
   await page.getByRole('button', { name: 'Выйти' }).click();
   await expect(page.locator('#logout-error')).toHaveText('Не удалось выйти: Сервер CRM не отвечает. Повторите или закройте браузер.');
   await expect(page).toHaveURL(/\/$/);
+});
+
+test('обязательная смена пароля: любая страница ведёт на /account/password, после смены – обычная работа', async ({ page }) => {
+  await login(page, 'fresh@yu.test');
+  await expect(page).toHaveURL(/\/account\/password$/);
+  await page.goto('/branches/b-nsk-krasny');
+  await expect(page).toHaveURL(/\/account\/password$/);
+  await page.getByLabel('Текущий пароль').fill(MOCK_PASSWORD);
+  await page.locator('input[name="newPassword"]').fill('Новый-пароль-сотрудника');
+  await page.locator('input[name="repeat"]').fill('Новый-пароль-сотрудника');
+  await page.getByRole('button', { name: 'Сменить пароль' }).click();
+  await expect(page.locator('#password-result')).not.toBeEmpty();
+  await page.goto('/branches/b-nsk-krasny');
+  await expect(page).toHaveURL(/\/branches\/b-nsk-krasny$/);
 });
