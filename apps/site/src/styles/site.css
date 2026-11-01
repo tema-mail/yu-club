@@ -443,6 +443,9 @@ a { color: inherit; }
 .yu-hold__price { font-weight: 700; white-space: nowrap; }
 .yu-hold__total { font-size: var(--yu-fs-m); }
 .yu-hold__actions { display: flex; flex-wrap: wrap; gap: var(--yu-sp-2xs); }
+.yu-checkout__body { display: grid; gap: var(--yu-sp-s); max-width: 640px; }
+.yu-checkout__body > * { min-width: 0; margin: 0; }
+.yu-sched__status[hidden], .yu-hold__items[hidden] { display: none; }
 
 /* ── Подвал ─────────────────────────────────────────────── */
 .yu-footer { border-top: 1px solid var(--yu-line-soft); background: var(--yu-surface); font-size: var(--yu-fs-s); color: var(--yu-muted); }
