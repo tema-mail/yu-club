@@ -51,6 +51,8 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<'pick' | 'checkout'>('pick');
   const holdRef = useRef<HoldDto | null>(null);
+  const checkoutTitle = useRef<HTMLHeadingElement>(null);
+  const firstStep = useRef(true);
   const reqNo = useRef(0);
 
   function adopt(h: HoldDto | null) {
@@ -87,6 +89,17 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
   }, [date, reload]);
 
   const refresh = () => setReload((x) => x + 1);
+
+  // Смена шага меняет высоту страницы: без этого браузер оставляет прежнюю прокрутку, шапка (sticky) встаёт
+  // поверх середины страницы, а заголовок шага уезжает вверх. Каждый шаг начинается с верха страницы.
+  useEffect(() => {
+    if (firstStep.current) {
+      firstStep.current = false;
+      return;
+    }
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    if (step === 'checkout') checkoutTitle.current?.focus({ preventScroll: true });
+  }, [step]);
 
   async function toggle(r: ScheduleResource, s: SlotDto) {
     if (busy || (s.state !== 'free' && s.state !== 'mine')) return;
@@ -182,7 +195,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
       <div class="yu-sched" data-testid="schedule">
         {statusLine}
         <section class="yu-checkout" aria-labelledby="checkout-title">
-          <h2 id="checkout-title" class="yu-hold__title">Оформление записи</h2>
+          <h2 id="checkout-title" class="yu-hold__title" ref={checkoutTitle} tabIndex={-1}>Оформление записи</h2>
           <HoldTimer deadline={deadline} onPhase={setPhase} onExpire={expire} />
           <Checkout
             hold={hold} timezone={tz} onHold={adopt} onNotice={setNotice}

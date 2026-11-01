@@ -201,6 +201,41 @@ for (const [state, reach] of Object.entries(REACH) as Array<[UiState, (typeof RE
   });
 }
 
+/** Шапка – первый блок вверху: страница не прокручена, шапка в y=0, крошки и заголовок шага – под ней и видны. */
+async function headerFirst(page: Page, heading: string) {
+  await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(0);
+  const header = (await page.locator('.yu-header').boundingBox())!;
+  expect(header.y).toBe(0);
+  const crumbs = (await page.locator('.yu-crumbs').boundingBox())!;
+  expect(crumbs.y).toBeGreaterThanOrEqual(header.y + header.height);
+  await expect(page.getByRole('heading', { name: heading, exact: true })).toBeInViewport();
+}
+
+test('390 px: шапка вверху и заголовок шага виден после каждого перехода', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openTomorrow(page);
+  await headerFirst(page, 'Расписание и запись');
+  await pick(page, 'PS5 3, 21:00–21:30'); // нижний ряд сетки – кнопка «Оформить» далеко внизу
+  await page.getByRole('button', { name: 'Оформить запись' }).scrollIntoViewIfNeeded();
+  await page.getByRole('button', { name: 'Оформить запись' }).click();
+  await headerFirst(page, 'Оформление записи');
+  await page.getByLabel('Телефон').fill('9131234567');
+  await page.getByRole('button', { name: 'Получить код' }).click();
+  await expect(page.getByLabel('Код из SMS')).toBeVisible();
+  await headerFirst(page, 'Оформление записи');
+  await page.getByLabel('Код из SMS').fill(MOCK_CODE);
+  await page.getByLabel(/согласие на обработку/).check();
+  await page.getByRole('button', { name: 'Войти и продолжить' }).click();
+  await expect(page.getByTestId('confirm')).toBeEnabled();
+  await page.getByRole('button', { name: 'Изменить выбор' }).scrollIntoViewIfNeeded();
+  await page.getByRole('button', { name: 'Изменить выбор' }).click();
+  await headerFirst(page, 'Расписание и запись');
+  await page.getByRole('button', { name: 'Оформить запись' }).scrollIntoViewIfNeeded();
+  await page.getByRole('button', { name: 'Оформить запись' }).click();
+  await headerFirst(page, 'Оформление записи');
+  await page.screenshot({ path: 'test-results/checkout-summary-390.png', fullPage: true });
+});
+
 for (const width of [390, 1440]) {
   test(`${width} px: оформление без горизонтальной прокрутки, поля 16 px, кнопки ≥ 44 px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
