@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { diffFields, writeAudit, type AuditAction, type AuditObjectType, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
+import { resolveSetting } from '../../core/settings.ts';
 import { branchScopeSql, can, roleAllows, scopeFilter, type AccessContext, type Action } from '../../core/permissions.ts';
 import { isValidTimeZone, systemClock, todayIn, type Clock, type TimeZone } from '../../core/time.ts';
 import { BRANCH_COLUMNS, BRANCH_FROM, isUuid, toBranchInfo, type BranchInfo, type BranchRow, type BranchStatus } from './index.ts';
@@ -199,11 +200,20 @@ export async function updateCity(tx: Tx, ctx: AccessContext, cityId: string, raw
 }
 
 /** Архив города – только без неархивных филиалов (02 §5.2). */
-export async function archiveCity(tx: Tx, ctx: AccessContext, cityId: string, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<CityInfo> {
+export async function archiveCity(
+  tx: Tx,
+  ctx: AccessContext,
+  cityId: string,
+  raw: unknown,
+  meta: AuditRequestMeta,
+  clock: Clock = systemClock,
+): Promise<CityInfo> {
   guardNetwork(ctx, 'network.city.manage', 'city.archived', isUuid(cityId) ? cityId : null);
+  const input = parse(z.object({ rowVersion: ROW_VERSION }), raw);
   const cur = await lockCity(tx, cityId);
   if (!cur) throw notFound();
   if (cur.status === 'archived') return cur;
+  checkVersion(cur.rowVersion, input.rowVersion);
   const active = await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM app.branches WHERE city_id = $1 AND status <> 'archived'`, [cityId]);
   if (active.rows[0]!.n > 0) {
     throw new AppError('CITY_HAS_ACTIVE_BRANCHES', 409, 'В городе есть неархивные филиалы', { count: active.rows[0]!.n });
@@ -278,15 +288,12 @@ export async function getBranchCard(db: Db, ctx: AccessContext, branchId: string
 /** Карточка для команды: блокировка строки, видимость, право; архивный – не редактируется. */
 async function lockForCommand(tx: Tx, ctx: AccessContext, branchId: string, perm: Action, action: AuditAction): Promise<BranchCard> {
   const b = await loadCard(tx, branchId, true);
-  if (!b) {
-    if (!roleAllows(ctx.role, perm)) deny('FORBIDDEN', perm, { action, object: { type: 'branch', id: isUuid(branchId) ? branchId : null }, branchId: null, cityId: null });
-    throw notFound();
-  }
+  // Нет объекта – всегда NOT_FOUND до проверки роли: ответ как у чужого, существование не раскрывается.
+  if (!b) deny('NOT_FOUND', perm, { action, object: { type: 'branch', id: isUuid(branchId) ? branchId : null }, branchId: null, cityId: null });
   guardBranch(ctx, perm, action, b);
   return b;
 }
 
-const DEFAULT_HOURS = { open: '10:00', close: '22:00' } as const; // 01 §4 п.1; ключ K7 branch.default_hours – после S0-12
 
 async function auditBranch(tx: Tx, meta: AuditRequestMeta, clock: Clock, action: AuditAction, before: BranchCard | null, after: BranchCard): Promise<void> {
   const strip = (b: BranchCard | null) => (b ? { ...b, rowVersion: 0, cityName: '', citySlug: '' } : {});
@@ -295,15 +302,13 @@ async function auditBranch(tx: Tx, meta: AuditRequestMeta, clock: Clock, action:
   await writeAudit(tx, meta, { action, object: { type: 'branch', id: after.id }, branchId: after.id, cityId: after.cityId, ...d }, clock);
 }
 
-/** Новый филиал: статус «готовится», зона – город по умолчанию (15 §5.2), 7 строк графика 10:00–22:00 с сегодняшней даты филиала. */
+/** Новый филиал: статус «готовится», зона – город по умолчанию (15 §5.2), 7 строк графика из настройки K7
+ *  branch.default_hours города (система – 10:00–22:00, 01 §4 п.1) с сегодняшней даты филиала. */
 export async function createBranch(tx: Tx, ctx: AccessContext, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<BranchCard> {
   const input = parse(branchCreate, raw);
   const city = await lockCity(tx, input.cityId);
   const d = { action: 'branch.created' as const, object: { type: 'branch' as const, id: null }, branchId: null, cityId: city?.id ?? null };
-  if (!city) {
-    if (!roleAllows(ctx.role, 'network.branch.create')) deny('FORBIDDEN', 'network.branch.create', d);
-    throw notFound();
-  }
+  if (!city) deny('NOT_FOUND', 'network.branch.create', d); // как чужой город – до проверки роли
   if (!can(ctx, 'network.branch.create', { cityId: city.id })) {
     deny((await cityVisible(tx, ctx, city.id)) ? 'FORBIDDEN' : 'NOT_FOUND', 'network.branch.create', d);
   }
@@ -330,10 +335,11 @@ export async function createBranch(tx: Tx, ctx: AccessContext, raw: unknown, met
     )
     .catch(taken);
   const id = r.rows[0]!.id;
+  const hours = (await resolveSetting(tx, 'branch.default_hours', { cityId: city.id }, clock.now())).value;
   await tx.query(
     `INSERT INTO app.branch_weekly_hours (branch_id, weekday, open_time, close_time, valid_from, created_by)
      SELECT $1, wd, $2::time, $3::time, $4::date, $5 FROM generate_series(1, 7) AS wd`,
-    [id, DEFAULT_HOURS.open, DEFAULT_HOURS.close, todayIn(clock, tz), ctx.actor.staffId],
+    [id, hours.open, hours.close, todayIn(clock, tz), ctx.actor.staffId],
   );
   const card = (await loadCard(tx, id, false))!;
   await auditBranch(tx, meta, clock, 'branch.created', null, card);
@@ -422,15 +428,22 @@ const listQuery = z.object({
   includeArchived: z.enum(['true', 'false']).optional(),
 });
 
-function decodeCursor(s: string | undefined, size: number): unknown[] | null {
+const SORT_INT = z.number().int().min(-2_147_483_648).max(2_147_483_647);
+const BRANCH_CURSOR = z.tuple([z.string().max(200), SORT_INT, z.string().max(200), z.uuid()]);
+const CITY_CURSOR = z.tuple([z.string().max(200), z.uuid()]);
+
+/** Курсор – base64url(JSON) по схеме ключа сортировки; любой мусор – 400, до SQL. */
+function decodeCursor<T>(s: string | undefined, schema: z.ZodType<T>): T | null {
   if (s === undefined) return null;
+  let v: unknown;
   try {
-    const v = JSON.parse(Buffer.from(s, 'base64url').toString('utf8')) as unknown;
-    if (Array.isArray(v) && v.length === size) return v;
+    v = JSON.parse(Buffer.from(s, 'base64url').toString('utf8'));
   } catch {
-    // ниже – общая ошибка
+    v = undefined;
   }
-  throw new AppError('VALIDATION_FAILED', 400, 'Неверный курсор', { field: 'cursor' });
+  const r = schema.safeParse(v);
+  if (!r.success) throw new AppError('VALIDATION_FAILED', 400, 'Неверный курсор', { field: 'cursor' });
+  return r.data;
 }
 const encodeCursor = (v: unknown[]) => Buffer.from(JSON.stringify(v)).toString('base64url');
 
@@ -448,7 +461,7 @@ export async function listBranches(db: Db, ctx: AccessContext, raw: unknown): Pr
     params.push(q.status);
     where.push(`b.status = $${params.length}`);
   } else if (q.includeArchived !== 'true') where.push(`b.status <> 'archived'`);
-  const c = decodeCursor(q.cursor, 4);
+  const c = decodeCursor(q.cursor, BRANCH_CURSOR);
   if (c) {
     params.push(...c);
     const n = params.length;
@@ -477,7 +490,7 @@ export async function listCities(db: Db, ctx: AccessContext, raw: unknown): Prom
     where.push(`(id = ANY($1::uuid[]) OR id IN (SELECT city_id FROM app.branches WHERE id = ANY($2::uuid[])))`);
   }
   if (q.includeArchived !== 'true') where.push(`status <> 'archived'`);
-  const c = decodeCursor(q.cursor, 2);
+  const c = decodeCursor(q.cursor, CITY_CURSOR);
   if (c) {
     params.push(...c);
     where.push(`(name, id) > ($${params.length - 1}::text, $${params.length}::uuid)`);

@@ -240,52 +240,90 @@ export async function setSetting<K extends SettingKey>(
     });
   }
   notPast(input.validFrom, clock, 'validFrom');
-  await assertWindowPair(tx, input.key, input.scope, parsed.data, input.validFrom);
-  const rows = await ownRows(tx, input.key, level, scopeId, input.validFrom);
-  const current = rows.find((r) => r.valid_from.getTime() < input.validFrom.getTime());
-  const conflict = rows.find((r) => r !== current);
-  if (conflict) throw overlap(conflict.id);
-  const before = await resolveSetting(tx, input.key, input.scope, input.validFrom);
-  if (current) await tx.query('UPDATE app.settings_values SET valid_to = $2 WHERE id = $1', [current.id, input.validFrom]);
-  const cols = scopeCols(level, scopeId);
-  const ins = await tx
-    .query<{ id: string }>(
-      `INSERT INTO app.settings_values (key, level, city_id, branch_id, value, valid_from, reason, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-      [input.key, level, cols.cityId, cols.branchId, JSON.stringify(parsed.data), input.validFrom, input.reason ?? null, ctx.actor.staffId],
-    )
-    .catch((err: { code?: string }) => {
-      if (err.code === '23P01') throw overlap(current?.id ?? 'unknown');
-      throw err;
-    });
-  const valueId = ins.rows[0]!.id;
-  await writeAudit(
-    tx,
-    meta,
-    {
-      action: 'setting.changed',
-      object: { type: 'setting', id: valueId },
-      ...cols,
-      before: { key: input.key, value: before.value, level: before.source.level },
-      after: { key: input.key, value: parsed.data, level, validFrom: input.validFrom },
-      reason: input.reason ?? null,
-    },
-    clock,
-  );
-  return { valueId };
+  return savepoint(tx, async () => {
+    const rows = await ownRows(tx, input.key, level, scopeId, input.validFrom);
+    const current = rows.find((r) => r.valid_from.getTime() < input.validFrom.getTime());
+    const conflict = rows.find((r) => r !== current);
+    if (conflict) throw overlap(conflict.id);
+    const before = await resolveSetting(tx, input.key, input.scope, input.validFrom);
+    if (current) await tx.query('UPDATE app.settings_values SET valid_to = $2 WHERE id = $1', [current.id, input.validFrom]);
+    const cols = scopeCols(level, scopeId);
+    const ins = await tx
+      .query<{ id: string }>(
+        `INSERT INTO app.settings_values (key, level, city_id, branch_id, value, valid_from, reason, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+        [input.key, level, cols.cityId, cols.branchId, JSON.stringify(parsed.data), input.validFrom, input.reason ?? null, ctx.actor.staffId],
+      )
+      .catch((err: { code?: string }) => {
+        if (err.code === '23P01') throw overlap(current?.id ?? 'unknown');
+        throw err;
+      });
+    const valueId = ins.rows[0]!.id;
+    await assertWindowPair(tx, input.key, input.scope, input.validFrom);
+    await writeAudit(
+      tx,
+      meta,
+      {
+        action: 'setting.changed',
+        object: { type: 'setting', id: valueId },
+        ...cols,
+        before: { key: input.key, value: before.value, level: before.source.level },
+        after: { key: input.key, value: parsed.data, level, validFrom: input.validFrom },
+        reason: input.reason ?? null,
+      },
+      clock,
+    );
+    return { valueId };
+  });
 }
 
-/** Окно записи: максимум не меньше окна по умолчанию в той же области на ту же дату (K7 «≥ default»). */
-async function assertWindowPair(tx: Tx, key: SettingKey, scope: SettingScope, value: unknown, at: Date): Promise<void> {
-  if (key !== 'booking.window_default_days' && key !== 'booking.window_max_days') return;
-  const other = key === 'booking.window_default_days' ? 'booking.window_max_days' : 'booking.window_default_days';
-  const o = (await resolveSetting(tx, other, scope, at)).value;
-  const [def, max] = key === 'booking.window_default_days' ? [value as number, o] : [o, value as number];
-  if (max < def) {
-    throw new AppError('SETTING_INVALID', 422, 'Максимальное окно записи меньше окна по умолчанию', {
-      key,
-      issues: [{ path: '', message: `window_max_days (${max}) < window_default_days (${def})` }],
-    });
+const WINDOW_KEYS = ['booking.window_default_days', 'booking.window_max_days'] as const;
+
+/** Окно записи (K7 «max ≥ default»): после записи – в той же транзакции под SAVEPOINT – проверяются
+ *  действующие значения во всех затронутых областях (для сети – сеть и каждый филиал, ключи без уровня city)
+ *  на дату изменения и на каждую дату начала/конца будущих строк обоих ключей. Нарушение – откат к SAVEPOINT
+ *  и SETTING_INVALID: в базе ничего не остаётся, даже если вызывающий зафиксирует транзакцию. */
+async function assertWindowPair(tx: Tx, key: SettingKey, scope: SettingScope, from: Date): Promise<void> {
+  if (!(WINDOW_KEYS as readonly string[]).includes(key)) return;
+  const scopes: SettingScope[] = [scope];
+  if ('network' in scope) {
+    const b = await tx.query<{ id: string }>('SELECT id FROM app.branches ORDER BY id');
+    scopes.push(...b.rows.map((r) => ({ branchId: r.id })));
+  }
+  const pts = await tx.query<{ t: Date }>(
+    `SELECT DISTINCT t FROM (SELECT valid_from AS t FROM app.settings_values WHERE key = ANY($1::text[])
+       UNION SELECT valid_to FROM app.settings_values WHERE key = ANY($1::text[]) AND valid_to IS NOT NULL) x
+     WHERE t > $2 ORDER BY t`,
+    [WINDOW_KEYS, from],
+  );
+  const points = [from, ...pts.rows.map((r) => r.t)];
+  for (const sc of scopes) {
+    for (const at of points) {
+      const r = await resolveSettings(tx, WINDOW_KEYS, sc, at);
+      const def = r['booking.window_default_days'].value;
+      const max = r['booking.window_max_days'].value;
+      if (max < def) {
+        throw new AppError('SETTING_INVALID', 422, 'Максимальное окно записи меньше окна по умолчанию', {
+          key,
+          scope: sc,
+          at: at.toISOString(),
+          issues: [{ path: '', message: `window_max_days (${max}) < window_default_days (${def})` }],
+        });
+      }
+    }
+  }
+}
+
+/** Запись под SAVEPOINT: исключение – откат только этих изменений и проброс. */
+async function savepoint<T>(tx: Tx, fn: () => Promise<T>): Promise<T> {
+  await tx.query('SAVEPOINT settings_write');
+  try {
+    const r = await fn();
+    await tx.query('RELEASE SAVEPOINT settings_write');
+    return r;
+  } catch (err) {
+    await tx.query('ROLLBACK TO SAVEPOINT settings_write').catch(() => undefined);
+    throw err;
   }
 }
 
@@ -300,24 +338,27 @@ export async function resetToInherited(
 ): Promise<void> {
   const { level, scopeId } = await prepare(tx, ctx, input.key, input.scope);
   notPast(input.at, clock, 'at');
-  const rows = await ownRows(tx, input.key, level, scopeId, input.at);
-  const current = rows.find((r) => r.valid_from.getTime() < input.at.getTime());
-  const future = rows.find((r) => r !== current);
-  if (future) throw overlap(future.id);
-  if (!current) return;
-  await tx.query('UPDATE app.settings_values SET valid_to = $2 WHERE id = $1', [current.id, input.at]);
-  const inherited = await resolveSetting(tx, input.key, input.scope, input.at);
-  await writeAudit(
-    tx,
-    meta,
-    {
-      action: 'setting.reset_to_inherited',
-      object: { type: 'setting', id: current.id },
-      ...scopeCols(level, scopeId),
-      before: { key: input.key, value: current.value, level },
-      after: { key: input.key, value: inherited.value, level: inherited.source.level },
-      reason: input.reason ?? null,
-    },
-    clock,
-  );
+  await savepoint(tx, async () => {
+    const rows = await ownRows(tx, input.key, level, scopeId, input.at);
+    const current = rows.find((r) => r.valid_from.getTime() < input.at.getTime());
+    const future = rows.find((r) => r !== current);
+    if (future) throw overlap(future.id);
+    if (!current) return;
+    await tx.query('UPDATE app.settings_values SET valid_to = $2 WHERE id = $1', [current.id, input.at]);
+    await assertWindowPair(tx, input.key, input.scope, input.at);
+    const inherited = await resolveSetting(tx, input.key, input.scope, input.at);
+    await writeAudit(
+      tx,
+      meta,
+      {
+        action: 'setting.reset_to_inherited',
+        object: { type: 'setting', id: current.id },
+        ...scopeCols(level, scopeId),
+        before: { key: input.key, value: current.value, level },
+        after: { key: input.key, value: inherited.value, level: inherited.source.level },
+        reason: input.reason ?? null,
+      },
+      clock,
+    );
+  });
 }

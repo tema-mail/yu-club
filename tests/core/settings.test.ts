@@ -207,6 +207,30 @@ describe('setSetting / resetToInherited: проверки до сохранен�
     }); // у b1 окно по умолчанию 14
   });
 
+  it('окно, сеть: максимум сети ниже собственного окна по умолчанию филиала – SETTING_INVALID, в базе пусто даже после COMMIT', async () => {
+    await db.client.query('BEGIN');
+    const err = await setSetting(db.client, owner, { key: 'booking.window_max_days', scope: { network: true }, value: 12, validFrom: d('2026-12-01T00:00:00Z') }, meta(owner), clock).catch((e: unknown) => e);
+    await db.client.query('COMMIT'); // SAVEPOINT уже откатил запись – фиксировать нечего
+    expect(err).toMatchObject({ code: 'SETTING_INVALID', details: { scope: { branchId: ids.b1 } } }); // у сети 10 ≤ 12, у b1 своё 14
+    const n = await db.client.query(`SELECT count(*)::int n FROM app.settings_values WHERE key = 'booking.window_max_days'`);
+    expect(n.rows[0].n).toBe(0);
+    await set(owner, { key: 'booking.window_max_days', scope: { network: true }, value: 14, validFrom: d('2026-12-01T00:00:00Z') });
+  });
+
+  it('окно, будущие записи: максимум филиала ниже запланированного окна по умолчанию – SETTING_INVALID; сброс, ломающий пару, – тоже', async () => {
+    await set(owner, { key: 'booking.window_max_days', scope: { branchId: ids.b2! }, value: 25, validFrom: d('2026-11-25T00:00:00Z') });
+    await set(owner, { key: 'booking.window_default_days', scope: { branchId: ids.b2! }, value: 20, validFrom: d('2026-12-10T00:00:00Z') });
+    await expect(set(owner, { key: 'booking.window_max_days', scope: { branchId: ids.b2! }, value: 15, validFrom: d('2026-11-26T00:00:00Z') })).rejects.toMatchObject({
+      code: 'SETTING_INVALID',
+      details: { at: '2026-12-10T00:00:00.000Z' }, // 26.11: 10 ≤ 15, а с 10.12: 20 > 15
+    });
+    // своё окно 20 сверх сетевого максимума 14 – тоже нельзя, если свой максимум не задан (b3)
+    await expect(set(owner, { key: 'booking.window_default_days', scope: { branchId: ids.b3! }, value: 20, validFrom: d('2026-12-10T00:00:00Z') })).rejects.toMatchObject({ code: 'SETTING_INVALID' });
+    // сброс максимума b2 к сети (14 с 01.12) при своём окне 20 с 10.12 – нарушение
+    await expect(reset(owner, { key: 'booking.window_max_days', scope: { branchId: ids.b2! }, at: d('2026-11-26T00:00:00Z') })).rejects.toMatchObject({ code: 'SETTING_INVALID' });
+    expect((await resolveSetting(db.client, 'booking.window_max_days', { branchId: ids.b2! }, d('2026-12-11T00:00:00Z'))).value).toBe(25);
+  });
+
   it('значение с даты: текущее закрывается этой датой, новое действует с неё; аудит было/стало', async () => {
     const dir = ctx('director', { cityIds: [ids.nsk!], branchIds: [ids.b1!, ids.b2!] });
     const first = await set(owner, { key: KEY, scope: { network: true }, value: 40, validFrom: d('2026-11-21T00:00:00Z') });
