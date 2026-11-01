@@ -34,31 +34,29 @@ export function sql(query: string): string[] {
   return out.split('\n').filter((l) => l !== '');
 }
 
-/** Настройка K7 уровня филиала на стенде: HTTP-маршрута настроек в API пока нет, поэтому командой ядра
- *  setSetting / resetToInherited внутри контейнера API – от имени активного Владельца, с аудитом (source cli).
- *  value = null – вернуть к наследованию. Значение действует через 2 с (история настроек не пишется в прошлое). */
+/** Настройка K7 уровня филиала на стенде – через HTTP API настроек CRM (K7 «HTTP CRM») от имени Владельца:
+ *  вход, текущий rowVersion из GET /settings, PUT с датой «сегодня по зоне филиала» (действует с этой минуты)
+ *  или POST …/reset (value = null – вернуть к наследованию). Аудит пишет сам API (source crm). */
 export async function branchSetting(key: string, branchId: string, value: unknown): Promise<void> {
-  const script = `
-import pg from 'pg';
-import { randomUUID } from 'node:crypto';
-import { setSetting, resetToInherited } from '/app/apps/api/src/core/settings.ts';
-const { key, branchId, value } = JSON.parse(process.env.E2E_SETTING);
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const c = await pool.connect();
-try {
-  await c.query('BEGIN');
-  const owner = (await c.query("SELECT id FROM app.staff WHERE role = 'owner' AND status = 'active'")).rows[0].id;
-  const now = new Date();
-  const ctx = { actor: { kind: 'staff', staffId: owner, sessionId: randomUUID() }, role: 'owner', network: true, cityIds: new Set(), branchIds: new Set(), at: now };
-  const meta = { actor: { kind: 'system', process: 'e2e-stand' }, source: 'cli', requestId: 'e2e-stand:' + now.toISOString() };
-  const at = new Date(now.getTime() + 2000);
-  if (value === null) await resetToInherited(c, ctx, { key, scope: { branchId }, at, reason: 'e2e S1-27: возврат к наследованию' }, meta);
-  else await setSetting(c, ctx, { key, scope: { branchId }, value, validFrom: at, reason: 'e2e S1-27' }, meta);
-  await c.query('COMMIT');
-} catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); await pool.end(); }
-`;
-  ssh(`docker exec -i -e E2E_SETTING='${JSON.stringify({ key, branchId, value })}' ${API_CT} node --input-type=module -`, script);
-  await new Promise((r) => setTimeout(r, 2500));
+  const api = await pwRequest.newContext({ baseURL: CRM_URL, ignoreHTTPSErrors: true, extraHTTPHeaders: { origin: CRM_URL } });
+  try {
+    const login = await api.post('/api/crm/v1/auth/login', { data: { email: OWNER.email(), password: OWNER.password() } });
+    if (!login.ok()) throw await apiError(login);
+    const q = `scope=branch&id=${encodeURIComponent(branchId)}`;
+    const list = await api.get(`/api/crm/v1/settings?${q}`);
+    if (!list.ok()) throw await apiError(list);
+    const page = (await list.json()) as { scope: { today: string }; items: Array<{ key: string; rowVersion: string; source: { own: boolean } }> };
+    const item = page.items.find((i) => i.key === key);
+    expect(item, `настройка ${key} в API`).toBeTruthy();
+    const headers = { 'idempotency-key': randomUUID() };
+    const res =
+      value === null
+        ? await api.post(`/api/crm/v1/settings/${key}/reset?${q}`, { headers, data: { rowVersion: item!.rowVersion, reason: 'e2e S1-27: возврат к наследованию' } })
+        : await api.put(`/api/crm/v1/settings/${key}?${q}`, { headers, data: { value, validFrom: page.scope.today, rowVersion: item!.rowVersion, reason: 'e2e S1-27' } });
+    if (!res.ok()) throw await apiError(res);
+  } finally {
+    await api.dispose();
+  }
 }
 
 // ── телефоны и код входа ────────────────────────────────────
