@@ -1,0 +1,102 @@
+---
+// Карточка комнаты /{city}/{branch}/rooms/{room}/ (карта сайта 3.2, 12 §7): из GET /branches/{id}/resources (K5 №4) –
+// название, филиал, направления, места и форматы аренды понятным языком (12 §7.2). Фото, описания и вместимости в API
+// пока нет: вместимость из числа устройств не выводим (12 §7.1), пустых блоков-заглушек не рисуем.
+// «Записаться» – /schedule/ с предвыбором зоны и комнаты (в сетке – места этой комнаты по отдельности).
+// Нет такой комнаты (в т.ч. в архиве или снятой с публикации – API её не отдаёт) – 404 с кодом 404.
+import Site from '../../../../layouts/Site.astro';
+import {
+  ApiError, RESOURCE_KIND, ZONE_LABEL, branchRooms, findBranch, roomPath, scheduleHref, site, type ResourceDto,
+} from '../../../../lib/api.ts';
+
+const { city: citySlug = '', branch: branchSlug = '', room: slug = '' } = Astro.params;
+const { network } = Astro.locals;
+const found = network ? findBranch(network, citySlug, branchSlug) : null;
+if (network && !found) return Astro.rewrite('/404/');
+
+let resources: ResourceDto[] = [];
+let failed = !network;
+if (found) {
+  try {
+    resources = await site.resources(found.branch.id);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return Astro.rewrite('/404/');
+    console.error('site: комната – ресурсы из API не загрузились', e);
+    failed = true;
+  }
+}
+const rooms = branchRooms(resources);
+const room = rooms.find((r) => r.slug === slug);
+if (!failed && !room) return Astro.rewrite('/404/');
+if (failed) Astro.response.status = 503;
+
+const city = found?.city;
+const branch = found?.branch;
+const closed = branch?.status === 'temporarily_closed';
+const hasCityHub = (city?.branches.length ?? 0) >= 2;
+const others = rooms.filter((r) => r.id !== room?.id);
+---
+<Site
+  title={room && branch ? `${room.name} – ${branch.name}` : 'Комната временно недоступна – Ю-Клуб'}
+  description={room && branch && city ? `${room.name} в клубе ${branch.name}, ${city.name}: ${room.resources.map((r) => r.name).join(', ')}. Онлайн-запись.` : undefined}
+>
+  {failed || !room || !branch || !city ? (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Страница комнаты временно недоступна</h1>
+      <p class="yu-body">Сервис не ответил. Обновите страницу через минуту.</p>
+    </section>
+  ) : (
+    <>
+      <ol class="yu-crumbs" aria-label="Навигация">
+        <li><a href="/">Главная</a></li>
+        <li>{hasCityHub ? <a href={`/${city.slug}/`}>{city.name}</a> : city.name}</li>
+        <li><a href={`/${city.slug}/${branch.slug}/`}>{branch.name}</a></li>
+        <li><a href={`/${city.slug}/${branch.slug}/#rooms`}>Комнаты</a></li>
+        <li aria-current="page">{room.name}</li>
+      </ol>
+      <section class="yu-hero">
+        <div>
+          <h1 data-testid="room-title">{room.name}</h1>
+          <p class="yu-lead">{branch.name}, {city.name}, {branch.address}</p>
+          {closed ? (
+            <p class="yu-notice" role="status" data-testid="room-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>
+          ) : (
+            <a class="yu-btn" data-testid="room-book" href={scheduleHref(city.slug, branch.slug, { zone: room.zones[0]!, room: room.slug })}>Записаться</a>
+          )}
+        </div>
+        <dl class="yu-facts">
+          <div>
+            <dt>Направление</dt>
+            <dd data-testid="room-zones">{room.zones.map((z) => ZONE_LABEL[z]).join(', ')}</dd>
+          </div>
+          <div>
+            <dt>Мест для записи</dt>
+            <dd>{room.resources.map((r) => r.name).join(', ')}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="yu-section" aria-labelledby="formats-title">
+        <h2 id="formats-title">Что можно забронировать</h2>
+        <ul class="yu-zone__rooms" data-testid="room-formats">
+          {room.resources.map((r) => (
+            <li class="yu-zone__room">
+              <span class="yu-zone__room-name">{r.name}</span>
+              <span class="yu-body">{RESOURCE_KIND[r.type] ?? 'место для записи'}, шаг записи {r.stepMinutes} мин</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {others.length > 0 && (
+        <section class="yu-section" aria-labelledby="others-title">
+          <h2 id="others-title">Другие комнаты клуба</h2>
+          <ul class="yu-room-links">
+            {others.map((o) => <li><a class="yu-btn yu-btn--ghost" href={roomPath(city.slug, branch.slug, o.slug)}>{o.name}</a></li>)}
+          </ul>
+        </section>
+      )}
+    </>
+  )}
+</Site>

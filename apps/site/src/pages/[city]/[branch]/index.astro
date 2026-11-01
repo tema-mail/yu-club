@@ -3,10 +3,12 @@
 // зоны – из ресурсов (K5 №4). Нет часов на сегодня – «закрыто сегодня», а не ошибка.
 // Нет такого города или филиала (в т.ч. 'preparing'/'archived' – K5 их не отдаёт) – 404 с кодом 404.
 // Временно закрытый – страница остаётся, плашка, без слотов и записи (12 §4.3, карта п.2.12).
+// Зоны – разделы этой страницы (#rooms, отдельных страниц зон нет); комната – ссылка на свою карточку (S1-21),
+// у зоны – запись с предвыбором зоны. Нет опубликованных комнат – пустое состояние, а не пропавший раздел.
 // Запись – кнопкой в /schedule/?branch={город}/{филиал} (карта п.2.9: своего адреса расписания у филиала нет); у закрытого её нет.
 import Site from '../../../layouts/Site.astro';
 import {
-  ApiError, ZONE_LABEL, ZONE_ORDER, findBranch, site,
+  ApiError, ZONE_LABEL, ZONE_ORDER, branchRooms, findBranch, roomPath, scheduleHref, site,
   type BranchDetailDto, type ResourceDto,
 } from '../../../lib/api.ts';
 
@@ -36,13 +38,14 @@ const closed = branch?.status === 'temporarily_closed';
 const hours = detail?.hoursToday ?? [];
 const hoursToday = hours.length === 0 ? 'Закрыто сегодня' : hours.map((i) => `${i.start}–${i.end}`).join(', ');
 
-// Зоны → комнаты → места. Порядок зон фиксированный, пустые зоны не показываем.
+// Зоны → комнаты → места. Порядок зон фиксированный, пустые зоны не показываем. Адрес комнаты – branchRooms (один на филиал).
+const slugs = new Map(branchRooms(resources).map((r) => [r.id, r.slug]));
 const zones = ZONE_ORDER.map((code) => {
   const items = resources.filter((r) => r.zone === code);
-  const rooms = new Map<string, { name: string; items: ResourceDto[] }>();
+  const rooms = new Map<string, { name: string; slug: string | null; items: ResourceDto[] }>();
   for (const r of items) {
     const key = r.roomId ?? r.id;
-    const room = rooms.get(key) ?? { name: r.roomName ?? r.name, items: [] };
+    const room = rooms.get(key) ?? { name: r.roomName ?? r.name, slug: r.roomId ? (slugs.get(r.roomId) ?? null) : null, items: [] };
     room.items.push(r);
     rooms.set(key, room);
   }
@@ -88,9 +91,11 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
         </dl>
       </section>
 
-      {zones.length > 0 && (
-        <section class="yu-section" aria-labelledby="zones-title">
-          <h2 id="zones-title">Зоны клуба</h2>
+      <section class="yu-section" id="rooms" aria-labelledby="zones-title">
+        <h2 id="zones-title">Зоны и комнаты</h2>
+        {zones.length === 0 ? (
+          <p class="yu-body" data-testid="zones-empty">Комнаты клуба пока не опубликованы. Уточните у администратора клуба, что можно забронировать.</p>
+        ) : (
           <div class="yu-zones">
             {zones.map((z) => (
               <article class="yu-zone" data-testid={`zone-${z.code}`}>
@@ -98,18 +103,21 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
                 <ul class="yu-zone__rooms">
                   {z.rooms.map((room) => (
                     <li class="yu-zone__room">
-                      <span class="yu-zone__room-name">{room.name}</span>
+                      {room.slug
+                        ? <a class="yu-zone__room-name" href={roomPath(city.slug, branch.slug, room.slug)}>{room.name}</a>
+                        : <span class="yu-zone__room-name">{room.name}</span>}
                       <ul class="yu-chips">
                         {room.items.map((r) => <li class="yu-chip">{r.name}</li>)}
                       </ul>
                     </li>
                   ))}
                 </ul>
+                {!closed && <a class="yu-btn yu-btn--ghost yu-zone__book" href={scheduleHref(city.slug, branch.slug, { zone: z.code })}>Записаться</a>}
               </article>
             ))}
           </div>
-        </section>
-      )}
+        )}
+      </section>
     </>
   )}
 </Site>
