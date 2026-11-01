@@ -63,7 +63,7 @@ async function book(clientId: string, count = 1, gapHours = 0): Promise<string[]
 const noShow = async (id: string) => runOccupancyCommand(pool, async (c) => markNoShow(c, id, { ctx: owner, rowVersion: await rowVersion(id) }, meta(), clock));
 const revert = async (id: string) => runOccupancyCommand(pool, async (c) => revertVisit(c, id, { ctx: owner, rowVersion: await rowVersion(id), reason: 'ошибка' }, meta(), clock));
 const eventsOf = async (type: string, bookingId: string) =>
-  (await db.client.query<{ id: string }>(`SELECT id FROM app.outbox_events WHERE event_type = $1 AND payload ->> 'bookingId' = $2 ORDER BY occurred_at, id`, [type, bookingId])).rows.map((r) => r.id);
+  (await db.client.query<{ id: string }>(`SELECT id FROM app.outbox_events WHERE event_type = $1 AND payload ->> 'bookingId' = $2 ORDER BY occurred_at, xmin::text::bigint`, [type, bookingId])).rows.map((r) => r.id);
 const deliver = (handler: string, eventId: string) => processEvent(pool, handler, eventId, now);
 async function redeliver(handler: string, eventId: string): Promise<void> {
   await db.client.query('DELETE FROM app.processed_events WHERE handler = $1 AND event_id = $2', [handler, eventId]);

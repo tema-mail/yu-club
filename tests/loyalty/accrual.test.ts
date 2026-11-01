@@ -92,7 +92,7 @@ async function refundAll(paymentId: string): Promise<void> {
 }
 /** Все события типа по агрегату/брони – id в порядке записи. */
 async function events(type: string, bookingId: string): Promise<string[]> {
-  return (await db.client.query<{ id: string }>(`SELECT id FROM app.outbox_events WHERE event_type = $1 AND payload ->> 'bookingId' = $2 ORDER BY occurred_at, id`, [type, bookingId])).rows.map((r) => r.id);
+  return (await db.client.query<{ id: string }>(`SELECT id FROM app.outbox_events WHERE event_type = $1 AND payload ->> 'bookingId' = $2 ORDER BY occurred_at, xmin::text::bigint`, [type, bookingId])).rows.map((r) => r.id);
 }
 const deliver = (handler: string, eventId: string) => processEvent(pool, handler, eventId, now);
 /** Повторная доставка мимо processed_events (как будто очередь отдала задачу ещё раз после сбоя записи отметки). */
