@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config.ts';
-import { buildServer } from '../../apps/api/src/server.ts';
+import { buildServer, depsFromConfig } from '../../apps/api/src/server.ts';
 
 describe('GET /health', () => {
   it('отдаёт 200, статус и версию из GIT_SHA', async () => {
@@ -26,5 +26,28 @@ describe('loadConfig', () => {
 
   it('берёт порт из окружения', () => {
     expect(loadConfig({ PORT: '4100' }).PORT).toBe(4100);
+  });
+});
+
+describe('вход сотрудников из окружения', () => {
+  it('короткий SESSION_PEPPER не проходит валидацию, значение в ошибку не попадает', () => {
+    expect(() => loadConfig({ SESSION_PEPPER: 'секрет-короткий' })).toThrow(/SESSION_PEPPER/);
+    expect(() => loadConfig({ SESSION_PEPPER: 'секрет-короткий' })).not.toThrow(/секрет-короткий/);
+  });
+
+  it('без DATABASE_URL зависимостей нет, без SESSION_PEPPER – нет маршрутов входа', async () => {
+    expect(depsFromConfig(loadConfig({})).deps).toEqual({});
+    const noPepper = depsFromConfig(loadConfig({ DATABASE_URL: 'postgres://u:p@127.0.0.1:1/x' }));
+    expect(noPepper.deps.staff).toBeUndefined();
+    await noPepper.close();
+    const full = depsFromConfig(loadConfig({ DATABASE_URL: 'postgres://u:p@127.0.0.1:1/x', SESSION_PEPPER: 'p'.repeat(32) }));
+    expect(full.deps.staff?.auth.maxFailures).toBe(10);
+    const app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), full.deps);
+    const res = await app.inject({ method: 'GET', url: '/api/crm/v1/auth/session' });
+    expect(res.json().error.code).toBe('AUTH_REQUIRED');
+    const dict = await app.inject({ method: 'GET', url: '/api/crm/v1/dictionaries/reasons' });
+    expect(dict.json().error.code).toBe('AUTH_REQUIRED');
+    await app.close();
+    await full.close();
   });
 });

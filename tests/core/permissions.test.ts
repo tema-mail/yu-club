@@ -1,0 +1,312 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  ACTIONS,
+  actionsOf,
+  assertCan,
+  assertCanAudited,
+  assertCanManageStaff,
+  assertOwnClient,
+  branchScopeSql,
+  can,
+  loadAccess,
+  roleAllows,
+  scopeFilter,
+  type AccessContext,
+  type NetworkLookup,
+  type StaffRole,
+  type Target,
+} from '../../apps/api/src/core/permissions.ts';
+import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+
+const CITY_A = 'aaaaaaaa-0000-4000-8000-00000000000a';
+const CITY_B = 'bbbbbbbb-0000-4000-8000-00000000000b';
+const BR_A1 = 'aaaaaaaa-0000-4000-8000-0000000000a1';
+const BR_A2 = 'aaaaaaaa-0000-4000-8000-0000000000a2';
+const BR_B1 = 'bbbbbbbb-0000-4000-8000-0000000000b1';
+
+function ctx(role: StaffRole, zone: { cityIds?: string[]; branchIds?: string[] } = {}): AccessContext {
+  return {
+    actor: { kind: 'staff', staffId: { owner: '0', director: '1', admin: '2' }[role].repeat(8) + '-0000-4000-8000-000000000001', sessionId: 's' },
+    role,
+    network: role === 'owner',
+    cityIds: new Set(zone.cityIds ?? []),
+    branchIds: new Set(zone.branchIds ?? []),
+    at: new Date('2026-11-15T07:00:00Z'),
+  };
+}
+
+// Директор – город A (филиалы A1, A2), Администратор – только филиал A1.
+const owner = ctx('owner');
+const director = ctx('director', { cityIds: [CITY_A], branchIds: [BR_A1, BR_A2] });
+const admin = ctx('admin', { branchIds: [BR_A1] });
+
+// Матрица K1 §Реестр, переписанная независимо от кода: О Д А и тип цели.
+const EXPECTED: [string, string, 'network' | 'city' | 'branch' | 'client'][] = [
+  ['network.view', 'ОДА', 'branch'],
+  ['network.city.manage', 'О', 'network'],
+  ['network.branch.create', 'О', 'city'],
+  ['network.branch.archive', 'О', 'city'],
+  ['network.branch.update', 'ОД', 'branch'],
+  ['network.hours.manage', 'ОД', 'branch'],
+  ['staff.view', 'ОД', 'branch'],
+  ['staff.director.assign', 'О', 'branch'],
+  ['staff.admin.assign', 'ОД', 'branch'],
+  ['staff.block', 'ОД', 'branch'],
+  ['resources.view', 'ОДА', 'branch'],
+  ['resources.manage', 'ОД', 'branch'],
+  ['schedule.view', 'ОДА', 'branch'],
+  ['booking.create', 'ОДА', 'branch'],
+  ['booking.cancel', 'ОДА', 'branch'],
+  ['booking.reschedule', 'ОДА', 'branch'],
+  ['booking.visit.mark', 'ОДА', 'branch'],
+  ['booking.visit.correct', 'ОД', 'branch'],
+  ['block.manage', 'ОДА', 'branch'],
+  ['client.view.basic', 'ОДА', 'client'],
+  ['client.view.full', 'ОД', 'client'],
+  ['client.update.limited', 'ОДА', 'client'],
+  ['client.update', 'ОД', 'client'],
+  ['client.merge', 'О', 'network'],
+  ['client.export', 'О', 'network'],
+  ['export.pd', 'О', 'network'],
+  ['tariff.manage', 'О', 'branch'],
+  ['settings.network.manage', 'О', 'network'],
+  ['settings.branch.manage', 'ОД', 'branch'],
+  ['dictionary.manage', 'О', 'network'],
+  ['audit.view', 'ОД', 'branch'],
+  ['audit.view.own', 'ОДА', 'branch'],
+  ['audit.export', 'О', 'network'],
+  ['notifications.view', 'ОДА', 'branch'],
+];
+
+const LETTER: Record<StaffRole, string> = { owner: 'О', director: 'Д', admin: 'А' };
+const own: Record<string, Target> = { network: { network: true }, city: { cityId: CITY_A }, branch: { branchId: BR_A1 } };
+const foreign: Record<string, Target> = { network: { network: true }, city: { cityId: CITY_B }, branch: { branchId: BR_B1 } };
+
+describe('матрица K1 × роль × своя/чужая цель', () => {
+  it('реестр кода совпадает с K1 построчно', () => {
+    expect([...ACTIONS].sort()).toEqual(EXPECTED.map((r) => r[0]).sort());
+  });
+
+  const rows = EXPECTED.flatMap(([action, roles, kind]) =>
+    (['owner', 'director', 'admin'] as const).map((role) => ({ action, role, kind, allowed: roles.includes(LETTER[role]) })),
+  );
+
+  it.each(rows)('$action / $role', ({ action, role, kind, allowed }) => {
+    const c = { owner, director, admin }[role];
+    expect(roleAllows(role, action)).toBe(allowed);
+    if (kind === 'client') return; // клиент – только assertCanClient (K1)
+    expect(can(c, action, own[kind]!)).toBe(allowed && (kind !== 'network' || role === 'owner'));
+    expect(can(c, action, foreign[kind]!)).toBe(allowed && role === 'owner');
+  });
+
+  it('неуказанное – запрещено всем, включая Владельца; finance.* в Э1 нет', () => {
+    for (const a of ['finance.correct', 'finance.refund', 'loyalty.adjust', 'payroll.view', 'booking.delete', '']) {
+      expect(can(owner, a, { network: true })).toBe(false);
+      expect(can(owner, a, { branchId: BR_A1 })).toBe(false);
+      expect(roleAllows('owner', a)).toBe(false);
+    }
+  });
+
+  it('actionsOf для меню CRM', () => {
+    expect(actionsOf('admin')).not.toContain('staff.view');
+    expect(actionsOf('owner')).toHaveLength(ACTIONS.length);
+  });
+});
+
+describe('assertCan: чужое – 404, своё без права – 403', () => {
+  it('Директор: свой филиал – да, чужой – NOT_FOUND', () => {
+    expect(() => assertCan(director, 'network.branch.update', { branchId: BR_A2 })).not.toThrow();
+    expect(() => assertCan(director, 'network.branch.update', { branchId: BR_B1 })).toThrow(
+      expect.objectContaining({ code: 'NOT_FOUND', httpStatus: 404 }),
+    );
+  });
+
+  it('Администратор: чужой филиал – NOT_FOUND даже для разрешённого действия, свой без права – FORBIDDEN', () => {
+    expect(() => assertCan(admin, 'booking.create', { branchId: BR_A2 })).toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    expect(() => assertCan(admin, 'resources.manage', { branchId: BR_A1 })).toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN', httpStatus: 403 }),
+    );
+    expect(() => assertCan(admin, 'resources.manage', { branchId: BR_B1 })).toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+  });
+
+  it('тело 404 для чужого и несуществующего одинаково', () => {
+    const msg = (t: Target) => {
+      try {
+        assertCan(admin, 'schedule.view', t);
+      } catch (e) {
+        return JSON.stringify({ ...(e as object), message: (e as Error).message });
+      }
+      return 'нет ошибки';
+    };
+    expect(msg({ branchId: BR_B1 })).toBe(msg({ branchId: 'ffffffff-0000-4000-8000-000000000000' }));
+  });
+
+  it('сетевая цель у не-Владельца – FORBIDDEN', () => {
+    expect(() => assertCan(director, 'network.city.manage', { network: true })).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+    expect(() => assertCan(owner, 'network.city.manage', { network: true })).not.toThrow();
+  });
+});
+
+describe('assertCanManageStaff (04 §2 п.6, §4.2)', () => {
+  const t = (role: StaffRole, extra: object = {}) => ({ role, branchIds: [BR_A1], cityIds: [], ...extra });
+
+  it('Директор не назначает и не блокирует директоров и Владельца', () => {
+    for (const op of ['create', 'change_role', 'change_scope', 'block', 'end_sessions'] as const) {
+      expect(() => assertCanManageStaff(director, op, t('director'))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+      expect(() => assertCanManageStaff(director, op, t('owner'))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+    }
+  });
+
+  it('Директор назначает администратора в свою зону; в чужую – NOT_FOUND', () => {
+    expect(() => assertCanManageStaff(director, 'create', t('admin'))).not.toThrow();
+    expect(() => assertCanManageStaff(director, 'block', t('admin', { staffId: 'x' }))).not.toThrow();
+    expect(() => assertCanManageStaff(director, 'create', t('admin', { branchIds: [BR_B1] }))).toThrow(
+      expect.objectContaining({ code: 'NOT_FOUND' }),
+    );
+    expect(() => assertCanManageStaff(director, 'change_scope', t('admin', { cityIds: [CITY_B], branchIds: [] }))).toThrow(
+      expect.objectContaining({ code: 'NOT_FOUND' }),
+    );
+  });
+
+  it('никто не меняет себе роль и зону – даже Владелец', () => {
+    for (const c of [owner, director]) {
+      for (const op of ['change_role', 'change_scope'] as const) {
+        expect(() => assertCanManageStaff(c, op, { staffId: c.actor.staffId, role: 'admin', branchIds: [], cityIds: [] })).toThrow(
+          expect.objectContaining({ code: 'FORBIDDEN' }),
+        );
+      }
+    }
+  });
+
+  it('Владельца не создаёт никто через CRM; Владелец назначает директора', () => {
+    expect(() => assertCanManageStaff(owner, 'create', t('owner'))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+    expect(() => assertCanManageStaff(owner, 'change_role', t('owner', { staffId: 'other' }))).toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN' }),
+    );
+    expect(() => assertCanManageStaff(owner, 'create', t('director', { branchIds: [BR_B1] }))).not.toThrow();
+  });
+
+  it('Администратор сотрудниками не управляет', () => {
+    expect(() => assertCanManageStaff(admin, 'create', t('admin'))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+    expect(() => assertCanManageStaff(admin, 'end_sessions', t('admin'))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+  });
+});
+
+describe('клиент и списки', () => {
+  it('assertOwnClient: чужой клиент и сотрудник – NOT_FOUND', () => {
+    expect(() => assertOwnClient({ kind: 'client', clientId: 'c1', sessionId: 's' }, 'c1')).not.toThrow();
+    expect(() => assertOwnClient({ kind: 'client', clientId: 'c1', sessionId: 's' }, 'c2')).toThrow(
+      expect.objectContaining({ code: 'NOT_FOUND' }),
+    );
+    expect(() => assertOwnClient(owner.actor, 'c1')).toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+  });
+
+  it('scopeFilter: Владелец – all, зона – branches, без права или без зоны – none', () => {
+    expect(scopeFilter(owner, 'schedule.view')).toEqual({ kind: 'all' });
+    expect(scopeFilter(admin, 'schedule.view')).toEqual({ kind: 'branches', branchIds: [BR_A1] });
+    expect(scopeFilter(admin, 'audit.view')).toEqual({ kind: 'none' });
+    expect(scopeFilter(ctx('admin'), 'schedule.view')).toEqual({ kind: 'none' });
+    expect(scopeFilter(admin, 'finance.correct')).toEqual({ kind: 'none' });
+  });
+
+  it('branchScopeSql: условие и параметр, кривое имя столбца – ошибка', () => {
+    const p: unknown[] = ['x'];
+    expect(branchScopeSql('b.branch_id', { kind: 'branches', branchIds: [BR_A1] }, p)).toBe('b.branch_id = ANY($2::uuid[])');
+    expect(p).toEqual(['x', [BR_A1]]);
+    expect(branchScopeSql('branch_id', { kind: 'all' }, p)).toBe('TRUE');
+    expect(branchScopeSql('branch_id', { kind: 'none' }, p)).toBe('FALSE');
+    expect(() => branchScopeSql('1; DROP', { kind: 'all' }, p)).toThrow();
+  });
+});
+
+describe('loadAccess и назначения (БД)', () => {
+  let db: TestDatabase;
+  const network: NetworkLookup = {
+    branchesOfCities: async (_db, ids) =>
+      ids.flatMap((id) => (id === CITY_A ? [BR_A1, BR_A2] : id === CITY_B ? [BR_B1] : [])),
+  };
+  const at = new Date('2026-11-15T07:00:00Z');
+
+  async function staff(role: StaffRole, status = 'active'): Promise<string> {
+    const r = await db.client.query<{ id: string }>(
+      `INSERT INTO app.staff (first_name, last_name, email, role, status, password_hash)
+       VALUES ('А', 'Б', gen_random_uuid() || '@yu.test', $1, $2, 'x') RETURNING id`,
+      [role, status],
+    );
+    return r.rows[0]!.id;
+  }
+  async function assign(staffId: string, kind: 'city' | 'branch', id: string, from = '2026-01-01', to: string | null = null) {
+    await db.client.query(
+      `INSERT INTO app.staff_assignments (staff_id, scope_type, city_id, branch_id, valid_from, valid_to, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $1)`,
+      [staffId, kind, kind === 'city' ? id : null, kind === 'branch' ? id : null, from, to],
+    );
+  }
+  const actor = (staffId: string) => ({ kind: 'staff' as const, staffId, sessionId: 's' });
+
+  beforeAll(async () => {
+    db = await createTestDatabase({ migrate: true });
+  });
+  afterAll(async () => {
+    await db.drop();
+  });
+
+  it('назначение branch не открывает соседний филиал того же города', async () => {
+    const id = await staff('admin');
+    await assign(id, 'branch', BR_A1);
+    const c = await loadAccess(db.client, actor(id), at, network);
+    expect([...c.branchIds]).toEqual([BR_A1]);
+    expect(c.cityIds.size).toBe(0);
+    expect(can(c, 'schedule.view', { branchId: BR_A2 })).toBe(false);
+    expect(can(c, 'network.view', { cityId: CITY_A })).toBe(false);
+  });
+
+  it('назначение city открывает все филиалы города (и только его)', async () => {
+    const id = await staff('director');
+    await assign(id, 'city', CITY_A);
+    const c = await loadAccess(db.client, actor(id), at, network);
+    expect([...c.branchIds].sort()).toEqual([BR_A1, BR_A2]);
+    expect(can(c, 'schedule.view', { branchId: BR_B1 })).toBe(false);
+  });
+
+  it('отзыв и истёкший срок назначения → следующий loadAccess не видит филиал', async () => {
+    const id = await staff('admin');
+    await assign(id, 'branch', BR_A1);
+    await assign(id, 'branch', BR_A2, '2026-01-01', '2026-11-14');
+    expect([...(await loadAccess(db.client, actor(id), at, network)).branchIds]).toEqual([BR_A1]);
+    await db.client.query('UPDATE app.staff_assignments SET revoked_at = now(), revoked_by = $1 WHERE staff_id = $1', [id]);
+    expect((await loadAccess(db.client, actor(id), at, network)).branchIds.size).toBe(0);
+  });
+
+  it('пересечение действующих назначений на одну цель запрещено, после отзыва – можно', async () => {
+    const id = await staff('admin');
+    await assign(id, 'branch', BR_B1, '2026-01-01', '2026-12-31');
+    await expect(assign(id, 'branch', BR_B1, '2026-06-01')).rejects.toMatchObject({ code: '23P01' });
+    await db.client.query('UPDATE app.staff_assignments SET revoked_at = now(), revoked_by = $1 WHERE staff_id = $1', [id]);
+    await assign(id, 'branch', BR_B1, '2026-06-01');
+  });
+
+  it('Владелец – вся сеть без назначений; заблокированный – SESSION_REVOKED', async () => {
+    const o = await staff('owner');
+    expect((await loadAccess(db.client, actor(o), at)).network).toBe(true);
+    const b = await staff('admin', 'blocked');
+    await expect(loadAccess(db.client, actor(b), at)).rejects.toMatchObject({ code: 'SESSION_REVOKED', httpStatus: 401 });
+    await expect(loadAccess(db.client, actor('00000000-0000-4000-8000-000000000000'), at)).rejects.toMatchObject({
+      code: 'SESSION_REVOKED',
+    });
+  });
+
+  it('assertCanAudited пишет отказ в аудит и бросает ту же ошибку', async () => {
+    const meta = { actor: admin.actor, access: admin, source: 'crm' as const, requestId: 'r-deny' };
+    await expect(
+      assertCanAudited(db.client, meta, admin, 'network.branch.update', { branchId: BR_B1 }, {
+        action: 'branch.updated',
+        object: { type: 'branch', id: BR_B1 },
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const r = await db.client.query("SELECT action, result, reason, branch_id FROM journal.audit_events WHERE request_id = 'r-deny'");
+    expect(r.rows).toEqual([
+      { action: 'branch.updated', result: 'denied', reason: 'NOT_FOUND: network.branch.update', branch_id: BR_B1 },
+    ]);
+  });
+});

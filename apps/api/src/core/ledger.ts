@@ -24,17 +24,6 @@ export const ledgerErrors = {
 
 type LedgerErrorCode = keyof typeof ledgerErrors;
 
-declare module './errors.ts' {
-  interface ErrorCodeRegistry {
-    BALANCE_BELOW_LIMIT: 409;
-    LIMIT_OVERRIDE_NOT_ALLOWED: 403;
-    ALREADY_REVERSED: 409;
-    CANNOT_REVERSE_REVERSAL: 409;
-    UNIT_MISMATCH: 422;
-    ACCOUNT_CLOSED: 409;
-    INVALID_AMOUNT: 422;
-  }
-}
 
 function fail(code: LedgerErrorCode, message: string, details?: Record<string, unknown>): AppError {
   return new AppError(code, ledgerErrors[code], message, details);
