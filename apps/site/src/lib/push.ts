@@ -97,9 +97,9 @@ export async function disablePush(): Promise<PushState> {
   const reg = await navigator.serviceWorker.getRegistration(SW_URL);
   const sub = reg ? await reg.pushManager.getSubscription() : null;
   if (sub) {
-    // id подписки на сервере – из идемпотентного POST; DELETE /{id} всегда 204 (K9).
-    const id = await saveOnServer(sub).catch(() => null);
-    if (id) await api(`/me/push-subscriptions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    // DELETE по endpoint в теле: сервер гасит только подписку этого клиента, ничего не записывая заново; 204 всегда.
+    const res = await api('/me/push-subscriptions', { method: 'DELETE', body: JSON.stringify({ endpoint: sub.endpoint }) });
+    if (!res.ok) throw new Error(`push: сервер не отозвал подписку – HTTP ${res.status}`);
     await sub.unsubscribe();
   }
   return 'off';

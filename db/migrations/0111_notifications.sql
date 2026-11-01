@@ -10,6 +10,7 @@
 CREATE TABLE app.push_subscriptions (            -- Web Push (Q-30)
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id       uuid NOT NULL REFERENCES app.clients(id),
+  session_id      uuid REFERENCES app.client_sessions(id),   -- сессия ЛК, из которой подписались: выход гасит подписки этой сессии (K9 №3)
   endpoint        text NOT NULL UNIQUE CHECK (endpoint ~ '^https?://' AND length(endpoint) <= 2048),
   p256dh          text NOT NULL CHECK (p256dh ~ '^[A-Za-z0-9_-]{86,88}$'),   -- 65 байт base64url
   auth            text NOT NULL CHECK (auth ~ '^[A-Za-z0-9_-]{22,24}$'),     -- 16 байт base64url
@@ -23,6 +24,7 @@ CREATE TABLE app.push_subscriptions (            -- Web Push (Q-30)
   CHECK ((revoked_at IS NULL) = (revoke_reason IS NULL))
 );
 CREATE INDEX push_subscriptions_client_idx ON app.push_subscriptions (client_id) WHERE revoked_at IS NULL;
+CREATE INDEX push_subscriptions_session_idx ON app.push_subscriptions (session_id) WHERE revoked_at IS NULL;
 
 CREATE TABLE app.notifications (                 -- 09 §9: одна строка – одно сообщение клиенту; она же журнал статусов
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),

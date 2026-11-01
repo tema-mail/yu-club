@@ -1,7 +1,8 @@
 ---
 // Личный кабинет (S1-17, карта сайта 3.6): целиком за входом – сессию проверяет middleware через GET /me (K9).
-// Сейчас: профиль и выход. Переключателей «Напоминания» и «Реклама» нет: API отдаёт их значения в /me, но ручки
-// изменения ещё нет – без неё переключатель был бы заглушкой. «Мои записи» – когда появится API броней (S1-08).
+// Сейчас: профиль, блок «Уведомления» (переключатели и push в браузере – остров NotificationSettings, K9
+// /me/notification-settings, /me/push-subscriptions) и выход. «Мои записи» – когда появится API броней (S1-08).
+import NotificationSettings from '../../islands/NotificationSettings.tsx';
 import Site from '../../layouts/Site.astro';
 
 const me = Astro.locals.client!;
@@ -23,6 +24,11 @@ const name = [me.firstName, me.lastName].filter(Boolean).join(' ');
         <dd data-testid="profile-phone">{me.phoneMasked}</dd>
       </div>
     </dl>
+    <NotificationSettings
+      client:load
+      remindersEnabled={me.notifications.remindersEnabled}
+      marketingEnabled={me.notifications.marketingEnabled}
+    />
     <div>
       <button class="yu-btn yu-btn--ghost" type="button" id="logout">Выйти</button>
     </div>

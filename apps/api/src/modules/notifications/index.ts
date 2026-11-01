@@ -54,7 +54,9 @@ export function validateSubscription(input: PushSubscriptionInput, allowedHosts:
     throw new AppError('VALIDATION_FAILED', 400, 'Неверный адрес подписки', { field: 'endpoint' });
   }
   const local = url.hostname === '127.0.0.1' || url.hostname === 'localhost';
-  if (!hostAllowed(url.hostname, allowedHosts) || (url.protocol !== 'https:' && !(local && url.protocol === 'http:'))) {
+  // https – только стандартный порт (URL нормализует :443 в ''): иначе внутренние сервисы на нестандартных портах.
+  const httpsOk = url.protocol === 'https:' && url.port === '';
+  if (!hostAllowed(url.hostname, allowedHosts) || !(httpsOk || (local && url.protocol === 'http:'))) {
     throw new AppError('PUSH_ENDPOINT_NOT_ALLOWED', 422, 'Этот браузер не поддерживается для уведомлений', { host: url.hostname });
   }
   try {
@@ -69,6 +71,7 @@ export function validateSubscription(input: PushSubscriptionInput, allowedHosts:
 interface SubRow {
   id: string;
   client_id: string;
+  session_id: string | null;
   p256dh: string;
   auth: string;
   revoked_at: Date | null;
@@ -78,30 +81,35 @@ interface SubRow {
 export async function savePushSubscription(
   pool: Pool,
   clock: Clock,
-  clientId: string,
+  session: { clientId: string; sessionId: string },
   input: PushSubscriptionInput,
   allowedHosts: readonly string[],
   meta: AuditRequestMeta,
 ): Promise<{ id: string; created: boolean }> {
   validateSubscription(input, allowedHosts);
+  const { clientId, sessionId } = session;
   return withTx(pool, async (tx) => {
     const now = clock.now();
     // Блокировка клиента сериализует параллельные подписки одного клиента (лимит MAX_ACTIVE_SUBSCRIPTIONS).
     await tx.query('SELECT 1 FROM app.clients WHERE id = $1 FOR UPDATE', [clientId]);
     const prev = (
-      await tx.query<SubRow>('SELECT id, client_id, p256dh, auth, revoked_at FROM app.push_subscriptions WHERE endpoint = $1 FOR UPDATE', [input.endpoint])
+      await tx.query<SubRow>('SELECT id, client_id, session_id, p256dh, auth, revoked_at FROM app.push_subscriptions WHERE endpoint = $1 FOR UPDATE', [input.endpoint])
     ).rows[0];
     if (prev && prev.client_id === clientId && !prev.revoked_at && prev.p256dh === input.keys.p256dh && prev.auth === input.keys.auth) {
+      // То же устройство после нового входа: подписка переезжает на текущую сессию (выход из неё её погасит).
+      if (prev.session_id !== sessionId) {
+        await tx.query('UPDATE app.push_subscriptions SET session_id = $2, updated_at = $3 WHERE id = $1', [prev.id, sessionId, clock.now()]);
+      }
       return { id: prev.id, created: false };
     }
     const ua = input.userAgent ? input.userAgent.slice(0, 512) : null;
     const r = await tx.query<{ id: string }>(
-      `INSERT INTO app.push_subscriptions (client_id, endpoint, p256dh, auth, user_agent, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $6)
-       ON CONFLICT (endpoint) DO UPDATE SET client_id = EXCLUDED.client_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth,
+      `INSERT INTO app.push_subscriptions (client_id, session_id, endpoint, p256dh, auth, user_agent, created_at, updated_at)
+       VALUES ($1, $7, $2, $3, $4, $5, $6, $6)
+       ON CONFLICT (endpoint) DO UPDATE SET client_id = EXCLUDED.client_id, session_id = EXCLUDED.session_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth,
          user_agent = EXCLUDED.user_agent, updated_at = EXCLUDED.updated_at, revoked_at = NULL, revoke_reason = NULL, last_error = NULL
        RETURNING id`,
-      [clientId, input.endpoint, input.keys.p256dh, input.keys.auth, ua, now],
+      [clientId, input.endpoint, input.keys.p256dh, input.keys.auth, ua, now, sessionId],
     );
     const id = r.rows[0]!.id;
     const extra = await tx.query<{ id: string }>(
@@ -125,6 +133,16 @@ export async function savePushSubscription(
   });
 }
 
+/** DELETE по endpoint (тело запроса, не URL – адрес браузера не попадает в журнал запросов): только своя активная. */
+export async function removePushSubscriptionByEndpoint(pool: Pool, clock: Clock, clientId: string, endpoint: string, meta: AuditRequestMeta): Promise<boolean> {
+  const r = await pool.query<{ id: string }>(
+    'SELECT id FROM app.push_subscriptions WHERE endpoint = $1 AND client_id = $2 AND revoked_at IS NULL',
+    [endpoint, clientId],
+  );
+  const id = r.rows[0]?.id;
+  return id ? removePushSubscriptionById(pool, clock, clientId, id, meta) : false;
+}
+
 /** DELETE подписки (K9 /me/push-subscriptions/{id}): только своей и активной; повтор и чужая – false (ответ всё равно 204). */
 export async function removePushSubscriptionById(pool: Pool, clock: Clock, clientId: string, id: string, meta: AuditRequestMeta): Promise<boolean> {
   return withTx(pool, async (tx) => {
@@ -146,11 +164,12 @@ export async function removePushSubscriptionById(pool: Pool, clock: Clock, clien
   });
 }
 
-/** Все активные подписки клиента → revoked (выход 'logout', обезличивание). В транзакции вызывающего. */
-export async function revokeClientSubscriptions(tx: Tx, clientId: string, reason: 'logout' | 'unsubscribed', now: Date): Promise<number> {
+/** Выход из ЛК (K9 №3): подписки, сохранённые из этой сессии → revoked('logout'). Другие устройства клиента не трогаем.
+ *  Вызывается из clients.logoutClient в той же транзакции. */
+export async function revokeSessionSubscriptions(tx: Tx, sessionId: string, now: Date): Promise<number> {
   const r = await tx.query(
-    `UPDATE app.push_subscriptions SET revoked_at = $3, revoke_reason = $2, updated_at = $3 WHERE client_id = $1 AND revoked_at IS NULL`,
-    [clientId, reason, now],
+    `UPDATE app.push_subscriptions SET revoked_at = $2, revoke_reason = 'logout', updated_at = $2 WHERE session_id = $1 AND revoked_at IS NULL`,
+    [sessionId, now],
   );
   return r.rowCount ?? 0;
 }

@@ -95,6 +95,10 @@ describe('отправка на фейковый push-сервис', () => {
     expect(await send('/push/busy', 429)).toEqual({ kind: 'retryable', status: 429 });
     expect(await send('/push/bad', 403)).toEqual({ kind: 'rejected', status: 403 });
     expect(await send('/push/hang', 'hang')).toEqual({ kind: 'timeout' });
+    // 3xx: по редиректу не идём (SSRF), это rejected; на /redirected запроса нет
+    const before = rx.received.length;
+    expect(await send('/push/moved', 307)).toEqual({ kind: 'rejected', status: 307 });
+    expect(rx.received.slice(before).map((r) => r.path)).toEqual(['/push/moved']);
   });
 
   it('classifyStatus: 202 и 404 тоже по стандарту', () => {

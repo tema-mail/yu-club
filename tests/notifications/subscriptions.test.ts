@@ -9,7 +9,8 @@ import {
   MAX_ACTIVE_SUBSCRIPTIONS,
   getNotificationSettings,
   removePushSubscriptionById,
-  revokeClientSubscriptions,
+  removePushSubscriptionByEndpoint,
+  revokeSessionSubscriptions,
   savePushSubscription,
   updateNotificationSettings,
   validateSubscription,
@@ -22,14 +23,24 @@ let pool: pg.Pool;
 const clock = fixedClock('2026-11-14T10:00:00Z');
 let phone = 79130002000;
 
-async function client(): Promise<{ id: string; meta: AuditRequestMeta }> {
+async function newSession(clientId: string): Promise<string> {
+  return (
+    await db.client.query<{ id: string }>(
+      `INSERT INTO app.client_sessions (client_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '1 day') RETURNING id`,
+      [clientId, randomUUID()],
+    )
+  ).rows[0]!.id;
+}
+
+async function client(): Promise<{ id: string; sessionId: string; s: { clientId: string; sessionId: string }; meta: AuditRequestMeta }> {
   const id = (
     await db.client.query<{ id: string }>(
       `INSERT INTO app.clients (phone_e164, status, registered_at, created_by_type) VALUES ($1, 'active', now(), 'system') RETURNING id`,
       [`+${++phone}`],
     )
   ).rows[0]!.id;
-  return { id, meta: { actor: { kind: 'client', clientId: id, sessionId: randomUUID() }, source: 'account', requestId: randomUUID() } };
+  const sessionId = await newSession(id);
+  return { id, sessionId, s: { clientId: id, sessionId }, meta: { actor: { kind: 'client', clientId: id, sessionId }, source: 'account', requestId: randomUUID() } };
 }
 
 const sub = (path: string = randomUUID()) => {
@@ -55,7 +66,8 @@ describe('validateSubscription', () => {
   it('известные push-сервисы проходят, чужой хост и http – 422, кривые ключи – 400', () => {
     expect(() => validateSubscription(ok, DEFAULT_PUSH_HOSTS)).not.toThrow();
     expect(() => validateSubscription({ ...ok, endpoint: 'https://api.push.apple.com/3/device/x' }, DEFAULT_PUSH_HOSTS)).not.toThrow();
-    for (const endpoint of ['https://evil.example/fcm', 'http://fcm.googleapis.com/x', 'https://push.apple.com.evil.ru/x', 'https://169.254.169.254/latest']) {
+    expect(() => validateSubscription({ ...ok, endpoint: 'https://fcm.googleapis.com:443/fcm/send/x' }, DEFAULT_PUSH_HOSTS)).not.toThrow();
+    for (const endpoint of ['https://fcm.googleapis.com:8443/fcm/send/x', 'https://evil.example/fcm', 'http://fcm.googleapis.com/x', 'https://push.apple.com.evil.ru/x', 'https://169.254.169.254/latest']) {
       expect(() => validateSubscription({ ...ok, endpoint }, DEFAULT_PUSH_HOSTS), endpoint).toThrow(expect.objectContaining({ code: 'PUSH_ENDPOINT_NOT_ALLOWED' }));
     }
     expect(() => validateSubscription({ ...ok, endpoint: 'не адрес' }, DEFAULT_PUSH_HOSTS)).toThrow(expect.objectContaining({ code: 'VALIDATION_FAILED' }));
@@ -72,8 +84,8 @@ describe('подписка', () => {
   it('сохраняется; повтор той же – идемпотентен (created=false, без второй строки и аудита)', async () => {
     const c = await client();
     const s = sub();
-    const first = await savePushSubscription(pool, clock, c.id, s, DEFAULT_PUSH_HOSTS, c.meta);
-    const again = await savePushSubscription(pool, clock, c.id, s, DEFAULT_PUSH_HOSTS, c.meta);
+    const first = await savePushSubscription(pool, clock, c.s, s, DEFAULT_PUSH_HOSTS, c.meta);
+    const again = await savePushSubscription(pool, clock, c.s, s, DEFAULT_PUSH_HOSTS, c.meta);
     expect(first.created).toBe(true);
     expect(again).toEqual({ id: first.id, created: false });
     expect(await active(c.id)).toBe(1);
@@ -87,8 +99,8 @@ describe('подписка', () => {
     const a = await client();
     const b = await client();
     const s = sub();
-    const { id } = await savePushSubscription(pool, clock, a.id, s, DEFAULT_PUSH_HOSTS, a.meta);
-    const moved = await savePushSubscription(pool, clock, b.id, { ...s, keys: sub().keys }, DEFAULT_PUSH_HOSTS, b.meta);
+    const { id } = await savePushSubscription(pool, clock, a.s, s, DEFAULT_PUSH_HOSTS, a.meta);
+    const moved = await savePushSubscription(pool, clock, b.s, { ...s, keys: sub().keys }, DEFAULT_PUSH_HOSTS, b.meta);
     expect(moved).toEqual({ id, created: false });
     expect([await active(a.id), await active(b.id)]).toEqual([0, 1]);
     expect((await audit(b.id))[0]!.after).toMatchObject({ transferred: true });
@@ -98,12 +110,12 @@ describe('подписка', () => {
     const c = await client();
     const other = await client();
     const s = sub();
-    const { id } = await savePushSubscription(pool, clock, c.id, s, DEFAULT_PUSH_HOSTS, c.meta);
+    const { id } = await savePushSubscription(pool, clock, c.s, s, DEFAULT_PUSH_HOSTS, c.meta);
     expect(await removePushSubscriptionById(pool, clock, other.id, id, other.meta)).toBe(false);
     expect(await removePushSubscriptionById(pool, clock, c.id, id, c.meta)).toBe(true);
     expect(await removePushSubscriptionById(pool, clock, c.id, id, c.meta)).toBe(false);
     expect(await active(c.id)).toBe(0);
-    await savePushSubscription(pool, clock, c.id, s, DEFAULT_PUSH_HOSTS, c.meta);
+    await savePushSubscription(pool, clock, c.s, s, DEFAULT_PUSH_HOSTS, c.meta);
     expect(await active(c.id)).toBe(1);
   });
 
@@ -111,18 +123,37 @@ describe('подписка', () => {
     const c = await client();
     for (let i = 0; i <= MAX_ACTIVE_SUBSCRIPTIONS; i++) {
       clock.advance(1000);
-      await savePushSubscription(pool, clock, c.id, sub(`many-${i}`), DEFAULT_PUSH_HOSTS, c.meta);
+      await savePushSubscription(pool, clock, c.s, sub(`many-${i}`), DEFAULT_PUSH_HOSTS, c.meta);
     }
     expect(await active(c.id)).toBe(MAX_ACTIVE_SUBSCRIPTIONS);
     const oldest = await db.client.query('SELECT revoke_reason FROM app.push_subscriptions WHERE endpoint LIKE $1', ['%/many-0']);
     expect(oldest.rows[0]).toEqual({ revoke_reason: 'unsubscribed' });
   });
 
-  it('revokeClientSubscriptions (выход) гасит все активные', async () => {
+  it('выход гасит только подписки своей сессии (logout); повторный вход переносит подписку на новую сессию', async () => {
     const c = await client();
-    await savePushSubscription(pool, clock, c.id, sub(), DEFAULT_PUSH_HOSTS, c.meta);
-    await savePushSubscription(pool, clock, c.id, sub(), DEFAULT_PUSH_HOSTS, c.meta);
-    expect(await revokeClientSubscriptions(db.client, c.id, 'logout', clock.now())).toBe(2);
+    const phone2 = await newSession(c.id);
+    const here = sub();
+    await savePushSubscription(pool, clock, c.s, here, DEFAULT_PUSH_HOSTS, c.meta);
+    await savePushSubscription(pool, clock, { clientId: c.id, sessionId: phone2 }, sub(), DEFAULT_PUSH_HOSTS, c.meta);
+    expect(await revokeSessionSubscriptions(db.client, c.sessionId, clock.now())).toBe(1);
+    expect(await active(c.id)).toBe(1);
+    const r = await db.client.query('SELECT revoke_reason FROM app.push_subscriptions WHERE endpoint = $1', [here.endpoint]);
+    expect(r.rows[0]).toEqual({ revoke_reason: 'logout' });
+    // тот же браузер вошёл заново и подписался – подписка ожила и привязана к новой сессии
+    const again = await newSession(c.id);
+    await savePushSubscription(pool, clock, { clientId: c.id, sessionId: again }, here, DEFAULT_PUSH_HOSTS, c.meta);
+    expect(await revokeSessionSubscriptions(db.client, again, clock.now())).toBe(1);
+  });
+
+  it('удаление по endpoint – только своей; чужая и повтор – false', async () => {
+    const c = await client();
+    const other = await client();
+    const s = sub();
+    await savePushSubscription(pool, clock, c.s, s, DEFAULT_PUSH_HOSTS, c.meta);
+    expect(await removePushSubscriptionByEndpoint(pool, clock, other.id, s.endpoint, other.meta)).toBe(false);
+    expect(await removePushSubscriptionByEndpoint(pool, clock, c.id, s.endpoint, c.meta)).toBe(true);
+    expect(await removePushSubscriptionByEndpoint(pool, clock, c.id, s.endpoint, c.meta)).toBe(false);
     expect(await active(c.id)).toBe(0);
   });
 });
