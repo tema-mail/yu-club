@@ -11,6 +11,7 @@ import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
+import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 import { staffAdminRoutes } from './modules/staff/routes.staff.ts';
@@ -18,6 +19,8 @@ import { staffAdminRoutes } from './modules/staff/routes.staff.ts';
 export interface ServerDeps {
   staff?: StaffDeps;
   clients?: ClientPublicDeps;
+  /** Web Push (S1-15): открытый ключ VAPID (null – не настроен, подписка 503) и разрешённые push-сервисы. Нужны clients. */
+  notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[] };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
 }
@@ -83,6 +86,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   if (deps.clients) {
     const clients = deps.clients;
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
+    const push = deps.notifications ?? { vapidPublicKey: null };
+    void app.register(async (scope) => notificationPublicRoutes(scope, { clients, ...push }), { prefix: '/api/public/v1' });
   }
 
   return app;
