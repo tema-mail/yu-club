@@ -375,6 +375,75 @@ a { color: inherit; }
 .yu-account__block p { margin: 0; }
 .yu-account__push { display: grid; gap: var(--yu-sp-xs); justify-items: start; padding-top: var(--yu-sp-s); border-top: 1px solid var(--yu-line-soft); }
 
+/* ── Расписание и запись (S1-19, S1-20) ─────────────────── */
+/* Страница без горизонтальной прокрутки: вбок листается только сетка внутри .yu-sched__scroll.
+   Состояние слота – не только цветом: знак ::after и штриховка, подписи – в легенде. */
+.yu-schedule-page { display: grid; gap: var(--yu-sp-s); }
+.yu-schedule-page > * { min-width: 0; }
+.yu-inline-link { color: var(--yu-text); text-underline-offset: 3px; white-space: nowrap; }
+.yu-sched { display: grid; gap: var(--yu-sp-s); min-width: 0; }
+.yu-sched > * { min-width: 0; }
+.yu-sched__controls { display: grid; gap: var(--yu-sp-xs); min-width: 0; }
+.yu-sched__days, .yu-sched__zones { display: flex; gap: var(--yu-sp-3xs); overflow-x: auto; padding-block-end: 4px; scrollbar-width: thin; }
+.yu-sched__zones { flex-wrap: wrap; overflow: visible; }
+.yu-sched__day, .yu-sched__zone {
+  flex: none; display: grid; place-content: center; min-height: var(--yu-tap); min-width: var(--yu-tap);
+  padding: var(--yu-sp-3xs) var(--yu-sp-xs); border: 1px solid var(--yu-line); border-radius: var(--yu-r-s);
+  background: var(--yu-surface); color: var(--yu-text); font: inherit; font-size: var(--yu-fs-s); line-height: 1.2; cursor: pointer; text-align: center;
+}
+.yu-sched__day-week { font-size: var(--yu-fs-xs); color: var(--yu-muted); }
+.yu-sched__day-num { font-weight: 700; white-space: nowrap; }
+.yu-sched__day--more { color: var(--yu-muted); }
+.yu-sched__day[aria-pressed="true"], .yu-sched__zone[aria-pressed="true"] { border-color: var(--yu-accent); background: var(--yu-accent-soft); box-shadow: inset 0 0 0 1px var(--yu-accent); }
+.yu-sched__day[aria-pressed="true"] .yu-sched__day-week { color: var(--yu-text); }
+.yu-sched__status {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--yu-sp-2xs) var(--yu-sp-s);
+  min-height: var(--yu-tap); padding: var(--yu-sp-2xs) var(--yu-sp-s); border-radius: var(--yu-r-s);
+  border: 1px solid var(--yu-line-soft); background: var(--yu-surface); font-size: var(--yu-fs-s);
+}
+.yu-sched__status[data-state="expiring"], .yu-sched__status[data-state="expired"], .yu-sched__status[data-state="cancelled"] { border-color: var(--yu-warn); background: var(--yu-warn-soft); }
+.yu-sched__status[data-state="conflict"], .yu-sched__status[data-state="load_error"], .yu-sched__status[data-state="forbidden"], .yu-sched__status[data-state="blocked"] { border-color: var(--yu-danger); color: var(--yu-danger); }
+.yu-sched__status[data-state="held"], .yu-sched__status[data-state="success"] { border-color: var(--yu-accent); background: var(--yu-accent-soft); }
+.yu-btn--small { min-height: var(--yu-tap); padding-inline: var(--yu-sp-s); }
+.yu-sched__scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); overscroll-behavior-x: contain; }
+.yu-sched__grid { --yu-cell: 44px; --yu-label: 8.5rem; display: grid; width: max-content; padding-block-end: var(--yu-sp-2xs); }
+.yu-sched__row { display: grid; grid-template-columns: var(--yu-label) repeat(var(--cols), var(--yu-cell)); align-items: stretch; }
+.yu-sched__row + .yu-sched__row { border-top: 1px solid var(--yu-line-soft); }
+.yu-sched__row--head { position: sticky; top: 0; font-size: var(--yu-fs-xs); color: var(--yu-dim); }
+.yu-sched__label {
+  position: sticky; left: 0; z-index: 1; grid-column: 1; display: grid; align-content: center;
+  padding: var(--yu-sp-3xs) var(--yu-sp-xs); background: var(--yu-surface); border-right: 1px solid var(--yu-line-soft);
+}
+.yu-sched__res { font-weight: 700; font-size: var(--yu-fs-s); white-space: nowrap; }
+.yu-sched__room { font-size: var(--yu-fs-xs); color: var(--yu-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.yu-sched__hour { padding: var(--yu-sp-3xs) 4px; border-left: 1px solid var(--yu-line-soft); white-space: nowrap; }
+.yu-slot {
+  position: relative; min-height: var(--yu-tap); margin: 3px 2px; padding: 0 2px; border: 1px solid var(--yu-line); border-radius: 8px;
+  background: var(--yu-bg); color: var(--yu-muted); font: inherit; font-size: 0.75rem; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.yu-slot--free:hover { border-color: var(--yu-accent); color: var(--yu-text); }
+.yu-slot--mine { background: var(--yu-accent); border-color: var(--yu-accent); color: var(--yu-on-accent); font-weight: 800; }
+.yu-slot--mine::after { content: "✓"; position: absolute; top: 1px; right: 4px; font-size: 0.6875rem; }
+.yu-slot--held { background: repeating-linear-gradient(135deg, var(--yu-warn-soft) 0 6px, transparent 6px 12px); border-color: var(--yu-warn); border-style: dashed; color: var(--yu-warn); }
+.yu-slot--booked { background: var(--yu-surface-2); border-color: transparent; color: var(--yu-dim); text-decoration: line-through; }
+.yu-slot--blocked { background: repeating-linear-gradient(45deg, rgb(255 155 143 / 0.14) 0 4px, transparent 4px 8px); border-color: var(--yu-danger); color: var(--yu-danger); }
+.yu-slot--closed { background: none; border-color: var(--yu-line-soft); color: transparent; }
+.yu-slot:disabled { cursor: default; }
+.yu-legend { display: flex; flex-wrap: wrap; gap: var(--yu-sp-3xs) var(--yu-sp-s); margin: 0; padding: 0; list-style: none; font-size: var(--yu-fs-xs); color: var(--yu-muted); }
+.yu-legend li { display: inline-flex; align-items: center; gap: var(--yu-sp-3xs); }
+.yu-legend__mark { display: inline-block; width: 22px; min-height: 18px; height: 18px; margin: 0; padding: 0; cursor: default; }
+.yu-hold, .yu-checkout { display: grid; gap: var(--yu-sp-xs); padding: var(--yu-sp-m); border: 1px solid var(--yu-accent); border-radius: var(--yu-r-m); background: var(--yu-surface); }
+.yu-hold > *, .yu-checkout > * { min-width: 0; margin: 0; }
+.yu-hold__title { font-size: var(--yu-fs-l); }
+.yu-timer { font-size: var(--yu-fs-s); color: var(--yu-muted); }
+.yu-timer [role="timer"] { font-size: var(--yu-fs-l); font-weight: 800; color: var(--yu-text); font-variant-numeric: tabular-nums; }
+.yu-timer--soon [role="timer"] { color: var(--yu-warn); }
+.yu-hold__items { display: grid; gap: var(--yu-sp-3xs); margin: 0; padding: 0; list-style: none; }
+.yu-hold__item { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 var(--yu-sp-s); padding-block: var(--yu-sp-3xs); border-bottom: 1px solid var(--yu-line-soft); font-size: var(--yu-fs-s); }
+.yu-hold__price { font-weight: 700; white-space: nowrap; }
+.yu-hold__total { font-size: var(--yu-fs-m); }
+.yu-hold__actions { display: flex; flex-wrap: wrap; gap: var(--yu-sp-2xs); }
+
 /* ── Подвал ─────────────────────────────────────────────── */
 .yu-footer { border-top: 1px solid var(--yu-line-soft); background: var(--yu-surface); font-size: var(--yu-fs-s); color: var(--yu-muted); }
 .yu-footer__row { display: grid; gap: var(--yu-sp-m); padding-block: var(--yu-sp-l); }
