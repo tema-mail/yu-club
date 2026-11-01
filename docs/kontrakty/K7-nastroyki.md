@@ -104,6 +104,32 @@ export function settingHistory(db: Db, key: SettingKey, scope: SettingScope): Pr
 
 Новый ключ = строка этой таблицы + `SettingDef` в коде.
 
+## HTTP CRM (внесено 02.11.2026; `apps/api/src/modules/settings/routes.crm.ts`)
+
+Область – в запросе всех четырёх маршрутов: `?scope=network|city|branch&id=<uuid>` (у сети id нет). Смотреть – право `settings.branch.manage` в зоне области (Владелец; Директор – своя зона, сеть ему `403`); Администратор – `403`; чужой или несуществующий город/филиал – `404` с одинаковым телом. Менять – `editAction` ключа в этой области (K1): ключи Э2 и сетевые – только Владелец (D2-02), операционные ключи филиала (`settings.branch.manage`) – и Директор своего филиала.
+
+| Метод и путь | Тело | Ответ |
+|---|---|---|
+| `GET /settings` | – | `{ scope: { level, id, name, city, timezone, today }, items: SettingItem[] }` |
+| `PUT /settings/{key}` | `{ value, validFrom: 'YYYY-MM-DD', rowVersion, reason? }`, `Idempotency-Key` | `200 SettingItem` |
+| `POST /settings/{key}/reset` | `{ rowVersion, reason? }`, `Idempotency-Key` | `200 SettingItem` – с текущего момента |
+| `GET /settings/{key}/history` | – | `{ key, items: [{ valueId, level, value, validFrom, validTo, createdBy, reason, own, status: 'active' \| 'planned' \| 'ended' }] }` |
+
+```ts
+interface SettingItem {
+  key: SettingKey; value: unknown; systemDefault: unknown;
+  source: { level: SettingLevel; valueId: string | null; validFrom: Iso | null; own: boolean; cityName: string | null };
+  levels: StoredLevel[]; levelAllowed: boolean; editAction: Action; editable: boolean;   // считает сервер
+  constraints: { kind: 'integer', min, max, nullable } | { kind: 'boolean' | 'time' | 'datetime' | 'hours' | 'list', nullable }
+             | { kind: 'enum', options, nullable } | { kind: 'multi', options, minItems, nullable };  // из той же Zod-схемы
+  upcoming: Array<{ valueId; level; value; validFrom: Iso }>;   // будущие строки цепочки на разрешённых уровнях
+  rowVersion: string;   // `<id своей последней строки>:<её valid_to | open>` или 'none'; не совпало → 409 VERSION_CONFLICT, details.current
+}
+```
+
+- `validFrom` – дата по зоне области: полночь филиала/города; для сети (своей зоны нет) – самая поздняя полночь среди городов (западный город), «сегодня» – самая ранняя дата среди городов (решение). Сегодня – с текущего момента; раньше сегодня – `400 VALIDATION_FAILED` (`details.field = 'validFrom'`, `details.today`): прошлое не переписывается.
+- Пределы, уровень, «max ≥ default», пересечение дат – ошибки `setSetting`/`resetToInherited` выше (`SETTING_*`). Отказ по правам (`403`) – в аудит отдельной транзакцией (ADR 0005 п.8).
+
 ## Ошибки
 
 | Код | HTTP | Когда |

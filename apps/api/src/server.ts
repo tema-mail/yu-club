@@ -21,6 +21,7 @@ import { networkRoutes } from './modules/network/routes.ts';
 import { networkPublicRoutes, type NetworkPublicDeps } from './modules/network/routes.public.ts';
 import { resourcesRoutes } from './modules/resources/routes.ts';
 import { pricingRoutes } from './modules/pricing/routes.ts';
+import { settingsRoutes } from './modules/settings/routes.crm.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
 import type { SenderDeps } from './modules/notifications/sender.ts';
@@ -96,6 +97,16 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(
       async (scope) =>
         pricingRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    // K7 по HTTP: экран CRM «Настройки» (наследование сеть → город → филиал, даты, история).
+    void app.register(
+      async (scope) =>
+        settingsRoutes(scope, {
           pool: staff.pool,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
