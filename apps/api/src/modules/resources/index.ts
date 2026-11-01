@@ -4,6 +4,9 @@
 import type { Db, Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 
+// Состав и единицы – K6 (composite.ts).
+export { changeComposition, expandToUnits, type UnitSet } from './composite.ts';
+
 export interface ResourceInfo {
   id: string;
   branchId: string;

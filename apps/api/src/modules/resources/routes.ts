@@ -12,6 +12,7 @@ import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../co
 import { can, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { getBranch } from '../network/index.ts';
+import { attachInitialUnits, changeComposition, compositionAt, insertUnit, listUnits } from './composite.ts';
 import { getResource, isUuid } from './index.ts';
 
 export interface ResourcesDeps {
@@ -160,7 +161,7 @@ const DEFS: Record<Kind, EntityDef> = {
       roomId: 'room_id', type: 'resource_type', name: 'name', status: 'status', selfBookable: 'self_bookable',
       stepMinutesOverride: 'step_minutes_override', sortOrder: 'sort_order', internalComment: 'internal_comment',
     },
-    create: createSchema(resourceFields, ['type', 'name']),
+    create: createSchema({ ...resourceFields, unitCode: z.string().trim().min(1).max(64), unitIds: z.array(ID).max(32) }, ['type', 'name']),
     patch: patchSchema(resourceFields, ['type']),
     createOnly: ['type'],
   },
@@ -207,7 +208,7 @@ export async function createEntity(tx: Tx, ctx: AccessContext, kind: Kind, branc
   const branch = await getBranch(tx, branchId);
   if (!branch) throw notFound();
   if (branch.status === 'archived') throw new AppError('RESOURCE_ARCHIVED', 409, 'Филиал в архиве');
-  const input = parse(d.create, raw);
+  const { unitCode, unitIds, ...input } = parse(d.create, raw) as Record<string, unknown> & { unitCode?: string; unitIds?: string[] };
   await checkLinks(tx, branchId, input);
   const keys = Object.keys(input).filter((k) => input[k] !== undefined);
   const cols = ['branch_id', ...keys.map((k) => d.cols[k]!)];
@@ -218,7 +219,11 @@ export async function createEntity(tx: Tx, ctx: AccessContext, kind: Kind, branc
       values,
     )
     .catch(dbError);
-  const row = r.rows[0]!;
+  let row = r.rows[0]!;
+  if (kind === 'resource') {
+    const res = { id: row.id, branchId, roomId: (row.roomId as string | null) ?? null, type: row.type as string, name: row.name as string };
+    row = { ...row, unitIds: await attachInitialUnits(tx, res, { unitCode, unitIds }, clock.now()) };
+  }
   await auditEntity(tx, meta, clock, action, null, row);
   return row;
 }
@@ -333,7 +338,30 @@ export async function getEntityCard(db: Db, ctx: AccessContext, kind: Kind, id: 
   guard(ctx, 'resources.view', row.branchId);
   if (kind !== 'resource') return row;
   const info = (await getResource(db, row.id))!;
-  return { ...row, stepMinutes: info.stepMinutes, zone: info.zone, roomStatus: info.roomStatus };
+  return { ...row, stepMinutes: info.stepMinutes, zone: info.zone, roomStatus: info.roomStatus, unitIds: await compositionAt(db, row.id, ctx.at) };
+}
+
+// ---- единицы и состав (S1-02, K6)
+
+const unitCreate = z.strictObject({ roomId: ID, code: z.string().trim().min(1).max(64), name: NAME });
+const compositionInput = z.strictObject({ unitIds: z.array(ID).min(1).max(32), validFrom: z.iso.datetime({ offset: true }), dryRun: z.boolean().optional() });
+
+/** Единица без своего ресурса (PS4 в VR-комнате, 01 §5.2) – живёт в комнате; аудит – room.updated (своего кода в K2 нет). */
+export async function createUnit(tx: Tx, ctx: AccessContext, branchId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock) {
+  const input = parse(unitCreate, raw);
+  guard(ctx, 'resources.manage', branchId, { action: 'room.updated', object: { type: 'room', id: input.roomId } });
+  const room = await tx.query(`SELECT 1 FROM app.rooms WHERE id = $1 AND branch_id = $2 AND status <> 'archived'`, [input.roomId, branchId]);
+  if (room.rowCount !== 1) throw linkInvalid('roomId');
+  const unit = await insertUnit(tx, { branchId, roomId: input.roomId, code: input.code, name: input.name });
+  await writeAudit(tx, meta, { action: 'room.updated', object: { type: 'room', id: input.roomId }, branchId, before: { unit: null }, after: { unit } }, clock);
+  return unit;
+}
+
+export async function setComposition(tx: Tx, ctx: AccessContext, resourceId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock) {
+  const action = 'resource.composition_changed' as const;
+  const cur = await lockForCommand(tx, ctx, DEFS.resource, resourceId, action);
+  const input = parse(compositionInput, raw);
+  return changeComposition(tx, { resourceId: cur.id, unitIds: input.unitIds, validFrom: new Date(input.validFrom), ...(input.dryRun ? { dryRun: true } : {}) }, meta, clock);
 }
 
 // ---- HTTP
@@ -396,4 +424,14 @@ export async function resourcesRoutes(app: FastifyInstance, deps: ResourcesDeps)
     app.patch(`/${plural}/:${idParam}`, commandHandler(deps, `${kind}.update`, (tx, ctx, id, body, meta, c) => updateEntity(tx, ctx, kind, id, body, meta, c)));
     app.post(`/${plural}/:${idParam}/archive`, commandHandler(deps, `${kind}.archive`, (tx, ctx, id, body, meta, c) => archiveEntity(tx, ctx, kind, id, body, meta, c)));
   }
+  app.get('/branches/:branchId/units', async (request, reply) => {
+    const ctx = await viewer(request, reply);
+    const branchId = (request.params as { branchId: string }).branchId;
+    if (!isUuid(branchId)) throw notFound();
+    guard(ctx, 'resources.view', branchId);
+    if (!(await getBranch(deps.pool, branchId))) throw notFound();
+    return { items: await listUnits(deps.pool, branchId), nextCursor: null };
+  });
+  app.post('/branches/:branchId/units', commandHandler(deps, 'unit.create', createUnit, 201));
+  app.post('/resources/:resourceId/composition', commandHandler(deps, 'resource.composition', setComposition));
 }
