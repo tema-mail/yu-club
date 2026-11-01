@@ -1,0 +1,10 @@
+.git
+**/node_modules
+.pg-data
+.claude
+tz
+docs
+tests
+*.log
+.env
+.env.*

@@ -1,0 +1,25 @@
+# >>> yu-club: CRM/ЛК сети компьютерных клубов, тест-стенд; блок ставит deploy/deploy.sh репозитория yu-club
+# Проверочный адрес: свой сертификат Caddy (curl -k), закрыт от поисковиков.
+# http → https явным 301 (redir permanent): автоматический редирект Caddy отдаёт 308.
+http://yu-club.45.12.72.227.nip.io {
+	redir https://yu-club.45.12.72.227.nip.io{uri} permanent
+}
+yu-club.45.12.72.227.nip.io {
+	tls internal
+	encode gzip zstd
+	header {
+		X-Robots-Tag "noindex, nofollow"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy yu-club-api:3000
+	log {
+		output stdout
+		format console
+	}
+}
+# <<< yu-club
