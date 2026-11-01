@@ -12,6 +12,8 @@ import { auditActions as financeAudit } from '../modules/finance/audit.ts';
 import { errors as financeErrors } from '../modules/finance/errors.ts';
 import { auditActions as loyaltyAudit } from '../modules/loyalty/audit.ts';
 import { errors as loyaltyErrors } from '../modules/loyalty/errors.ts';
+import { auditActions as certificatesAudit } from '../modules/certificates/audit.ts';
+import { errors as certificatesErrors } from '../modules/certificates/errors.ts';
 import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit.ts';
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
 import { auditActions as networkAudit } from '../modules/network/audit.ts';
@@ -38,6 +40,7 @@ const moduleErrors = {
   notifications: notificationsErrors,
   finance: financeErrors,
   loyalty: loyaltyErrors,
+  certificates: certificatesErrors,
 } as const;
 const moduleAudit = {
   settings: settingsAudit,
@@ -53,6 +56,7 @@ const moduleAudit = {
   ledger: ['ledger.posted', 'ledger.reversed'] as const,
   finance: financeAudit,
   loyalty: loyaltyAudit,
+  certificates: certificatesAudit,
 } as const;
 
 type ModuleErrors = typeof moduleErrors;
