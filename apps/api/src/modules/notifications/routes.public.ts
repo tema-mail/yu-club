@@ -10,6 +10,7 @@ import { authenticateClient, type ClientPublicDeps } from '../clients/routes.pub
 import {
   DEFAULT_PUSH_HOSTS,
   getNotificationSettings,
+  removePushSubscriptionByEndpoint,
   removePushSubscriptionById,
   savePushSubscription,
   updateNotificationSettings,
@@ -27,6 +28,7 @@ const subscriptionBody = z.object({
   keys: z.object({ p256dh: z.string().max(128), auth: z.string().max(64) }),
   expirationTime: z.number().nullable().optional(), // PushSubscription.toJSON() – принимаем и не храним
 });
+const deleteBody = z.object({ endpoint: z.string().min(1).max(2048) });
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const settingsBody = z.object({
   remindersEnabled: z.boolean(),
@@ -71,12 +73,20 @@ export async function notificationPublicRoutes(app: FastifyInstance, deps: Notif
     const r = await savePushSubscription(
       clients.pool,
       clock,
-      session.clientId,
+      session,
       { endpoint: body.endpoint, keys: body.keys, userAgent: ua },
       hosts,
       meta(request, session),
     );
     return reply.code(r.created ? 201 : 200).send({ id: r.id });
+  });
+
+  // Отписка этого браузера по endpoint (тело, не URL: адрес браузера – ПДн, в журнал запросов не идёт). 204 всегда.
+  app.delete('/me/push-subscriptions', async (request, reply) => {
+    const session = await authenticateClient(clients, request, reply);
+    const body = parse(deleteBody, request.body);
+    await removePushSubscriptionByEndpoint(clients.pool, clock, session.clientId, body.endpoint, meta(request, session));
+    return reply.code(204).send();
   });
 
   // K9: 204 всегда – чужая, уже отозванная и несуществующая подписка неотличимы (не раскрываем чужие id).

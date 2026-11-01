@@ -104,6 +104,33 @@ describe('подписка', () => {
   });
 });
 
+describe('отписка по endpoint и выход', () => {
+  it('DELETE /me/push-subscriptions с {endpoint} – 204, подписка отозвана; endpoint не в URL', async () => {
+    const own = { ...subscription, endpoint: `${subscription.endpoint}-del` };
+    await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie }, payload: own });
+    const res = await app.inject({ method: 'DELETE', url: `${BASE}/me/push-subscriptions`, headers: { cookie }, payload: { endpoint: own.endpoint } });
+    expect(res.statusCode).toBe(204);
+    const r = await db.client.query('SELECT revoke_reason FROM app.push_subscriptions WHERE endpoint = $1', [own.endpoint]);
+    expect(r.rows[0]).toEqual({ revoke_reason: 'unsubscribed' });
+  });
+
+  it('выход (K9 №3) гасит подписку этой сессии с revoke_reason=logout, подписку другой сессии – нет', async () => {
+    const s1 = await login('+79135550103');
+    clock.advance(61_000); // пауза между кодами на номер (K7 otp_resend_cooldown_seconds)
+    const s2 = await login('+79135550103');
+    const a = { ...subscription, endpoint: `${subscription.endpoint}-s1` };
+    const b = { ...subscription, endpoint: `${subscription.endpoint}-s2` };
+    await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie: s1 }, payload: a });
+    await app.inject({ method: 'POST', url: `${BASE}/me/push-subscriptions`, headers: { cookie: s2 }, payload: b });
+    expect((await app.inject({ method: 'POST', url: `${BASE}/auth/logout`, headers: { cookie: s1 } })).statusCode).toBe(204);
+    const r = await db.client.query<{ endpoint: string; revoke_reason: string | null }>(
+      'SELECT endpoint, revoke_reason FROM app.push_subscriptions WHERE endpoint = ANY($1) ORDER BY endpoint',
+      [[a.endpoint, b.endpoint]],
+    );
+    expect(r.rows.map((x) => x.revoke_reason)).toEqual(['logout', null]);
+  });
+});
+
 describe('настройки', () => {
   it('GET – умолчания; PUT без Idempotency-Key – 400; PUT меняет, повтор ключа – idempotent-replay', async () => {
     const get = await app.inject({ method: 'GET', url: `${BASE}/me/notification-settings`, headers: { cookie } });

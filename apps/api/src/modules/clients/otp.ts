@@ -15,6 +15,7 @@ import { AppError } from '../../core/errors.ts';
 import { claimKey, idempotencyScope, requestHash, saveResponse, type IdempotentResult } from '../../core/idempotency.ts';
 import type { Clock } from '../../core/time.ts';
 import { getNotificationPrefs, maskPhone, normalizePhone, withTx, type ClientStatus, type Pool } from './index.ts';
+import { revokeSessionSubscriptions } from '../notifications/index.ts';
 
 // ---- адаптер SMS (ADR 0001)
 
@@ -444,7 +445,7 @@ export async function resolveClientSession(
   return { clientId: s.client_id, sessionId: s.id };
 }
 
-/** Выход (K9 №3): сессия → 'logout'. Push-подписки устройства – с модулем уведомлений (0111, S1-15). */
+/** Выход (K9 №3): сессия → 'logout', push-подписки этой сессии → 'logout' (модуль уведомлений, в той же транзакции). */
 export async function logoutClient(
   pool: Pool,
   clock: Clock,
@@ -458,6 +459,7 @@ export async function logoutClient(
       [session.sessionId, now],
     );
     if (r.rowCount) {
+      await revokeSessionSubscriptions(tx, session.sessionId, now);
       await writeAudit(tx, clientMeta(req, session.clientId, session.sessionId), { action: 'auth.client.logout', object: { type: 'client', id: session.clientId } }, clock);
     }
   });
