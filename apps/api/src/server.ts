@@ -25,6 +25,7 @@ import { settingsRoutes } from './modules/settings/routes.crm.ts';
 import { financeCrmRoutes } from './modules/finance/routes.crm.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { createCertificatePaymentMethod } from './modules/certificates/payment-method.ts';
+import { certificateCrmRoutes } from './modules/certificates/routes.crm.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
 import type { SenderDeps } from './modules/notifications/sender.ts';
@@ -40,6 +41,8 @@ export interface ServerDeps {
   network?: NetworkPublicDeps;
   /** Web Push (S1-15): открытый ключ VAPID (null – не настроен, подписка 503) и разрешённые push-сервисы. Нужны clients. */
   notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[] };
+  /** Сертификаты (K16): CERT_PEPPER – HMAC кода. Нет – маршруты сертификатов не подключаются. */
+  certificates?: { pepper: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
 }
@@ -125,6 +128,19 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         }),
       { prefix: '/api/crm/v1' },
     );
+    if (deps.certificates) {
+      const pepper = deps.certificates.pepper;
+      void app.register(
+        async (scope) =>
+          certificateCrmRoutes(scope, {
+            pool: staff.pool,
+            pepper,
+            ...(staff.clock ? { clock: staff.clock } : {}),
+            authenticate: (request, reply) => authenticate(staff, request, reply),
+          }),
+        { prefix: '/api/crm/v1' },
+      );
+    }
     void app.register(
       async (scope) =>
         resourcesRoutes(scope, {
@@ -209,6 +225,7 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   deps.notifications = { vapidPublicKey: vapid?.publicKey ?? null, allowedPushHosts: config.PUSH_ENDPOINT_HOSTS ?? DEFAULT_PUSH_HOSTS };
+  if (config.CERT_PEPPER) deps.certificates = { pepper: config.CERT_PEPPER };
   if (config.SESSION_PEPPER) {
     deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
     const sms =
