@@ -1,11 +1,15 @@
 // K4. Доставка outbox через pg-boss – часть процесса worker (ADR 0002).
 // Диспетчер: по NOTIFY outbox и раз в intervalMs (1 с) вызывает dispatchOutbox → задача pg-boss
-// в очередь 'outbox/<handler>' на каждого подписчика (singletonKey = <eventId>:<handler>).
+// в очередь 'outbox/<handler>' на каждого подписчика. singletonKey = <eventId>:<handler> – только метка для
+// поиска: очереди с политикой standard по нему не дедуплицируют, повторную доставку гасит processed_events.
+// Подписки замораживаются при старте (freezeSubscriptions): очереди создаются по этому снимку, поздний
+// subscribe() бросает ошибку. Сбой постановки одного события изолирован (SAVEPOINT в dispatchOutbox),
+// после maxAttempts событие помечается dispatch_failed_at и логируется.
 // Обработчик: processEvent в своей транзакции; исключение → pg-boss повторяет с экспонентой до retryLimit (10),
 // последняя неудача – статус failed и лог уровня error с eventId и handler (17 §13).
 import type { PgBoss } from 'pg-boss';
 import type pg from 'pg';
-import { dispatchOutbox, listSubscriptions, processEvent, type OutboxJob } from './outbox.ts';
+import { dispatchOutbox, freezeSubscriptions, processEvent, type OutboxJob } from './outbox.ts';
 import type { Clock } from './time.ts';
 
 export interface WorkerLogger {
@@ -23,6 +27,8 @@ export interface OutboxWorkerOptions {
   pollingIntervalSeconds?: number;
   /** Начальная задержка повтора, с; дальше экспонента pg-boss. По умолчанию 1. */
   retryDelaySeconds?: number;
+  /** Сколько раз пытаться поставить событие в очередь, прежде чем пометить dispatch_failed_at. По умолчанию 10. */
+  maxDispatchAttempts?: number;
   logger?: WorkerLogger;
 }
 
@@ -48,7 +54,7 @@ export async function startOutboxWorker(opts: OutboxWorkerOptions): Promise<Outb
   const { pool, boss, clock } = opts;
   const logger = opts.logger ?? consoleLogger;
   const retryDelay = opts.retryDelaySeconds ?? 1;
-  const subs = listSubscriptions();
+  const subs = freezeSubscriptions();
 
   for (const sub of subs) {
     if (!(await boss.getQueue(sub.queue))) {
@@ -61,7 +67,7 @@ export async function startOutboxWorker(opts: OutboxWorkerOptions): Promise<Outb
       async (jobs) => {
         for (const job of jobs) {
           try {
-            await processEvent(pool, sub.name, job.data.eventId);
+            await processEvent(pool, sub.name, job.data.eventId, clock.now());
           } catch (err) {
             if (job.retryCount >= job.retryLimit) {
               logger.error(
@@ -93,11 +99,19 @@ export async function startOutboxWorker(opts: OutboxWorkerOptions): Promise<Outb
     let total = 0;
     do {
       again = false;
-      let n: number;
+      let r;
       do {
-        n = await dispatchOutbox(pool, enqueue, clock.now());
-        total += n;
-      } while (n === 100 && !stopped);
+        r = await dispatchOutbox(pool, enqueue, clock.now(), {
+          subscriptions: subs,
+          maxAttempts: opts.maxDispatchAttempts ?? 10,
+          onError: ({ eventId, attempts, final, error }) => {
+            if (final) {
+              logger.error({ eventId, attempts, err: errorText(error) }, 'outbox: событие не удалось поставить в очередь, dispatch_failed_at');
+            }
+          },
+        });
+        total += r.dispatched;
+      } while (r.selected === 100 && !stopped);
     } while (again && !stopped);
     return total;
   };

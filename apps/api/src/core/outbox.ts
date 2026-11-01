@@ -2,7 +2,8 @@
 // publish   – внутри транзакции команды: событие видно только после её фиксации.
 // subscribe – регистрация обработчика со стабильным именем (processed_events.handler).
 // dispatchOutbox – диспетчер: берёт неразосланные (FOR UPDATE SKIP LOCKED), ставит задачу на каждого
-//                  подписчика через переданный enqueue (pg-boss – core/outbox-worker.ts), ставит dispatched_at.
+//                  подписчика через переданный enqueue (pg-boss – core/outbox-worker.ts), ставит dispatched_at;
+//                  сбой одного события изолирован SAVEPOINT, после maxAttempts – dispatch_failed_at.
 // processEvent – обработка одной задачи: своя транзакция, processed_events гасит повторную доставку,
 //                исключение обработчика откатывает транзакцию и пробрасывается (повтор – дело очереди).
 import type pg from 'pg';
@@ -79,19 +80,24 @@ export interface Subscription {
 
 const HANDLER_NAME_RE = /^[A-Za-z0-9_.-]+$/;
 const subscriptions = new Map<string, Subscription>();
+let frozen = false;
 
 /** Имя очереди pg-boss для обработчика. ':' в именах очередей pg-boss запрещён, поэтому 'outbox/<handler>'. */
 export function outboxQueue(handlerName: string): string {
   return `outbox/${handlerName}`;
 }
 
-/** Регистрация обработчика. name – стабильное имя, уникальное во всём приложении. */
+/**
+ * Регистрация обработчика. name – стабильное имя, уникальное во всём приложении.
+ * Только до старта воркера: воркер создаёт очереди по снимку подписок, поздняя подписка осталась бы без очереди.
+ */
 export function subscribe<T extends EventType>(
   type: T,
   name: string,
   handler: Handler<T>,
   opts: { retryLimit?: number; retryBackoff?: true } = {},
 ): void {
+  if (frozen) throw new Error(`subscribe: «${name}» – подписки закрыты, воркер уже запущен; подписывайтесь до startOutboxWorker`);
   if (!HANDLER_NAME_RE.test(name)) throw new Error(`subscribe: имя обработчика «${name}» – только [A-Za-z0-9_.-]`);
   if (subscriptions.has(name)) throw new Error(`subscribe: обработчик «${name}» уже зарегистрирован`);
   const retryLimit = opts.retryLimit ?? 10;
@@ -110,9 +116,16 @@ export function listSubscriptions(): Subscription[] {
   return [...subscriptions.values()];
 }
 
-/** Только для тестов и перезапуска воркера: снять все подписки. */
+/** Закрыть подписки и вернуть их снимок (вызывает startOutboxWorker). */
+export function freezeSubscriptions(): Subscription[] {
+  frozen = true;
+  return listSubscriptions();
+}
+
+/** Только для тестов и перезапуска воркера: снять все подписки и открыть регистрацию. */
 export function clearSubscriptions(): void {
   subscriptions.clear();
+  frozen = false;
 }
 
 // ---- диспетчер
@@ -121,50 +134,85 @@ export interface OutboxJob {
   queue: string;
   handler: string;
   eventId: string;
-  /** singletonKey = <eventId>:<handler> (K4). */
+  /** Метка задачи для поиска (K4). Дубли не гасит – от повторной доставки защищает processed_events. */
   singletonKey: string;
   retryLimit: number;
   retryBackoff: boolean;
 }
 
+export interface DispatchOptions {
+  /** Снимок подписок воркера; по умолчанию – текущие подписки. */
+  subscriptions?: Subscription[];
+  limit?: number;
+  /** После стольких неудачных постановок событие получает dispatch_failed_at и больше не берётся. */
+  maxAttempts?: number;
+  /** Сообщение о неудачной постановке (final – событие помечено failed). */
+  onError?: (info: { eventId: string; attempts: number; final: boolean; error: unknown }) => void;
+}
+
+export interface DispatchResult {
+  /** Сколько событий взято в проход (для решения «есть ли ещё»). */
+  selected: number;
+  dispatched: number;
+  failed: number;
+}
+
 /**
  * Один проход диспетчера: до `limit` неразосланных событий, задача на каждого подписчика, dispatched_at = now.
- * Событие без подписчиков тоже помечается разосланным (иначе оно вечно занимает голову очереди); строка остаётся.
- * Ошибка enqueue откатывает проход – события будут взяты снова (дубли гасит processed_events).
- * Возвращает число помеченных событий.
+ * Каждое событие – под своим SAVEPOINT: сбой постановки одного не откатывает остальные; у него растёт
+ * dispatch_attempts, после maxAttempts – dispatch_failed_at (событие больше не блокирует выборку).
+ * Частично поставленное событие при повторе ставится заново – дубли гасит processed_events.
+ * Событие без подписчиков тоже помечается разосланным; строка остаётся.
  */
 export async function dispatchOutbox(
   pool: pg.Pool,
   enqueue: (job: OutboxJob) => Promise<void>,
   now: Date,
-  limit = 100,
-): Promise<number> {
+  opts: DispatchOptions = {},
+): Promise<DispatchResult> {
+  const subs = opts.subscriptions ?? listSubscriptions();
+  const maxAttempts = opts.maxAttempts ?? 10;
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    const res = await c.query<{ id: string; event_type: string }>(
-      `SELECT id, event_type FROM app.outbox_events
-       WHERE dispatched_at IS NULL ORDER BY occurred_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`,
-      [limit],
+    const res = await c.query<{ id: string; event_type: string; dispatch_attempts: number }>(
+      `SELECT id, event_type, dispatch_attempts FROM app.outbox_events
+       WHERE dispatched_at IS NULL AND dispatch_failed_at IS NULL
+       ORDER BY occurred_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`,
+      [opts.limit ?? 100],
     );
+    const result: DispatchResult = { selected: res.rows.length, dispatched: 0, failed: 0 };
     for (const ev of res.rows) {
-      for (const sub of subscriptions.values()) {
-        if (sub.type !== ev.event_type) continue;
-        await enqueue({
-          queue: sub.queue,
-          handler: sub.name,
-          eventId: ev.id,
-          singletonKey: `${ev.id}:${sub.name}`,
-          retryLimit: sub.retryLimit,
-          retryBackoff: sub.retryBackoff,
-        });
+      await c.query('SAVEPOINT outbox_event');
+      try {
+        for (const sub of subs) {
+          if (sub.type !== ev.event_type) continue;
+          await enqueue({
+            queue: sub.queue,
+            handler: sub.name,
+            eventId: ev.id,
+            singletonKey: `${ev.id}:${sub.name}`,
+            retryLimit: sub.retryLimit,
+            retryBackoff: sub.retryBackoff,
+          });
+        }
+        await c.query('UPDATE app.outbox_events SET dispatched_at = $2 WHERE id = $1', [ev.id, now]);
+        await c.query('RELEASE SAVEPOINT outbox_event');
+        result.dispatched++;
+      } catch (error) {
+        await c.query('ROLLBACK TO SAVEPOINT outbox_event');
+        const attempts = ev.dispatch_attempts + 1;
+        const final = attempts >= maxAttempts;
+        await c.query(
+          `UPDATE app.outbox_events SET dispatch_attempts = $2, dispatch_error = $3, dispatch_failed_at = $4 WHERE id = $1`,
+          [ev.id, attempts, error instanceof Error ? error.message : String(error), final ? now : null],
+        );
+        if (final) result.failed++;
+        opts.onError?.({ eventId: ev.id, attempts, final, error });
       }
     }
-    if (res.rows.length > 0) {
-      await c.query('UPDATE app.outbox_events SET dispatched_at = $2 WHERE id = ANY($1::uuid[])', [res.rows.map((r) => r.id), now]);
-    }
     await c.query('COMMIT');
-    return res.rows.length;
+    return result;
   } catch (err) {
     await c.query('ROLLBACK').catch(() => undefined);
     throw err;
@@ -190,15 +238,20 @@ interface EventRow {
  * Обработать событие одним обработчиком в своей транзакции.
  * 'duplicate' – уже обработано (повторная доставка); исключение обработчика – откат и проброс.
  */
-export async function processEvent(pool: pg.Pool, handlerName: string, eventId: string): Promise<'processed' | 'duplicate'> {
+export async function processEvent(
+  pool: pg.Pool,
+  handlerName: string,
+  eventId: string,
+  now: Date,
+): Promise<'processed' | 'duplicate'> {
   const sub = subscriptions.get(handlerName);
   if (!sub) throw new Error(`processEvent: нет обработчика «${handlerName}»`);
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
     const claimed = await c.query(
-      'INSERT INTO app.processed_events (handler, event_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING event_id',
-      [handlerName, eventId],
+      'INSERT INTO app.processed_events (handler, event_id, processed_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING event_id',
+      [handlerName, eventId, now],
     );
     if (claimed.rowCount !== 1) {
       await c.query('COMMIT');

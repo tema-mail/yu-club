@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   clearSubscriptions,
   dispatchOutbox,
+  freezeSubscriptions,
   listSubscriptions,
   processEvent,
   publish,
@@ -121,11 +122,48 @@ describe('S0-08 outbox: запись и рассылка', () => {
     expect(await collectDispatch()).toEqual([]);
   });
 
-  it('ошибка постановки откатывает проход – событие берётся снова', async () => {
+  it('сбой постановки одного события не откатывает остальные; после maxAttempts – failed, голову не блокирует', async () => {
     subscribe('test.happened', 'test.enqueue-fail', effectHandler().handler);
+    const bad = (await inTx((tx) => publish(tx, happened(randomUUID(), 13)))).eventId;
+    const good = (await inTx((tx) => publish(tx, happened(randomUUID(), 1)))).eventId;
+    const errors: { eventId: string; attempts: number; final: boolean }[] = [];
+    const jobs: OutboxJob[] = [];
+    const enqueue = async (j: OutboxJob) => {
+      if (j.eventId === bad) throw new Error('очередь недоступна');
+      jobs.push(j);
+    };
+    const onError = (e: { eventId: string; attempts: number; final: boolean }) =>
+      void errors.push({ eventId: e.eventId, attempts: e.attempts, final: e.final });
+
+    const r1 = await dispatchOutbox(pool, enqueue, now, { maxAttempts: 2, onError });
+    expect(r1).toEqual({ selected: 2, dispatched: 1, failed: 0 });
+    expect(jobs.map((j) => j.eventId)).toEqual([good]);
+    const r2 = await dispatchOutbox(pool, enqueue, now, { maxAttempts: 2, onError });
+    expect(r2).toEqual({ selected: 1, dispatched: 0, failed: 1 });
+    expect(errors).toEqual([
+      { eventId: bad, attempts: 1, final: false },
+      { eventId: bad, attempts: 2, final: true },
+    ]);
+    const row = (
+      await db.client.query('SELECT dispatched_at, dispatch_attempts, dispatch_error, dispatch_failed_at FROM app.outbox_events WHERE id = $1', [bad])
+    ).rows[0];
+    expect(row).toMatchObject({ dispatched_at: null, dispatch_attempts: 2, dispatch_error: 'очередь недоступна' });
+    expect(row.dispatch_failed_at.toISOString()).toBe(now.toISOString());
+    // выпавшее событие больше не берётся – новые проходят
+    const fresh = (await inTx((tx) => publish(tx, happened(randomUUID(), 2)))).eventId;
+    expect((await collectDispatch()).map((j) => j.eventId)).toEqual([fresh]);
+  });
+
+  it('диспетчер работает по снимку подписок; после freezeSubscriptions подписка – ошибка', async () => {
+    subscribe('test.happened', 'test.snap-a', effectHandler().handler);
+    const snapshot = freezeSubscriptions();
+    expect(() => subscribe('test.happened', 'test.snap-late', effectHandler().handler)).toThrow(/подписки закрыты/);
     const { eventId } = await inTx((tx) => publish(tx, happened(randomUUID())));
-    await expect(dispatchOutbox(pool, async () => Promise.reject(new Error('очередь недоступна')), now)).rejects.toThrow(/недоступна/);
-    expect((await collectDispatch()).map((j) => j.eventId)).toEqual([eventId]);
+    const jobs: OutboxJob[] = [];
+    await dispatchOutbox(pool, async (j) => void jobs.push(j), now, { subscriptions: snapshot });
+    expect(jobs.map((j) => [j.handler, j.eventId])).toEqual([['test.snap-a', eventId]]);
+    clearSubscriptions();
+    expect(() => subscribe('test.happened', 'test.snap-late', effectHandler().handler)).not.toThrow();
   });
 
   it('два диспетчера параллельно не ставят событие дважды (SKIP LOCKED)', async () => {
@@ -138,10 +176,10 @@ describe('S0-08 outbox: запись и рассылка', () => {
     const a: OutboxJob[] = [];
     const b: OutboxJob[] = [];
     await Promise.all([
-      dispatchOutbox(pool, async (j) => void a.push(j), now, 10),
-      dispatchOutbox(pool, async (j) => void b.push(j), now, 10),
-      dispatchOutbox(pool, async (j) => void a.push(j), now, 10),
-      dispatchOutbox(pool, async (j) => void b.push(j), now, 10),
+      dispatchOutbox(pool, async (j) => void a.push(j), now, { limit: 10 }),
+      dispatchOutbox(pool, async (j) => void b.push(j), now, { limit: 10 }),
+      dispatchOutbox(pool, async (j) => void a.push(j), now, { limit: 10 }),
+      dispatchOutbox(pool, async (j) => void b.push(j), now, { limit: 10 }),
     ]);
     const rest = await collectDispatch();
     const all = [...a, ...b, ...rest].map((j) => j.eventId).sort();
@@ -187,8 +225,10 @@ describe('S0-08 outbox: обработка', () => {
     const h = effectHandler();
     subscribe('test.happened', 'test.twice', h.handler);
     const { eventId } = await inTx((tx) => publish(tx, happened(randomUUID(), 7)));
-    expect(await processEvent(pool, 'test.twice', eventId)).toBe('processed');
-    expect(await processEvent(pool, 'test.twice', eventId)).toBe('duplicate');
+    expect(await processEvent(pool, 'test.twice', eventId, now)).toBe('processed');
+    const mark = await db.client.query('SELECT processed_at FROM app.processed_events WHERE handler = $1 AND event_id = $2', ['test.twice', eventId]);
+    expect(mark.rows[0].processed_at.toISOString()).toBe(now.toISOString());
+    expect(await processEvent(pool, 'test.twice', eventId, now)).toBe('duplicate');
     expect(await effects(eventId)).toBe(1);
     expect(h.state.calls).toBe(1);
   });
@@ -197,7 +237,7 @@ describe('S0-08 outbox: обработка', () => {
     const h = effectHandler();
     subscribe('test.happened', 'test.race', h.handler);
     const { eventId } = await inTx((tx) => publish(tx, happened(randomUUID())));
-    const results = await Promise.all([processEvent(pool, 'test.race', eventId), processEvent(pool, 'test.race', eventId)]);
+    const results = await Promise.all([processEvent(pool, 'test.race', eventId, now), processEvent(pool, 'test.race', eventId, now)]);
     expect(results.sort()).toEqual(['duplicate', 'processed']);
     expect(await effects(eventId)).toBe(1);
   });
@@ -206,12 +246,12 @@ describe('S0-08 outbox: обработка', () => {
     const h = effectHandler(2);
     subscribe('test.happened', 'test.flaky', h.handler);
     const { eventId } = await inTx((tx) => publish(tx, happened(randomUUID())));
-    await expect(processEvent(pool, 'test.flaky', eventId)).rejects.toThrow(/попытка 1/);
-    await expect(processEvent(pool, 'test.flaky', eventId)).rejects.toThrow(/попытка 2/);
+    await expect(processEvent(pool, 'test.flaky', eventId, now)).rejects.toThrow(/попытка 1/);
+    await expect(processEvent(pool, 'test.flaky', eventId, now)).rejects.toThrow(/попытка 2/);
     expect(await effects(eventId)).toBe(0);
     const marks = await db.client.query('SELECT count(*)::int AS n FROM app.processed_events WHERE event_id = $1', [eventId]);
     expect(marks.rows[0].n).toBe(0);
-    expect(await processEvent(pool, 'test.flaky', eventId)).toBe('processed');
+    expect(await processEvent(pool, 'test.flaky', eventId, now)).toBe('processed');
     expect(await effects(eventId)).toBe(1);
   });
 
@@ -221,8 +261,8 @@ describe('S0-08 outbox: обработка', () => {
     subscribe('test.happened', 'test.bad', async () => Promise.reject(new Error('плохой')));
     const agg = randomUUID();
     const { eventId } = await inTx((tx) => publish(tx, happened(agg, 5)));
-    await expect(processEvent(pool, 'test.bad', eventId)).rejects.toThrow(/плохой/);
-    expect(await processEvent(pool, 'test.ok', eventId)).toBe('processed');
+    await expect(processEvent(pool, 'test.bad', eventId, now)).rejects.toThrow(/плохой/);
+    expect(await processEvent(pool, 'test.ok', eventId, now)).toBe('processed');
     expect(seen).toEqual([
       {
         eventId,

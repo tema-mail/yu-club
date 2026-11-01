@@ -137,6 +137,10 @@ describe('S0-08 доставка через pg-boss', () => {
     expect(jobs).toHaveLength(1);
   }, 30_000);
 
+  it('подписка после старта воркера – ошибка (очереди созданы по снимку)', () => {
+    expect(() => subscribe('worker.happened', 'worker.late', handler('worker.late', () => 0))).toThrow(/подписки закрыты/);
+  });
+
   it('dispatchNow: пустой outbox – ноль, без ошибок в логе диспетчера', async () => {
     await worker.dispatchNow();
     expect(await worker.dispatchNow()).toBe(0);

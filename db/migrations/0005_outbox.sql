@@ -13,14 +13,18 @@ CREATE TABLE app.outbox_events (
   payload        jsonb NOT NULL,
   dedupe_key     text NOT NULL UNIQUE,    -- '<event_type>:<aggregate_id>:<aggregate_version>'
   occurred_at    timestamptz NOT NULL,    -- $now из Clock
-  dispatched_at  timestamptz              -- поставлено в pg-boss
+  dispatched_at  timestamptz,             -- поставлено в pg-boss
+  dispatch_attempts  smallint NOT NULL DEFAULT 0,  -- неудачные постановки в очередь
+  dispatch_error     text,                         -- текст последней неудачи
+  dispatch_failed_at timestamptz                   -- исчерпаны попытки постановки; событие не берётся (разбор вручную)
 );
-CREATE INDEX outbox_undispatched_idx ON app.outbox_events (occurred_at) WHERE dispatched_at IS NULL;
+CREATE INDEX outbox_undispatched_idx ON app.outbox_events (occurred_at, id)
+  WHERE dispatched_at IS NULL AND dispatch_failed_at IS NULL;
 
 CREATE TABLE app.processed_events (
   handler      text NOT NULL,
   event_id     uuid NOT NULL REFERENCES app.outbox_events(id),
-  processed_at timestamptz NOT NULL DEFAULT now(),
+  processed_at timestamptz NOT NULL,      -- $now из Clock (ADR 0003 п.10)
   PRIMARY KEY (handler, event_id)
 );
 
