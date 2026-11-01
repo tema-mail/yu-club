@@ -54,6 +54,7 @@ export const AUDIT_OBJECT_TYPES = [
   'export',
   'finance_category', // Э2, K17 §5 (K2 «Деньги»)
   'finance_operation', // Э2, K17 §3–§4
+  'certificate', // Э2, K16 (K2 «Сертификаты»)
 ] as const;
 export type AuditObjectType = (typeof AUDIT_OBJECT_TYPES)[number];
 
@@ -107,6 +108,8 @@ export const SECRET_KEYS: readonly string[] = [
   'apiKey',
   'authorization',
   'cookie',
+  'pin', // код сертификата K16 §3: в аудит не попадает даже по ошибке вызывающего
+  'pinHash',
 ];
 // 'code' в список НЕ входит: это обычное поле (branch.code, city.code).
 

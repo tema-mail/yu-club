@@ -31,6 +31,7 @@ describe('redact (K2 правило 2)', () => {
       nested: { token: '***' },
     });
     expect(redact({ code: 'NSK-1' })).toEqual({ code: 'NSK-1' });
+    expect(redact({ pin: '0042', pin_hash: 'h', number: 'YC-7K2M-9QXD' })).toEqual({ pin: '***', pin_hash: '***', number: 'YC-7K2M-9QXD' });
   });
 
   it('регистр и snake_case не обходят список', () => {
