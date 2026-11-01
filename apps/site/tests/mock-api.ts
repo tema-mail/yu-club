@@ -1,6 +1,7 @@
 // Мок публичного API для e2e сайта. Сеть – точно по apps/api/src/modules/network/routes.public.ts (K5 №1–4:
 // города, филиалы, филиал с hoursToday, ресурсы; id – UUID, не-UUID и закрытые статусы – одинаковый 404);
-// тело ошибки – ADR 0002; статусы – K13. Доступности (K5 №5) нет: сайт её не вызывает до расписания (S1-19).
+// тело ошибки – ADR 0002; статусы – K13. Запись (K5 №5–12) – точно по apps/api/src/modules/booking/routes.public.ts,
+// hold.ts, confirm.ts: см. registerBooking ниже.
 // Филиалы 'preparing'/'archived' лежат в данных, но наружу не отдаются (K5) – так e2e проверяет 404.
 // Запуск: MOCK_PORT=4020 node tests/mock-api.ts; сайт: API_URL=http://127.0.0.1:4020.
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
@@ -29,16 +30,20 @@ const branches: Array<{ id: string; cityId: string; slug: string; name: string; 
   { id: '0b0b0000-0000-4000-8000-000000000031', cityId: '0b0c0000-0000-4000-8000-000000000003', slug: 'mira', name: 'Ю-Клуб на Мира', address: 'проспект Мира, 5', timezone: 'Asia/Omsk', status: 'preparing', phone: null },
 ];
 
-// Пилот по макету (карта сайта п.4): 5 ПК, комната VR+PS4, комнаты PS5.
+// Пилот по макету (карта сайта п.4): 5 ПК, комната VR+PS4, комнаты PS5. Шаг: VR-место 15 мин, ПК, комната VR и PS5 – 30.
+// id – UUID, как в API (z.uuid() в теле удержания): ресурс `0b0e{4 цифры филиала}-…-{код}`, комната `0b0f…`.
+const CODE: Record<string, string> = { pc1: '01', pc2: '02', pc3: '03', pc4: '04', pc5: '05', vr1: '11', vr2: '12', 'vr-room': '13', 'ps5-1': '21', 'ps5-2': '22', 'ps5-3': '23', 'pc-zone': '31', vr: '32' };
+export const resourceId = (branchId: string, code: string) => `0b0e${branchId.slice(-4)}-0000-4000-8000-0000000000${CODE[code] ?? '99'}`;
+const roomId = (branchId: string, code: string) => `0b0f${branchId.slice(-4)}-0000-4000-8000-0000000000${CODE[code] ?? '99'}`;
 function seedResources(branchId: string) {
-  const r = (id: string, zone: Zone, type: string, name: string, roomId: string | null, roomName: string | null, stepMinutes: number) =>
-    ({ id: `${branchId}-${id}`, branchId, roomId, roomName, type, zone, name, stepMinutes, selfBookable: true as const });
+  const r = (id: string, zone: Zone, type: string, name: string, room: string, roomName: string, stepMinutes: number) =>
+    ({ id: resourceId(branchId, id), branchId, roomId: roomId(branchId, room), roomName, type, zone, name, stepMinutes, selfBookable: true as const });
   return [
-    ...[1, 2, 3, 4, 5].map((n) => r(`pc${n}`, 'pc', 'pc', `ПК ${n}`, `${branchId}-pc-zone`, 'Зал ПК', 30)),
-    r('vr1', 'vr', 'vr_seat', 'VR 1', `${branchId}-vr`, 'Комната VR+PS4', 30),
-    r('vr2', 'vr', 'vr_seat', 'VR 2', `${branchId}-vr`, 'Комната VR+PS4', 30),
-    r('vr-room', 'vr', 'room_whole', 'Вся комната', `${branchId}-vr`, 'Комната VR+PS4', 60),
-    ...[1, 2, 3].map((n) => r(`ps5-${n}`, 'ps', 'ps_room', `PS5 ${n}`, `${branchId}-ps5-${n}`, `Комната PS5 ${n}`, 60)),
+    ...[1, 2, 3, 4, 5].map((n) => r(`pc${n}`, 'pc', 'pc', `ПК ${n}`, 'pc-zone', 'Зал ПК', 30)),
+    r('vr1', 'vr', 'vr_seat', 'VR 1', 'vr', 'Комната VR+PS4', 15),
+    r('vr2', 'vr', 'vr_seat', 'VR 2', 'vr', 'Комната VR+PS4', 15),
+    r('vr-room', 'vr', 'room_whole', 'Вся комната', 'vr', 'Комната VR+PS4', 30),
+    ...[1, 2, 3].map((n) => r(`ps5-${n}`, 'ps', 'ps_room', `PS5 ${n}`, `ps5-${n}`, `Комната PS5 ${n}`, 30)),
   ];
 }
 
@@ -86,6 +91,7 @@ export function buildMock() {
 
 
   registerClientAuth(app, P);
+  registerBooking(app, P);
   return app;
 }
 
@@ -203,6 +209,7 @@ function registerClientAuth(app: FastifyInstance, P: string) {
     ch.used = true;
     const token = randomUUID();
     sessions.set(token, client.id);
+    attachVisitorHolds(client.id, visitorOf(req.headers.cookie)); // хук входа K9 → booking (server.ts)
     reply.header('set-cookie', `yu_client=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${30 * 86400}`);
     return { client: meDto(client), isNew };
   });
@@ -273,6 +280,384 @@ function registerClientAuth(app: FastifyInstance, P: string) {
     return meDto(client);
   });
 
+}
+
+// ---- Запись (K5 №5–12) – по apps/api/src/modules/booking: availability.ts (6 состояний слота), hold.ts (общий таймер,
+// добавление перезапускает его, удаление последней позиции закрывает удержание, attach при входе), confirm.ts (позиции
+// одного ресурса встык – одна бронь, повтор переведённого удержания – прежний результат), идемпотентность по ключу.
+// Часы: Новосибирск и Томск – UTC+7 без перехода. Рабочие часы 10:00–22:00; у «Красного» сегодня выходной (как hoursToday),
+// «ПК 5» работает до 20:00 (вне графика после). На завтра у «Красного»: ПК 1 10:00–11:00 – бронь, ПК 2 10:00–10:30 –
+// чужое удержание, ПК 3 10:00–12:00 – блокировка. У Алины (+7 913 123-45-67) – бронь на завтра 14:00–14:30 в Томске.
+// Только для e2e: /__test/booking-reset, /__test/fail-next (следующий вызов операции – ошибка или задержка), /__test/bookings.
+const TZ_OFFSET: Record<string, number> = { 'Asia/Novosibirsk': 7, 'Asia/Tomsk': 7, 'Asia/Omsk': 6 };
+const MIN = 60_000;
+const HOLD_MINUTES = 15;
+const WINDOW_MAX_DAYS = 30;
+const MAX_HOLD_ITEMS = 20;
+const RATE_KOP: Record<string, number> = { pc: 15_000, vr_seat: 20_000, room_whole: 60_000, ps_room: 25_000 }; // за шаг ресурса
+
+const localDate = (t: number, tz: string) => new Date(t + (TZ_OFFSET[tz] ?? 0) * 60 * MIN).toISOString().slice(0, 10);
+const plusDays = (date: string, n: number) => new Date(Date.parse(`${date}T00:00:00Z`) + n * 1440 * MIN).toISOString().slice(0, 10);
+const at = (date: string, hhmm: string, tz: string) => Date.parse(`${date}T${hhmm}:00Z`) - (TZ_OFFSET[tz] ?? 0) * 60 * MIN;
+const iso = (t: number) => new Date(t).toISOString();
+
+type Branch = (typeof branches)[number];
+type Resource = ReturnType<typeof seedResources>[number];
+interface MHoldItem { id: string; resourceId: string; units: string[]; start: number; end: number; status: 'active' | 'removed' | 'converted' }
+interface MHold { id: string; branchId: string; clientId: string | null; visitorId: string | null; status: 'active' | 'converted' | 'released'; expiresAt: number; items: MHoldItem[]; checkout?: unknown }
+interface MBooking { id: string; number: number; checkoutId: string; branchId: string; clientId: string; resourceId: string; units: string[]; start: number; end: number; priceKop: number }
+interface Owner { clientId: string | null; visitorId: string | null }
+
+const holds = new Map<string, MHold>();
+let bookings: MBooking[] = [];
+let bookingNo = 1000;
+const replies = new Map<string, { status: number; body: unknown }>();
+let failNext: { op: string; status: number; code: string; details?: Record<string, unknown>; delayMs?: number } | null = null;
+
+class MockError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly details: Record<string, unknown>;
+  constructor(status: number, code: string, message: string, details: Record<string, unknown> = {}) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const resourcesOf = (branchId: string) => seedResources(branchId);
+const findResource = (id: string): Resource | undefined => publicBranches().flatMap((b) => resourcesOf(b.id)).find((r) => r.id === id);
+/** Вся комната VR = оба места (expandToUnits); остальные ресурсы – одна единица. */
+const unitsOf = (r: Resource) => (r.type === 'room_whole' ? [resourceId(r.branchId, 'vr1'), resourceId(r.branchId, 'vr2')] : [r.id]);
+const branchOf = (id: string) => publicBranches().find((b) => b.id === id);
+
+/** Интервалы работы ресурса в день по зоне филиала. */
+function openOf(b: Branch, r: Resource | null, date: string): Array<[number, number]> {
+  if (b.status !== 'active') return [];
+  if (b.slug === 'krasny-prospekt' && date === localDate(Date.now(), b.timezone)) return [];
+  const end = r && r.id === resourceId(b.id, 'pc5') ? '20:00' : '22:00';
+  return [[at(date, '10:00', b.timezone), at(date, end, b.timezone)]];
+}
+
+/** Постоянная занятость на завтра у «Красного». */
+function staticBusy(b: Branch, date: string): Array<{ unit: string; start: number; end: number; kind: 'booked' | 'held' | 'blocked' }> {
+  if (b.slug !== 'krasny-prospekt' || date !== plusDays(localDate(Date.now(), b.timezone), 1)) return [];
+  const t = (h: string) => at(date, h, b.timezone);
+  return [
+    { unit: resourceId(b.id, 'pc1'), start: t('10:00'), end: t('11:00'), kind: 'booked' },
+    { unit: resourceId(b.id, 'pc2'), start: t('10:00'), end: t('10:30'), kind: 'held' },
+    { unit: resourceId(b.id, 'pc3'), start: t('10:00'), end: t('12:00'), kind: 'blocked' },
+  ];
+}
+
+const isLive = (h: MHold, now: number) => h.status === 'active' && h.expiresAt > now;
+const ownedBy = (h: MHold, o: Owner) => (o.clientId !== null && h.clientId === o.clientId) || (o.visitorId !== null && h.clientId === null && h.visitorId === o.visitorId);
+const overlaps = (s1: number, e1: number, s2: number, e2: number) => s1 < e2 && s2 < e1;
+
+function seedBookings() {
+  bookings = [];
+  const alina = clients.find((c) => c.phone === '+79131234567')!;
+  const tomsk = branches.find((b) => b.slug === 'lenina')!;
+  const date = plusDays(localDate(Date.now(), tomsk.timezone), 1);
+  bookings.push({ id: randomUUID(), number: ++bookingNo, checkoutId: randomUUID(), branchId: tomsk.id, clientId: alina.id, resourceId: resourceId(tomsk.id, 'pc1'), units: [resourceId(tomsk.id, 'pc1')], start: at(date, '14:00', tomsk.timezone), end: at(date, '14:30', tomsk.timezone), priceKop: 15_000 });
+}
+seedBookings();
+
+function priceOf(r: Resource, start: number, end: number) {
+  return Math.round(((end - start) / (r.stepMinutes * MIN)) * (RATE_KOP[r.type] ?? 0));
+}
+
+function holdDto(h: MHold, now: number) {
+  const status = h.status === 'active' && h.expiresAt <= now ? 'expired' : h.status;
+  const items = status === 'expired' || status === 'released' ? [] : h.items.filter((i) => i.status !== 'removed').sort((a, b) => a.start - b.start);
+  const dto = items.map((i) => {
+    const r = findResource(i.resourceId)!;
+    return { id: i.id, resourceId: i.resourceId, resourceName: r.name, start: iso(i.start), end: iso(i.end), priceKop: priceOf(r, i.start, i.end) };
+  });
+  return { id: h.id, branchId: h.branchId, status, expiresAt: iso(h.expiresAt), serverNow: iso(now), items: dto, totalKop: dto.reduce((a, i) => a + i.priceKop, 0), owner: h.clientId ? 'client' : 'visitor' };
+}
+
+/** Пересечения клиента по сети (client_time): живые позиции его удержаний и брони. */
+function clientOverlap(clientId: string, start: number, end: number, skipItem?: string) {
+  const now = Date.now();
+  const inHolds = [...holds.values()].some((h) => h.clientId === clientId && isLive(h, now) && h.items.some((i) => i.status === 'active' && i.id !== skipItem && overlaps(i.start, i.end, start, end)));
+  return inHolds || bookings.some((b) => b.clientId === clientId && overlaps(b.start, b.end, start, end));
+}
+
+/** Проверки позиции 01 §8.2 и занятость единиц (EXCLUDE в API) – те же коды. */
+function checkItem(b: Branch, raw: unknown, owner: Owner): MHoldItem {
+  const now = Date.now();
+  const it = (raw ?? {}) as { resourceId?: unknown; start?: unknown; end?: unknown };
+  const start = typeof it.start === 'string' ? Date.parse(it.start) : NaN;
+  const end = typeof it.end === 'string' ? Date.parse(it.end) : NaN;
+  if (typeof it.resourceId !== 'string' || !Number.isFinite(start) || !Number.isFinite(end)) throw new MockError(400, 'VALIDATION_FAILED', 'Проверьте данные');
+  const r = findResource(it.resourceId);
+  if (!r || r.branchId !== b.id) throw new MockError(404, 'NOT_FOUND', 'Не найдено');
+  if (!(start < end)) throw new MockError(422, 'INVALID_DURATION', 'Конец раньше начала', { reason: 'empty' });
+  const date = localDate(start, b.timezone);
+  const today = localDate(now, b.timezone);
+  if (start <= now || date < today || date >= plusDays(today, WINDOW_MAX_DAYS)) throw new MockError(422, 'OUTSIDE_BOOKING_WINDOW', `Запись доступна на ${WINDOW_MAX_DAYS} дней вперёд`, { maxDays: WINDOW_MAX_DAYS });
+  const step = r.stepMinutes * MIN;
+  if ((end - start) % step !== 0 || (start - at(date, '10:00', b.timezone)) % step !== 0) throw new MockError(422, 'INVALID_DURATION', `Выберите время кратно ${r.stepMinutes} минутам`);
+  if (b.status !== 'active') throw new MockError(409, 'BRANCH_NOT_ACTIVE', 'Филиал сейчас не принимает записи');
+  if (!openOf(b, r, date).some(([s, e]) => s <= start && end <= e)) throw new MockError(409, 'OUTSIDE_SCHEDULE', 'В это время филиал не работает');
+  const units = unitsOf(r);
+  const fixed = staticBusy(b, date).filter((x) => units.includes(x.unit) && overlaps(x.start, x.end, start, end));
+  if (fixed.some((x) => x.kind === 'blocked')) throw new MockError(409, 'RESOURCE_BLOCKED', 'Ресурс заблокирован');
+  if (fixed.some((x) => x.kind === 'booked') || bookings.some((x) => x.units.some((u) => units.includes(u)) && overlaps(x.start, x.end, start, end))) throw new MockError(409, 'SLOT_TAKEN', 'Это время уже занято');
+  const held = [...holds.values()].some((h) => isLive(h, now) && h.items.some((i) => i.status === 'active' && i.units.some((u) => units.includes(u)) && overlaps(i.start, i.end, start, end)));
+  if (held || fixed.some((x) => x.kind === 'held')) throw new MockError(409, 'SLOT_HELD', 'Это время сейчас удерживается');
+  if (owner.clientId && clientOverlap(owner.clientId, start, end)) throw new MockError(409, 'CLIENT_OVERLAP', 'У вас уже есть запись на это время');
+  return { id: randomUUID(), resourceId: r.id, units, start, end, status: 'active' };
+}
+
+function ownActiveHold(branchId: string, o: Owner): MHold | undefined {
+  const now = Date.now();
+  return [...holds.values()].find((h) => h.branchId === branchId && isLive(h, now) && (o.clientId ? h.clientId === o.clientId : h.clientId === null && h.visitorId === o.visitorId));
+}
+
+const visitorOf = (cookie: string | undefined) => {
+  const v = readCookie(cookie, 'yu_visitor');
+  return v && UUID.test(v) ? v : null;
+};
+const clientOf = (cookie: string | undefined) => {
+  const token = readCookie(cookie, 'yu_client');
+  return (token && sessions.get(token)) || null;
+};
+
+/** attach (K5 №11): к клиенту; пересечение по сети → CLIENT_OVERLAP. */
+function attach(h: MHold, clientId: string): void {
+  const now = Date.now();
+  if (h.clientId === clientId) return;
+  if (!isLive(h, now)) throw new MockError(410, 'HOLD_EXPIRED', 'Время на оформление истекло, слоты освобождены');
+  const other = ownActiveHold(h.branchId, { clientId, visitorId: null });
+  if (other) throw new MockError(409, 'HOLD_ALREADY_ACTIVE', 'Уже есть активное удержание в этом филиале', { holdId: other.id });
+  const active = h.items.filter((i) => i.status === 'active');
+  if (active.some((i) => clientOverlap(clientId, i.start, i.end)) || active.some((i, k) => active.some((j, m) => m < k && overlaps(i.start, i.end, j.start, j.end)))) {
+    throw new MockError(409, 'CLIENT_OVERLAP', 'У вас уже есть запись на это время');
+  }
+  h.clientId = clientId;
+}
+
+/** Хук входа: удержания посетителя переходят к клиенту; конфликтующее остаётся посетителю (вход не падает). */
+function attachVisitorHolds(clientId: string, visitorId: string | null) {
+  if (!visitorId) return;
+  for (const h of holds.values()) {
+    if (h.visitorId !== visitorId || h.clientId !== null || !isLive(h, Date.now())) continue;
+    try {
+      attach(h, clientId);
+    } catch (e) {
+      if (!(e instanceof MockError)) throw e;
+    }
+  }
+}
+
+function confirm(h: MHold, clientId: string) {
+  const now = Date.now();
+  if (h.status === 'converted') return h.checkout;
+  if (!isLive(h, now)) throw new MockError(410, 'HOLD_EXPIRED', 'Время на оформление истекло, слоты освобождены');
+  const items = h.items.filter((i) => i.status === 'active').sort((a, b) => a.start - b.start);
+  if (items.length === 0) throw new MockError(410, 'HOLD_EXPIRED', 'Время на оформление истекло, слоты освобождены');
+  const client = clients.find((c) => c.id === clientId);
+  if (client?.status === 'restricted') throw new MockError(403, 'CLIENT_RESTRICTED', 'Запись для клиента ограничена');
+  const b = branchOf(h.branchId)!;
+  const checkoutId = randomUUID();
+  const groups: MHoldItem[][] = [];
+  for (const i of items) {
+    const g = groups.find((x) => x[0]!.resourceId === i.resourceId && x.at(-1)!.end === i.start);
+    if (g) g.push(i);
+    else groups.push([i]);
+  }
+  const made = groups.map((g) => {
+    const r = findResource(g[0]!.resourceId)!;
+    const bk: MBooking = { id: randomUUID(), number: ++bookingNo, checkoutId, branchId: b.id, clientId, resourceId: r.id, units: g[0]!.units, start: g[0]!.start, end: g.at(-1)!.end, priceKop: priceOf(r, g[0]!.start, g.at(-1)!.end) };
+    bookings.push(bk);
+    return bk;
+  });
+  for (const i of items) i.status = 'converted';
+  h.status = 'converted';
+  h.checkout = {
+    checkoutId,
+    bookings: made.map((bk) => ({
+      id: bk.id, number: bk.number, branchId: b.id, branchName: b.name, branchAddress: b.address, timezone: b.timezone,
+      resourceId: bk.resourceId, resourceName: findResource(bk.resourceId)!.name, start: iso(bk.start), end: iso(bk.end),
+      durationMinutes: (bk.end - bk.start) / MIN, priceKop: bk.priceKop, paymentNote: 'pay_at_club', status: 'confirmed', canCancel: true,
+    })),
+  };
+  return h.checkout;
+}
+
+function registerBooking(app: FastifyInstance, P: string) {
+  const send = (reply: FastifyReply, e: unknown) => {
+    if (!(e instanceof MockError)) throw e;
+    return reply.code(e.status).send({ error: { code: e.code, message: e.message, details: e.details, requestId: randomUUID() } });
+  };
+  /** Подмена из e2e: ошибка или задержка на следующий вызов операции. */
+  async function injected(op: string, reply: FastifyReply): Promise<boolean> {
+    if (!failNext || failNext.op !== op) return false;
+    const f = failNext;
+    failNext = null;
+    if (f.delayMs) await new Promise((r) => setTimeout(r, f.delayMs));
+    if (!f.status) return false;
+    await reply.code(f.status).send({ error: { code: f.code, message: f.code, details: f.details ?? {}, requestId: randomUUID() } });
+    return true;
+  }
+
+  app.post('/__test/booking-reset', async () => {
+    holds.clear();
+    replies.clear();
+    failNext = null;
+    seedBookings();
+    return { ok: true };
+  });
+  app.post('/__test/fail-next', async (req) => {
+    failNext = req.body as typeof failNext;
+    return { ok: true };
+  });
+  app.get('/__test/bookings', async () => ({ items: bookings.map((b) => ({ id: b.id, checkoutId: b.checkoutId, resourceId: b.resourceId, start: iso(b.start) })) }));
+
+  app.get(`${P}/branches/:id/availability`, async (req, reply) => {
+    let visitorId = visitorOf(req.headers.cookie);
+    if (!visitorId) {
+      visitorId = randomUUID();
+      reply.header('set-cookie', `yu_visitor=${visitorId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`);
+    }
+    if (await injected('availability', reply)) return reply;
+    const b = branchOf((req.params as { id: string }).id);
+    if (!b) return fail(reply, 404, 'NOT_FOUND', 'Не найдено');
+    const { date } = req.query as { date?: string };
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return reply.code(400).send({ error: { code: 'VALIDATION_FAILED', message: 'Проверьте данные', details: { field: 'date' }, requestId: randomUUID() } });
+    const now = Date.now();
+    const today = localDate(now, b.timezone);
+    const viewer: Owner = { clientId: clientOf(req.headers.cookie), visitorId };
+    const base = { branchId: b.id, date, timezone: b.timezone, generatedAt: iso(now) };
+    if (date < today || date >= plusDays(today, WINDOW_MAX_DAYS)) return { ...base, dayState: 'outside_window', openIntervals: [], resources: [] };
+    const branchOpen = openOf(b, null, date);
+    const rs = resourcesOf(b.id);
+    const openDto = branchOpen.map(([s, e]) => ({ start: iso(s), end: iso(e) }));
+    if (branchOpen.length === 0) return { ...base, dayState: 'closed', openIntervals: openDto, resources: rs.map((r) => ({ resourceId: r.id, slots: [] })) };
+    const fixed = staticBusy(b, date);
+    const live = [...holds.values()].filter((h) => isLive(h, now));
+    return {
+      ...base, dayState: 'open', openIntervals: openDto,
+      resources: rs.map((r) => {
+        const units = unitsOf(r);
+        const own = openOf(b, r, date);
+        const slots = [];
+        for (const [os, oe] of branchOpen) {
+          for (let s = os; s + r.stepMinutes * MIN <= oe; s += r.stepMinutes * MIN) {
+            const e = s + r.stepMinutes * MIN;
+            const hit = (u: string[]) => u.some((x) => units.includes(x));
+            let state: string;
+            if (s <= now || !own.some(([a, z]) => a <= s && e <= z)) state = 'closed';
+            else if (fixed.some((x) => x.kind === 'blocked' && hit([x.unit]) && overlaps(x.start, x.end, s, e))) state = 'blocked';
+            else {
+              const kinds: string[] = [];
+              for (const x of fixed) if (x.kind !== 'blocked' && hit([x.unit]) && overlaps(x.start, x.end, s, e)) kinds.push(x.kind);
+              for (const x of bookings) if (hit(x.units) && overlaps(x.start, x.end, s, e)) kinds.push('booked');
+              for (const h of live) for (const i of h.items) if (i.status === 'active' && hit(i.units) && overlaps(i.start, i.end, s, e)) kinds.push(ownedBy(h, viewer) ? 'mine' : 'held');
+              state = kinds.length === 0 ? 'free' : kinds.every((k) => k === 'mine') ? 'mine' : kinds.includes('booked') ? 'booked' : 'held';
+            }
+            slots.push({ start: iso(s), end: iso(e), state });
+          }
+        }
+        return { resourceId: r.id, slots };
+      }),
+    };
+  });
+
+  /** Команда: владелец → ключ → повтор того же ответа (ADR 0004) → выполнение. */
+  function command(op: string, okStatus: number, run: (o: Owner, params: Record<string, string>, body: unknown) => unknown) {
+    return async (req: { headers: Record<string, string | string[] | undefined>; params: unknown; body: unknown }, reply: FastifyReply) => {
+      const cookie = req.headers.cookie as string | undefined;
+      const o: Owner = { clientId: clientOf(cookie), visitorId: visitorOf(cookie) };
+      if (!o.clientId && !o.visitorId) return fail(reply, 400, 'VISITOR_REQUIRED', 'Нужна кука посетителя');
+      const key = req.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key.trim()) return fail(reply, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Нужен заголовок Idempotency-Key');
+      const scope = `${o.clientId ? `c:${o.clientId}` : `v:${o.visitorId}`}|${op}|${key}`;
+      const prev = replies.get(scope);
+      if (prev) return reply.header('idempotent-replay', 'true').code(prev.status).send(prev.body);
+      if (await injected(op, reply)) return reply;
+      try {
+        const body = run(o, req.params as Record<string, string>, req.body);
+        replies.set(scope, { status: okStatus, body });
+        return reply.code(okStatus).send(body);
+      } catch (e) {
+        return send(reply, e);
+      }
+    };
+  }
+  const lockHold = (id: string | undefined, o: Owner) => {
+    const h = id ? holds.get(id) : undefined;
+    if (!h || !ownedBy(h, o)) throw new MockError(404, 'NOT_FOUND', 'Не найдено');
+    return h;
+  };
+  const expired = () => new MockError(410, 'HOLD_EXPIRED', 'Время на оформление истекло, слоты освобождены');
+
+  app.post(`${P}/holds`, command('create', 201, (o, _p, body) => {
+    const input = (body ?? {}) as { branchId?: unknown; items?: unknown };
+    const b = typeof input.branchId === 'string' ? branchOf(input.branchId) : undefined;
+    if (!b) throw new MockError(404, 'NOT_FOUND', 'Не найдено');
+    if (b.status !== 'active') throw new MockError(409, 'BRANCH_NOT_ACTIVE', 'Филиал сейчас не принимает записи');
+    if (!Array.isArray(input.items) || input.items.length === 0) throw new MockError(400, 'VALIDATION_FAILED', 'Нет позиций', { field: 'items' });
+    if (input.items.length > MAX_HOLD_ITEMS) throw new MockError(422, 'HOLD_LIMIT_REACHED', 'Слишком много слотов в одной записи', { max: MAX_HOLD_ITEMS });
+    const existing = ownActiveHold(b.id, o);
+    if (existing) throw new MockError(409, 'HOLD_ALREADY_ACTIVE', 'Уже есть активное удержание – добавьте слот в него', { holdId: existing.id });
+    const items = input.items.map((x) => checkItem(b, x, o));
+    const h: MHold = { id: randomUUID(), branchId: b.id, clientId: o.clientId, visitorId: o.visitorId, status: 'active', expiresAt: Date.now() + HOLD_MINUTES * MIN, items };
+    holds.set(h.id, h);
+    return holdDto(h, Date.now());
+  }));
+
+  app.get(`${P}/holds/:holdId`, async (req, reply) => {
+    try {
+      const o: Owner = { clientId: clientOf(req.headers.cookie), visitorId: visitorOf(req.headers.cookie) };
+      return holdDto(lockHold((req.params as { holdId: string }).holdId, o), Date.now());
+    } catch (e) {
+      return send(reply, e);
+    }
+  });
+
+  app.post(`${P}/holds/:holdId/items`, command('add', 200, (o, p, body) => {
+    const h = lockHold(p.holdId, o);
+    if (!isLive(h, Date.now())) throw expired();
+    if (h.items.filter((i) => i.status === 'active').length + 1 > MAX_HOLD_ITEMS) throw new MockError(422, 'HOLD_LIMIT_REACHED', 'Слишком много слотов в одной записи', { max: MAX_HOLD_ITEMS });
+    h.items.push(checkItem(branchOf(h.branchId)!, body, o));
+    h.expiresAt = Date.now() + HOLD_MINUTES * MIN; // добавление перезапускает общий таймер (01 §7)
+    return holdDto(h, Date.now());
+  }));
+
+  app.delete(`${P}/holds/:holdId/items/:itemId`, command('remove', 200, (o, p) => {
+    const h = lockHold(p.holdId, o);
+    if (!isLive(h, Date.now())) throw expired();
+    const active = h.items.filter((i) => i.status === 'active');
+    const item = active.find((i) => i.id === p.itemId);
+    if (!item) throw new MockError(404, 'NOT_FOUND', 'Не найдено');
+    item.status = 'removed';
+    if (active.length === 1) h.status = 'released';
+    return holdDto(h, Date.now());
+  }));
+
+  app.post(`${P}/holds/:holdId/release`, command('release', 200, (o, p) => {
+    const h = lockHold(p.holdId, o);
+    if (h.status === 'active') h.status = 'released';
+    return holdDto(h, Date.now());
+  }));
+
+  app.post(`${P}/holds/:holdId/attach`, command('attach', 200, (o, p) => {
+    if (!o.clientId) throw new MockError(401, 'AUTH_REQUIRED', 'Войдите, чтобы завершить запись');
+    const h = lockHold(p.holdId, o);
+    attach(h, o.clientId);
+    return holdDto(h, Date.now());
+  }));
+
+  app.post(`${P}/holds/:holdId/confirm`, command('confirm', 201, (o, p) => {
+    if (!o.clientId) throw new MockError(401, 'AUTH_REQUIRED', 'Войдите, чтобы завершить запись');
+    const h = holds.get(p.holdId ?? '');
+    if (!h || h.clientId !== o.clientId) throw new MockError(404, 'NOT_FOUND', 'Не найдено');
+    return confirm(h, o.clientId);
+  }));
 }
 
 let lastForwardedFor: string | string[] | null = null;

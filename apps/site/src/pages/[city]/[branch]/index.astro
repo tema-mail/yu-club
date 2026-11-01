@@ -3,7 +3,7 @@
 // зоны – из ресурсов (K5 №4). Нет часов на сегодня – «закрыто сегодня», а не ошибка.
 // Нет такого города или филиала (в т.ч. 'preparing'/'archived' – K5 их не отдаёт) – 404 с кодом 404.
 // Временно закрытый – страница остаётся, плашка, без слотов и записи (12 §4.3, карта п.2.12).
-// Кнопки записи нет: запись – шаг S1-19, в меню её не показываем.
+// Запись – кнопкой в /schedule/?branch={город}/{филиал} (карта п.2.9: своего адреса расписания у филиала нет); у закрытого её нет.
 import Site from '../../../layouts/Site.astro';
 import {
   ApiError, ZONE_LABEL, ZONE_ORDER, findBranch, site,
@@ -70,7 +70,11 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
         <div>
           <h1 data-testid="branch-title">{branch.name}</h1>
           <p class="yu-lead">{city.name}, {branch.address}</p>
-          {closed && <p class="yu-notice" role="status" data-testid="branch-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>}
+          {closed ? (
+            <p class="yu-notice" role="status" data-testid="branch-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>
+          ) : (
+            <a class="yu-btn" href={`/schedule/?branch=${city.slug}/${branch.slug}`} data-testid="branch-book">Записаться онлайн</a>
+          )}
         </div>
         <dl class="yu-facts">
           <div>

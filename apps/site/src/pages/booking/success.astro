@@ -1,0 +1,51 @@
+---
+// Экран успеха записи (S1-20): показывает только то, что вернул сервер на POST /holds/{id}/confirm (D-07) – результат
+// кладёт остров Checkout в sessionStorage перед переходом сюда. Нет результата (открыли адрес напрямую, другая вкладка) –
+// честно ведём в кабинет, где видны все записи. Закрыта от поиска.
+import Site from '../../layouts/Site.astro';
+---
+<Site title="Запись подтверждена – Ю-Клуб" noindex>
+  <section class="yu-account" aria-labelledby="success-title">
+    <h1 id="success-title">Запись</h1>
+    <p class="yu-sched__status" data-state="success" id="success-status" role="status" hidden></p>
+    <ul class="yu-hold__items" id="success-list" data-testid="success-list" hidden></ul>
+    <p class="yu-body" id="success-note">Подробности ваших записей – в личном кабинете.</p>
+    <div class="yu-hold__actions">
+      <a class="yu-btn" href="/account/" data-testid="to-account">Перейти в личный кабинет</a>
+      <a class="yu-btn yu-btn--ghost" href="/schedule/">Записаться ещё</a>
+    </div>
+  </section>
+
+  <script>
+    import { SUCCESS_STORE_KEY, UI_STATES, dayLabel, rub, timeIn, type ConfirmResultDto } from '../../lib/booking.ts';
+
+    const raw = sessionStorage.getItem(SUCCESS_STORE_KEY);
+    let result: ConfirmResultDto | null = null;
+    try {
+      result = raw ? (JSON.parse(raw) as ConfirmResultDto) : null;
+    } catch {
+      result = null;
+    }
+    if (result && result.bookings.length > 0) {
+      const status = document.getElementById('success-status')!;
+      const list = document.getElementById('success-list')!;
+      document.getElementById('success-title')!.textContent = 'Запись подтверждена';
+      status.textContent = UI_STATES.success;
+      status.hidden = false;
+      for (const b of result.bookings) {
+        const li = document.createElement('li');
+        li.className = 'yu-hold__item';
+        const date = dayLabel(new Intl.DateTimeFormat('en-CA', { timeZone: b.timezone }).format(new Date(b.start))).day;
+        const what = document.createElement('span');
+        what.textContent = `№ ${b.number} · ${b.branchName}, ${b.resourceName}, ${date}, ${timeIn(b.start, b.timezone)}–${timeIn(b.end, b.timezone)}`;
+        const price = document.createElement('span');
+        price.className = 'yu-hold__price';
+        price.textContent = rub(b.priceKop);
+        li.append(what, price);
+        list.append(li);
+      }
+      list.hidden = false;
+      document.getElementById('success-note')!.textContent = `Адрес: ${result.bookings[0]!.branchAddress}. Оплата – в клубе, при визите. Записи видны в личном кабинете.`;
+    }
+  </script>
+</Site>
