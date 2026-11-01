@@ -55,7 +55,11 @@ export function changeComposition(tx: Tx, input: { resourceId: string; unitIds: 
 export function releaseExpiredHolds(tx: Tx, now: Date, scope: { unitIds?: string[]; clientId?: string; period: Interval }): Promise<{ expiredHoldIds: string[] }>;
 
 /** booking: занять единицы. Порядок внутри:
- *  1) SELECT id FROM occupancy_units WHERE id = ANY($units) ORDER BY id FOR SHARE – видимость против блокировок (ниже);
+ *  0) SELECT … FROM app.resources WHERE id=$1 FOR SHARE – против FOR UPDATE в changeComposition (ревизия S1-02, 01.11);
+ *  1) SELECT id FROM occupancy_units WHERE id = ANY($units) ORDER BY id FOR NO KEY UPDATE – видимость против блокировок
+ *     и сериализация записей одной единицы (FOR SHARE давал 40P01 на взаимной проверке EXCLUDE; решение 01.11 по ревизии);
+ *     так же берут convertHoldItem и перенос. В этой транзакции – никаких внешних вызовов (оплата, push): только outbox.
+ *     Цена – занятия одной единицы идут по одному до COMMIT;
  *  2) assertNotBlocked;
  *  3) ВСЕ строки команды (всех позиций) – одним INSERT ... SELECT ... ORDER BY unit_id; затем client_time одним INSERT;
  *  4) 23P01 по occupancy_no_overlap → SLOT_TAKEN | SLOT_HELD (по source_type конфликтующей строки, без раскрытия
@@ -67,12 +71,12 @@ export function occupy(tx: Tx, input: {
   clientId: string | null;            // null → client_time не пишется (посетитель без входа, мероприятие без клиента)
 }): Promise<void>;
 
-/** booking: проверка блокировок на единицах (после FOR SHARE на occupancy_units). Есть пересечение → RESOURCE_BLOCKED. */
+/** booking: проверка блокировок на единицах (после FOR NO KEY UPDATE на occupancy_units). Есть пересечение → RESOURCE_BLOCKED. */
 export function assertNotBlocked(tx: Tx, unitIds: string[], period: Interval): Promise<void>;
 
 /** booking: создать блокировку (S1-04). Порядок: SELECT ... FROM occupancy_units WHERE id = ANY($units) ORDER BY id
  *  FOR UPDATE → INSERT resource_blocks + resource_block_units → список затронутых активных строк occupancy
- *  (брони и удержания) на этих единицах. FOR UPDATE против FOR SHARE из occupy сериализует гонку
+ *  (брони и удержания) на этих единицах. FOR UPDATE против FOR NO KEY UPDATE из occupy сериализует гонку
  *  «удержание против блокировки»: либо блокировка видит новую бронь в списке затронутых, либо удержание видит
  *  блокировку и получает RESOURCE_BLOCKED. Брони не трогаются (01 §13). */
 export function createBlock(tx: Tx, ctx: AccessContext, input: {
