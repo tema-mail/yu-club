@@ -1,5 +1,6 @@
 // S0-18. Тестовые данные Э0: 2 города, 3 филиала в разных зонах, демо-значения справочников,
-// сотрудники трёх ролей с назначениями. Ресурсы – S1-28 (db/seed/resources.ts).
+// сотрудники трёх ролей с назначениями. Ресурсы, тарифы, исключения графика, демо-клиенты – S1-28 (db/seed/resources.ts):
+// CLI ниже запускает его следом за засевом Э0, тем же окружением.
 // Повторный запуск не плодит дубли: всё ищется по коду/email и создаётся, только если нет.
 // Демо-данные помечены (19 §10.1): коды городов и филиалов с префиксом demo-, email @demo.yu-club.test,
 // комментарий DEMO_MARK; код демо-причин – demo_*. На прод не попадают: при APP_ENV/NODE_ENV = production
@@ -16,6 +17,7 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { systemClock, type Clock } from '../../apps/api/src/core/time.ts';
 import { createBranch, createCity, setBranchStatus } from '../../apps/api/src/modules/network/commands.ts';
 import { assertPasswordStrength, hashPassword, withTx, type Pool } from '../../apps/api/src/modules/staff/auth.ts';
+import { seedResources } from './resources.ts';
 
 export const DEMO_MARK = 'DEMO: тестовые данные Э0 (db/seed/dev.ts), не для прода';
 export const DEMO_EMAIL_DOMAIN = 'demo.yu-club.test';
@@ -164,6 +166,8 @@ async function cli(): Promise<void> {
   try {
     const r = await seedDev(pool, { env: process.env, password });
     console.log(`Засев Э0: создано ${JSON.stringify(r.created)}; вход: director@${DEMO_EMAIL_DOMAIN}, admin@${DEMO_EMAIL_DOMAIN}`);
+    const e1 = await seedResources(pool, { env: process.env });
+    console.log(`Засев Э1: создано ${JSON.stringify(e1.created)}`);
   } finally {
     await pool.end();
   }
