@@ -1,0 +1,115 @@
+---
+// Хаб филиала /{city}/{branch}/ (карта сайта 3.1): адрес и часы – из API (12 приёмка 23), зоны – из ресурсов (K5 №4).
+// Нет такого города или филиала (в т.ч. 'preparing'/'archived' – K5 их не отдаёт) – 404 с кодом 404.
+// Временно закрытый – страница остаётся, плашка, без слотов и записи (12 §4.3, карта п.2.12).
+// Кнопки записи нет: запись – шаг S1-19, в меню её не показываем.
+import Site from '../../../layouts/Site.astro';
+import {
+  ApiError, ZONE_LABEL, ZONE_ORDER, findBranch, site, timeIn, todayIn,
+  type AvailabilityDto, type ResourceDto,
+} from '../../../lib/api.ts';
+
+const { city: citySlug = '', branch: branchSlug = '' } = Astro.params;
+const { network } = Astro.locals;
+
+const found = network ? findBranch(network, citySlug, branchSlug) : null;
+if (network && !found) return Astro.rewrite('/404/');
+
+let resources: ResourceDto[] = [];
+let day: AvailabilityDto | null = null;
+let failed = !network;
+if (found) {
+  try {
+    [resources, day] = await Promise.all([
+      site.resources(found.branch.id),
+      site.availability(found.branch.id, todayIn(found.branch.timezone)),
+    ]);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return Astro.rewrite('/404/');
+    console.error('site: филиал из API не загрузился', e);
+    failed = true;
+  }
+}
+if (failed) Astro.response.status = 503;
+
+const city = found?.city;
+const branch = found?.branch;
+const closed = branch?.status === 'temporarily_closed';
+const tz = branch?.timezone ?? 'UTC';
+const hoursToday = !day || day.dayState !== 'open' || day.openIntervals.length === 0
+  ? 'Сегодня не работает'
+  : day.openIntervals.map((i) => `${timeIn(i.start, tz)}–${timeIn(i.end, tz)}`).join(', ');
+
+// Зоны → комнаты → места. Порядок зон фиксированный, пустые зоны не показываем.
+const zones = ZONE_ORDER.map((code) => {
+  const items = resources.filter((r) => r.zone === code);
+  const rooms = new Map<string, { name: string; items: ResourceDto[] }>();
+  for (const r of items) {
+    const key = r.roomId ?? r.id;
+    const room = rooms.get(key) ?? { name: r.roomName ?? r.name, items: [] };
+    room.items.push(r);
+    rooms.set(key, room);
+  }
+  return { code, label: ZONE_LABEL[code], rooms: [...rooms.values()] };
+}).filter((z) => z.rooms.length > 0);
+
+const title = branch && city ? `${branch.name}, ${city.name}` : 'Клуб временно недоступен';
+const hasCityHub = (city?.branches.length ?? 0) >= 2;
+---
+<Site title={`${title} – Ю-Клуб`} description={branch && city ? `${branch.name}: ${city.name}, ${branch.address}. Игровые ПК, VR и PlayStation, часы работы и зоны клуба.` : undefined}>
+  {failed || !branch || !city ? (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Страница клуба временно недоступна</h1>
+      <p class="yu-body">Сервис не ответил. Обновите страницу через минуту.</p>
+    </section>
+  ) : (
+    <>
+      <ol class="yu-crumbs" aria-label="Навигация">
+        <li><a href="/">Главная</a></li>
+        <li>{hasCityHub ? <a href={`/${city.slug}/`}>{city.name}</a> : city.name}</li>
+        <li aria-current="page">{branch.name}</li>
+      </ol>
+      <section class="yu-hero">
+        <div>
+          <h1 data-testid="branch-title">{branch.name}</h1>
+          <p class="yu-lead">{city.name}, {branch.address}</p>
+          {closed && <p class="yu-notice" role="status" data-testid="branch-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>}
+        </div>
+        <dl class="yu-facts">
+          <div>
+            <dt>Адрес</dt>
+            <dd data-testid="branch-address">{branch.address}</dd>
+          </div>
+          <div>
+            <dt>Сегодня</dt>
+            <dd data-testid="branch-hours">{closed ? 'Временно закрыт' : hoursToday}</dd>
+          </div>
+        </dl>
+      </section>
+
+      {zones.length > 0 && (
+        <section class="yu-section" aria-labelledby="zones-title">
+          <h2 id="zones-title">Зоны клуба</h2>
+          <div class="yu-zones">
+            {zones.map((z) => (
+              <article class="yu-zone" data-testid={`zone-${z.code}`}>
+                <h3>{z.label}</h3>
+                <ul class="yu-zone__rooms">
+                  {z.rooms.map((room) => (
+                    <li class="yu-zone__room">
+                      <span class="yu-zone__room-name">{room.name}</span>
+                      <ul class="yu-chips">
+                        {room.items.map((r) => <li class="yu-chip">{r.name}</li>)}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  )}
+</Site>
