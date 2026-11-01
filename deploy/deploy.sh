@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Выкладка тест-стенда yu-club с мака (S0-19): код из git HEAD → $ROOT/src на сервере, сборка образов API и CRM,
+# Выкладка тест-стенда yu-club с мака (S0-19): код из git HEAD → $ROOT/src на сервере, сборка образов API, CRM и сайта,
 # Postgres (роли – deploy/initdb), миграции под yu_owner, запуск API, свой блок в общем Caddy
 # (копия → замена своего блока → validate → reload; соседи проверяются до и после),
 # бэкап по расписанию 04:40 UTC (backup.sh, затем restore-check.sh), проверка снаружи.
@@ -20,7 +20,8 @@ CADDY_CT=${YU_CADDY_CT:-dzenbot-caddy-1}
 CRM_DOMAIN=${YU_CRM_DOMAIN:-yu-crm.45.12.72.227.nip.io}
 NEIGHBOURS=${YU_NEIGHBOURS:-"https://gaz-mag.ru/ https://lupa.45.12.72.227.nip.io/login https://teyes.45.12.72.227.nip.io/"}
 cd "$(dirname "$0")/.."
-SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$HOST")
+# ServerAliveInterval: тихая сборка образа (build -q) идёт минутами – без пингов сеть рвёт сессию
+SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$HOST")
 
 RESET=0
 case "${1:-}" in
@@ -41,10 +42,12 @@ fi
 
 # 1. код
 git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/backups; chmod 700 $ROOT/backups; rm -rf $ROOT/src.new; mkdir $ROOT/src.new; tar -x -C $ROOT/src.new; rm -rf $ROOT/src.old; [ -d $ROOT/src ] && mv $ROOT/src $ROOT/src.old; mv $ROOT/src.new $ROOT/src; echo $REV > $ROOT/src/REVISION"
-# CRM собирается здесь (дерево чистое = HEAD): на стенде astro build не помещается в память
-PATH="$HOME/.local/node/bin:$PATH" npm run -s build -w @yu/crm >/dev/null
-tar -C apps/crm -cf - dist | "${SSH[@]}" "set -e; mkdir -p $ROOT/src/apps/crm; tar -x -C $ROOT/src/apps/crm"
-echo "→ CRM собрана на маке и отправлена"
+# CRM и сайт собираются здесь (дерево чистое = HEAD): на стенде astro build не помещается в память
+for app in crm site; do
+  PATH="$HOME/.local/node/bin:$PATH" npm run -s build -w "@yu/$app" >/dev/null
+  tar --no-xattrs -C "apps/$app" -cf - dist | "${SSH[@]}" "set -e; mkdir -p $ROOT/src/apps/$app; tar -x -C $ROOT/src/apps/$app"
+done
+echo "→ CRM и сайт собраны на маке и отправлены"
 
 # 2. окружение – один раз, пароли генерируются на сервере
 "${SSH[@]}" "set -e; test -f $ROOT/.env || { umask 077; printf 'APP_ENV=stage\nPUBLIC_SITE_URL=https://%s\nPOSTGRES_PASSWORD=%s\nYU_OWNER_PASSWORD=%s\nYU_APP_PASSWORD=%s\nDATA_DIR=%s/data\nBACKUP_DIR=%s/backups\nBACKUP_RETENTION_DAYS=14\nCADDY_NETWORK=dzenbot_default\n' $DOMAIN \$(openssl rand -hex 24) \$(openssl rand -hex 24) \$(openssl rand -hex 24) $ROOT $ROOT > $ROOT/.env; echo '→ создан $ROOT/.env (600)'; }; chmod 600 $ROOT/.env"
@@ -58,11 +61,12 @@ cd $ROOT/src/deploy
 DC=(docker compose --env-file $ROOT/.env -f compose.yml)
 GIT_SHA=$REV "\${DC[@]}" build --pull -q api </dev/null   # по одному образу – меньше пик памяти
 "\${DC[@]}" build --pull -q crm </dev/null
+"\${DC[@]}" build --pull -q site </dev/null
 "\${DC[@]}" up -d --wait postgres </dev/null
 if [ "$RESET" = 1 ]; then
   grep -qx 'APP_ENV=stage' $ROOT/.env || { echo "!!! не stage – отказ"; exit 1; }
   BACKUP_DB=yu_club bash $ROOT/src/deploy/backup.sh </dev/null
-  "\${DC[@]}" stop crm api </dev/null
+  "\${DC[@]}" stop site crm api </dev/null
   docker exec yu-club-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
     -c "DROP DATABASE IF EXISTS yu_club WITH (FORCE)" -c "CREATE DATABASE yu_club OWNER yu_owner" \
     -c "REVOKE ALL ON DATABASE yu_club FROM PUBLIC"
@@ -77,7 +81,7 @@ if ! OUT=\$("\${DC[@]}" run --rm -T migrate </dev/null 2>&1); then
   exit 1
 fi
 echo "\$OUT" | grep -E 'Применены|Нечего' || true
-GIT_SHA=$REV "\${DC[@]}" up -d --wait api crm </dev/null
+GIT_SHA=$REV "\${DC[@]}" up -d --wait api crm site </dev/null
 docker image prune -f --filter label=project=yu-club >/dev/null
 echo "→ контейнеры: \$(docker ps --filter name=yu-club- --format '{{.Names}} {{.Status}}' | tr '\n' ';')"
 REMOTE
@@ -115,6 +119,7 @@ AFTER=$(codes); echo "→ соседи после: $AFTER"
 HEALTH=$(curl -sk -m 20 "https://$DOMAIN/health" || true)
 printf '%s https://%s/health %s\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$DOMAIN/health")" "$DOMAIN" "$HEALTH"
 printf '%s http://%s/health → %s\n' "$(curl -s -o /dev/null -m 20 -w '%{http_code}' "http://$DOMAIN/health")" "$DOMAIN" "$(curl -s -o /dev/null -m 20 -w '%{redirect_url}' "http://$DOMAIN/health")"
+printf '%s https://%s/ (сайт)\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$DOMAIN/")" "$DOMAIN"
 printf '%s https://%s/login\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$CRM_DOMAIN/login")" "$CRM_DOMAIN"
 printf '%s http://%s/login → %s\n' "$(curl -s -o /dev/null -m 20 -w '%{http_code}' "http://$CRM_DOMAIN/login")" "$CRM_DOMAIN" "$(curl -s -o /dev/null -m 20 -w '%{redirect_url}' "http://$CRM_DOMAIN/login")"
 case "$HEALTH" in *"\"version\":\"$REV\""*) echo "→ готово: https://$DOMAIN, CRM https://$CRM_DOMAIN (ревизия $REV)";; *) echo "!!! /health не отдал версию $REV"; exit 1;; esac

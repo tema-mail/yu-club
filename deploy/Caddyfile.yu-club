@@ -16,7 +16,15 @@ yu-club.45.12.72.227.nip.io {
 	request_body {
 		max_size 2MB
 	}
-	reverse_proxy yu-club-api:3000
+	# публичный API и проверка живости – в api; остальное (страницы сайта) – в site.
+	# Caddy сам ставит X-Forwarded-For; api верит ему только от сетей Docker (TRUSTED_PROXIES).
+	@api path /api/public/* /health
+	handle @api {
+		reverse_proxy yu-club-api:3000
+	}
+	handle {
+		reverse_proxy yu-club-site:4341
+	}
 	log {
 		output stdout
 		format console
