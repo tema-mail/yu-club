@@ -1,0 +1,173 @@
+---
+// Ресурсы филиала (S1-24): /resources/{branchId}/{раздел}[/new|/{id}]. Разделы: комнаты, места (ресурсы и составные
+// конфигурации). Экран – при resources.view; править – resources.manage (Владелец, Директор в зоне). Филиал вне зоны
+// и запись чужого филиала – 404, как несуществующие (K1). Удаления нет – архив через окно внутри записи (02 §12).
+// История комнат и мест на сервере пока открыта только Владельцу (routes.crm.ts) – остальным блок не показываем.
+import Crm from '../../layouts/Crm.astro';
+import EntityList from '../../islands/EntityList.tsx';
+import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import CompositionForm, { type UnitView } from '../../islands/CompositionForm.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+
+type Row = Record<string, unknown> & { id: string; branchId: string; name: string; status: string; rowVersion: number };
+
+const ROOM_STATUS: Record<string, string> = { active: 'Работает', unavailable: 'Недоступна', repair: 'Ремонт', closed: 'Закрыта', archived: 'В архиве' };
+const RES_STATUS: Record<string, string> = { active: 'Работает', unavailable: 'Недоступно', archived: 'В архиве' };
+const SECTIONS = [
+  { key: 'rooms', label: 'Комнаты' },
+  { key: 'resources', label: 'Места' },
+];
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const [branchKey = '', section = '', key = '', extra] = (Astro.params.path ?? '').split('/');
+
+if (!branchKey) {
+  const first = ctx.kind === 'branch' ? ctx.branch : branches[0];
+  if (first && can('resources.view')) return Astro.redirect(`/resources/${first.id}/rooms`);
+}
+const branch = branches.find((b) => b.id === branchKey);
+if (branch && !section) return Astro.redirect(`/resources/${branch.id}/rooms`);
+
+const manage = can('resources.manage');
+let notFound = !branch || !can('resources.view') || extra !== undefined || !SECTIONS.some((s) => s.key === section) || (key === 'new' && !manage);
+
+async function load<T>(path: string): Promise<T | null> {
+  try {
+    return await serverCall<T>(cookie, path);
+  } catch (e) {
+    if (e instanceof ApiError && [400, 403, 404].includes(e.status)) return null;
+    throw e;
+  }
+}
+
+let row: Row | null = null;
+let rooms: Row[] = [];
+let units: UnitView[] = [];
+let types: Array<{ code: string; name: string; archivedAt: string | null }> = [];
+if (!notFound && branch) {
+  if (key && key !== 'new') {
+    row = await load<Row>(`/${section}/${encodeURIComponent(key)}`);
+    if (!row || row.branchId !== branch.id) notFound = true;
+  }
+  if (!notFound && section === 'resources') {
+    [rooms, units, types] = await Promise.all([
+      load<{ items: Row[] }>(`/branches/${branch.id}/rooms?limit=100`).then((r) => r?.items ?? []),
+      key && key !== 'new' ? load<{ items: UnitView[] }>(`/branches/${branch.id}/units`).then((r) => r?.items ?? []) : Promise.resolve([]),
+      load<{ items: Array<{ code: string; name: string; archivedAt: string | null }> }>('/dictionaries/resource-types').then((r) => r?.items ?? []),
+    ]);
+  }
+}
+if (notFound) Astro.response.status = 404;
+
+const typeLabel = Object.fromEntries(types.map((t) => [t.code, t.name]));
+const roomOptions = [{ value: '', label: 'Без комнаты' }, ...rooms.map((r) => ({ value: r.id, label: r.name }))];
+const statusOptions = (m: Record<string, string>) => Object.entries(m).filter(([k]) => k !== 'archived').map(([value, label]) => ({ value, label }));
+
+const roomFields: CardField[] = [
+  { kind: 'text', name: 'name', label: 'Название', required: true },
+  { kind: 'text', name: 'slug', label: 'Адрес на сайте (slug)', required: true, hint: 'Латиница в нижнем регистре, цифры и дефис' },
+  { kind: 'number', name: 'capacity', label: 'Вместимость, человек', min: 1, max: 1000 },
+  { kind: 'select', name: 'status', label: 'Статус', options: statusOptions(ROOM_STATUS), labels: ROOM_STATUS, required: true },
+  { kind: 'checkbox', name: 'isPublished', label: 'Показывать на сайте' },
+  { kind: 'checkbox', name: 'wholeRentAllowed', label: 'Можно арендовать целиком' },
+  { kind: 'text', name: 'publicDescription', label: 'Описание для сайта' },
+  { kind: 'text', name: 'internalDescription', label: 'Заметка для сотрудников' },
+  { kind: 'number', name: 'sortOrder', label: 'Порядок в списке' },
+];
+const resourceFields = (creating: boolean): CardField[] => [
+  { kind: 'text', name: 'name', label: 'Название', required: true },
+  { kind: 'select', name: 'type', label: 'Тип', required: true, readOnly: !creating,
+    options: types.filter((t) => !t.archivedAt || t.code === row?.type).map((t) => ({ value: t.code, label: t.name })), hint: creating ? 'Тип не меняется после создания' : undefined },
+  { kind: 'select', name: 'roomId', label: 'Комната', options: roomOptions },
+  { kind: 'select', name: 'status', label: 'Статус', options: statusOptions(RES_STATUS), labels: RES_STATUS, required: true },
+  { kind: 'checkbox', name: 'selfBookable', label: 'Клиент бронирует сам' },
+  { kind: 'number', name: 'stepMinutesOverride', label: 'Свой шаг записи, минут', min: 1, max: 1440, hint: 'Пусто – шаг типа ресурса' },
+  { kind: 'number', name: 'sortOrder', label: 'Порядок в списке' },
+  { kind: 'text', name: 'internalComment', label: 'Заметка для сотрудников' },
+  ...(creating ? [{ kind: 'text', name: 'unitCode', label: 'Код места', hint: 'Для ПК, VR-места и PS-комнаты; пусто – как название. Составное место собирается в карточке.' } as CardField] : []),
+];
+
+const sectionLabel = SECTIONS.find((s) => s.key === section)?.label ?? '';
+const title = notFound
+  ? 'Не найдено'
+  : row ? String(row.name) : key === 'new' ? (section === 'rooms' ? 'Новая комната' : 'Новое место') : `${sectionLabel} – ${branch!.name}`;
+const archived = row?.status === 'archived';
+const owner = me.access.network;
+---
+<Crm title={title}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такой записи нет или она вне вашей зоны доступа. Проверьте ссылку.</p>
+      <p><a href="/resources">К ресурсам</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        {key && <p class="yc-crumbs"><a href={`/resources/${branch!.id}/${section}`}>{sectionLabel} – {branch!.name}</a> / {title}</p>}
+        <h1>{title}</h1>
+        {!key && branches.length > 1 && (
+          <p class="yc-crumbs" data-testid="branch-links">
+            Филиал: {branches.map((b, i) => (
+              <>{i > 0 && ' · '}{b.id === branch!.id ? <strong>{b.name}</strong> : <a href={`/resources/${b.id}/${section}`}>{b.name}</a>}</>
+            ))}
+          </p>
+        )}
+        {row && <p><span class={`yc-badge yc-badge--${row.status}`}>{(section === 'rooms' ? ROOM_STATUS : RES_STATUS)[row.status] ?? row.status}</span></p>}
+      </div>
+      {!key && (
+        <nav class="yc-tabs" aria-label="Разделы филиала">
+          {SECTIONS.map((s) => <a class="yc-tabs__link" href={`/resources/${branch!.id}/${s.key}`} aria-current={s.key === section ? 'page' : undefined}>{s.label}</a>)}
+          {manage && section === 'rooms' && <a class="yc-btn yc-tabs__action" href={`/resources/${branch!.id}/rooms/new`}>Добавить комнату</a>}
+          {manage && section === 'resources' && <a class="yc-btn yc-tabs__action" href={`/resources/${branch!.id}/resources/new`}>Добавить место</a>}
+        </nav>
+      )}
+
+      {section === 'rooms' && !key && (
+        <section class="yc-panel" aria-label="Комнаты">
+          <EntityList client:load testId="rooms" endpoint={`/branches/${branch!.id}/rooms`} rowHref={`/resources/${branch!.id}/rooms/{id}`} pageSize={20}
+            query={{ includeArchived: 'true' }} archive={{ field: 'archivedAt' }}
+            columns={[
+              { key: 'name', label: 'Комната', main: true }, { key: 'capacity', label: 'Вместимость' },
+              { key: 'wholeRentAllowed', label: 'Целиком', yesNo: true }, { key: 'status', label: 'Статус', badge: ROOM_STATUS },
+            ]}
+            emptyText={manage ? 'Комнат пока нет. Добавьте первую.' : 'Комнат в филиале пока нет.'} />
+        </section>
+      )}
+
+      {section === 'resources' && !key && (
+        <section class="yc-panel" aria-label="Места">
+          <EntityList client:load testId="resources" endpoint={`/branches/${branch!.id}/resources`} rowHref={`/resources/${branch!.id}/resources/{id}`} pageSize={20}
+            query={{ includeArchived: 'true' }} archive={{ field: 'archivedAt' }}
+            filters={[{ param: 'roomId', label: 'Комната', options: [{ value: '', label: 'Все' }, ...rooms.map((r) => ({ value: r.id, label: r.name }))] }]}
+            columns={[
+              { key: 'name', label: 'Место', main: true }, { key: 'type', label: 'Тип', labels: typeLabel },
+              { key: 'selfBookable', label: 'Клиент сам', yesNo: true }, { key: 'status', label: 'Статус', badge: RES_STATUS },
+            ]}
+            emptyText={manage ? 'Мест пока нет. Добавьте первое.' : 'Мест в филиале пока нет.'} />
+        </section>
+      )}
+
+      {key === 'new' && section === 'rooms' && (
+        <EntityCard client:load fields={roomFields} values={{ status: 'active', sortOrder: 0 }}
+          save={{ method: 'POST', path: `/branches/${branch!.id}/rooms`, label: 'Создать комнату', redirect: `/resources/${branch!.id}/rooms/{id}` }} />
+      )}
+      {key === 'new' && section === 'resources' && (
+        <EntityCard client:load fields={resourceFields(true)} values={{ status: 'active', selfBookable: true, sortOrder: 0, type: types[0]?.code }}
+          save={{ method: 'POST', path: `/branches/${branch!.id}/resources`, label: 'Создать место', redirect: `/resources/${branch!.id}/resources/{id}` }} />
+      )}
+
+      {row && (
+        <EntityCard client:load fields={section === 'rooms' ? roomFields : resourceFields(false)} values={{ ...row, roomId: row.roomId ?? '' }} rowVersion={row.rowVersion}
+          save={manage && !archived ? { method: 'PATCH', path: `/${section}/${row.id}`, label: 'Сохранить', versioned: true } : undefined}
+          remove={manage ? { what: section === 'rooms' ? 'Комната' : 'Место', archived, versioned: true, archivePath: `/${section}/${row.id}/archive` } : undefined}
+          history={owner ? { objectType: section === 'rooms' ? 'room' : 'resource', objectId: row.id, timezone: branch!.timezone } : undefined} />
+      )}
+      {row && section === 'resources' && (
+        <CompositionForm client:load resourceId={row.id} branchId={branch!.id} roomId={(row.roomId as string | null) ?? null} units={units}
+          current={(row.unitIds as string[] | undefined) ?? []} rooms={rooms.map((r) => ({ id: r.id, name: r.name }))} canManage={manage} archived={archived} />
+      )}
+    </>
+  )}
+</Crm>
