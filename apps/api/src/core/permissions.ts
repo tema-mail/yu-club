@@ -3,6 +3,7 @@
 // Чужой объект – NOT_FOUND (как несуществующий), FORBIDDEN – только объект в зоне без права.
 import { writeDenied, type AuditAction, type AuditObjectType, type AuditRequestMeta, type Db } from './audit.ts';
 import { AppError } from './errors.ts';
+import { instantToLocal, isValidTimeZone } from './time.ts';
 import type { Actor, StaffRole } from './audit.ts';
 
 export type { Actor, StaffRole } from './audit.ts';
@@ -85,16 +86,19 @@ export type Target = { network: true } | { cityId: string } | { branchId: string
 
 export type BranchScope = { kind: 'all' } | { kind: 'branches'; branchIds: string[] } | { kind: 'none' };
 
-/** Раскрытие city → филиалы. Таблицы филиалов принадлежат модулю network (S0-11): он и даёт реализацию. */
+/** Раскрытие city → филиалы и зоны целей назначений. Таблицы сети принадлежат модулю network (S0-11):
+ *  реализацию передаёт server.ts (modules/network/index.ts), core модули не импортирует (ADR 0002). */
 export interface NetworkLookup {
   branchesOfCities(db: Db, cityIds: string[]): Promise<string[]>;
+  /** IANA-зоны городов и филиалов по id. Нет функции или id – дата назначения по UTC. */
+  timezonesOf?(db: Db, input: { cityIds: string[]; branchIds: string[] }): Promise<ReadonlyMap<string, string>>;
 }
-/** До S0-11 филиалов нет – city-назначение раскрывается в пустой список. */
+/** Без модуля сети (тесты ядра): city-назначение раскрывается в пустой список, даты – по UTC. */
 export const noNetwork: NetworkLookup = { branchesOfCities: async () => [] };
 
-/** Дата назначения. Решение K1 – «по зоне филиала/города»; до S0-11 зон нет – берём дату UTC. */
-function assignmentDate(at: Date): string {
-  return at.toISOString().slice(0, 10);
+/** Локальная дата момента в зоне цели назначения (K1: «по зоне филиала/города»). */
+function assignmentDate(at: Date, tz: string | undefined): string {
+  return tz && isValidTimeZone(tz) ? instantToLocal(at, tz).date : at.toISOString().slice(0, 10);
 }
 
 /** Загружается на КАЖДЫЙ запрос (04 §12), без кэша. Сотрудник не active → SESSION_REVOKED. */
@@ -112,15 +116,26 @@ export async function loadAccess(
   if (staff.role === 'owner') {
     return { actor, role: 'owner', network: true, cityIds: new Set(), branchIds: new Set(), at };
   }
-  const date = assignmentDate(at);
-  const a = await db.query<{ scope_type: string; city_id: string | null; branch_id: string | null }>(
-    `SELECT scope_type, city_id, branch_id FROM app.staff_assignments
-     WHERE staff_id = $1 AND revoked_at IS NULL AND valid_from <= $2::date AND (valid_to IS NULL OR valid_to >= $2::date)`,
-    [actor.staffId, date],
+  // Кандидаты – с запасом ±1 сутки от даты UTC (зоны мира в пределах UTC−12…UTC+14); точная дата – по зоне цели ниже.
+  const utc = at.toISOString().slice(0, 10);
+  const a = await db.query<{ scope_type: string; city_id: string | null; branch_id: string | null; valid_from: string; valid_to: string | null }>(
+    `SELECT scope_type, city_id, branch_id, valid_from::text AS valid_from, valid_to::text AS valid_to FROM app.staff_assignments
+     WHERE staff_id = $1 AND revoked_at IS NULL AND valid_from <= $2::date + 1 AND (valid_to IS NULL OR valid_to >= $2::date - 1)`,
+    [actor.staffId, utc],
   );
+  const targets = { cityIds: [] as string[], branchIds: [] as string[] };
+  for (const row of a.rows) {
+    if (row.scope_type === 'city' && row.city_id) targets.cityIds.push(row.city_id);
+    if (row.scope_type === 'branch' && row.branch_id) targets.branchIds.push(row.branch_id);
+  }
+  const zones = network.timezonesOf && a.rows.length > 0 ? await network.timezonesOf(db, targets) : new Map<string, string>();
+  const active = a.rows.filter((row) => {
+    const date = assignmentDate(at, zones.get(row.city_id ?? row.branch_id ?? ''));
+    return row.valid_from <= date && (row.valid_to === null || row.valid_to >= date);
+  });
   const cityIds = new Set<string>();
   const branchIds = new Set<string>();
-  for (const row of a.rows) {
+  for (const row of active) {
     // Назначение network у не-Владельца не даёт сети (решение: сеть следует только из роли, ADR 0005 п.2).
     if (row.scope_type === 'city' && row.city_id) cityIds.add(row.city_id);
     if (row.scope_type === 'branch' && row.branch_id) branchIds.add(row.branch_id);

@@ -7,7 +7,10 @@ import './core/registry.ts'; // проверка реестров модулей
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
+import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
+import { networkRoutes } from './modules/network/routes.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 
@@ -17,6 +20,9 @@ export interface ServerDeps {
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
 }
+
+/** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
+export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
   // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
@@ -44,7 +50,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   app.get('/health', async () => ({ status: 'ok', version: config.GIT_SHA }));
 
   if (deps.staff) {
-    const staff = deps.staff;
+    const staff: StaffDeps = { network: networkLookup, ...deps.staff };
     void app.register(async (scope) => staffAuthRoutes(scope, staff), { prefix: '/api/crm/v1/auth' });
     void app.register(async (scope) => staffMeRoutes(scope, staff), { prefix: '/api/crm/v1' });
     void app.register(
@@ -55,6 +61,15 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
           authenticate: (request, reply) => authenticate(staff, request, reply),
         }),
       { prefix: '/api/crm/v1/dictionaries' },
+    );
+    void app.register(
+      async (scope) =>
+        networkRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
     );
     void app.register(
       async (scope) =>

@@ -16,6 +16,7 @@ import {
   type StaffRole,
   type Target,
 } from '../../apps/api/src/core/permissions.ts';
+import { networkLookup } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const CITY_A = 'aaaaaaaa-0000-4000-8000-00000000000a';
@@ -323,5 +324,71 @@ describe('loadAccess и назначения (БД)', () => {
     expect(r.rows).toEqual([
       { action: 'branch.updated', result: 'denied', reason: 'NOT_FOUND: network.branch.update', branch_id: BR_B1 },
     ]);
+  });
+});
+
+describe('loadAccess с модулем network (БД): раскрытие города и дата назначения по зоне цели', () => {
+  let db: TestDatabase;
+  const ids: Record<string, string> = {};
+  const actor = (staffId: string) => ({ kind: 'staff' as const, staffId, sessionId: 's' });
+
+  async function row(sql: string, values: unknown[]): Promise<string> {
+    const r = await db.client.query<{ id: string }>(sql, values);
+    return r.rows[0]!.id;
+  }
+  const city = (slug: string, tz: string) =>
+    row(`INSERT INTO app.cities (code, slug, name, timezone) VALUES ($1, $1, $1, $2) RETURNING id`, [slug, tz]);
+  const branch = (cityId: string, slug: string, tz: string) =>
+    row(`INSERT INTO app.branches (city_id, code, slug, name, address, timezone) VALUES ($1, $2, $2, $2, 'a', $3) RETURNING id`, [cityId, slug, tz]);
+  const staff = (role: StaffRole) =>
+    row(`INSERT INTO app.staff (first_name, last_name, email, role, password_hash) VALUES ('А', 'Б', gen_random_uuid() || '@yu.test', $1, 'x') RETURNING id`, [role]);
+  const assign = (staffId: string, kind: 'city' | 'branch', id: string, from: string, to: string | null = null) =>
+    db.client.query(
+      `INSERT INTO app.staff_assignments (staff_id, scope_type, city_id, branch_id, valid_from, valid_to, created_by) VALUES ($1, $2, $3, $4, $5, $6, $1)`,
+      [staffId, kind, kind === 'city' ? id : null, kind === 'branch' ? id : null, from, to],
+    );
+
+  beforeAll(async () => {
+    db = await createTestDatabase({ migrate: true });
+    ids.nsk = await city('nsk', 'Asia/Novosibirsk');
+    ids.msk = await city('msk', 'Europe/Moscow');
+    ids.nsk1 = await branch(ids.nsk, 'nsk-1', 'Asia/Novosibirsk');
+    ids.nsk2 = await branch(ids.nsk, 'nsk-2', 'Asia/Novosibirsk');
+    ids.msk1 = await branch(ids.msk, 'msk-1', 'Europe/Moscow');
+  });
+  afterAll(async () => {
+    await db.drop();
+  });
+
+  it('назначение на город открывает все его филиалы из базы, чужой город – нет', async () => {
+    const id = await staff('director');
+    await assign(id, 'city', ids.nsk!, '2026-01-01');
+    const c = await loadAccess(db.client, actor(id), new Date('2026-11-15T07:00:00Z'), networkLookup);
+    expect([...c.branchIds].sort()).toEqual([ids.nsk1, ids.nsk2].sort());
+    expect(can(c, 'schedule.view', { branchId: ids.msk1! })).toBe(false);
+    expect((await loadAccess(db.client, actor(id), new Date('2026-11-15T07:00:00Z'))).branchIds.size).toBe(0);
+  });
+
+  it('начало назначения – по дате филиала: 14.11 18:00Z = 15.11 01:00 в Новосибирске', async () => {
+    const id = await staff('admin');
+    await assign(id, 'branch', ids.nsk1!, '2026-11-15');
+    const at = new Date('2026-11-14T18:00:00Z');
+    expect([...(await loadAccess(db.client, actor(id), at, networkLookup)).branchIds]).toEqual([ids.nsk1]);
+    expect((await loadAccess(db.client, actor(id), at)).branchIds.size).toBe(0); // без зон – дата UTC, ещё 14.11
+  });
+
+  it('конец назначения – по дате филиала: 14.11 22:30Z = 15.11 01:30 в Москве, назначение до 14.11 уже кончилось', async () => {
+    const id = await staff('admin');
+    await assign(id, 'branch', ids.msk1!, '2026-01-01', '2026-11-14');
+    await assign(id, 'branch', ids.nsk2!, '2026-01-01', '2026-11-15');
+    const c = await loadAccess(db.client, actor(id), new Date('2026-11-14T22:30:00Z'), networkLookup);
+    expect([...c.branchIds]).toEqual([ids.nsk2]);
+  });
+
+  it('город по зоне города: назначение с 15.11 открывается в 01:00 по Новосибирску', async () => {
+    const id = await staff('director');
+    await assign(id, 'city', ids.nsk!, '2026-11-15');
+    expect((await loadAccess(db.client, actor(id), new Date('2026-11-14T16:59:00Z'), networkLookup)).cityIds.size).toBe(0);
+    expect([...(await loadAccess(db.client, actor(id), new Date('2026-11-14T17:00:00Z'), networkLookup)).cityIds]).toEqual([ids.nsk]);
   });
 });

@@ -6,7 +6,7 @@
 # Сервер, ключ, адрес и сеть Caddy – окружением; переезд к заказчику = другие значения + свой .env.
 #   deploy/deploy.sh
 #   YU_HOST=root@1.2.3.4 YU_DOMAIN=crm.example.ru YU_CADDY=/etc/caddy/Caddyfile YU_CADDY_CT=caddy deploy/deploy.sh
-# Пароли БД генерируются на сервере один раз в $ROOT/.env (600) и никуда не выводятся.
+# Пароли БД и SESSION_PEPPER генерируются на сервере один раз в $ROOT/.env (600) и никуда не выводятся.
 #
 # Следующий шаг (не сделан, решение владельца позже): .github/workflows/deploy-test.yml – выкладка по тегу
 # test-*: тот же сценарий из Actions; нужен деплой-ключ сервера в секретах репозитория.
@@ -30,6 +30,8 @@ git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/b
 
 # 2. окружение – один раз, пароли генерируются на сервере
 "${SSH[@]}" "set -e; test -f $ROOT/.env || { umask 077; printf 'APP_ENV=stage\nPUBLIC_SITE_URL=https://%s\nPOSTGRES_PASSWORD=%s\nYU_OWNER_PASSWORD=%s\nYU_APP_PASSWORD=%s\nDATA_DIR=%s/data\nBACKUP_DIR=%s/backups\nBACKUP_RETENTION_DAYS=14\nCADDY_NETWORK=dzenbot_default\n' $DOMAIN \$(openssl rand -hex 24) \$(openssl rand -hex 24) \$(openssl rand -hex 24) $ROOT $ROOT > $ROOT/.env; echo '→ создан $ROOT/.env (600)'; }; chmod 600 $ROOT/.env"
+# SESSION_PEPPER (K12) – тоже один раз; на стенде, где .env создан раньше, дописывается. Смена значения = выход всех сотрудников.
+"${SSH[@]}" "set -e; grep -q '^SESSION_PEPPER=' $ROOT/.env || { umask 077; printf 'SESSION_PEPPER=%s\n' \$(openssl rand -hex 32) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен SESSION_PEPPER'; }; chmod 600 $ROOT/.env"
 
 # 3. образ, база, миграции, API
 "${SSH[@]}" "bash -s" <<REMOTE
