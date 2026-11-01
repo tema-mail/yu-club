@@ -17,6 +17,7 @@ interface MenuItem {
 }
 
 const MENU: MenuItem[] = [
+  { href: '/schedule', label: 'Расписание', action: 'schedule.view', active: (p) => p.startsWith('/schedule') || p.startsWith('/bookings') },
   { href: '/', label: 'Филиалы', action: 'network.view', active: (p) => p === '/' || p.startsWith('/branches/') },
   { href: '/clients', label: 'Клиенты', action: 'client.view.basic', active: (p) => p.startsWith('/clients') },
   { href: '/staff', label: 'Сотрудники', action: 'staff.view', active: (p) => p.startsWith('/staff') },
