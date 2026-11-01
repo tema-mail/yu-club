@@ -11,7 +11,10 @@ import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
+import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
+import { startDispatcher, type SenderDeps } from './modules/notifications/sender.ts';
+import { vapidKeys } from './modules/notifications/webpush.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 import { staffAdminRoutes } from './modules/staff/routes.staff.ts';
@@ -95,25 +98,37 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
 
 /** Зависимости из окружения: пул yu_app (search_path=app,journal – model-dannyh §0), вход сотрудников и клиентов.
  *  SMS: APP_ENV=prod – боевой адаптер (провайдер не выбран, R-18 → 503); stage и dev – тестовый (код в лог сервера). */
-export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void> } {
+export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void>; sender?: SenderDeps } {
   if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
   const deps: ServerDeps = {};
+  // Пара VAPID проверяется здесь: несовпадение ключей – ошибка запуска, а не тихий отказ всех отправок.
+  const vapid =
+    config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY && config.VAPID_SUBJECT
+      ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
+      : null;
+  deps.notifications = { vapidPublicKey: vapid?.publicKey ?? null, allowedPushHosts: config.PUSH_ENDPOINT_HOSTS ?? DEFAULT_PUSH_HOSTS };
   if (config.SESSION_PEPPER) {
     deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
     const sms =
       config.APP_ENV === 'prod' ? unconfiguredSmsSender : createDevSmsSender(config.APP_ENV, (line) => console.info(line));
     deps.clients = { pool, auth: clientAuthConfig(config.SESSION_PEPPER), sms };
   }
-  return { deps, close: () => pool.end() };
+  // Диспетчер уведомлений работает и без VAPID: строки получают статус «нет канала» и остаются в ЛК.
+  return { deps, close: () => pool.end(), sender: { pool, vapid } };
 }
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const { deps, close } = depsFromConfig(config);
+  const { deps, close, sender } = depsFromConfig(config);
   const app = buildServer(config, deps);
   if (!deps.staff) app.log.warn('Вход сотрудников выключен: нужны DATABASE_URL и SESSION_PEPPER');
-  app.addHook('onClose', close);
+  if (sender && !sender.vapid) app.log.warn('Web Push выключен: нет VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT');
+  const stopDispatcher = sender ? startDispatcher(sender, { log: (err) => app.log.error({ err }, 'notifications: диспетчер') }) : () => {};
+  app.addHook('onClose', async () => {
+    stopDispatcher();
+    await close();
+  });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       void app.close().then(() => process.exit(0));

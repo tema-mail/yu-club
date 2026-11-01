@@ -8,7 +8,7 @@ import { loadConfig } from '../../apps/api/src/config.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { clientAuthConfig, createDevSmsSender } from '../../apps/api/src/modules/clients/otp.ts';
 import { generateVapidKeys } from '../../apps/api/src/modules/notifications/webpush.ts';
-import { buildServer } from '../../apps/api/src/server.ts';
+import { buildServer, depsFromConfig } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 import { fakeBrowser } from '../helpers/push-receiver.ts';
 
@@ -118,5 +118,27 @@ describe('настройки', () => {
     expect(logs.length).toBeGreaterThan(0);
     expect(logs).not.toContain(ua.p256dh);
     expect(logs).not.toContain(subscription.endpoint.split('/').at(-1)!);
+  });
+});
+
+describe('конфиг VAPID', () => {
+  const env = { VAPID_PUBLIC_KEY: vapid.publicKey, VAPID_PRIVATE_KEY: vapid.privateKey, VAPID_SUBJECT: 'mailto:ops@yu-club.test' };
+  it('все три или ни одного; формат проверяется', () => {
+    expect(() => loadConfig({ VAPID_PUBLIC_KEY: vapid.publicKey })).toThrow(/все три или ни одного/);
+    expect(() => loadConfig({ ...env, VAPID_PRIVATE_KEY: 'short' })).toThrow(/VAPID_PRIVATE_KEY/);
+    expect(() => loadConfig({ ...env, VAPID_SUBJECT: 'ops@yu-club.test' })).toThrow(/VAPID_SUBJECT/);
+    expect(loadConfig({ PUSH_ENDPOINT_HOSTS: 'fcm.googleapis.com, *.push.apple.com' }).PUSH_ENDPOINT_HOSTS).toEqual(['fcm.googleapis.com', '*.push.apple.com']);
+  });
+
+  it('depsFromConfig: пара не сходится – ошибка запуска; сходится – ключ отдаётся маршрутам и диспетчеру', async () => {
+    const other = generateVapidKeys();
+    expect(() => depsFromConfig(loadConfig({ ...env, VAPID_PRIVATE_KEY: other.privateKey, DATABASE_URL: db.url }))).toThrow(/не соответствует/);
+    const ok = depsFromConfig(loadConfig({ ...env, DATABASE_URL: db.url }));
+    expect(ok.deps.notifications?.vapidPublicKey).toBe(vapid.publicKey);
+    expect(ok.sender?.vapid?.publicKey).toBe(vapid.publicKey);
+    await ok.close();
+    const off = depsFromConfig(loadConfig({ DATABASE_URL: db.url }));
+    expect([off.deps.notifications?.vapidPublicKey, off.sender?.vapid]).toEqual([null, null]);
+    await off.close();
   });
 });

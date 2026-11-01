@@ -22,6 +22,20 @@ const schema = z.object({
     .default('127.0.0.0/8,::1,172.16.0.0/12')
     .transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean))
     .refine((list) => list.every((x) => /^[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(x)), 'адреса или CIDR через запятую'),
+  // Web Push (S1-15, Q-30): пара VAPID P-256 в base64url – открытый 65 байт, закрытый 32 байта; subject – mailto: или https://.
+  // Генерирует deploy.sh один раз на сервере (как SESSION_PEPPER). Смена пары = все подписки браузеров недействительны.
+  // Нет ключей – подписка отвечает 503, уведомления остаются записью в ЛК со статусом «нет канала».
+  VAPID_PUBLIC_KEY: z.string().regex(/^[A-Za-z0-9_-]{87}$/, '65 байт base64url без =').optional(),
+  VAPID_PRIVATE_KEY: z.string().regex(/^[A-Za-z0-9_-]{43}$/, '32 байта base64url без =').optional(),
+  VAPID_SUBJECT: z.string().regex(/^(mailto:|https:\/\/)\S+$/, 'mailto: или https://').optional(),
+  // Хосты push-сервисов, на которые сервер шлёт (защита от SSRF). Пусто – список браузеров по умолчанию (notifications/index.ts).
+  PUSH_ENDPOINT_HOSTS: z
+    .string()
+    .optional()
+    .transform((s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : undefined)),
+}).superRefine((c, ctx) => {
+  const set = [c.VAPID_PUBLIC_KEY, c.VAPID_PRIVATE_KEY, c.VAPID_SUBJECT].filter((x) => x !== undefined).length;
+  if (set !== 0 && set !== 3) ctx.addIssue({ code: 'custom', path: ['VAPID_PUBLIC_KEY'], message: 'VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY и VAPID_SUBJECT – все три или ни одного' });
 });
 
 export type Config = z.infer<typeof schema>;
