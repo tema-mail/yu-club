@@ -31,6 +31,7 @@
     "build:crm": "npm run build -w @yu/crm",
     "test:crm": "npm run test:e2e -w @yu/crm",
     "build:site": "npm run build -w @yu/site",
-    "test:site": "npm run test:e2e -w @yu/site"
+    "test:site": "npm run test:e2e -w @yu/site",
+    "load:race": "node tests/load/booking-race.ts"
   }
 }
