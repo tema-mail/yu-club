@@ -1,6 +1,6 @@
 ---
 // Ресурсы филиала (S1-24): /resources/{branchId}/{раздел}[/new|/{id}]. Разделы: комнаты, места (ресурсы и составные
-// конфигурации), график и исключения (правка – network.hours.manage), блокировки (block.manage). Экран – при resources.view; править – resources.manage (Владелец, Директор в зоне). Филиал вне зоны
+// конфигурации), график и исключения (правка – network.hours.manage), блокировки (block.manage), тарифы (видят все, правит tariff.manage – Владелец). Экран – при resources.view; править – resources.manage (Владелец, Директор в зоне). Филиал вне зоны
 // и запись чужого филиала – 404, как несуществующие (K1). Удаления нет – архив через окно внутри записи (02 §12).
 // История комнат и мест на сервере пока открыта только Владельцу (routes.crm.ts) – остальным блок не показываем.
 import Crm from '../../layouts/Crm.astro';
@@ -8,6 +8,7 @@ import EntityList from '../../islands/EntityList.tsx';
 import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
 import CalendarExceptions from '../../islands/CalendarExceptions.tsx';
 import BlockForm from '../../islands/BlockForm.tsx';
+import TariffForm from '../../islands/TariffForm.tsx';
 import CompositionForm, { type UnitView } from '../../islands/CompositionForm.tsx';
 import { ApiError, serverCall } from '../../lib/api.ts';
 
@@ -20,6 +21,7 @@ const SECTIONS = [
   { key: 'resources', label: 'Места' },
   { key: 'schedule', label: 'График' },
   ...(Astro.locals.me.actions.includes('block.manage') ? [{ key: 'blocks', label: 'Блокировки' }] : []),
+  { key: 'tariffs', label: 'Тарифы' },
 ];
 
 const { me, cookie, ctx, branches } = Astro.locals;
@@ -63,6 +65,9 @@ if (!notFound && branch) {
   if (!notFound && section === 'blocks') {
     const list = (await load<{ items: Array<(typeof reasons)[number] & { sortOrder: number }> }>('/dictionaries/reasons?domain=resource_block'))?.items ?? [];
     reasons = list.sort((x, y) => x.sortOrder - y.sortOrder).map(({ id, name, requiresComment }) => ({ id, name, requiresComment }));
+  }
+  if (!notFound && section === 'tariffs') {
+    types = (await load<{ items: typeof types }>('/dictionaries/resource-types'))?.items ?? [];
   }
   if (!notFound && section === 'resources') {
     [rooms, units, types] = await Promise.all([
@@ -171,6 +176,11 @@ const owner = me.access.network;
       {section === 'blocks' && (
         <BlockForm client:load branchId={branch!.id} timezone={branch!.timezone} reasons={reasons}
           rooms={rooms.map((r) => ({ id: r.id, name: r.name }))} resources={resources.map((r) => ({ id: r.id, name: r.name }))} />
+      )}
+
+      {section === 'tariffs' && (
+        <TariffForm client:load branchId={branch!.id} timezone={branch!.timezone} canManage={can('tariff.manage')}
+          types={types.filter((t) => !t.archivedAt).map((t) => ({ code: t.code, name: t.name }))} />
       )}
 
       {key === 'new' && section === 'rooms' && (
