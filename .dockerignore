@@ -8,3 +8,6 @@ tests
 *.log
 .env
 .env.*
+**/dist
+**/.astro
+!apps/crm/dist
