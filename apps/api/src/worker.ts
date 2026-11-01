@@ -1,6 +1,6 @@
 // Фоновый процесс (ADR 0002: процесс worker – тот же образ API, другая команда).
 // Запускает: подписки уведомлений на события брони (K14, до startOutboxWorker – подписки замораживаются),
-// подписки баллов (K15: штраф за неявку; начисление – когда передан PaymentLookup finance),
+// подписки баллов (K15: штраф за неявку, резерв; начисление и paid_other – когда передан PaymentLookup finance),
 // доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение удержаний раз в 15 с
 // (modules/booking/hold.ts) и диспетчер запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts).
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
@@ -19,6 +19,7 @@ import { startHoldExpiry } from './modules/booking/hold.ts';
 import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
 import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/accrual.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
+import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { vapidKeys, type VapidKeys } from './modules/notifications/webpush.ts';
@@ -55,6 +56,7 @@ export async function startWorkerTasks(opts: {
   // подписки – до startOutboxWorker: он замораживает их и создаёт очереди по снимку
   registerNotificationHandlers({ bookings: bookingLookup, clock });
   registerPenaltyHandlers({ bookings: paymentBookingProvider, clock });
+  registerReserveHandlers({ bookings: paymentBookingProvider, clock, ...(opts.payments ? { payments: opts.payments } : {}) });
   if (opts.payments) registerAccrualHandlers({ bookings: paymentBookingProvider, payments: opts.payments, clock });
   const outbox = await startOutboxWorker({
     pool: opts.pool,
