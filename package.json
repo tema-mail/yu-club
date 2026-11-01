@@ -8,7 +8,7 @@
     "db"
   ],
   "engines": {
-    "node": ">=22.18"
+    "node": ">=26"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
