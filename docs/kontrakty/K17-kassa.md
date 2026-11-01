@@ -1,6 +1,6 @@
 # K17. Касса филиала: места денег, приход и расход, сторно, смена и сверка
 
-Статус: контракт Э2 (02.11.2026). Модуль-владелец: `finance` (`apps/api/src/modules/finance/cashbox.ts`, `categories.ts`, `corrections.ts`, `summary.ts`, `shift.ts`, `routes.crm.ts`). Таблицы: `finance_categories`, `finance_operations`, `finance_opening_balances`, `finance_periods` (`0201_finance.sql`), `cash_shifts` (`0206_cash_shifts.sql`).
+Статус: контракт Э2 (02.11.2026). Модуль-владелец: `finance` (`apps/api/src/modules/finance/cashbox.ts`, `categories.ts`, `corrections.ts`, `summary.ts`, `shift.ts`, `routes.crm.ts`). Таблицы: `finance_categories`, `finance_operations`, `finance_opening_balances`, `finance_periods` (`0202_finance.sql`), `cash_shifts` (`0206_cash_shifts.sql`).
 Основа: 06 §2–§16, §17 (приёмка), §18; 16 §7.2, §14, §19 п.17–19; 18 §6.2 п.4, 12–15, §6.5; 20 §4.11, §9.1; K3 (журнал), K10 (оплата), K16 (продажа сертификата).
 
 Пометки: «по умолчанию, ждёт заказчика (Q-xx)» – умолчание плана; «решение» – вывод архитектора.
@@ -16,7 +16,7 @@
 | Место денег | Счёт K3 | Что сюда | Сверяется пересчётом |
 |---|---|---|---|
 | `cash` – наличные | `kind='cash_branch'` | оплата наличными, наличные расходы, изъятия | да (§7) |
-| `noncash` – безнал | `kind='cash_branch_noncash'` (новый вид, миграция 0201) | терминал (`card`) и перевод (`transfer`); способ хранится в операции | нет (сверка с выпиской – после Э2, 06 §16 «последующие этапы») |
+| `noncash` – безнал | `kind='cash_branch_noncash'` (новый вид, миграция 0202) | терминал (`card`) и перевод (`transfer`); способ хранится в операции | нет (сверка с выпиской – после Э2, 06 §16 «последующие этапы») |
 
 - Итог кассы = `cash + noncash`; формула 06 §3.2 выполняется для каждого места и для итога.
 - Отчёт по способам (06 §18 в.9) – по полю `method` операции, третьего счёта не нужно.
@@ -75,7 +75,9 @@ export function recordExpense(tx, ctx, input: { branchId; place; method; amountK
 export function recordWithdrawal(tx, ctx, input: { branchId; amountKop; occurredAt; comment }, meta): Promise<FinanceOperationDto>;   // только cash
 export function transferBetweenPlaces(tx, ctx, input: { branchId; from: MoneyPlace; amountKop; occurredAt; comment }, meta): Promise<FinanceOperationDto>;
 
-/** Сторно: обратная запись K3 (reverse), операция kind='reversal' со ссылкой; причина обязательна (06 §4.4). */
+/** Сторно: обратная запись K3 (reverse), операция kind='reversal' со ссылкой; причина обязательна (06 §4.4).
+ *  Приход с source='session' → USE_PAYMENT_REFUND (только K10 refundPayment), source='certificate_sale' → USE_CERTIFICATE_CANCEL
+ *  (только K16 отмена продажи): иначе платёж или сертификат остались бы «живыми» без денег (правка по ревью 02.11). То же – correctOperation. */
 export function reverseOperation(tx, ctx, input: { operationId; reason }, meta): Promise<FinanceOperationDto>;
 /** Исправление = сторно + новая операция в одной транзакции (06 §8 «правка хранит старое и новое»): исходная не меняется. */
 export function correctOperation(tx, ctx, input: { operationId; replacement: NewOperation; reason }, meta): Promise<{ reversal: FinanceOperationDto; replacement: FinanceOperationDto }>;
@@ -97,11 +99,11 @@ export function previewBalance(db, ctx, input: { branchId; place; deltaKop }): P
 - `finance_categories`: `kind: 'income' | 'expense'`, `parent_id` (два уровня: категория и подкатегория, третьего нет – `CHECK` триггером), `name`, `sort_order`, `status: active | archived`. Сеть одна на всех (решение: справочник Владельца, 06 §7.2).
 - Расход требует категорию; если у категории есть активные подкатегории – подкатегория обязательна (06 §8 «если предусмотрена», §13.4 «не выбрана подкатегория»).
 - Использованная категория только архивируется (06 §7.2, приёмка 11); операции хранят свою категорию навсегда.
-- Стартовый справочник – 06 §7.3, засевается миграцией 0201 как предложение (не закрытый перечень) – утверждение в 6.4.3 плана.
+- Стартовый справочник – 06 §7.3, засевается миграцией 0202 как предложение (не закрытый перечень) – утверждение в 6.4.3 плана.
 
 ## 6. Отрицательный остаток и закрытый период
 
-- **Отрицательный остаток** (06 §3.3): `finance.negative_balance_allowed` (K7, сеть → филиал), по умолчанию `false` – по умолчанию, ждёт заказчика (Q-28). Проверка – в коде под `lockAccounts` места денег, а не `min_balance` счёта (решение: настройку можно менять, а `min_balance` у `yu_app` неизменяем, K3). Касаются: `expense`, `withdrawal`, `place_transfer` (источник), `refund`. При запрете → `CASH_INSUFFICIENT` с `details { currentKop, afterKop }` и текстом 06 §3.3 «внесите поступление или проверьте начальный остаток».
+- **Отрицательный остаток** (06 §3.3): `finance.negative_balance_allowed` (K7, сеть → филиал), по умолчанию `false` – по умолчанию, ждёт заказчика (Q-28). Проверка – в коде под `lockAccounts` места денег, а не `min_balance` счёта (решение: настройку можно менять, а `min_balance` у `yu_app` неизменяем, K3). Касаются: `expense`, `withdrawal`, `place_transfer` (источник), `refund`, а также сторно и исправление **прихода** – они тоже уменьшают место денег (правка по ревью 02.11). При запрете → `CASH_INSUFFICIENT` с `details { currentKop, afterKop }` и текстом 06 §3.3 «внесите поступление или проверьте начальный остаток».
 - **Закрытый период** (06 §8, §14; Q-28 по умолчанию: месяц закрывает Владелец): `finance_periods (branch_id, month, closed_at, closed_by)`. Операция с `occurred_at` в закрытом месяце → `PERIOD_CLOSED`. Исправление прошлого – корректирующая операция текущей датой со ссылкой на исходную (16 §14 последний абзац). Открыть закрытый месяц – нельзя (решение: иначе закрытие ничего не гарантирует).
 
 ## 7. Кассовая смена и сверка наличных (за флагом)
@@ -188,6 +190,8 @@ interface CashSummaryDto {
 | `PERIOD_CLOSED` | 409 | дата операции в закрытом месяце |
 | `ALREADY_REVERSED` | 409 | операция уже сторнирована (K3) |
 | `SESSION_INCOME_VIA_PAYMENT` | 422 | ручной доход с источником «сеанс» |
+| `USE_PAYMENT_REFUND` | 409 | сторно или исправление прихода по сеансу – только возвратом платежа (K10) |
+| `USE_CERTIFICATE_CANCEL` | 409 | сторно или исправление прихода от продажи сертификата – только отменой продажи (K16 §6) |
 | `CASH_SHIFT_REQUIRED` | 409 | смена включена и не открыта |
 | `CASH_SHIFT_ALREADY_OPEN` | 409 | вторая открытая смена филиала |
 | `INVALID_AMOUNT` | 422 | 0, дробное, отрицательное (K3) |

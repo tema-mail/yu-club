@@ -1,6 +1,6 @@
 # K16. Сертификаты: продажа, погашение, срок, остаток
 
-Статус: контракт Э2 (02.11.2026). Модуль-владелец: `certificates` (`apps/api/src/modules/certificates/*`). Таблицы: `certificates`, `certificate_redemptions`, `certificate_holder_history` (миграция `0203_certificates.sql`; FK между сертификатами и платежами добавляет `0204_payments.sql`, §10).
+Статус: контракт Э2 (02.11.2026). Модуль-владелец: `certificates` (`apps/api/src/modules/certificates/*`). Таблицы: `certificates`, `certificate_redemptions`, `certificate_holder_history` (миграция `0204_certificates.sql`; FK между сертификатами и платежами добавляет `0205_payments.sql`, §10).
 Основа: 08 §2–§15; 06 §4.1, §12; 16 §7.4, §8.1–8.3; 20 §4.5, §4.7, §7.2, TC-08; 18 §6.2 п.6–8, §6.3; K3, K10, K17.
 
 Пометки: «по умолчанию, ждёт заказчика (Q-xx)» – умолчание плана; «решение» – вывод архитектора.
@@ -53,7 +53,9 @@ export function sellCertificate(tx: Tx, ctx: AccessContext, input: {
 - Сертификат **на предъявителя** – по умолчанию, ждёт заказчика (Q-26). Погашение – по номеру **и** 4-значному коду.
 - Номер: `YC-` + 8 символов Crockford Base32 из криптографического генератора (40 бит), при совпадении – новая попытка; `UNIQUE (number)`. Ручной ввод номера невозможен (08 §4.2).
 - Код: 4 цифры из криптографического генератора, в базе – `HMAC-SHA256(pin, CERT_PEPPER)`; показывается и печатается **один раз** в ответе продажи (08 §11.3); в логи и аудит не попадает (04 §11.2).
-- Перебор: 5 неверных кодов по сертификату → блок ввода кода на 15 минут (`pin_failed_count`, `pin_locked_until`); ответы на «нет такого номера» и «неверный код» одинаковы – `CERTIFICATE_NOT_FOUND` (не раскрываем существование номера). Перевыпуск кода – право `certificate.correct`, аудит.
+- Перебор: 5 неверных кодов по сертификату → блок ввода кода на 15 минут (`pin_failed_count`, `pin_locked_until`); ответы на «нет такого номера» и «неверный код» одинаковы – `CERTIFICATE_NOT_FOUND` (не раскрываем существование номера). Перевыпуск кода – право `certificate.correct`, аудит. Длина кода и число попыток – по умолчанию, ждёт заказчика (Q-105: 4 цифры, 5 попыток, 15 минут).
+- **Неудачная попытка не откатывается** (правка по ревью 02.11): проверка кода идёт в отдельной короткой транзакции до основной команды – `UPDATE … SET pin_failed_count = pin_failed_count + 1` фиксируется, затем ответ `CERTIFICATE_NOT_FOUND`. Если считать попытку внутри транзакции оплаты, откат после отказа съест счётчик и перебор станет бесконечным. Успех обнуляет счётчик в основной транзакции.
+- **Код не попадает в `idempotency_keys`** (правка по ревью 02.11, шаг S2-08): ответ продажи сохраняется без `pin` (`redact`); повтор с тем же ключом возвращает тот же сертификат с `pin: null, pinShownOnce: true` – «код показан один раз» (08 §11.3). В `request_hash` тела оплаты и `POST /certificates/check` вместо кода идёт `HMAC-SHA256(pin, CERT_PEPPER)` – 4 цифры по чистому SHA-256 подбираются мгновенно.
 
 ## 4. Срок 6 месяцев (08 §5, Q-27)
 
@@ -71,10 +73,13 @@ export function expiryOf(soldAt: Date, saleBranchTz: TimeZone): { expiresOn: Loc
 
 ```ts
 /** Обработчик способа certificate для K10. Проверки 08 §6.3 в порядке:
+ *  0) код проверен заранее отдельной транзакцией (§3); здесь – lockAccounts(счёт сертификата), затем ПЕРЕЧИТАТЬ строку сертификата и баланс
+ *     под блокировкой (решение по ревью 02.11: блокировка → перечитать → проверить; что видели экран и /check – только подсказка);
  *  1) номер + код (§3) → иначе CERTIFICATE_NOT_FOUND; 2) не cancelled / needs_review → CERTIFICATE_NOT_ACTIVE;
  *  3) now < expiresAt → иначе CERTIFICATE_EXPIRED; 4) остаток > 0 → CERTIFICATE_NOT_ACTIVE (used_up);
  *  5) сумма > 0; 6) сумма ≤ остатка, иначе CERTIFICATE_INSUFFICIENT (mode 'exact') или списать весь остаток (mode 'drain', K10 §2);
- *  7) конкурирующая операция – lockAccounts(счёт сертификата) + триггер K3 min 0: два параллельных погашения не уводят в минус (16 §8.2);
+ *  7) конкурирующая операция – блокировка из п.0 + триггер K3 min 0: два параллельных погашения не уводят в минус (16 §8.2);
+ *     если триггер всё же ответил BALANCE_BELOW_LIMIT – наружу CERTIFICATE_INSUFFICIENT (код K3 наружу не отдаём);
  *  8) «сеанс не оплачен другим способом» – гарантирует K10 (живой платёж один).
  *  Запись: certificate.redeem −сумма, branch_id = филиал сеанса, ref booking; certificate_redemptions(active). */
 export const certificatePaymentMethod: PaymentMethodHandler;   // K10 §5
@@ -117,10 +122,10 @@ export const certificatePaymentMethod: PaymentMethodHandler;   // K10 §5
 | `certificate.link` | Владелец, Директор, Администратор | 08 §7 |
 | погашение | через `finance.payment.record` (K10 §8) | R-14 по умолчанию: Администратор проводит оплаты сеансов |
 
-## 10. Данные (`0203_certificates.sql`)
+## 10. Данные (`0204_certificates.sql`)
 
 - `certificates` (`id`, `number UNIQUE`, `pin_hash`, `pin_failed_count`, `pin_locked_until`, `nominal_kop > 0`, `sale_branch_id → branches`, `sale_method`, `sale_operation_id → finance_operations`, `ledger_account_id → ledger_accounts UNIQUE`, `sold_at`, `sold_by → staff`, `expires_on`, `expires_at`, `expired_entry_id`, `cancelled_at`, `cancel_reason`, `review_reason`, `buyer_client_id → clients`, `recipient_client_id → clients`, `comment`, `row_version`). У `yu_app` нет UPDATE на `nominal_kop`, `number`, `sold_at`, `expires_*`, `sale_*` (08 §15: «не может менять номинал, срок») – как у `tariffs` (0107).
-- `certificate_redemptions` (`certificate_id`, `booking_id → bookings`, `branch_id`, `client_id`, `amount_kop`, `ledger_entry_id`, `status: active | returned | not_restored`, `return_entry_id`, автор, время). Ссылка на платёж – `payment_id uuid` без FK: `payments` появляется в `0204`, а отложенный FK `certificate_redemptions.payment_id → payments` и `payment_lines.certificate_id → certificates` добавляет `0204_payments.sql` (правило model-dannyh §1 «FK вперёд – в миграции цели»).
+- `certificate_redemptions` (`certificate_id`, `booking_id → bookings`, `branch_id`, `client_id`, `amount_kop`, `ledger_entry_id`, `status: active | returned | not_restored`, `return_entry_id`, автор, время). Ссылка на платёж – `payment_id uuid` без FK: `payments` появляется в `0205`, а отложенный FK `certificate_redemptions.payment_id → payments` и `payment_lines.certificate_id → certificates` добавляет `0205_payments.sql` (правило model-dannyh §1 «FK вперёд – в миграции цели»).
 - `certificate_holder_history` – только вставка (`journal`).
 
 ## 11. API CRM (дополняет K11)
@@ -156,5 +161,5 @@ export const certificatePaymentMethod: PaymentMethodHandler;   // K10 §5
 - Два параллельных погашения, вместе больше остатка → одно проходит, второе `CERTIFICATE_INSUFFICIENT`; остаток ≥ 0 (16 §8.2).
 - `expiryOf`: 31.08 → 28.02 (29.02 в високосный), 31.03 → 30.09, 15.01 → 15.07; граница – полночь по зоне филиала продажи, тест с чужим `TZ` машины.
 - Возврат погашения до срока → остаток восстановлен; после срока → `not_restored`, остаток 0.
-- Код: 5 неверных → `CERTIFICATE_PIN_LOCKED`; код не встречается в логах и аудите теста.
+- Код: 5 неверных → `CERTIFICATE_PIN_LOCKED`, счётчик растёт и при откате основной транзакции; код не встречается в логах, аудите и `idempotency_keys` (`response_body`, `request_hash`); повтор продажи – без кода.
 - `UPDATE certificates SET nominal_kop` от `yu_app` → `42501`.

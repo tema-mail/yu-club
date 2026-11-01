@@ -1,6 +1,6 @@
 # K10. Сеанс оплаты
 
-Статус: **финальная версия для Э2** (02.11.2026), заменяет черновик Э1. Модуль-владелец: `finance` (`apps/api/src/modules/finance/payment.ts`, `methods.ts` (реестр способов и типы событий), `refund.ts`, `routes.payments.ts`). Таблицы: `payment_sessions`, `payments`, `payment_lines`, `payment_refunds` (миграция `0204_payments.sql`).
+Статус: **финальная версия для Э2** (02.11.2026), заменяет черновик Э1. Модуль-владелец: `finance` (`apps/api/src/modules/finance/payment.ts`, `methods.ts` (реестр способов и типы событий), `refund.ts`, `routes.payments.ts`). Таблицы: `payment_sessions`, `payments`, `payment_lines`, `payment_refunds` (миграция `0205_payments.sql`).
 Основа: 06 §5, §5.1–5.2, §12; 08 §6.3–6.5, §9.2; 07 §6.1–6.4; 13 §12.1 п.8–10; 16 §7, §15.2–15.3; 20 §4.5, §9.1, TC-07, TC-08; 18 §6.3. Смежные контракты: K3 (журнал), K4 (события), K15 (баллы), K16 (сертификаты), K17 (касса), K1 (права), K7 (настройки).
 
 Пометки: «по умолчанию, ждёт заказчика (Q-xx)» – умолчание плана, меняется решением заказчика; «решение» – вывод архитектора, не пункт ТЗ.
@@ -59,7 +59,7 @@ export interface Payment {
 }
 ```
 
-Таблицы (`0204_payments.sql`):
+Таблицы (`0205_payments.sql`):
 - `payment_sessions` (PK = `booking_id` → `bookings`, `branch_id`, `client_id`, `amount_due_kop`, `booking_version`, `status`, `row_version`). Создаётся лениво первой командой оплаты: `INSERT … ON CONFLICT DO NOTHING`, затем `SELECT … FOR UPDATE`.
 - `payments` (`session_id` → `payment_sessions`, `attempt`, `status`, `total_kop`, `topup_rule_snapshot`, автор, время). **`CREATE UNIQUE INDEX payments_one_live_per_session ON payments (session_id) WHERE status IN ('active','partially_refunded')`** – второй живой платёж невозможен даже при гонке (TC-07, 18 §6.3). `UNIQUE (session_id, attempt)`.
 - `payment_lines` (`payment_id`, `line_no` 1..2, `method`, `amount_kop`, `points_centi`, `certificate_id` → `certificates`, `ledger_posting_id`, `finance_operation_id` → `finance_operations`). `CHECK`: строк ≤ 2; вторая строка допустима, только если первая `certificate`, а вторая `cash|card|transfer` (проверка триггером на вставку, решение).
@@ -83,6 +83,7 @@ export function recordPayment(tx: Tx, ctx: AccessContext, input: {
   lines: Array<{ method: MoneyMethod | 'points' | 'certificate' | 'none'; amountKop: number;
                  certificate?: { number: string; pin: string } }>;     // pin – K16 §3
   comment?: string;
+  receiptIssued?: boolean;    // «чек пробит» для денежной строки – в операцию кассы K17 (Q-23)
 }, meta: AuditRequestMeta, clock?: Clock): Promise<{ paymentId: string; session: PaymentSession }>;
 
 /** Возврат – отдельная операция с решением сотрудника (06 §5.2, 16 §7.5). Причина обязательна. Отмена брони сама денег
@@ -128,14 +129,16 @@ export function registerPaymentMethod(h: PaymentMethodHandler): void;
 | `points` | `loyalty` (K15 §6) | `loyalty.spend_time` −минуты×100 на бонусный счёт; партии FEFO; резерв брони гасится | 07 §6.1–6.3, 06 §5.1 «баллы не увеличивают кассу» |
 | `certificate` | `certificates` (K16 §5) | `certificate.redeem` −сумма на счёт сертификата; денежного поступления нет | 08 §6.4, §12.2; TC-08 |
 
-`mode: 'drain'` – только строка сертификата при флаге R-03: списать весь остаток, вернуть фактическую сумму; finance добавляет денежную строку на разницу.
+`mode: 'drain'` – только строка сертификата при флаге R-03: списать весь остаток, вернуть фактическую сумму; finance добавляет денежную строку на разницу. После обработчика finance сверяет: `0 < списано сертификатом < amountDue` и `списано + денежная строка = amountDue`; иначе исключение и откат всей транзакции (правка по ревью 02.11: остаток мог измениться между проверкой на экране и проводкой).
+
+Обработчики соблюдают порядок **блокировка → перечитать → проверить** (решение): `lockAccounts` своего счёта, затем срок, статус и остаток читаются из базы под блокировкой; проверки экрана и `POST /certificates/check` – только подсказка.
 
 ## 6. События (дополняют K4)
 
 | `type` @ver | Когда | `aggregateVersion` | Payload | Потребители |
 |---|---|---|---|---|
 | `payment.recorded` @1 | платёж проведён | `<paymentId>` | `{ paymentId, sessionId, bookingId, branchId, clientId, attempt, methods: PaymentMethod[], totalKop, pointsCenti \| null, certificateId \| null }` | loyalty: начисление (K15 §4); CRM: статус |
-| `payment.refunded` @1 | возврат проведён | `<refundId>` | `{ refundId, paymentId, bookingId, clientId, lines: [{ lineNo, method, amountKop, pointsCenti \| null, outcome }], reason, sessionStatus }` | CRM; отчёты Э4 |
+| `payment.refunded` @1 | возврат проведён | `<refundId>` | `{ refundId, paymentId, bookingId, clientId, lines: [{ lineNo, method, amountKop, pointsCenti \| null, outcome }], reason, sessionStatus }` | loyalty: при `sessionStatus = 'refunded'` – сторно начисления (K15 §4, Q-102 по умолчанию); CRM; отчёты Э4 |
 
 Payload без ПДн (K4 правило 2).
 
@@ -176,7 +179,8 @@ Payload без ПДн (K4 правило 2).
 ## 10. Изменения смежных контрактов (вносятся шагом S2-00)
 
 - K4: у `visit.confirmed` потребитель loyalty – «начисление, если у брони уже есть живой платёж» (K15 §4); добавить `payment.recorded`, `payment.refunded` (раздел 6) и события K15, K16.
-- K3: правило 4 – ключ оплаты по разделу 9; новый вид счёта `cash_branch_noncash` (K17 §2); тип ссылки `payment`.
+- K3: правило 4 – ключ оплаты по разделу 9; новый вид счёта `cash_branch_noncash` (K17 §2); тип ссылки `payment` (`RefType` в `ledger.ts`, шаг S2-10); предел счёта – только для списаний (миграция 0201, шаг S2-07); ключ начисления – `loyalty-accrual:<visitId>:<paymentId>` (K15 §4).
+- K4 и `core/outbox.ts`: `AggregateType` + `'payment'`, `'certificate'` (шаг S2-06).
 - K11: маршруты №19–23 (раздел 11).
 - K1: действия раздела 8, K15 §10, K16 §9, K17 §8.
 - K7: ключи `payment.*`, `finance.*`, `loyalty.*`, `certificate.*` из K10, K15–K17.
