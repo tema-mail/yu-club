@@ -209,6 +209,17 @@ export async function assertCanBook(
     row.status === 'guest' ||
     (row.status === 'restricted' && row.status_until !== null && row.status_until <= at);
   if (!ok) throw new AppError('CLIENT_RESTRICTED', 403, 'Запись для этого клиента ограничена', { status: row.status });
+  await assertBookingGates(tx, clientId, at, opts);
+}
+
+/** Только ворота записи, без статуса клиента: удержание (K5 №6, attach) проверяет −50, а CLIENT_RESTRICTED по-прежнему
+ *  отдаёт подтверждение (K5 №12) – контракт Э1 удержания не меняется. */
+export async function assertBookingGates(
+  tx: Tx,
+  clientId: string,
+  at: Date,
+  opts: { override?: { loyaltyLimit?: { reason: string; staffId: string } } } = {},
+): Promise<void> {
   const override = opts.override?.loyaltyLimit;
   for (const gate of bookingGates.values()) await gate.check(tx, { clientId, at, ...(override ? { override } : {}) });
 }

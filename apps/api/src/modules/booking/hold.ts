@@ -13,7 +13,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { assertSlotAligned, contains, durationMinutes, fromPgRange, instantToLocal, isDateInWindow, systemClock, toPgRange, type Clock, type Interval } from '../../core/time.ts';
 import { getBranch, isAcceptingBookings, openIntervals, type BranchInfo } from '../network/index.ts';
 import { quote } from '../pricing/tariff.ts';
-import { assertCanBook, lockClients } from '../clients/index.ts';
+import { assertBookingGates, lockClients } from '../clients/index.ts';
 import { assertBookable, expandToUnits, getResource } from '../resources/index.ts';
 import { insertClientTime, occupyMany, releaseSources, type OccupyItem } from './occupancy.ts';
 
@@ -186,8 +186,9 @@ export async function createHold(tx: Tx, owner: HoldOwner, input: { branchId: st
   const branch = await activeBranch(tx, input.branchId, now);
   const s = await holdSettings(tx, branch.id, now);
   await lockOwner(tx, owner);
-  // Э2 (K15 §8, S2-35): известный клиент проходит ворота записи уже на удержании (−50 → LOYALTY_LIMIT_REACHED)
-  if (owner.clientId !== null) await assertCanBook(tx, owner.clientId, now);
+  // Э2 (K15 §8, S2-35): известный клиент проходит ворота записи уже на удержании (−50 → LOYALTY_LIMIT_REACHED);
+  // статус клиента (CLIENT_RESTRICTED) – по-прежнему при подтверждении (K5 №12)
+  if (owner.clientId !== null) await assertBookingGates(tx, owner.clientId, now);
   if (input.items.length === 0) throw new AppError('VALIDATION_FAILED', 400, 'Нет позиций', { field: 'items' });
   if (input.items.length > s.maxItems) throw new AppError('HOLD_LIMIT_REACHED', 422, 'Слишком много слотов в одной записи', { max: s.maxItems });
   const existing = await ownActiveHold(tx, branch.id, owner, now);
@@ -287,7 +288,7 @@ export async function attachHold(tx: Tx, clientId: string, visitorId: string | n
   if (h.client_id === clientId) return holdDto(tx, h.id, now);
   if (!isLive(h, now)) throw holdExpired();
   await lockOwner(tx, { clientId, visitorId: null });
-  await assertCanBook(tx, clientId, now); // Э2 (K15 §8): ворота записи; при входе отказ гасит attachVisitorHolds
+  await assertBookingGates(tx, clientId, now); // Э2 (K15 §8): ворота записи; при входе отказ гасит attachVisitorHolds
   const other = await ownActiveHold(tx, h.branch_id, { clientId, visitorId: null }, now);
   if (other) throw new AppError('HOLD_ALREADY_ACTIVE', 409, 'Уже есть активное удержание в этом филиале', { holdId: other });
   await tx.query('UPDATE app.holds SET client_id = $2 WHERE id = $1', [h.id, clientId]);
