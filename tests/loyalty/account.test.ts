@@ -98,9 +98,11 @@ describe('миграция 0203', () => {
   it('вниз и снова вверх на базе с данными Э1; движения партий – только вставка', async () => {
     const t = await createTestDatabase({ migrate: true });
     try {
-      await migrateDown(t.client);
+      // откат до 0203 включительно – вместе с более поздними миграциями (раннер откатывает с конца)
+      const later = (await t.client.query<{ version: string }>(`SELECT version FROM public.schema_migrations WHERE version >= '0203' ORDER BY version`)).rows.map((r) => r.version);
+      expect((await migrateDown(t.client, later.length)).at(-1)).toBe('0203');
       expect((await t.client.query(`SELECT to_regclass('app.loyalty_batches') AS r`)).rows[0].r).toBeNull();
-      await migrateUp(t.client);
+      expect(await migrateUp(t.client)).toEqual(later);
       expect((await t.client.query(`SELECT to_regclass('app.loyalty_reserves') AS r`)).rows[0].r).not.toBeNull();
       expect((await t.client.query(`SELECT * FROM journal.append_only_violations()`)).rows).toEqual([]);
     } finally {
