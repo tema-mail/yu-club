@@ -20,7 +20,8 @@ CADDY_CT=${YU_CADDY_CT:-dzenbot-caddy-1}
 CRM_DOMAIN=${YU_CRM_DOMAIN:-yu-crm.45.12.72.227.nip.io}
 NEIGHBOURS=${YU_NEIGHBOURS:-"https://gaz-mag.ru/ https://lupa.45.12.72.227.nip.io/login https://teyes.45.12.72.227.nip.io/"}
 cd "$(dirname "$0")/.."
-SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$HOST")
+# ServerAliveInterval: тихая сборка образа (build -q) идёт минутами – без пингов сеть рвёт сессию
+SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$HOST")
 
 RESET=0
 case "${1:-}" in
