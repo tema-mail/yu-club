@@ -1,5 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { resolveSetting, resolveSettings, SETTINGS, settingDef, settingHistory } from '../../apps/api/src/core/settings.ts';
+import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
+import type { AccessContext, StaffRole } from '../../apps/api/src/core/permissions.ts';
+import { errorStatus, registeredAuditActions } from '../../apps/api/src/core/registry.ts';
+import {
+  resetToInherited,
+  resolveSetting,
+  resolveSettings,
+  setSetting,
+  SETTINGS,
+  settingDef,
+  settingHistory,
+} from '../../apps/api/src/core/settings.ts';
+import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 let db: TestDatabase;
@@ -132,5 +145,118 @@ describe('resolveSetting: приоритет филиал → город → с�
     const h = await settingHistory(db.client, 'booking.buffer_minutes', { branchId: ids.b1! });
     expect(h.map((x) => [x.level, x.value])).toEqual([['branch', 10], ['branch', 5]]);
     expect(h[1]!.validTo).toEqual(new Date('2026-06-01T00:00:00Z'));
+  });
+});
+
+describe('setSetting / resetToInherited: проверки до сохранения, история, аудит', () => {
+  const clock = fixedClock('2026-11-20T00:00:00Z');
+  const d = (iso: string) => new Date(iso);
+  function ctx(role: StaffRole, scope: { cityIds?: string[]; branchIds?: string[] } = {}): AccessContext {
+    return {
+      actor: { kind: 'staff', staffId: randomUUID(), sessionId: randomUUID() },
+      role,
+      network: role === 'owner',
+      cityIds: new Set(scope.cityIds ?? []),
+      branchIds: new Set(scope.branchIds ?? []),
+      at: clock.now(),
+    };
+  }
+  const meta = (c: AccessContext): AuditRequestMeta => ({ actor: c.actor, access: c, source: 'crm', requestId: randomUUID() });
+  const owner = ctx('owner');
+  const KEY = 'booking.max_anonymous_holds_per_branch' as const;
+
+  async function inTx<T>(fn: () => Promise<T>): Promise<T> {
+    await db.client.query('BEGIN');
+    try {
+      const r = await fn();
+      await db.client.query('COMMIT');
+      return r;
+    } catch (err) {
+      await db.client.query('ROLLBACK');
+      throw err;
+    }
+  }
+  const set = (c: AccessContext, input: Parameters<typeof setSetting>[2]) => inTx(() => setSetting(db.client, c, input, meta(c), clock));
+  const reset = (c: AccessContext, input: Parameters<typeof resetToInherited>[2]) => inTx(() => resetToInherited(db.client, c, input, meta(c), clock));
+
+  it('коды K7 и действия аудита в реестре', () => {
+    expect(errorStatus.SETTING_INVALID).toBe(422);
+    expect(errorStatus.SETTING_LEVEL_NOT_ALLOWED).toBe(422);
+    expect(errorStatus.SETTING_PERIOD_OVERLAP).toBe(409);
+    expect(registeredAuditActions.has('setting.changed')).toBe(true);
+    expect(registeredAuditActions.has('setting.reset_to_inherited')).toBe(true);
+  });
+
+  it('уровень не разрешён, значение вне пределов, прошлая дата, нет права – до записи', async () => {
+    await expect(set(owner, { key: 'booking.hold_minutes', scope: { branchId: ids.b3! }, value: 20, validFrom: d('2026-12-01T00:00:00Z') })).rejects.toMatchObject({ code: 'SETTING_LEVEL_NOT_ALLOWED' });
+    await expect(set(owner, { key: KEY, scope: { branchId: ids.b3! }, value: 501, validFrom: d('2026-12-01T00:00:00Z') })).rejects.toMatchObject({ code: 'SETTING_INVALID' });
+    await expect(set(owner, { key: KEY, scope: { branchId: ids.b3! }, value: 5, validFrom: d('2026-11-19T00:00:00Z') })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    const admin = ctx('admin', { branchIds: [ids.b3!] });
+    await expect(set(admin, { key: KEY, scope: { branchId: ids.b3! }, value: 5, validFrom: d('2026-12-01T00:00:00Z') })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    const dir = ctx('director', { cityIds: [ids.nsk!], branchIds: [ids.b1!, ids.b2!] });
+    await expect(set(dir, { key: KEY, scope: { branchId: ids.b3! }, value: 5, validFrom: d('2026-12-01T00:00:00Z') })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(set(dir, { key: KEY, scope: { network: true }, value: 5, validFrom: d('2026-12-01T00:00:00Z') })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(set(owner, { key: KEY, scope: { branchId: randomUUID() }, value: 5, validFrom: d('2026-12-01T00:00:00Z') })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const n = await db.client.query(`SELECT count(*)::int n FROM app.settings_values WHERE key = $1`, [KEY]);
+    expect(n.rows[0].n).toBe(0);
+  });
+
+  it('окно: максимум меньше окна по умолчанию – SETTING_INVALID', async () => {
+    await expect(set(owner, { key: 'booking.window_max_days', scope: { branchId: ids.b1! }, value: 10, validFrom: d('2026-12-01T00:00:00Z') })).rejects.toMatchObject({
+      code: 'SETTING_INVALID',
+    }); // у b1 окно по умолчанию 14
+  });
+
+  it('значение с даты: текущее закрывается этой датой, новое действует с неё; аудит было/стало', async () => {
+    const dir = ctx('director', { cityIds: [ids.nsk!], branchIds: [ids.b1!, ids.b2!] });
+    const first = await set(owner, { key: KEY, scope: { network: true }, value: 40, validFrom: d('2026-11-21T00:00:00Z') });
+    const a = await set(dir, { key: KEY, scope: { branchId: ids.b1! }, value: 50, validFrom: d('2026-11-22T00:00:00Z'), reason: 'много ботов' });
+    const b = await set(dir, { key: KEY, scope: { branchId: ids.b1! }, value: 60, validFrom: d('2026-12-01T00:00:00Z') });
+    const at = (iso: string) => resolveSetting(db.client, KEY, { branchId: ids.b1! }, d(iso));
+    expect((await at('2026-11-21T12:00:00Z')).value).toBe(40);
+    expect(await at('2026-11-25T00:00:00Z')).toMatchObject({ value: 50, source: { level: 'branch', valueId: a.valueId } });
+    expect(await at('2026-12-02T00:00:00Z')).toMatchObject({ value: 60, source: { valueId: b.valueId } });
+    const audit = await db.client.query(`SELECT before, after, reason, branch_id FROM journal.audit_events WHERE action = 'setting.changed' AND object_id = $1`, [a.valueId]);
+    expect(audit.rows[0]).toMatchObject({
+      before: { key: KEY, value: 40, level: 'network' },
+      after: { key: KEY, value: 50, level: 'branch' },
+      reason: 'много ботов',
+      branch_id: ids.b1,
+    });
+    expect(first.valueId).toBeTruthy();
+  });
+
+  it('пересечение дат: запланированное значение того же уровня – SETTING_PERIOD_OVERLAP до сохранения', async () => {
+    const err = await set(owner, { key: KEY, scope: { branchId: ids.b1! }, value: 70, validFrom: d('2026-11-25T00:00:00Z') }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'SETTING_PERIOD_OVERLAP', httpStatus: 409 });
+    const planned = (await settingHistory(db.client, KEY, { branchId: ids.b1! })).find((h) => h.value === 60)!;
+    expect((err as { details: { conflictValueId: string } }).details.conflictValueId).toBe(planned.valueId);
+    await expect(reset(owner, { key: KEY, scope: { branchId: ids.b1! }, at: d('2026-11-25T00:00:00Z') })).rejects.toMatchObject({ code: 'SETTING_PERIOD_OVERLAP' });
+  });
+
+  it('возврат к наследованию: филиал → город нельзя (уровень), филиал → сеть → система; старое – в истории', async () => {
+    await reset(owner, { key: KEY, scope: { branchId: ids.b1! }, at: d('2026-12-05T00:00:00Z'), reason: 'вернуть сетевое' });
+    expect(await resolveSetting(db.client, KEY, { branchId: ids.b1! }, d('2026-12-06T00:00:00Z'))).toMatchObject({ value: 40, source: { level: 'network' } });
+    await reset(owner, { key: KEY, scope: { network: true }, at: d('2026-12-07T00:00:00Z') });
+    expect(await resolveSetting(db.client, KEY, { branchId: ids.b1! }, d('2026-12-08T00:00:00Z'))).toMatchObject({ value: 30, source: { level: 'system' } });
+    const h = await settingHistory(db.client, KEY, { branchId: ids.b1! });
+    expect(h.map((x) => [x.level, x.value, x.validTo?.toISOString() ?? null])).toEqual([
+      ['branch', 60, '2026-12-05T00:00:00.000Z'],
+      ['branch', 50, '2026-12-01T00:00:00.000Z'],
+      ['network', 40, '2026-12-07T00:00:00.000Z'],
+    ]);
+    expect((await resolveSetting(db.client, KEY, { branchId: ids.b1! }, d('2026-12-02T00:00:00Z'))).value).toBe(60); // прошлое на дату – как было
+    const audit = await db.client.query(`SELECT before, after, reason FROM journal.audit_events WHERE action = 'setting.reset_to_inherited' ORDER BY occurred_at, id`);
+    expect(audit.rows[0]).toMatchObject({ before: { value: 60, level: 'branch' }, after: { value: 40, level: 'network' }, reason: 'вернуть сетевое' });
+    await reset(owner, { key: KEY, scope: { branchId: ids.b1! }, at: d('2026-12-10T00:00:00Z') }); // нечего закрывать – без ошибки
+  });
+
+  it('город: значение города действует на его филиалы и не на чужие (цепочка фиксирована – цикла нет)', async () => {
+    await set(owner, { key: 'branch.default_hours', scope: { cityId: ids.tsk! }, value: { open: '12:00', close: '20:00' }, validFrom: d('2026-12-01T00:00:00Z') });
+    expect((await resolveSetting(db.client, 'branch.default_hours', { branchId: ids.b3! }, d('2026-12-02T00:00:00Z'))).value).toEqual({ open: '12:00', close: '20:00' });
+    expect((await resolveSetting(db.client, 'branch.default_hours', { branchId: ids.b1! }, d('2026-12-02T00:00:00Z'))).value).toEqual({ open: '11:00', close: '23:00' });
+    await expect(
+      set(owner, { key: 'branch.default_hours', scope: { cityId: ids.tsk! }, value: { open: '22:00', close: '10:00' }, validFrom: d('2026-12-03T00:00:00Z') }),
+    ).rejects.toMatchObject({ code: 'SETTING_INVALID' });
   });
 });
