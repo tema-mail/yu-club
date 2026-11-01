@@ -1,0 +1,11 @@
+{
+  "name": "@yu/db",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "migrate": "node migrate.ts"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}
