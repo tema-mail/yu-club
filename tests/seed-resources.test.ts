@@ -93,6 +93,18 @@ describe('S1-28: засев Э1', () => {
     expect(await counts()).toEqual(before);
   });
 
+  it('адреса комнат – английскими словами (карта сайта п.5); старые vr / ps5-N переименовываются без дублей', async () => {
+    const b = (await db.client.query<{ id: string }>(`SELECT id FROM app.branches WHERE code = 'demo-nsk-krasny'`)).rows[0]!.id;
+    const slugs = async () => (await db.client.query(`SELECT slug FROM app.rooms WHERE branch_id = $1 ORDER BY slug`, [b])).rows.map((x) => x.slug);
+    expect(await slugs()).toEqual(['ps5-room-1', 'ps5-room-2', 'ps5-room-3', 'vr-ps4-room']);
+    await db.client.query(`UPDATE app.rooms SET slug = CASE slug WHEN 'vr-ps4-room' THEN 'vr' ELSE replace(slug, 'ps5-room-', 'ps5-') END WHERE branch_id = $1`, [b]);
+    const n = (await counts()).rooms;
+    const again = await seedResources(pool, { env: { APP_ENV: 'stage' } }, clock);
+    expect(again.created.rooms).toBe(0);
+    expect((await counts()).rooms).toBe(n);
+    expect(await slugs()).toEqual(['ps5-room-1', 'ps5-room-2', 'ps5-room-3', 'vr-ps4-room']);
+  });
+
   it('на засеянных данных: «вся комната» и место VR1 на один слот – одно удержание, бронь подтверждается', async () => {
     const r = first.branches['demo-nsk-krasny']!;
     const b = (await db.client.query<{ id: string }>(`SELECT id FROM app.branches WHERE code = 'demo-nsk-krasny'`)).rows[0]!.id;

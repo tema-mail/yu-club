@@ -18,7 +18,7 @@ import { addDays, systemClock, todayIn, type Clock, type LocalTime, type TimeZon
 import { bookingsProvider } from '../../apps/api/src/modules/booking/providers.ts';
 import { applyHoursChange, previewHoursChange } from '../../apps/api/src/modules/network/calendar.ts';
 import { createTariff } from '../../apps/api/src/modules/pricing/tariff.ts';
-import { createEntity, createUnit } from '../../apps/api/src/modules/resources/routes.ts';
+import { createEntity, updateEntity, createUnit } from '../../apps/api/src/modules/resources/routes.ts';
 import { withTx, type Pool } from '../../apps/api/src/modules/staff/auth.ts';
 import { assertNotProduction, DEMO_MARK } from './dev.ts';
 
@@ -73,9 +73,20 @@ interface Ctx {
   created: Created;
 }
 
-async function room(c: Ctx, branchId: string, input: { slug: string; name: string; capacity: number; wholeRentAllowed: boolean }): Promise<string> {
-  const found = await c.tx.query<{ id: string }>('SELECT id FROM app.rooms WHERE branch_id = $1 AND slug = $2', [branchId, input.slug]);
-  if (found.rows[0]) return found.rows[0].id;
+/** Комната по slug; засеянная раньше со старым slug (vr, ps5-N) – переименовывается командой (с аудитом), без дубля. */
+async function room(
+  c: Ctx,
+  branchId: string,
+  input: { slug: string; name: string; capacity: number; wholeRentAllowed: boolean },
+  legacySlug?: string,
+): Promise<string> {
+  const found = await c.tx.query<{ id: string; slug: string; row_version: number }>(
+    'SELECT id, slug, row_version FROM app.rooms WHERE branch_id = $1 AND slug = ANY($2::text[]) ORDER BY slug = $3 DESC LIMIT 1',
+    [branchId, [input.slug, legacySlug ?? input.slug], input.slug],
+  );
+  const f = found.rows[0];
+  if (f && f.slug !== input.slug) await updateEntity(c.tx, c.ctx, 'room', f.id, { rowVersion: f.row_version, slug: input.slug }, c.meta, c.clock);
+  if (f) return f.id;
   const row = await createEntity(c.tx, c.ctx, 'room', branchId, { ...input, isPublished: true, internalDescription: DEMO_MARK }, c.meta, c.clock);
   c.created.rooms++;
   return row.id;
@@ -101,7 +112,7 @@ async function unitOf(c: Ctx, resourceId: string): Promise<string> {
 async function seedBranch(c: Ctx, branch: { id: string; timezone: TimeZone }): Promise<BranchResources> {
   const b = branch.id;
   // VR-комната: VR1, VR2 – места; PS4 – единица комнаты без своего ресурса; «вся комната» – из трёх единиц.
-  const vrRoomId = await room(c, b, { slug: 'vr', name: 'VR-комната', capacity: 6, wholeRentAllowed: true });
+  const vrRoomId = await room(c, b, { slug: 'vr-ps4-room', name: 'VR-комната', capacity: 6, wholeRentAllowed: true }, 'vr');
   const vr1 = await resource(c, b, { roomId: vrRoomId, type: 'vr_seat', name: 'VR1', sortOrder: 10, unitCode: 'VR1' });
   const vr2 = await resource(c, b, { roomId: vrRoomId, type: 'vr_seat', name: 'VR2', sortOrder: 20, unitCode: 'VR2' });
   const ps4 = await c.tx.query<{ id: string }>('SELECT id FROM app.occupancy_units WHERE branch_id = $1 AND code = $2', [b, 'PS4']);
@@ -118,7 +129,7 @@ async function seedBranch(c: Ctx, branch: { id: string; timezone: TimeZone }): P
 
   const ps5: string[] = [];
   for (let k = 1; k <= 3; k++) {
-    const roomId = await room(c, b, { slug: `ps5-${k}`, name: `PS5-комната ${k}`, capacity: 4, wholeRentAllowed: false });
+    const roomId = await room(c, b, { slug: `ps5-room-${k}`, name: `PS5-комната ${k}`, capacity: 4, wholeRentAllowed: false }, `ps5-${k}`);
     ps5.push(await resource(c, b, { roomId, type: 'ps_room', name: `PS5 · комната ${k}`, sortOrder: 200 + k, unitCode: `PS5-${k}` }));
   }
 

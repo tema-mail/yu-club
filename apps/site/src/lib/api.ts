@@ -26,6 +26,7 @@ export type ZoneCode = 'pc' | 'vr' | 'ps';
 
 export interface ResourceDto {
   id: string; branchId: string; roomId: string | null; roomName: string | null;
+  roomSlug: string | null; // rooms.slug – адрес /{city}/{branch}/rooms/{roomSlug}/
   type: string; // API отдаёт код типа из справочника (modules/network/routes.public.ts)
   zone: ZoneCode; name: string; stepMinutes: number; selfBookable: true;
 }
@@ -121,41 +122,24 @@ export function siteUrl(fallbackOrigin: string): string {
 
 // ── Комнаты (S1-21, карта сайта 3.2: /{city}/{branch}/rooms/{room}/) ──
 // Комната – группа ресурсов с одним roomId из GET /branches/{id}/resources (K5 №4): в API только опубликованные
-// активные комнаты, поэтому архивная сюда не попадает и её адрес отдаёт 404. Поля slug комнаты в ResourceDto нет –
-// адрес строится транслитом названия (как город и филиал, карта п.3); появится roomSlug в K5 – заменить в roomSlug().
-// Вместимости в ResourceDto нет, а из числа устройств её выводить нельзя (12 §7.1) – число не показываем.
-
-const TRANSLIT: Record<string, string> = {
-  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o',
-  п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'kh', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'shch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
-};
-
-export function roomSlug(name: string): string {
-  const latin = [...name.toLowerCase()].map((ch) => TRANSLIT[ch] ?? ch).join('');
-  return latin.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'room';
-}
+// активные комнаты, поэтому архивная сюда не попадает и её адрес отдаёт 404. Адрес – roomSlug из API (rooms.slug,
+// уникален в филиале, английскими словами по карте сайта п.5). Вместимости в ResourceDto нет, а из числа устройств
+// её выводить нельзя (12 §7.1) – число не показываем.
 
 export interface RoomView { id: string; slug: string; name: string; zones: ZoneCode[]; resources: ResourceDto[] }
 
-/** Комнаты филиала в порядке зон; совпавший адрес у двух комнат получает -2, -3 по порядку id (стабильно). */
+/** Комнаты филиала в порядке зон (затем id – стабильно). */
 export function branchRooms(resources: ResourceDto[]): RoomView[] {
   const byRoom = new Map<string, RoomView>();
   for (const r of resources) {
     if (!r.roomId) continue;
-    const room = byRoom.get(r.roomId) ?? { id: r.roomId, slug: '', name: r.roomName ?? r.name, zones: [], resources: [] };
+    if (!r.roomSlug) continue; // комната без адреса – страницы нет
+    const room = byRoom.get(r.roomId) ?? { id: r.roomId, slug: r.roomSlug, name: r.roomName ?? r.name, zones: [], resources: [] };
     room.resources.push(r);
     if (!room.zones.includes(r.zone)) room.zones.push(r.zone);
     byRoom.set(r.roomId, room);
   }
-  const rooms = [...byRoom.values()].sort((a, b) => ZONE_ORDER.indexOf(a.zones[0]!) - ZONE_ORDER.indexOf(b.zones[0]!) || a.id.localeCompare(b.id));
-  const used = new Map<string, number>();
-  for (const room of [...rooms].sort((a, b) => a.id.localeCompare(b.id))) {
-    const base = roomSlug(room.name);
-    const n = (used.get(base) ?? 0) + 1;
-    used.set(base, n);
-    room.slug = n === 1 ? base : `${base}-${n}`;
-  }
-  return rooms;
+  return [...byRoom.values()].sort((a, b) => ZONE_ORDER.indexOf(a.zones[0]!) - ZONE_ORDER.indexOf(b.zones[0]!) || a.id.localeCompare(b.id));
 }
 
 export const roomPath = (citySlug: string, branchSlug: string, slug: string) => `/${citySlug}/${branchSlug}/rooms/${slug}/`;
