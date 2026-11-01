@@ -20,6 +20,7 @@ import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
 import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
+import { loyaltyCrmRoutes } from './modules/loyalty/routes.crm.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
 import { networkPublicRoutes, type NetworkPublicDeps } from './modules/network/routes.public.ts';
@@ -153,6 +154,17 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
       async (scope) =>
         clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
+    );
+    // K15 №24–28: бонусный счёт и товары за баллы; зона клиента – через брони (clientBranchLinks)
+    void app.register(
+      async (scope) =>
+        loyaltyCrmRoutes(scope, {
+          pool: staff.pool,
+          links: clientBranchLinks,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
     );
   }
 
