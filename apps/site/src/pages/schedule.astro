@@ -1,10 +1,11 @@
 ---
 // Расписание и онлайн-запись /schedule/ (карта сайта 3.3, п.2.9–2.10): один адрес на сеть, клуб – параметром
-// ?branch={город}/{филиал} или из выбора посетителя (кука yu_branch); ?zone= – фильтр. canonical – без параметров.
+// ?branch={город}/{филиал} или из выбора посетителя (кука yu_branch); ?zone= и ?room= (адрес комнаты, S1-21) – фильтры.
+// canonical – без параметров. Неизвестная комната – фильтр просто не включается.
 // Клуб не выбран – список клубов. Временно закрытый – плашка без записи (12 §4.3). Сетка и удержание – остров Schedule.
 import Schedule from '../islands/Schedule.tsx';
 import Site from '../layouts/Site.astro';
-import { ApiError, ZONE_ORDER, findBranch, parseBranchCookie, site, type BranchDetailDto, type ResourceDto, type ZoneCode } from '../lib/api.ts';
+import { ApiError, ZONE_ORDER, branchRooms, findBranch, parseBranchCookie, site, type BranchDetailDto, type ResourceDto, type ZoneCode } from '../lib/api.ts';
 import { todayIn } from '../lib/booking.ts';
 
 const { network, choice } = Astro.locals;
@@ -29,6 +30,8 @@ if (found && found.branch.status === 'active') {
 }
 if (failed) Astro.response.status = 503;
 const branch = detail ?? found?.branch;
+const roomParam = Astro.url.searchParams.get('room');
+const room = roomParam ? (branchRooms(resources).find((r) => r.slug === roomParam) ?? null) : null;
 ---
 <Site title={branch ? `Расписание и запись – ${branch.name}` : 'Расписание и онлайн-запись – Ю-Клуб'} description="Свободное время в клубах Ю-Клуб: игровые ПК, VR и PlayStation. Выберите клуб, день и время – запись онлайн за минуту.">
   <ol class="yu-crumbs" aria-label="Навигация">
@@ -63,9 +66,10 @@ const branch = detail ?? found?.branch;
           <Schedule
             client:load
             branch={{ id: branch.id, name: branch.name, timezone: branch.timezone, bookingWindow: branch.bookingWindow }}
-            resources={resources.map((r) => ({ id: r.id, name: r.name, zone: r.zone, stepMinutes: r.stepMinutes, roomName: r.roomName }))}
+            resources={resources.map((r) => ({ id: r.id, name: r.name, zone: r.zone, stepMinutes: r.stepMinutes, roomName: r.roomName, roomId: r.roomId }))}
             today={todayIn(branch.timezone)}
-            zone={zone}
+            zone={room ? room.zones[0]! : zone}
+            room={room ? { id: room.id, name: room.name } : null}
           />
         )}
       </>

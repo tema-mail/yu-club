@@ -274,6 +274,10 @@ a { color: inherit; }
 .yu-zone__rooms { margin: var(--yu-sp-xs) 0 0; padding: 0; list-style: none; display: grid; gap: var(--yu-sp-2xs); }
 .yu-zone__room { display: grid; gap: var(--yu-sp-3xs); }
 .yu-zone__room-name { font-weight: 700; font-size: var(--yu-fs-s); }
+a.yu-zone__room-name { display: inline-flex; align-items: center; justify-self: start; min-height: var(--yu-tap); text-underline-offset: 3px; }
+a.yu-zone__room-name:hover { color: var(--yu-accent); }
+.yu-zone__book { margin-block-start: var(--yu-sp-s); }
+.yu-room-links { display: flex; flex-wrap: wrap; gap: var(--yu-sp-2xs); margin: 0; padding: 0; list-style: none; }
 .yu-chips { display: flex; flex-wrap: wrap; gap: var(--yu-sp-3xs); margin: 0; padding: 0; list-style: none; }
 .yu-chip { padding: 2px var(--yu-sp-2xs); border: 1px solid var(--yu-line); border-radius: var(--yu-r-s); font-size: var(--yu-fs-xs); color: var(--yu-muted); }
 
