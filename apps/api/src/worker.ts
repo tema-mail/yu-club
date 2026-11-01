@@ -15,7 +15,8 @@ import { loadConfig } from './config.ts';
 import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/outbox-worker.ts';
 import { systemClock, type Clock } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
-import { bookingLookup } from './modules/booking/providers.ts';
+import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
+import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/accrual.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { vapidKeys, type VapidKeys } from './modules/notifications/webpush.ts';
@@ -44,11 +45,14 @@ export async function startWorkerTasks(opts: {
   holdIntervalMs?: number;
   dispatcherIntervalMs?: number;
   logger?: WorkerLogger;
+  /** Чтение оплаты для начисления баллов (K15 §4) – реализация finance (K10, S2-20). Нет – начисление не подключается. */
+  payments?: PaymentLookup;
 }): Promise<WorkerTasks> {
   const clock = opts.clock ?? systemClock;
   const logger = opts.logger ?? { error: (obj: Record<string, unknown>, msg: string) => log('error', msg, obj) };
   // подписки – до startOutboxWorker: он замораживает их и создаёт очереди по снимку
   registerNotificationHandlers({ bookings: bookingLookup, clock });
+  if (opts.payments) registerAccrualHandlers({ bookings: paymentBookingProvider, payments: opts.payments, clock });
   const outbox = await startOutboxWorker({
     pool: opts.pool,
     boss: opts.boss,
