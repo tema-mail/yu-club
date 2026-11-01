@@ -4,12 +4,13 @@
 // S0-15: города и филиалы (создание, правка с rowVersion, архив), хронология аудита (K2), справочники –
 // точно по apps/api/src/modules/dictionaries/routes.ts. S1-25: поиск и карточка клиента – по clients/routes.crm.ts.
 // S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts). S1-24: ресурсы, график, блокировки, тарифы – mock-ops.ts.
-// S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts).
+// S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts). S2-60/61: касса – mock-finance.ts (по finance/routes.crm.ts).
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { registerBooking, resetBooking } from './mock-booking.ts';
+import { registerFinance, resetFinance } from './mock-finance.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
 import { registerSettings, resetSettings } from './mock-settings.ts';
 import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
@@ -60,16 +61,20 @@ const ACTIONS: Record<Role, string[]> = {
     'client.update.limited', 'client.update', 'client.merge', 'client.export', 'export.pd', 'tariff.manage',
     'settings.network.manage', 'settings.branch.manage', 'dictionary.manage', 'audit.view', 'audit.view.own',
     'audit.export', 'notifications.view',
+    'finance.view', 'finance.view.day', 'finance.expense.create', 'finance.income.create', 'finance.opening_balance', 'finance.withdrawal',
+    'finance.place_transfer', 'finance.correct', 'finance.category.manage', 'finance.period.close',
   ],
   director: [
     'network.view', 'network.branch.update', 'network.hours.manage', 'staff.view', 'staff.admin.assign', 'staff.block',
     'resources.view', 'resources.manage', 'schedule.view', 'booking.create', 'booking.cancel', 'booking.reschedule',
     'booking.visit.mark', 'booking.visit.correct', 'block.manage', 'client.view.basic', 'client.view.full',
     'client.update.limited', 'client.update', 'settings.branch.manage', 'audit.view', 'audit.view.own', 'notifications.view',
+    'finance.view', 'finance.view.day', 'finance.expense.create', 'finance.income.create', 'finance.withdrawal', 'finance.place_transfer',
   ],
   admin: [
     'network.view', 'resources.view', 'schedule.view', 'booking.create', 'booking.cancel', 'booking.reschedule',
     'booking.visit.mark', 'block.manage', 'client.view.basic', 'client.update.limited', 'audit.view.own', 'notifications.view',
+    'finance.view.day', 'finance.expense.create',
   ],
 };
 
@@ -680,6 +685,7 @@ export function buildMock() {
     resetOps();
     resetBooking();
     resetSettings();
+    resetFinance(branches);
     return { ok: true };
   });
 
@@ -704,6 +710,8 @@ export function buildMock() {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
     fail, audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),
   });
+  resetFinance(branches);
+  registerFinance(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches });
   registerStaff(app, P, {
     staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
     endSessions: (id) => { for (const [t, sid] of sessions) if (sid === id) sessions.delete(t); },
