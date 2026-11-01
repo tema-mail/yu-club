@@ -23,6 +23,8 @@ import { resourcesRoutes } from './modules/resources/routes.ts';
 import { pricingRoutes } from './modules/pricing/routes.ts';
 import { settingsRoutes } from './modules/settings/routes.crm.ts';
 import { financeCrmRoutes } from './modules/finance/routes.crm.ts';
+import { registerPaymentMethod } from './modules/finance/methods.ts';
+import { createCertificatePaymentMethod } from './modules/certificates/payment-method.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
 import type { SenderDeps } from './modules/notifications/sender.ts';
@@ -221,8 +223,11 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
 async function main(): Promise<void> {
   const config = loadConfig();
   const { deps, close, sender } = depsFromConfig(config);
+  // Способы оплаты чужих модулей (K10 §5, ADR 0002) – один раз на процесс: дубль роняет старт.
+  if (config.CERT_PEPPER) registerPaymentMethod(createCertificatePaymentMethod({ pepper: config.CERT_PEPPER }));
   const app = buildServer(config, deps);
   if (!deps.staff) app.log.warn('Вход сотрудников выключен: нужны DATABASE_URL и SESSION_PEPPER');
+  if (!config.CERT_PEPPER) app.log.warn('Оплата сертификатом выключена: нет CERT_PEPPER');
   if (sender && !sender.vapid) app.log.warn('Web Push выключен: нет VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT');
   // Диспетчер уведомлений, outbox и истечение удержаний – в отдельном процессе apps/api/src/worker.ts.
   app.addHook('onClose', async () => {
