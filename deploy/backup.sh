@@ -19,7 +19,7 @@ NAME=$DB-$(date -u +%Y%m%d-%H%M%S)
 fail() {
   echo "$(date -Is) ОШИБКА бэкапа $DB: $*"
   [ -n "${BACKUP_ALERT_URL:-}" ] && curl -s -m 10 -X POST --data-urlencode "text=yu-club: бэкап $DB не удался: $*" "$BACKUP_ALERT_URL" >/dev/null || true
-  rm -f "$DIR/$NAME.dump.part" "$DIR/$NAME.counts.part"
+  rm -f "$DIR/$NAME.dump.part" "$DIR/$NAME.counts.part" "$DIR/$NAME.snap" "$DIR/$NAME.failed"
   exit 1
 }
 trap 'fail "команда упала (строка $LINENO)"' ERR
@@ -28,10 +28,13 @@ mkdir -p "$DIR"; chmod 700 "$DIR"
 docker exec "$CT" pg_isready -q -U postgres -d "$DB" || fail "база недоступна"
 
 # Один сеанс psql: снимок → дамп этого снимка → подсчёт в том же снимке.
+# Имя снимка – через файл: psql не подставляет переменные в \!.
 docker exec -i "$CT" psql -U postgres -d "$DB" -v ON_ERROR_STOP=1 -q -At >/dev/null <<SQL
 BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
-SELECT pg_export_snapshot() AS snap \gset
-\! pg_dump -U postgres -Fc --snapshot=:snap -f /backups/$NAME.dump.part $DB || echo "pg_dump упал" > /backups/$NAME.failed
+\o /backups/$NAME.snap
+SELECT pg_export_snapshot();
+\o
+\! pg_dump -U postgres -Fc --snapshot="\$(cat /backups/$NAME.snap)" -f /backups/$NAME.dump.part $DB || echo "pg_dump упал" > /backups/$NAME.failed
 \o /backups/$NAME.counts.part
 SELECT 'rows ' || n.nspname || '.' || c.relname || ' ' ||
        (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname), false, true, '')))[1]::text
@@ -46,6 +49,7 @@ SELECT 'ledger_sum ' || coalesce((
 COMMIT;
 SQL
 
+rm -f "$DIR/$NAME.snap"
 if [ -f "$DIR/$NAME.failed" ]; then rm -f "$DIR/$NAME.failed"; fail "pg_dump вернул ошибку"; fi
 [ -s "$DIR/$NAME.dump.part" ] || fail "пустой дамп"
 [ -s "$DIR/$NAME.counts.part" ] || fail "нет подсчёта записей"
