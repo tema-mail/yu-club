@@ -450,6 +450,61 @@ export async function reverse(
   }
 }
 
+/** Сторно всей проводки одной новой проводкой (K17 §4: 1 операция кассы = 1 проводка, у перевода между местами
+ *  денег записей две). Каждая запись – та же сумма с обратным знаком на том же счёте, reversal_of = её id. */
+export async function reversePosting(
+  tx: Tx,
+  input: { postingId: string; reason: string; idempotencyKey: string; author: PostingInput['author']; occurredAt: Date },
+): Promise<PostingResult> {
+  const reason = assertNonEmpty(input.reason, 'reason');
+  const key = assertNonEmpty(input.idempotencyKey, 'idempotencyKey');
+  try {
+    const res = await tx.query<EntryRow & { branch_id: string | null; ref_type: string | null; ref_id: string | null }>(
+      `SELECT ${ENTRY_COLS}, branch_id, ref_type, ref_id FROM journal.ledger_entries WHERE posting_id = $1 ORDER BY id`,
+      [input.postingId],
+    );
+    if (res.rows.length === 0) throw new AppError('NOT_FOUND', 404, 'Проводка не найдена', { postingId: input.postingId });
+    const orig = res.rows.map(toEntry);
+    if (orig.some((e) => e.reversalOf !== null)) throw fail('CANNOT_REVERSE_REVERSAL', 'Сторно нельзя сторнировать');
+    await lockAccounts(tx, orig.map((e) => e.accountId));
+
+    const expected = orig.map((e) => ({ accountId: e.accountId, amount: -e.amount, type: 'reversal' as const }));
+    const stored = await findReplay(tx, key);
+    if (stored) {
+      if (!sameEntries(stored, expected) || stored.some((s, i) => s.reversalOf !== orig[i]!.id)) {
+        throw new AppError('IDEMPOTENCY_KEY_REUSED', 409, 'Ключ уже использован для другой операции', { idempotencyKey: key });
+      }
+      return { postingId: stored[0]!.postingId, entries: stored, replayed: true };
+    }
+
+    const postingId = randomUUID();
+    const entries: PostedEntry[] = [];
+    for (const [i, e] of orig.entries()) {
+      const row = res.rows[i]!;
+      entries.push(
+        await insertEntry(tx, {
+          postingId,
+          accountId: e.accountId,
+          amount: -e.amount,
+          type: 'reversal',
+          basis: reason,
+          branchId: row.branch_id,
+          ref: row.ref_type && row.ref_id ? { type: row.ref_type, id: row.ref_id } : null,
+          refs: {},
+          reversalOf: e.id,
+          idempotencyKey: `${key}#${i}`,
+          occurredAt: input.occurredAt,
+          author: input.author,
+          limitOverrideReason: null,
+        }),
+      );
+    }
+    return { postingId, entries, replayed: false };
+  } catch (err) {
+    throw mapDbError(err);
+  }
+}
+
 // ---- чтение
 
 export async function getBalance(db: Db, accountId: string): Promise<Minor> {
