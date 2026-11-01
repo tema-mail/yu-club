@@ -9,6 +9,7 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/
 COPY apps/crm/package.json apps/crm/
 COPY apps/site/package.json apps/site/
+COPY packages/contracts/package.json packages/contracts/
 COPY db/package.json db/
 RUN npm ci -w @yu/site --include-workspace-root=false --omit=dev --ignore-scripts --no-audit --no-fund
 
