@@ -53,13 +53,8 @@ export async function occupyMany(tx: Tx, branchId: string, items: OccupyItem[]):
   if (items.some((i) => i.clientId !== null && i.source.type === 'event')) throw new Error('booking.occupy: у мероприятия нет client_time');
   // 0) строки ресурсов FOR SHARE и сверка состава (против changeComposition) – до единиц: порядок «ресурсы → единицы».
   await lockCompositions(tx, items.map((i) => ({ resourceId: i.units.resourceId, unitIds: i.units.unitIds, at: i.period.start })));
-  const all = unitOrder(items.flatMap((i) => i.units.unitIds));
   // 1) строки единиц в порядке id: очередь команд одной единицы и видимость против блокировок (createBlock – FOR UPDATE).
-  const locked = await tx.query(
-    `SELECT id FROM app.occupancy_units WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND status = 'active' ORDER BY id FOR NO KEY UPDATE`,
-    [all, branchId],
-  );
-  if (locked.rowCount !== all.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
+  await lockUnitsForWrite(tx, branchId, items.flatMap((i) => i.units.unitIds));
   // 2) блокировки (K6 правило 2: в той же транзакции, после захвата строк единиц).
   for (const i of items) await assertNotBlocked(tx, i.units.unitIds, i.period);
   // 3) все строки – одним INSERT в порядке unit_id.
@@ -150,6 +145,36 @@ export async function releaseSources(
       params,
     );
   }
+}
+
+/** Строки единиц FOR NO KEY UPDATE по id – перед ЛЮБОЙ записью в occupancy (occupy, convertHoldItem, перенос;
+ *  ревизия S1-02 п.2). Нет единицы в филиале / архив → RESOURCE_UNAVAILABLE. */
+export async function lockUnitsForWrite(tx: Tx, branchId: string, unitIds: string[]): Promise<void> {
+  const all = unitOrder(unitIds);
+  const locked = await tx.query(
+    `SELECT id FROM app.occupancy_units WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND status = 'active' ORDER BY id FOR NO KEY UPDATE`,
+    [all, branchId],
+  );
+  if (locked.rowCount !== all.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
+}
+
+/** K6 convertHoldItem: строки позиции удержания → бронь без окна свободного слота (K5 confirm шаг 5).
+ *  Единицы уже захвачены вызывающим (lockUnitsForWrite). Строк меньше, чем единиц позиции (часть погашена
+ *  истечением), → HOLD_EXPIRED: вся транзакция откатывается. Так же client_time (ровно 1 строка, если есть клиент). */
+export async function convertHoldItem(tx: Tx, now: Date, item: { id: string; unitIds: string[]; clientId: string | null }, booking: { id: string; version: 1 }): Promise<void> {
+  const o = await tx.query(
+    `UPDATE app.occupancy SET source_type = 'booking', source_id = $2, booking_version = $3, hold_expires_at = NULL
+     WHERE active AND source_type = 'hold_item' AND source_id = $1 AND hold_expires_at > $4 RETURNING unit_id`,
+    [item.id, booking.id, booking.version, now],
+  );
+  if ((o.rowCount ?? 0) < item.unitIds.length) throw new AppError('HOLD_EXPIRED', 410, 'Время на оформление истекло, слоты освобождены');
+  if (item.clientId === null) return;
+  const c = await tx.query(
+    `UPDATE app.client_time SET source_type = 'booking', source_id = $2, hold_expires_at = NULL
+     WHERE active AND source_type = 'hold_item' AND source_id = $1 AND hold_expires_at > $3 RETURNING id`,
+    [item.id, booking.id, now],
+  );
+  if (c.rowCount !== 1) throw new AppError('HOLD_EXPIRED', 410, 'Время на оформление истекло, слоты освобождены');
 }
 
 /** K6 occupy – одна позиция. */

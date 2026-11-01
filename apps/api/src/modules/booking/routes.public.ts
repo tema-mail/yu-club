@@ -13,6 +13,7 @@ import { AppError } from '../../core/errors.ts';
 import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../core/idempotency.ts';
 import { parseLocalDate, systemClock, type Clock } from '../../core/time.ts';
 import { availability } from './availability.ts';
+import { confirmHold } from './confirm.ts';
 import { addHoldItem, attachHold, createHold, getHold, ownHoldItems, releaseHold, removeHoldItem, type HoldOwner } from './hold.ts';
 import { runOccupancyCommand } from './occupancy.ts';
 
@@ -135,6 +136,14 @@ export async function bookingPublicRoutes(app: FastifyInstance, deps: BookingPub
   app.post('/holds/:holdId/items', command('hold.add', 200, (tx, o, p, body) => addHoldItem(tx, o, p.holdId!, parse(itemSchema, body), clock)));
   app.delete('/holds/:holdId/items/:itemId', command('hold.remove', 200, (tx, o, p) => removeHoldItem(tx, o, p.holdId!, p.itemId!, clock)));
   app.post('/holds/:holdId/release', command('hold.release', 200, (tx, o, p) => releaseHold(tx, o, p.holdId!, clock)));
+  app.post(
+    '/holds/:holdId/confirm',
+    command('hold.confirm', 201, (tx, o, p, body) => {
+      parse(z.strictObject({ comment: z.string().max(500).optional() }), body);
+      if (!o.clientId) throw new AppError('AUTH_REQUIRED', 401, 'Войдите, чтобы завершить запись');
+      return confirmHold(tx, o.clientId, p.holdId!, clock);
+    }),
+  );
   app.post(
     '/holds/:holdId/attach',
     command('hold.attach', 200, (tx, o, p) => {

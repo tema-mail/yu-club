@@ -114,5 +114,5 @@ describe('CLI db/migrate.ts на чистой базе', () => {
     expect(await cli('up')).toBe(`Применены: ${all.join(', ')}`);
     const role = await db.client.query("SELECT 1 FROM pg_roles WHERE rolname = 'yu_app'");
     expect(role.rowCount).toBe(1); // откат не трогает роль кластера
-  });
+  }, 30_000); // четыре запуска CLI по всем миграциям; под нагрузкой гонок K6 5 с не хватает
 });
