@@ -6,7 +6,7 @@
 ## Общее
 
 - База: `${API_URL}/api/public/v1`. JSON, UTF-8. Время – ISO 8601 UTC с `Z` (`2026-11-15T07:00:00Z`); локальные даты филиала – `YYYY-MM-DD`; деньги – целые копейки (`priceKop`).
-- **Кто вызывает.** Кука `yu_visitor` (HttpOnly, Secure, SameSite=Lax, 1 год, uuid) ставится сервером на `GET /branches/{id}` и `GET /branches/{id}/availability`, если её нет (чтобы состояние `mine` и удержание работали с первого клика). `POST /holds` без куки → `400 VISITOR_REQUIRED` (сайт повторяет после GET; решение по ревью п.6). Кука `yu_client` – сессия клиента (K9). Удержание принадлежит посетителю или клиенту; при входе удержание посетителя переходит к клиенту (`POST /holds/{id}/attach`, ниже).
+- **Кто вызывает.** Кука `yu_visitor` (HttpOnly, Secure, SameSite=Lax, 1 год, uuid) ставится сервером только на `GET /branches/{id}/availability` (booking), если её нет; `GET /branches/{id}` остаётся общим и кэшируемым (решение координатора 01.11) (чтобы состояние `mine` и удержание работали с первого клика). `POST /holds` без куки → `400 VISITOR_REQUIRED` (сайт повторяет после GET; решение по ревью п.6). Кука `yu_client` – сессия клиента (K9). Удержание принадлежит посетителю или клиенту; при входе удержание посетителя переходит к клиенту (`POST /holds/{id}/attach`, ниже).
 - **Идемпотентность**: заголовок `Idempotency-Key: <uuid>` обязателен у всех `POST` этого контракта (ADR 0004). Повтор → тот же ответ и `Idempotent-Replay: true`; тот же ключ с другим телом → `409 IDEMPOTENCY_KEY_REUSED`. Клиент сайта генерирует ключ на одно нажатие и повторяет **с тем же ключом** при обрыве сети (16 §15.1).
 - **CSRF**: для `POST/DELETE` с кукой – заголовок `X-Requested-With: yu-site` + проверка `Origin ∈ {PUBLIC_SITE_URL}` (решение).
 - **Ошибка**: `{ "error": { "code": string, "message": string, "details"?: object, "requestId": string } }`.
@@ -71,7 +71,7 @@ interface ConfirmResultDto { checkoutId: string; bookings: BookingDto[] }
 |---|---|---|---|---|
 | 1 | `GET /cities` | все | – | `200 { items: CityDto[] }` – города с хотя бы одним `active`/`temporarily_closed` филиалом |
 | 2 | `GET /branches?city={slug}` | все | `city` необязателен | `200 { items: BranchDto[] }` |
-| 3 | `GET /branches/{branchId}` | все | – | `200 BranchDto`; `preparing`/`archived` → `404` |
+| 3 | `GET /branches/{branchId}` | все | – | `200 BranchDto & { hoursToday: { start: 'HH:mm'; end: 'HH:mm' }[] }` – расширение: часы сегодня по местному времени филиала (openIntervals с исключениями календаря; пусто – сегодня закрыт); `preparing`/`archived` → `404` |
 | 4 | `GET /branches/{branchId}/resources?zone=` | все | `zone` – `pc`/`vr`/`ps` | `200 { items: ResourceDto[] }` |
 | 5 | `GET /branches/{branchId}/availability?date=&resourceIds=` | все | `date` LocalDate обязателен; `resourceIds` – через запятую, ≤ 50, иначе все | `200 AvailabilityDto` за ≤ 2 с (17 §4.1) |
 | 6 | `POST /holds` | visitor / client | `{ branchId, items: [{ resourceId, start, end }] }` (1..10 позиций) | `201 HoldDto` – **все или ничего** для первой порции |

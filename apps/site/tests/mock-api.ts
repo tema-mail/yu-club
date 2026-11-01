@@ -41,7 +41,7 @@ const publicBranches = () => branches.filter((b) => isPublic(b.status));
 
 function toDto(b: (typeof branches)[number]) {
   const { id, cityId, slug, name, address, timezone, status, phone } = b;
-  return { id, cityId, slug, name, address, timezone, status, phone, publicContacts: {}, bookingWindow: { defaultDays: 7, maxDays: 30 }, holdMinutes: 10 };
+  return { id, cityId, slug, name, address, timezone, status, phone, publicContacts: {}, bookingWindow: { defaultDays: 7, maxDays: 30 }, holdMinutes: 15 };
 }
 
 function fail(reply: FastifyReply, status: number, code: string, message: string) {
@@ -74,7 +74,8 @@ export function buildMock() {
 
   app.get(`${P}/branches/:id`, async (req, reply) => {
     const b = publicBranches().find((x) => x.id === (req.params as { id: string }).id);
-    return b ? toDto(b) : fail(reply, 404, 'NOT_FOUND', 'Не найдено');
+    // K5 №3 + hoursToday (местное время филиала; временно закрыт – пусто), как apps/api routes.public.ts.
+    return b ? { ...toDto(b), hoursToday: b.status === 'active' ? [{ start: '10:00', end: '22:00' }] : [] } : fail(reply, 404, 'NOT_FOUND', 'Не найдено');
   });
 
   app.get(`${P}/branches/:id/resources`, async (req, reply) => {

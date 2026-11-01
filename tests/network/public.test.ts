@@ -49,6 +49,18 @@ beforeAll(async () => {
   await branch('old', 'nsk', 'old', 'archived');
   await branch('lenina', 'tsk', 'lenina', 'active');
   await branch('mira', 'omsk', 'mira', 'preparing'); // город только с готовящимся – не виден
+  for (const k of ['krasny', 'akadem', 'lenina']) {
+    await db.client.query(
+      `INSERT INTO app.branch_weekly_hours (branch_id, weekday, open_time, close_time, valid_from, created_by)
+       SELECT $1, wd, '10:00', '22:00', '2026-01-01', $1 FROM generate_series(1, 7) wd`,
+      [ids[k]],
+    );
+  }
+  await db.client.query(
+    `INSERT INTO app.calendar_exceptions (branch_id, scope_type, local_date, kind, open_time, close_time, reason, created_by)
+     VALUES ($1, 'branch', '2026-11-14', 'short_day', '10:00', '18:00', 'санитарный день', $1)`,
+    [ids.lenina],
+  );
   await db.client.query(
     `INSERT INTO app.settings_values (key, level, branch_id, value, valid_from, created_by) VALUES ('booking.window_default_days', 'branch', $1, '14', '2026-01-01', $1)`,
     [ids.krasny],
@@ -99,6 +111,18 @@ describe('K5 №1–2: города и филиалы', () => {
 });
 
 describe('K5 №3–4: филиал и его ресурсы', () => {
+  it('hoursToday – местное время филиала по графику и исключениям; временно закрыт – пусто; в списке поля нет', async () => {
+    const get = async (k: string) => (await app.inject({ method: 'GET', url: `${P}/branches/${ids[k]}` })).json();
+    const k = await get('krasny');
+    expect(k.hoursToday).toEqual([{ start: '10:00', end: '22:00' }]);
+    expect(sorted(k)).toEqual([...BRANCH_KEYS, 'hoursToday'].sort());
+    expect((await get('lenina')).hoursToday).toEqual([{ start: '10:00', end: '18:00' }]); // сокращённый день 14.11
+    expect((await get('akadem')).hoursToday).toEqual([]);
+    const list = (await app.inject({ method: 'GET', url: `${P}/branches` })).json().items;
+    expect(list.every((b: object) => !('hoursToday' in b))).toBe(true);
+  });
+
+
   it('филиал по id; готовящийся, архивный, несуществующий и мусорный id – одинаковый 404', async () => {
     const r = await app.inject({ method: 'GET', url: `${P}/branches/${ids.akadem}` });
     expect(r.json()).toMatchObject({ slug: 'akadem', status: 'temporarily_closed' });

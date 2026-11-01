@@ -3,15 +3,16 @@
 // 'preparing'/'archived' и несуществующий id – одинаковый 404. Внутренние поля (код, комментарии, версии,
 // статусы комнат, признаки ресурса) не отдаются: DTO собираются явным списком полей, не из строки базы.
 // Ответы общие для всех посетителей – короткий публичный кэш (данные сети меняются редко, но не «навсегда»).
-// Часы дня (openIntervals с исключениями календаря) – в K5 №5 availability, модуль booking (S1-08).
+// GET /branches/{id} дополнительно отдаёт hoursToday – часы сегодняшнего дня по местному времени филиала
+// (openIntervals с исключениями календаря; пусто – сегодня закрыт). Слоты и кука yu_visitor – K5 №5, booking.
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import type { Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { resolveSettings } from '../../core/settings.ts';
-import { systemClock, type Clock } from '../../core/time.ts';
+import { instantToLocal, systemClock, todayIn, type Clock } from '../../core/time.ts';
 import { listBookableResources } from '../resources/index.ts';
-import { BRANCH_COLUMNS, BRANCH_FROM, isUuid, toBranchInfo, type BranchRow } from './index.ts';
+import { BRANCH_COLUMNS, BRANCH_FROM, isUuid, openIntervals, toBranchInfo, type BranchRow } from './index.ts';
 
 export interface NetworkPublicDeps {
   pool: Db;
@@ -40,6 +41,11 @@ export interface BranchDto {
   bookingWindow: { defaultDays: number; maxDays: number };
   holdMinutes: number;
 }
+/** K5 №3 + расширение: часы сегодня, 'HH:mm' по зоне филиала. */
+export interface BranchDetailDto extends BranchDto {
+  hoursToday: Array<{ start: string; end: string }>;
+}
+
 export interface ResourceDto {
   id: string;
   branchId: string;
@@ -134,9 +140,18 @@ export async function networkPublicRoutes(app: FastifyInstance, deps: NetworkPub
   // №3: один филиал; 'preparing'/'archived'/нет – 404 одинаково.
   app.get('/branches/:branchId', async (request, reply) => {
     const row = await publicBranch(deps.pool, (request.params as { branchId: string }).branchId);
-    const dto = await toDto(deps.pool, row, clock.now());
+    const now = clock.now();
+    const dto = await toDto(deps.pool, row, now);
+    const info = toBranchInfo(row);
+    const closedNow =
+      info.tempClosed !== null && info.tempClosed.from <= now && (info.tempClosed.to === null || now < info.tempClosed.to);
+    const intervals = closedNow ? [] : await openIntervals(deps.pool, { branchId: row.id, date: todayIn(clock, info.timezone) });
+    const out: BranchDetailDto = {
+      ...dto,
+      hoursToday: intervals.map((i) => ({ start: instantToLocal(i.start, info.timezone).time, end: instantToLocal(i.end, info.timezone).time })),
+    };
     cached(reply);
-    return dto;
+    return out;
   });
 
   // №4: ресурсы для самостоятельной записи – публичный вид из modules/resources.
