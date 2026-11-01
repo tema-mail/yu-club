@@ -1,0 +1,87 @@
+---
+// Сотрудники (S0-15c, staff/routes.staff.ts): /staff – список зоны, /staff/new – создание, /staff/{id} – карточка.
+// Экран – при staff.view (Владелец, Директор); Администратору – 404, как несуществующей странице.
+// Опция «Директор» в создании – только при staff.director.assign (Владелец). Решает всё равно сервер (K1).
+import Crm from '../../layouts/Crm.astro';
+import EntityList from '../../islands/EntityList.tsx';
+import StaffForm, { type StaffItem } from '../../islands/StaffForm.tsx';
+import { ApiError, ROLE_LABEL, serverCall, type StaffRole } from '../../lib/api.ts';
+
+const STATUS_LABEL = { active: 'Работает', blocked: 'Заблокирован', archived: 'В архиве' };
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const [key = '', extra] = (Astro.params.path ?? '').split('/');
+
+let notFound = extra !== undefined || !can('staff.view') || (key === 'new' && !can('staff.admin.assign'));
+let staff: StaffItem | null = null;
+if (!notFound && key && key !== 'new') {
+  try {
+    staff = await serverCall<StaffItem>(cookie, `/staff/${encodeURIComponent(key)}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFound = true;
+  }
+}
+if (notFound) Astro.response.status = 404;
+
+const roleOptions = (['admin', 'director'] as StaffRole[])
+  .filter((r) => can(r === 'admin' ? 'staff.admin.assign' : 'staff.director.assign'))
+  .map((r) => ({ value: r, label: ROLE_LABEL[r] }));
+const zoneBranches = branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName }));
+const timezone = (ctx.kind === 'branch' ? ctx.branch.timezone : branches[0]?.timezone) ?? 'Asia/Novosibirsk';
+
+const self = staff?.id === me.staff.id;
+const canAssign = staff ? can(staff.role === 'admin' ? 'staff.admin.assign' : 'staff.director.assign') : false;
+const canRole = canAssign && !self && staff?.role !== 'owner';
+const canBlock = Boolean(staff) && can('staff.block') && !self && (staff?.role === 'admin' || me.staff.role === 'owner');
+
+const title = notFound ? 'Не найдено' : staff ? `${staff.lastName} ${staff.firstName}` : key === 'new' ? 'Новый сотрудник' : 'Сотрудники';
+---
+<Crm title={title}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такой записи нет или она вне вашей зоны доступа. Проверьте ссылку.</p>
+      <p><a href="/">На главную</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        {key && <p class="yc-crumbs"><a href="/staff">Сотрудники</a> / {title}</p>}
+        <h1>{title}</h1>
+        {staff && <p>{ROLE_LABEL[staff.role]} · <span class={`yc-badge yc-badge--${staff.status}`}>{STATUS_LABEL[staff.status]}</span></p>}
+      </div>
+
+      {!key && (
+        <>
+          {can('staff.admin.assign') && (
+            <nav class="yc-tabs" aria-label="Сотрудники">
+              <a class="yc-btn yc-tabs__action" href="/staff/new">Добавить сотрудника</a>
+            </nav>
+          )}
+          <section class="yc-panel" aria-label="Список сотрудников">
+            <EntityList client:load testId="staff" endpoint="/staff" rowHref="/staff/{id}" pageSize={20}
+              search={{ label: 'Поиск по имени и почте', param: 'q' }}
+              filters={[
+                { param: 'role', label: 'Роль', options: [{ value: '', label: 'Все' }, ...(['owner', 'director', 'admin'] as StaffRole[]).map((r) => ({ value: r, label: ROLE_LABEL[r] }))] },
+                { param: 'status', label: 'Статус', options: [{ value: '', label: 'Все' }, ...Object.entries(STATUS_LABEL).map(([value, label]) => ({ value, label }))] },
+              ]}
+              columns={[
+                { key: 'lastName', label: 'Фамилия', main: true }, { key: 'firstName', label: 'Имя' },
+                { key: 'role', label: 'Роль', labels: ROLE_LABEL }, { key: 'email', label: 'Почта' },
+                { key: 'status', label: 'Статус', badge: STATUS_LABEL },
+              ]}
+              emptyText="В вашей зоне пока нет сотрудников." />
+          </section>
+        </>
+      )}
+
+      {(key === 'new' || staff) && (
+        <StaffForm client:load staff={staff ?? undefined} branches={zoneBranches} cityIds={me.access.cityIds}
+          roleOptions={key === 'new' || canRole ? roleOptions : []} roleLabels={ROLE_LABEL} statusLabels={STATUS_LABEL}
+          canProfile={canAssign} canRole={canRole} canScope={canRole} canBlock={canBlock} timezone={timezone} />
+      )}
+    </>
+  )}
+</Crm>
