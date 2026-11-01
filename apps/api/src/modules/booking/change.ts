@@ -289,6 +289,25 @@ export interface StaffCreateInput {
   end: Date;
   client: { clientId: string } | { phone: string; firstName: string; lastName?: string | undefined };
   internalComment?: string | undefined;
+  /** Э2 (K11 изменение №4, K15 §8, R-13): бронь клиенту на −50 – только с правом loyalty.book_below_limit и причиной. */
+  overrideLoyaltyLimit?: { reason: string } | undefined;
+}
+
+/** Ворота записи для брони сотрудником: при LOYALTY_LIMIT_REACHED обход – только с причиной и правом
+ *  loyalty.book_below_limit (Владелец, Директор), иначе FORBIDDEN. Возвращает причину обхода (для аудита) или null. */
+async function assertCanBookByStaff(tx: Tx, input: StaffCreateInput, branchId: string, clientId: string, now: Date): Promise<string | null> {
+  try {
+    await assertCanBook(tx, clientId, now);
+    return null;
+  } catch (err) {
+    if (!(err instanceof AppError) || err.code !== 'LOYALTY_LIMIT_REACHED' || input.overrideLoyaltyLimit === undefined) throw err;
+  }
+  if (!can(input.ctx, 'loyalty.book_below_limit', { branchId })) {
+    throw new AppError('FORBIDDEN', 403, 'Записать клиента с балансом −50 может только Владелец или Директор', { action: 'loyalty.book_below_limit' });
+  }
+  const reason = requireText(input.overrideLoyaltyLimit.reason, 'overrideLoyaltyLimit.reason');
+  await assertCanBook(tx, clientId, now, { override: { loyaltyLimit: { reason, staffId: input.ctx.actor.staffId } } });
+  return reason;
 }
 
 /** Те же проверки, что K5 confirm, без удержания (01 §9 п.6, §10.2): ресурс, окно, шаг, график, блокировки,
@@ -309,7 +328,7 @@ export async function createStaffBooking(tx: Tx, input: StaffCreateInput, meta: 
     clientId = (await findOrCreateGuest(tx, input.client, meta, clock)).id;
   }
   await lockClients(tx, [clientId]);
-  await assertCanBook(tx, clientId, now);
+  const belowLimitReason = await assertCanBookByStaff(tx, input, branch.id, clientId, now);
   const maxDays = (await resolveSetting(tx, 'booking.window_max_days', { branchId: branch.id }, now)).value;
   const c = await checkItem(tx, branch, now, maxDays, { resourceId: input.resourceId, start: input.start, end: input.end });
   const q = await quote(tx, { branchId: branch.id, resourceType: c.resource.type, start: c.period.start, durationMinutes: durationMinutes(c.period) });
@@ -335,6 +354,9 @@ export async function createStaffBooking(tx: Tx, input: StaffCreateInput, meta: 
     { action: 'booking.created', object: { type: 'booking', id: bookingId }, branchId: branch.id, after: { clientId, resourceId: c.resource.id, start: c.period.start, end: c.period.end, priceKop: q.priceKop, source: 'crm' } },
     clock,
   );
+  if (belowLimitReason !== null) {
+    await writeAudit(tx, meta, { action: 'loyalty.booked_below_limit', object: { type: 'booking', id: bookingId }, branchId: branch.id, after: { clientId }, reason: belowLimitReason }, clock);
+  }
   await publish(tx as OutboxTx, {
     type: 'booking.confirmed',
     aggregateType: 'booking',
