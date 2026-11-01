@@ -7,6 +7,7 @@ import { useRef, useState } from 'preact/hooks';
 import {
   STATUS_LABEL, bookingApi, bookingError, fmtRange, fmtRub, inZone, isConflict, type BookingCard as Card, type CrmBooking, type TimelineEvent,
 } from '../lib/booking.ts';
+import RescheduleDialog from './RescheduleDialog.tsx';
 
 export interface Reason { id: string; name: string; domain: string }
 export interface BookingCardProps {
@@ -145,6 +146,7 @@ export default function BookingCard({ initial, reasons, canComment }: BookingCar
           {can('complete') && <button type="button" class="yc-btn" disabled={busy} onClick={() => void run(() => bookingApi.complete(b.id, b.rowVersion), 'Сеанс завершён.')}>Завершить сеанс</button>}
           {can('no_show') && <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => openDialog('no_show')}>Неявка…</button>}
           {can('revert_visit') && <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => openDialog('revert_visit')}>Исправить отметку…</button>}
+          {can('reschedule') && <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => openDialog('reschedule')}>Перенести…</button>}
           {can('cancel') && <button type="button" class="yc-btn yc-btn--ghost yc-btn--danger-text" disabled={busy} onClick={() => openDialog('cancel')}>Отменить запись…</button>}
         </section>
       )}
@@ -217,7 +219,10 @@ export default function BookingCard({ initial, reasons, canComment }: BookingCar
       </section>
 
       <dialog ref={dialog} class={`yc-dialog${kind === 'reschedule' ? ' yc-dialog--wide' : ''}`} aria-labelledby="bk-dialog-title" onClose={() => setKind(null)}>
-        {kind && kind !== 'reschedule' && (
+        {kind === 'reschedule' ? (
+          <RescheduleDialog booking={b} busy={busy} error={dlgError} onCancel={closeDialog}
+            onSubmit={async (body) => (await run(() => bookingApi.reschedule(b.id, { rowVersion: b.rowVersion, ...body }), 'Запись перенесена.', true)) && closeDialog()} />
+        ) : kind && (
           <form class="yc-dialog__body" novalidate onSubmit={confirmDialog}>
             <h2 id="bk-dialog-title">{title[kind]}</h2>
             <BeforeAfter before={now} after={after[kind]!} />

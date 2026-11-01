@@ -194,6 +194,37 @@ test('Администратор чужого филиала – 404 на кар
   expect(r.status()).toBe(404);
 });
 
+test('перенос: новый слот из календаря, «было → станет», причина обязательна, вторая версия', async ({ page, request }) => {
+  expect((await request.post(`${MOCK}/__test/reset`)).ok()).toBe(true);
+  await login(page, 'admin@yu.test');
+  await card(page, 'bk-pc1-evening');
+  await page.getByRole('button', { name: 'Перенести…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Перенести запись' });
+  await expect(dialog.getByTestId('cal-lane-res-pc1').locator('.yc-cal__item--current')).toBeVisible(); // переносимая подсвечена
+  await dialog.getByRole('button', { name: 'Перенести', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('Выберите новое время в календаре.');
+  await dialog.getByRole('button', { name: 'ПК 2, 18:00 – перенести сюда' }).click();
+  const d = `${day(1).slice(8, 10)}.${day(1).slice(5, 7)}`;
+  await expect(dialog.getByTestId('before-after')).toContainText(`ПК 1, ${d}, 20:00–22:00`);
+  await expect(dialog.getByTestId('before-after')).toContainText(`ПК 2, ${d}, 18:00–20:00`); // длительность сохранена
+  await dialog.getByRole('button', { name: 'Перенести', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveText('Укажите причину переноса.');
+  await dialog.getByLabel('Причина переноса *').fill('Клиент попросил пораньше');
+  await page.screenshot({ path: `${SHOTS}/booking-reschedule-1440.png` });
+  await dialog.getByRole('button', { name: 'Перенести', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByTestId('booking-notice')).toHaveText('Запись перенесена.');
+  await expect(page.getByTestId('booking-time')).toContainText(`${d}, 18:00–20:00`);
+  await expect(page.getByTestId('booking-versions').locator('li')).toHaveCount(2);
+  await expect(page.getByTestId('booking-versions').locator('li').first()).toContainText('Версия 2 (текущая): ПК 2');
+  await expect(timeline(page).first()).toContainText('Запись перенесена');
+  await expect(timeline(page).first()).toContainText(`ПК 2, ${d}, 18:00–20:00`);
+  // календарь видит новое место
+  await page.goto(`/schedule?date=${day(1)}`);
+  await expect(page.getByTestId('cal-lane-res-pc2').getByTestId('cal-item')).toHaveAttribute('aria-label', /18:00–20:00, Ольга Смирнова/);
+  await expect(page.getByTestId('cal-lane-res-pc1').getByTestId('cal-item')).toHaveCount(0);
+});
+
 test('снимки карточки и окна отмены 1440 и 390 без горизонтальной прокрутки', async ({ browser, request }) => {
   expect((await request.post(`${MOCK}/__test/reset`)).ok()).toBe(true);
   for (const [w, h] of [[1440, 900], [390, 844]] as const) {
