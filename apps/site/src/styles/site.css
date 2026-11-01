@@ -447,6 +447,29 @@ a { color: inherit; }
 .yu-checkout__body > * { min-width: 0; margin: 0; }
 .yu-sched__status[hidden], .yu-hold__items[hidden] { display: none; }
 
+/* ── Мои записи в ЛК (S1-17) ─────────────────────────────── */
+.yu-mybookings__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--yu-sp-xs); }
+.yu-tabs { display: flex; flex-wrap: wrap; gap: var(--yu-sp-3xs); }
+.yu-tabs__tab {
+  flex: none; min-height: var(--yu-tap); padding: var(--yu-sp-3xs) var(--yu-sp-s); border: 1px solid var(--yu-line); border-radius: var(--yu-r-s);
+  background: var(--yu-surface); color: var(--yu-muted); font: inherit; font-size: var(--yu-fs-s); font-weight: 700; cursor: pointer;
+}
+.yu-tabs__tab[aria-selected="true"] { color: var(--yu-text); border-color: var(--yu-accent); background: var(--yu-accent-soft); }
+.yu-mybookings__notice[hidden] { display: none; }
+.yu-mybookings__list { display: grid; gap: var(--yu-sp-xs); margin: 0; padding: 0; list-style: none; }
+.yu-mybookings__item { display: grid; gap: var(--yu-sp-3xs); justify-items: start; padding: var(--yu-sp-s); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-bg); }
+.yu-mybookings__item > * { min-width: 0; max-width: 100%; margin: 0; }
+.yu-mybookings__row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--yu-sp-3xs) var(--yu-sp-s); width: 100%; }
+.yu-mybookings__title { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+.yu-mybookings__meta { color: var(--yu-muted); font-size: var(--yu-fs-s); overflow-wrap: anywhere; }
+.yu-mybookings__status { padding: 2px var(--yu-sp-2xs); border-radius: var(--yu-r-s); background: var(--yu-surface-2); font-size: var(--yu-fs-xs); font-weight: 700; }
+.yu-mybookings__status[data-status="confirmed"], .yu-mybookings__status[data-status="arrived"] { background: var(--yu-accent-soft); color: var(--yu-accent); }
+.yu-mybookings__status[data-status^="cancelled"], .yu-mybookings__status[data-status="no_show"] { background: var(--yu-warn-soft); color: var(--yu-warn); }
+.yu-dialog { width: min(480px, calc(100vw - 2 * var(--yu-gutter))); padding: 0; border: 1px solid var(--yu-line); border-radius: var(--yu-r-m); background: var(--yu-surface); color: var(--yu-text); }
+.yu-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
+.yu-dialog__body { display: grid; gap: var(--yu-sp-xs); padding: var(--yu-sp-m); }
+.yu-dialog__body > * { margin: 0; min-width: 0; }
+
 /* ── Подвал ─────────────────────────────────────────────── */
 .yu-footer { border-top: 1px solid var(--yu-line-soft); background: var(--yu-surface); font-size: var(--yu-fs-s); color: var(--yu-muted); }
 .yu-footer__row { display: grid; gap: var(--yu-sp-m); padding-block: var(--yu-sp-l); }
