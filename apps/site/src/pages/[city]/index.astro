@@ -1,0 +1,77 @@
+---
+// Первый сегмент адреса: юридическая страница или хаб города.
+// 1) Юридические (карта сайта 3.4) – слова зарезервированы и городом быть не могут (п.2.8). Тексты – от юриста
+//    заказчика (N-01); пока их нет, страница честно пишет «документ готовится» (19 §4.1). Закрыты от поиска, кроме правил.
+// 2) Хаб города /{city}/ (3.1, п.2.11): ≥ 2 открытых филиала – список; один – 301 на филиал; нет города в публичном
+//    списке (K5 №1 отдаёт только города с active/temporarily_closed) – 404.
+import Site from '../../layouts/Site.astro';
+import { branchPath } from '../../lib/api.ts';
+
+const DOCS: Record<string, { title: string; index: boolean }> = {
+  rules: { title: 'Правила клуба', index: true },
+  'privacy-policy': { title: 'Политика обработки персональных данных', index: false },
+  'personal-data-consent': { title: 'Согласие на обработку персональных данных', index: false },
+  'cookie-policy': { title: 'Политика использования cookie', index: false },
+};
+
+const { city: slug = '' } = Astro.params;
+const doc = Object.hasOwn(DOCS, slug) ? DOCS[slug] : undefined;
+const { network } = Astro.locals;
+const city = doc ? undefined : network?.find((c) => c.slug === slug);
+
+if (!doc && network && !city) return Astro.rewrite('/404/');
+if (city && city.branches.length === 1) return Astro.redirect(branchPath(city.slug, city.branches[0]!.slug), 301);
+if (!doc && !network) Astro.response.status = 503;
+
+const title = doc ? doc.title : city ? `${city.name}: клубы Ю-Клуб` : 'Клубы временно недоступны';
+---
+<Site
+  title={`${title} – Ю-Клуб`}
+  description={city ? `Компьютерные клубы Ю-Клуб в городе ${city.name}: адреса, часы работы, ПК, VR и PlayStation.` : undefined}
+  noindex={doc ? !doc.index : false}
+>
+  {doc ? (
+    <>
+      <ol class="yu-crumbs" aria-label="Навигация">
+        <li><a href="/">Главная</a></li>
+        <li aria-current="page">{doc.title}</li>
+      </ol>
+      <h1>{doc.title}</h1>
+      <div class="yu-section">
+        <p class="yu-notice" role="status" data-testid="doc-pending">Документ готовится и появится здесь до открытия онлайн-записи.</p>
+      </div>
+    </>
+  ) : !city ? (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Список клубов временно недоступен</h1>
+      <p class="yu-body">Сервис не ответил. Обновите страницу через минуту.</p>
+    </section>
+  ) : (
+    <>
+      <ol class="yu-crumbs" aria-label="Навигация">
+        <li><a href="/">Главная</a></li>
+        <li aria-current="page">{city.name}</li>
+      </ol>
+      <section class="yu-hero">
+        <div>
+          <h1>Клубы Ю-Клуб, {city.name}</h1>
+          <p class="yu-lead">Выберите клуб: адрес, часы работы и зоны.</p>
+        </div>
+      </section>
+      <section class="yu-section" aria-label="Клубы города">
+        <ul class="yu-cards">
+          {city.branches.map((b) => (
+            <li class="yu-card">
+              <a class="yu-card__link" href={branchPath(city.slug, b.slug)}>{b.name}</a>
+              <span class="yu-card__meta">{b.address}</span>
+              {b.status === 'temporarily_closed'
+                ? <span class="yu-card__status yu-card__status--closed">Временно закрыт</span>
+                : <span class="yu-card__status">Работает</span>}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </>
+  )}
+</Site>

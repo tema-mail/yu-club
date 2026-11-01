@@ -1,0 +1,14 @@
+---
+// Страница не найдена (карта сайта 3.5, 12 §14.1): код ответа 404, не 200; закрыта от поиска.
+import Site from '../layouts/Site.astro';
+
+Astro.response.status = 404;
+---
+<Site title="Страница не найдена – Ю-Клуб" noindex>
+  <section class="yu-error" data-testid="not-found">
+    <span class="yu-error__code">404</span>
+    <h1>Такой страницы нет</h1>
+    <p class="yu-body">Адрес мог измениться, или клуб больше не работает. Выберите клуб на главной.</p>
+    <a class="yu-btn" href="/">На главную</a>
+  </section>
+</Site>

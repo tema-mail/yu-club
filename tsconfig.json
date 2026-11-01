@@ -14,5 +14,5 @@
     "types": ["node"]
   },
   "include": ["apps/*/src", "db", "tests", "*.ts"],
-  "exclude": ["apps/crm"]
+  "exclude": ["apps/crm", "apps/site"]
 }
