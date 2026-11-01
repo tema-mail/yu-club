@@ -1,7 +1,7 @@
 // Фоновый процесс (ADR 0002: процесс worker – тот же образ API, другая команда).
 // Запускает: подписки уведомлений на события брони (K14, до startOutboxWorker – подписки замораживаются),
 // доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение удержаний раз в 15 с
-// (modules/booking/hold.ts) и диспетчер запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts).
+// (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts).
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
 //
 // Окружение: DATABASE_URL – рантайм yu_app (данные модулей); PGBOSS_DATABASE_URL – роль yu_boss, владелец
@@ -15,6 +15,7 @@ import { loadConfig } from './config.ts';
 import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/outbox-worker.ts';
 import { systemClock, type Clock } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
+import { startCertificateExpiry } from './modules/certificates/lifecycle.ts';
 import { bookingLookup } from './modules/booking/providers.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
@@ -43,6 +44,7 @@ export async function startWorkerTasks(opts: {
   pollingIntervalSeconds?: number;
   holdIntervalMs?: number;
   dispatcherIntervalMs?: number;
+  certificateIntervalMs?: number;
   logger?: WorkerLogger;
 }): Promise<WorkerTasks> {
   const clock = opts.clock ?? systemClock;
@@ -63,6 +65,13 @@ export async function startWorkerTasks(opts: {
     intervalMs: opts.holdIntervalMs ?? 15_000,
     onError: (err) => logger.error({ err: errText(err) }, 'hold-expiry: проход упал'),
   });
+  // сгорание сертификатов раз в 5 минут (K16 §4): касса не меняется
+  const certificates = startCertificateExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.certificateIntervalMs ?? 5 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'certificates:expire: проход упал'),
+  });
   // проверки 1–4 перед отправкой – по таблице броней (как в API, server.ts)
   const stopDispatcher = startDispatcher(
     { pool: opts.pool, vapid: opts.vapid, clock, bookings: bookingLookup },
@@ -72,6 +81,7 @@ export async function startWorkerTasks(opts: {
     outbox,
     stop: async () => {
       holds.stop();
+      certificates.stop();
       stopDispatcher();
       await outbox.stop();
     },
@@ -96,7 +106,7 @@ async function main(): Promise<void> {
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   const tasks = await startWorkerTasks({ pool, boss, vapid });
-  log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, отправка 30 с', {
+  log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, сгорание сертификатов 5 мин, отправка 30 с', {
     version: config.GIT_SHA,
     webPush: Boolean(vapid),
   });
