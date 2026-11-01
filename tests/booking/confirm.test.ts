@@ -97,7 +97,7 @@ describe('подтверждение по HTTP (K5 №12)', () => {
     const key = randomUUID();
     const send = (k: string, cookie: string | null = a.cookie) =>
       app.inject({ method: 'POST', url: `/api/public/v1/holds/${h.id}/confirm`, headers: { 'idempotency-key': k, ...(cookie ? { cookie } : {}) }, payload: {} });
-    expect((await send(randomUUID(), null)).json().error.code).toBe('VISITOR_REQUIRED');
+    expect((await send(randomUUID(), null)).json().error.code).toBe('AUTH_REQUIRED'); // K5: confirm без сессии клиента
     expect((await send(randomUUID(), `yu_visitor=${randomUUID()}`)).json().error.code).toBe('AUTH_REQUIRED');
     const r = await send(key);
     expect(r.statusCode).toBe(201);
