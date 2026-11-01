@@ -208,6 +208,9 @@ const timelineQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
+/** Объекты филиала, чья хронология видна по зоне (Директор – вся, Администратор – свои события). */
+const BRANCH_OBJECTS: ReadonlySet<string> = new Set(['space', 'room', 'resource', 'tariff', 'resource_block', 'calendar_exception']);
+
 /** Видит ли сотрудник объект хронологии. Вне зоны – NOT_FOUND (как несуществующий), сеть у не-Владельца – 403. */
 async function assertTimelineObject(deps: StaffDeps, ctx: AccessContext, type: (typeof AUDIT_OBJECT_TYPES)[number], id: string) {
   if (ctx.network) return;
@@ -227,7 +230,19 @@ async function assertTimelineObject(deps: StaffDeps, ctx: AccessContext, type: (
     if (!inZone) throw new AppError('NOT_FOUND', 404, 'Не найдено');
     return;
   }
-  // Брони, ресурсы и прочее – модули Э1 дадут свою проверку объекта; до тех пор – только Владельцу.
+  if (BRANCH_OBJECTS.has(type)) {
+    // Филиал объекта – из его же успешных событий аудита (K2: branch_id обязателен у объекта с филиалом).
+    // Чтение таблиц чужих модулей не нужно; отказы (denied) не считаются – там филиал задаёт запрос.
+    const r = await deps.pool.query<{ branch_id: string | null }>(
+      `SELECT DISTINCT branch_id FROM journal.audit_events WHERE object_type = $1 AND object_id = $2 AND result = 'success'`,
+      [type, id],
+    );
+    const branches = r.rows.map((x) => x.branch_id);
+    const inZone = branches.length > 0 && branches.every((b) => b !== null && ctx.branchIds.has(b));
+    if (!inZone) throw new AppError('NOT_FOUND', 404, 'Не найдено');
+    return assertCan(ctx, 'audit.view.own', { branchId: branches[0]! });
+  }
+  // Брони, клиенты и прочее – свои проверки объекта у модулей; до тех пор – только Владельцу.
   throw new AppError('NOT_FOUND', 404, 'Не найдено');
 }
 
