@@ -11,6 +11,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { randomBytes, randomUUID } from 'node:crypto';
 import { registerBooking, resetBooking } from './mock-booking.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
+import { registerSettings, resetSettings } from './mock-settings.ts';
 import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
 
 type Role = 'owner' | 'director' | 'admin';
@@ -678,6 +679,7 @@ export function buildMock() {
     resetStaff();
     resetOps();
     resetBooking();
+    resetSettings();
     return { ok: true };
   });
 
@@ -697,6 +699,10 @@ export function buildMock() {
       clients.push(c);
       return c;
     },
+  });
+  registerSettings(app, P, {
+    current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
+    fail, audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),
   });
   registerStaff(app, P, {
     staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
