@@ -1,7 +1,7 @@
 // Фоновый процесс (ADR 0002: процесс worker – тот же образ API, другая команда).
 // Запускает: подписки уведомлений на события брони (K14, до startOutboxWorker – подписки замораживаются),
 // подписки баллов (K15: штраф за неявку, резерв; начисление и paid_other – когда передан PaymentLookup finance),
-// доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение удержаний раз в 15 с
+// доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение партий баллов раз в 10 мин, истечение удержаний раз в 15 с
 // (modules/booking/hold.ts) и диспетчер запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts).
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
 //
@@ -18,6 +18,7 @@ import { systemClock, type Clock } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
 import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
 import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/accrual.ts';
+import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
 import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
@@ -46,6 +47,7 @@ export async function startWorkerTasks(opts: {
   outboxIntervalMs?: number;
   pollingIntervalSeconds?: number;
   holdIntervalMs?: number;
+  loyaltyExpiryIntervalMs?: number;
   dispatcherIntervalMs?: number;
   logger?: WorkerLogger;
   /** Чтение оплаты для начисления баллов (K15 §4) – реализация finance (K10, S2-20). Нет – начисление не подключается. */
@@ -72,6 +74,13 @@ export async function startWorkerTasks(opts: {
     intervalMs: opts.holdIntervalMs ?? 15_000,
     onError: (err) => logger.error({ err: errText(err) }, 'hold-expiry: проход упал'),
   });
+  // K15 §2: истечение партий баллов (при loyalty.batch_ttl_days = null проход ничего не делает)
+  const loyaltyExpiry = startLoyaltyExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.loyaltyExpiryIntervalMs ?? 600_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'loyalty-expiry: проход упал'),
+  });
   // проверки 1–4 перед отправкой – по таблице броней (как в API, server.ts)
   const stopDispatcher = startDispatcher(
     { pool: opts.pool, vapid: opts.vapid, clock, bookings: bookingLookup },
@@ -81,6 +90,7 @@ export async function startWorkerTasks(opts: {
     outbox,
     stop: async () => {
       holds.stop();
+      loyaltyExpiry.stop();
       stopDispatcher();
       await outbox.stop();
     },
