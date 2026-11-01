@@ -147,13 +147,14 @@ export async function releaseSources(
   }
 }
 
-/** Строки единиц FOR NO KEY UPDATE по id – перед ЛЮБОЙ записью в occupancy (occupy, convertHoldItem, перенос;
- *  ревизия S1-02 п.2). Нет единицы в филиале / архив → RESOURCE_UNAVAILABLE. */
-export async function lockUnitsForWrite(tx: Tx, branchId: string, unitIds: string[]): Promise<void> {
+/** Строки единиц FOR NO KEY UPDATE по id – перед ЛЮБОЙ записью в occupancy (occupy, convertHoldItem, перенос, отмена;
+ *  ревизия S1-02 п.2). Нет единицы в филиале / архив → RESOURCE_UNAVAILABLE. forRelease – для гашения строк (отмена,
+ *  старая версия при переносе): единица в архиве не мешает освободить её строки. */
+export async function lockUnitsForWrite(tx: Tx, branchId: string, unitIds: string[], opts: { forRelease?: boolean } = {}): Promise<void> {
   const all = unitOrder(unitIds);
   const locked = await tx.query(
-    `SELECT id FROM app.occupancy_units WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND status = 'active' ORDER BY id FOR NO KEY UPDATE`,
-    [all, branchId],
+    `SELECT id FROM app.occupancy_units WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND ($3 OR status = 'active') ORDER BY id FOR NO KEY UPDATE`,
+    [all, branchId, opts.forRelease === true],
   );
   if (locked.rowCount !== all.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
 }

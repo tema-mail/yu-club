@@ -99,8 +99,9 @@ function itemError(err: unknown, index: number, item: HoldItemInput): never {
   throw err;
 }
 
-/** Проверки позиции 01 §8.2 (кроме пересечений – их даёт база): ресурс, окно, шаг, график → развёрнутые единицы. */
-async function checkItem(tx: Tx, branch: BranchInfo, now: Date, maxDays: number, item: HoldItemInput) {
+/** Проверки позиции 01 §8.2 (кроме пересечений – их даёт база): ресурс, окно, шаг, график → развёрнутые единицы.
+ *  Те же проверки – у переноса и брони администратором (change.ts, 01 §10.2, §11). */
+export async function checkItem(tx: Tx, branch: BranchInfo, now: Date, maxDays: number, item: HoldItemInput) {
   const r = await getResource(tx, item.resourceId);
   if (!r || r.branchId !== branch.id) throw notFound();
   assertBookable(r);
