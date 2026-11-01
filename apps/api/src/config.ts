@@ -15,6 +15,9 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   // Секрет HMAC токенов сессий (K12). Без него вход сотрудников выключен.
   SESSION_PEPPER: z.string().min(32, 'не короче 32 символов').optional(),
+  // Секрет HMAC кода сертификата (K16 §3, S2-08): pin_hash в базе и замена кода в request_hash идемпотентности.
+  // Генерирует deploy.sh один раз (как SESSION_PEPPER). Смена значения = все выданные коды сертификатов перестают сходиться.
+  CERT_PEPPER: z.string().min(32, 'не короче 32 символов').optional(),
   // Прокси, чьему X-Forwarded-For верим (адреса и IPv4-CIDR через запятую) – как TRUSTED_PROXIES в CRM.
   // От остальных XFF игнорируется: request.ip – адрес соединения. Нужен лимиту входа K12 по IP.
   TRUSTED_PROXIES: z
