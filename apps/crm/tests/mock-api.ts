@@ -1,25 +1,48 @@
 // Мок API CRM для разработки и Playwright – пока нет бэкенда (S0-09…S0-11).
 // Повторяет контракты: K12 (вход, сессия, пароль), K11 №1 GET /me, K11 №18 сеть (список и карточка филиала),
 // K1 (роли и зоны: объект вне зоны – 404 с телом, как у несуществующего), ADR 0002 (тело ошибки).
+// S0-15: города и филиалы (создание, правка с rowVersion, архив), хронология аудита (K2), справочники –
+// точно по apps/api/src/modules/dictionaries/routes.ts.
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
-import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { randomBytes, randomUUID } from 'node:crypto';
 
 type Role = 'owner' | 'director' | 'admin';
 
 export const MOCK_PASSWORD = 'yu-club-test-pass';
 
-const cities = [
-  { id: 'c-nsk', name: 'Новосибирск' },
-  { id: 'c-tsk', name: 'Томск' },
-];
+// Состояние мока изменяемое (S0-15: создание, правка, архив); POST /__test/reset возвращает исходное.
+interface MockCity { id: string; slug: string; name: string; region: string | null; timezone: string; status: 'active' | 'archived'; rowVersion: number }
+interface Hours { weekday: number; open: string | null; close: string | null }
+interface MockBranch {
+  id: string; cityId: string; cityName: string; citySlug: string; slug: string; name: string; address: string; timezone: string;
+  status: 'preparing' | 'active' | 'temporarily_closed' | 'archived'; rowVersion: number; weeklyHours: Hours[];
+}
 
-const branches = [
-  { id: 'b-nsk-krasny', cityId: 'c-nsk', slug: 'krasny', name: 'Ю Клуб на Красном', address: 'Красный проспект, 25', timezone: 'Asia/Novosibirsk', status: 'active' },
-  { id: 'b-nsk-akadem', cityId: 'c-nsk', slug: 'akadem', name: 'Ю Клуб Академгородок', address: 'Морской проспект, 2', timezone: 'Asia/Novosibirsk', status: 'temporarily_closed' },
-  { id: 'b-tsk-lenina', cityId: 'c-tsk', slug: 'lenina', name: 'Ю Клуб на Ленина', address: 'проспект Ленина, 80', timezone: 'Asia/Tomsk', status: 'active' },
-].map((b) => ({ ...b, cityName: cities.find((c) => c.id === b.cityId)!.name }));
+const week = (open: string | null, close: string | null): Hours[] =>
+  [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, open, close }));
+
+function seedCities(): MockCity[] {
+  return [
+    { id: 'c-nsk', slug: 'nsk', name: 'Новосибирск', region: 'Новосибирская область', timezone: 'Asia/Novosibirsk', status: 'active', rowVersion: 1 },
+    { id: 'c-tsk', slug: 'tomsk', name: 'Томск', region: 'Томская область', timezone: 'Asia/Tomsk', status: 'active', rowVersion: 1 },
+  ];
+}
+
+function seedBranches(cs: MockCity[]): MockBranch[] {
+  return [
+    { id: 'b-nsk-krasny', cityId: 'c-nsk', slug: 'krasny', name: 'Ю Клуб на Красном', address: 'Красный проспект, 25', timezone: 'Asia/Novosibirsk', status: 'active' as const },
+    { id: 'b-nsk-akadem', cityId: 'c-nsk', slug: 'akadem', name: 'Ю Клуб Академгородок', address: 'Морской проспект, 2', timezone: 'Asia/Novosibirsk', status: 'temporarily_closed' as const },
+    { id: 'b-tsk-lenina', cityId: 'c-tsk', slug: 'lenina', name: 'Ю Клуб на Ленина', address: 'проспект Ленина, 80', timezone: 'Asia/Tomsk', status: 'active' as const },
+  ].map((b) => {
+    const c = cs.find((x) => x.id === b.cityId)!;
+    return { ...b, cityName: c.name, citySlug: c.slug, rowVersion: 1, weeklyHours: week('10:00', '22:00') };
+  });
+}
+
+let cities = seedCities();
+let branches = seedBranches(cities);
 
 // Действия ролей по реестру K1 (Э1).
 const ACTIONS: Record<Role, string[]> = {
@@ -87,12 +110,390 @@ function currentStaff(req: FastifyRequest): MockStaff | null {
   return staff.find((s) => s.id === id) ?? null;
 }
 
+// ---- аудит (K2): только изменённые поля; хронология объекта – новые сверху
+
+interface AuditEvent {
+  id: string; at: string; objectType: string; objectId: string; action: string;
+  actor: { id: string; name: string; role: Role }; before: Record<string, unknown>; after: Record<string, unknown>; reason: string | null;
+}
+let audit: AuditEvent[] = [];
+
+function diff(before: Record<string, unknown>, after: Record<string, unknown>) {
+  const b: Record<string, unknown> = {};
+  const a: Record<string, unknown> = {};
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (k === 'rowVersion') continue;
+    if (JSON.stringify(before[k] ?? null) !== JSON.stringify(after[k] ?? null)) {
+      b[k] = before[k] ?? null;
+      a[k] = after[k] ?? null;
+    }
+  }
+  return { before: b, after: a };
+}
+
+function writeAudit(s: MockStaff, objectType: string, objectId: string, action: string, before: object, after: object, reason: string | null = null) {
+  const d = diff(before as Record<string, unknown>, after as Record<string, unknown>);
+  audit.push({
+    id: randomUUID(), at: new Date().toISOString(), objectType, objectId, action,
+    actor: { id: s.id, name: `${s.firstName} ${s.lastName}`, role: s.role }, ...d, reason,
+  });
+}
+
+// ---- общее для маршрутов S0-15
+
+const can = (s: MockStaff, action: string) => ACTIONS[s.role].includes(action);
+const forbidden = (reply: FastifyReply) => fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав');
+const notFound = (reply: FastifyReply) => fail(reply, 404, 'NOT_FOUND', 'Не найдено');
+type Issue = { path: string; message: string };
+const invalid = (reply: FastifyReply, issues: Issue[]) =>
+  fail(reply, 400, 'VALIDATION_FAILED', 'Неверные данные запроса', { issues });
+
+function page<T>(all: T[], q: { cursor?: string; limit?: string }) {
+  const size = Math.min(Number(q.limit ?? 50), Number(process.env.MOCK_PAGE_SIZE ?? 100));
+  const from = q.cursor ? Number(q.cursor) : 0;
+  return { items: all.slice(from, from + size), nextCursor: from + size < all.length ? String(from + size) : null };
+}
+
+const SLUG = /^[a-z0-9-]+$/;
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function textIssues(body: Record<string, unknown>, fields: string[], partial: boolean): Issue[] {
+  const issues: Issue[] = [];
+  for (const f of fields) {
+    const v = body[f];
+    if (v === undefined && partial) continue;
+    if (typeof v !== 'string' || v.trim() === '') issues.push({ path: f, message: 'Заполните поле' });
+    else if (f === 'slug' && !SLUG.test(v)) issues.push({ path: f, message: 'Только латиница в нижнем регистре, цифры и дефис' });
+  }
+  return issues;
+}
+
+function hoursIssues(v: unknown): Issue[] {
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.length !== 7) return [{ path: 'weeklyHours', message: 'Нужны все 7 дней недели' }];
+  const issues: Issue[] = [];
+  for (const d of v as Hours[]) {
+    if (d.open === null && d.close === null) continue;
+    if (!TIME.test(String(d.open)) || !TIME.test(String(d.close)) || String(d.close) <= String(d.open)) {
+      issues.push({ path: `weeklyHours.${d.weekday}`, message: 'Закрытие позже открытия, в пределах суток' });
+    }
+  }
+  return issues;
+}
+
+function staleVersion(reply: FastifyReply, body: Record<string, unknown>, current: { rowVersion: number }) {
+  if (body.rowVersion === current.rowVersion) return null;
+  return fail(reply, 409, 'VERSION_CONFLICT', 'Запись уже изменили. Обновите страницу', { current });
+}
+
+function zoneCityIds(s: MockStaff): string[] {
+  const a = access(s);
+  return a.network ? cities.map((c) => c.id) : [...new Set([...a.cityIds, ...branches.filter((b) => a.branchIds.includes(b.id)).map((b) => b.cityId)])];
+}
+
+const pick = (body: Record<string, unknown>, keys: string[]) =>
+  Object.fromEntries(keys.filter((k) => body[k] !== undefined).map((k) => [k, typeof body[k] === 'string' ? (body[k] as string).trim() : body[k]]));
+
+// ---- сеть: города и филиалы (K11 №18 «CRUD по K13»; настоящие маршруты пишет бэкенд S0-11)
+
+function registerNetwork(app: FastifyInstance, P: string) {
+  app.get(`${P}/cities`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    if (!can(s, 'network.view')) return forbidden(reply);
+    const q = req.query as { q?: string; archived?: string; cursor?: string; limit?: string };
+    const zone = new Set(zoneCityIds(s));
+    const needle = (q.q ?? '').trim().toLowerCase();
+    const all = cities.filter(
+      (c) => zone.has(c.id) && (q.archived === 'true') === (c.status === 'archived') && (!needle || c.name.toLowerCase().includes(needle)),
+    );
+    return page(all.map((c) => ({ ...c, branchCount: branches.filter((b) => b.cityId === c.id && b.status !== 'archived').length })), q);
+  });
+
+  app.get(`${P}/cities/:cityId`, async (req, reply) => {
+    const { cityId } = req.params as { cityId: string };
+    const c = cities.find((x) => x.id === cityId);
+    if (!c || !zoneCityIds(currentStaff(req)!).includes(c.id)) return notFound(reply);
+    return c;
+  });
+
+  app.post(`${P}/cities`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    if (!can(s, 'network.city.manage')) return forbidden(reply);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const issues = textIssues(body, ['name', 'slug', 'timezone'], false);
+    if (issues.length) return invalid(reply, issues);
+    if (cities.some((c) => c.slug === body.slug)) return fail(reply, 409, 'SLUG_TAKEN', 'Такой адрес (slug) уже занят');
+    const c = { id: `c-${randomUUID().slice(0, 8)}`, region: null, ...pick(body, ['name', 'slug', 'region', 'timezone']), status: 'active', rowVersion: 1 } as MockCity;
+    cities.push(c);
+    writeAudit(s, 'city', c.id, 'city.created', {}, c);
+    return reply.code(201).send(c);
+  });
+
+  app.patch(`${P}/cities/:cityId`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    if (!can(s, 'network.city.manage')) return forbidden(reply);
+    const c = cities.find((x) => x.id === (req.params as { cityId: string }).cityId);
+    if (!c) return notFound(reply);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const issues = textIssues(body, ['name', 'slug', 'timezone'], true);
+    if (issues.length) return invalid(reply, issues);
+    const stale = staleVersion(reply, body, c);
+    if (stale) return stale;
+    if (body.slug !== undefined && cities.some((x) => x.slug === body.slug && x.id !== c.id)) return fail(reply, 409, 'SLUG_TAKEN', 'Такой адрес (slug) уже занят');
+    const before = { ...c };
+    Object.assign(c, pick(body, ['name', 'slug', 'region', 'timezone']), { rowVersion: c.rowVersion + 1 });
+    for (const b of branches) if (b.cityId === c.id) Object.assign(b, { cityName: c.name, citySlug: c.slug });
+    writeAudit(s, 'city', c.id, 'city.updated', before, c);
+    return c;
+  });
+
+  for (const op of ['archive', 'restore'] as const) {
+    app.post(`${P}/cities/:cityId/${op}`, async (req, reply) => {
+      const s = currentStaff(req)!;
+      if (!can(s, 'network.city.manage')) return forbidden(reply);
+      const c = cities.find((x) => x.id === (req.params as { cityId: string }).cityId);
+      if (!c) return notFound(reply);
+      const stale = staleVersion(reply, (req.body ?? {}) as Record<string, unknown>, c);
+      if (stale) return stale;
+      if (op === 'archive' && branches.some((b) => b.cityId === c.id && b.status !== 'archived')) {
+        return fail(reply, 409, 'CITY_HAS_ACTIVE_BRANCHES', 'В городе есть действующие филиалы – сначала отправьте их в архив');
+      }
+      const before = { ...c };
+      Object.assign(c, { status: op === 'archive' ? 'archived' : 'active', rowVersion: c.rowVersion + 1 });
+      writeAudit(s, 'city', c.id, op === 'archive' ? 'city.archived' : 'city.updated', before, c);
+      return c;
+    });
+  }
+
+  // Курсорная пагинация K11; MOCK_PAGE_SIZE ужимает страницу, чтобы e2e проходили по курсору до конца.
+  // Архивные филиалы – только по archived=true (рабочие списки и переключатель их не видят).
+  app.get(`${P}/branches`, async (req) => {
+    const ids = new Set(access(currentStaff(req)!).branchIds);
+    const q = req.query as { q?: string; cityId?: string; status?: string; archived?: string; cursor?: string; limit?: string };
+    const needle = (q.q ?? '').trim().toLowerCase();
+    const all = branches.filter(
+      (b) =>
+        ids.has(b.id) &&
+        (q.archived === 'true') === (b.status === 'archived') &&
+        (!q.cityId || b.cityId === q.cityId) &&
+        (!q.status || b.status === q.status) &&
+        (!needle || `${b.name} ${b.address}`.toLowerCase().includes(needle)),
+    );
+    return page(all, q);
+  });
+
+  app.get(`${P}/branches/:branchId`, async (req, reply) => {
+    const { branchId } = req.params as { branchId: string };
+    const b = branches.find((x) => x.id === branchId);
+    // K1/K11: вне зоны – то же 404, что у несуществующего.
+    if (!b || !access(currentStaff(req)!).branchIds.includes(b.id)) return notFound(reply);
+    return b;
+  });
+
+  app.post(`${P}/branches`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    if (!can(s, 'network.branch.create')) return forbidden(reply);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const issues = [...textIssues(body, ['cityId', 'name', 'slug', 'address', 'timezone'], false), ...hoursIssues(body.weeklyHours ?? null)];
+    if (issues.length) return invalid(reply, issues);
+    const city = cities.find((c) => c.id === body.cityId && c.status === 'active');
+    if (!city) return invalid(reply, [{ path: 'cityId', message: 'Выберите действующий город' }]);
+    if (body.status === 'archived') return invalid(reply, [{ path: 'status', message: 'Архив – отдельной командой' }]);
+    if (branches.some((b) => b.cityId === city.id && b.slug === body.slug)) return fail(reply, 409, 'SLUG_TAKEN', 'Такой адрес (slug) в городе уже занят');
+    const b = {
+      id: `b-${randomUUID().slice(0, 8)}`, status: 'preparing',
+      ...pick(body, ['cityId', 'name', 'slug', 'address', 'timezone', 'status', 'weeklyHours']),
+      cityName: city.name, citySlug: city.slug, rowVersion: 1,
+    } as MockBranch;
+    branches.push(b);
+    writeAudit(s, 'branch', b.id, 'branch.created', {}, b);
+    return reply.code(201).send(b);
+  });
+
+  app.patch(`${P}/branches/:branchId`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    const b = branches.find((x) => x.id === (req.params as { branchId: string }).branchId);
+    if (!b || !access(s).branchIds.includes(b.id)) return notFound(reply);
+    if (!can(s, 'network.branch.update')) return forbidden(reply);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const issues = [...textIssues(body, ['name', 'slug', 'address', 'timezone'], true), ...hoursIssues(body.weeklyHours)];
+    if (body.status === 'archived') issues.push({ path: 'status', message: 'Архив – отдельной командой' });
+    if (body.cityId !== undefined && body.cityId !== b.cityId) issues.push({ path: 'cityId', message: 'Город филиала не меняется' });
+    if (issues.length) return invalid(reply, issues);
+    const stale = staleVersion(reply, body, b);
+    if (stale) return stale;
+    const before = { ...b };
+    Object.assign(b, pick(body, ['name', 'slug', 'address', 'timezone', 'status', 'weeklyHours']), { rowVersion: b.rowVersion + 1 });
+    const action =
+      before.status !== b.status ? 'branch.status_changed'
+      : JSON.stringify(before.weeklyHours) !== JSON.stringify(b.weeklyHours) ? 'branch.hours_changed' : 'branch.updated';
+    writeAudit(s, 'branch', b.id, action, before, b);
+    return b;
+  });
+
+  for (const op of ['archive', 'restore'] as const) {
+    app.post(`${P}/branches/:branchId/${op}`, async (req, reply) => {
+      const s = currentStaff(req)!;
+      const b = branches.find((x) => x.id === (req.params as { branchId: string }).branchId);
+      if (!b || !access(s).branchIds.includes(b.id)) return notFound(reply);
+      if (!can(s, 'network.branch.archive')) return forbidden(reply);
+      const stale = staleVersion(reply, (req.body ?? {}) as Record<string, unknown>, b);
+      if (stale) return stale;
+      const before = { ...b };
+      Object.assign(b, { status: op === 'archive' ? 'archived' : 'preparing', rowVersion: b.rowVersion + 1 });
+      writeAudit(s, 'branch', b.id, op === 'archive' ? 'branch.archived' : 'branch.status_changed', before, b);
+      return b;
+    });
+  }
+
+  // Хронология объекта (K2 objectTimeline): audit.view – в зоне, audit.view.own – только свои действия.
+  // HTTP-маршрута в K11 нет – предложение контракта: GET /audit/timeline?objectType=&objectId=&cursor=&limit=.
+  app.get(`${P}/audit/timeline`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    const q = req.query as { objectType?: string; objectId?: string; cursor?: string; limit?: string };
+    if (!can(s, 'audit.view') && !can(s, 'audit.view.own')) return forbidden(reply);
+    if (q.objectType === 'branch' && !access(s).branchIds.includes(q.objectId ?? '')) return notFound(reply);
+    if (q.objectType === 'city' && !zoneCityIds(s).includes(q.objectId ?? '')) return notFound(reply);
+    const all = audit
+      .filter((e) => e.objectType === q.objectType && e.objectId === q.objectId && (can(s, 'audit.view') || e.actor.id === s.id))
+      .reverse();
+    return page(all, q);
+  });
+}
+
+// ---- справочники: точно по apps/api/src/modules/dictionaries/routes.ts (S0-13)
+
+interface DictRow { code: string; name: string; isSystem: boolean; archivedAt: string | null; sortOrder: number; [k: string]: unknown }
+type DictKind = 'resource-types' | 'space-types' | 'reasons';
+
+function seedDictionaries(): Record<DictKind, DictRow[]> {
+  const rt = (code: string, name: string, stepMinutes: number, sortOrder: number): DictRow =>
+    ({ code, name, stepMinutes, bookable: true, isSystem: true, archivedAt: null, sortOrder });
+  const st = (code: string, name: string, sortOrder: number): DictRow => ({ code, name, isSystem: false, archivedAt: null, sortOrder });
+  let n = 0;
+  const rs = (domain: string, code: string, name: string, isSystem: boolean, requiresComment: boolean, sortOrder: number): DictRow => ({
+    id: `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`, domain, code, name, isSystem, requiresComment, archivedAt: null, sortOrder,
+  });
+  return {
+    'resource-types': [
+      rt('pc', 'ПК', 30, 10), rt('vr_seat', 'VR-место', 15, 20), rt('room_whole', 'Комната целиком', 15, 30),
+      rt('ps_room', 'PlayStation-комната', 30, 40), rt('composite', 'Составная конфигурация', 15, 50),
+    ],
+    'space-types': [
+      st('hall', 'Общий зал', 10), st('vr_zone', 'VR-зона', 20), st('game_room', 'Отдельная игровая комната', 30),
+      st('vip_room', 'VIP-комната', 40), st('technical', 'Техническое помещение', 50),
+    ],
+    reasons: [
+      ...['booking_cancel_club', 'booking_cancel_client', 'no_show', 'visit_correction', 'resource_block', 'ledger_correction']
+        .map((d) => rs(d, 'other', 'Другое', true, true, 1000)),
+      rs('booking_cancel_club', 'equipment_failure', 'Неисправность оборудования', false, false, 10),
+      rs('booking_cancel_client', 'changed_plans', 'Изменились планы', false, false, 10),
+      rs('resource_block', 'repair', 'Ремонт', false, false, 10),
+      rs('resource_block', 'maintenance', 'Обслуживание', false, false, 20),
+    ],
+  };
+}
+let dict = seedDictionaries();
+
+const DICT_TABLE: Record<DictKind, string> = { 'resource-types': 'app.dict_resource_types', 'space-types': 'app.dict_space_types', reasons: 'app.dict_reasons' };
+const DICT_EDITABLE: Record<DictKind, string[]> = {
+  'resource-types': ['name', 'stepMinutes', 'bookable', 'sortOrder'], 'space-types': ['name', 'sortOrder'], reasons: ['name', 'requiresComment', 'sortOrder'],
+};
+const DICT_CODE = /^[a-z][a-z0-9_]{0,62}$/;
+
+function registerDictionaries(app: FastifyInstance, P: string) {
+  const D = `${P}/dictionaries`;
+  const systemImmutable = (reply: FastifyReply) =>
+    fail(reply, 409, 'DICTIONARY_SYSTEM_IMMUTABLE', 'Системное значение: код нельзя изменить, значение нельзя удалить или архивировать');
+  const archiveOnly = (reply: FastifyReply) => fail(reply, 409, 'DICTIONARY_ARCHIVE_ONLY', 'Значение не удаляется – только архив');
+
+  for (const kind of Object.keys(DICT_TABLE) as DictKind[]) {
+    const keyParam = kind === 'reasons' ? 'id' : 'code';
+    const path = `${D}/${kind}/:${keyParam}`;
+    const find = (req: FastifyRequest) => {
+      const key = (req.params as Record<string, string>)[keyParam];
+      return dict[kind].find((r) => r[keyParam] === key);
+    };
+    const ref = (r: DictRow) => `${DICT_TABLE[kind]}:${String(r[keyParam])}`;
+
+    app.get(`${D}/${kind}`, async (req, reply) => {
+      if (!can(currentStaff(req)!, 'network.view')) return forbidden(reply);
+      const q = req.query as { domain?: string; includeArchived?: string };
+      return {
+        items: dict[kind].filter(
+          (r) => (kind === 'resource-types' || q.includeArchived === 'true' || !r.archivedAt) && (!q.domain || kind !== 'reasons' || r.domain === q.domain),
+        ),
+      };
+    });
+
+    app.patch(path, async (req, reply) => {
+      const s = currentStaff(req)!;
+      if (!can(s, 'dictionary.manage')) return forbidden(reply);
+      const row = find(req);
+      if (!row) return notFound(reply);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      if (body.code !== undefined && body.code !== row.code) {
+        if (row.isSystem) return systemImmutable(reply);
+        return fail(reply, 400, 'VALIDATION_FAILED', 'Код значения неизменен – создайте новое, старое – в архив');
+      }
+      if (body.name !== undefined && (typeof body.name !== 'string' || !body.name.trim())) return invalid(reply, [{ path: 'name', message: 'Заполните поле' }]);
+      const before = { ...row };
+      Object.assign(row, pick(body, DICT_EDITABLE[kind]));
+      writeAudit(s, 'dictionary', ref(row), 'dictionary.changed', before, row, 'update');
+      return row;
+    });
+
+    app.delete(path, async (req, reply) => {
+      if (!can(currentStaff(req)!, 'dictionary.manage')) return forbidden(reply);
+      const row = find(req);
+      if (!row) return notFound(reply);
+      return row.isSystem ? systemImmutable(reply) : archiveOnly(reply);
+    });
+
+    if (kind === 'resource-types') continue;
+    for (const op of ['archive', 'restore'] as const) {
+      app.post(`${path}/${op}`, async (req, reply) => {
+        const s = currentStaff(req)!;
+        if (!can(s, 'dictionary.manage')) return forbidden(reply);
+        const row = find(req);
+        if (!row) return notFound(reply);
+        if (row.isSystem) return systemImmutable(reply);
+        const before = { ...row };
+        row.archivedAt = op === 'archive' ? (row.archivedAt ?? new Date().toISOString()) : null;
+        if (before.archivedAt !== row.archivedAt) writeAudit(s, 'dictionary', ref(row), 'dictionary.changed', before, row, op);
+        return row;
+      });
+    }
+
+    app.post(`${D}/${kind}`, async (req, reply) => {
+      const s = currentStaff(req)!;
+      if (!can(s, 'dictionary.manage')) return forbidden(reply);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const issues: Issue[] = [];
+      if (typeof body.code !== 'string' || !DICT_CODE.test(body.code)) issues.push({ path: 'code', message: 'Латиница в нижнем регистре, цифры и _, первая – буква' });
+      if (typeof body.name !== 'string' || !body.name.trim()) issues.push({ path: 'name', message: 'Заполните поле' });
+      if (kind === 'reasons' && typeof body.domain !== 'string') issues.push({ path: 'domain', message: 'Выберите раздел' });
+      if (issues.length) return invalid(reply, issues);
+      if (dict[kind].some((r) => r.code === body.code && (kind !== 'reasons' || r.domain === body.domain))) {
+        return fail(reply, 409, 'DICTIONARY_CODE_TAKEN', 'Такой код уже есть');
+      }
+      const row: DictRow = {
+        ...(kind === 'reasons' ? { id: randomUUID(), domain: body.domain, requiresComment: body.requiresComment ?? false } : {}),
+        code: body.code as string, name: (body.name as string).trim(), isSystem: false, archivedAt: null, sortOrder: Number(body.sortOrder ?? 0),
+      };
+      dict[kind].push(row);
+      writeAudit(s, 'dictionary', ref(row), 'dictionary.changed', {}, row, 'create');
+      return reply.code(201).send(row);
+    });
+  }
+}
+
 export function buildMock() {
   const app = Fastify({ logger: false });
   const P = '/api/crm/v1';
 
   app.addHook('preHandler', async (req, reply) => {
-    if (req.url.startsWith(`${P}/auth/login`)) return;
+    if (req.url.startsWith(`${P}/auth/login`) || req.url === '/__test/reset') return;
     if (!currentStaff(req)) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
   });
 
@@ -135,25 +536,16 @@ export function buildMock() {
     return { staff: publicStaff(s), access: access(s), actions: ACTIONS[s.role] };
   });
 
-  // Курсорная пагинация K11; MOCK_PAGE_SIZE ужимает страницу, чтобы e2e проходили по курсору до конца.
-  app.get(`${P}/branches`, async (req) => {
-    const ids = new Set(access(currentStaff(req)!).branchIds);
-    const q = req.query as { cursor?: string; limit?: string };
-    const size = Math.min(Number(q.limit ?? 50), Number(process.env.MOCK_PAGE_SIZE ?? 100));
-    const all = branches.filter((b) => ids.has(b.id));
-    const from = q.cursor ? Number(q.cursor) : 0;
-    const items = all.slice(from, from + size);
-    return { items, nextCursor: from + size < all.length ? String(from + size) : null };
+  app.post('/__test/reset', async () => {
+    cities = seedCities();
+    branches = seedBranches(cities);
+    audit = [];
+    dict = seedDictionaries();
+    return { ok: true };
   });
 
-  app.get(`${P}/branches/:branchId`, async (req, reply) => {
-    const { branchId } = req.params as { branchId: string };
-    const b = branches.find((x) => x.id === branchId);
-    // K1/K11: вне зоны – то же 404, что у несуществующего.
-    if (!b || !access(currentStaff(req)!).branchIds.includes(b.id)) return fail(reply, 404, 'NOT_FOUND', 'Не найдено');
-    return b;
-  });
-
+  registerNetwork(app, P);
+  registerDictionaries(app, P);
   return app;
 }
 
