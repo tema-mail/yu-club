@@ -1,0 +1,139 @@
+---
+// Расписание филиала (S1-22): рабочий стол Администратора – требуют решения (R-08: сеанс прошёл без отметки),
+// записи дня, блокировки и оформления на сайте – и календарь по ресурсам (день/неделя). Филиал – из контекста
+// или ?branch=; вне зоны – 404 как у несуществующего (K1). Всё время – в зоне филиала, не браузера.
+import Crm from '../../layouts/Crm.astro';
+import BranchCalendar, { type CalendarView } from '../../islands/BranchCalendar.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+import {
+  MAX_DAYS, STATUS_LABEL, addDays, fmtDay, fmtRange, inZone, isLocalDate, today, type BookingPage, type CalendarDto,
+} from '../../lib/booking.ts';
+
+const { branches, ctx, cookie } = Astro.locals;
+const q = Astro.url.searchParams;
+const branchId = q.get('branch') ?? (ctx.kind === 'branch' ? ctx.branch.id : (branches[0]?.id ?? ''));
+const branch = branches.find((b) => b.id === branchId) ?? null;
+const tz = branch?.timezone ?? 'UTC';
+const view: CalendarView = q.get('view') === 'week' ? 'week' : 'day';
+const date = isLocalDate(q.get('date')) ? q.get('date')! : today(tz);
+const to = view === 'week' ? addDays(date, MAX_DAYS - 1) : date;
+
+let calendar: CalendarDto | null = null;
+let dayList: BookingPage | null = null;
+let decide: BookingPage | null = null;
+if (branch) {
+  const id = encodeURIComponent(branch.id);
+  try {
+    [calendar, dayList, decide] = await Promise.all([
+      serverCall<CalendarDto>(cookie, `/branches/${id}/calendar?from=${date}&to=${to}`),
+      serverCall<BookingPage>(cookie, `/branches/${id}/bookings?date=${date}&limit=100`),
+      serverCall<BookingPage>(cookie, `/branches/${id}/bookings?needsDecision=true&limit=100`),
+    ]);
+  } catch (e) {
+    if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 403)) throw e;
+    calendar = null;
+  }
+}
+const found = branch !== null && calendar !== null;
+if (!found) Astro.response.status = 404;
+
+const dayItems = (calendar?.items ?? []).filter((i) => inZone(i.start, tz).date <= date && inZone(new Date(Date.parse(i.end) - 1), tz).date >= date);
+const blocks = dayItems.filter((i) => i.kind === 'block');
+const holds = dayItems.filter((i) => i.kind === 'hold');
+const resName = (ids: string[]) => ids.map((id) => calendar?.resources.find((r) => r.id === id)?.name ?? id).join(', ');
+const title = found ? `Расписание: ${branch!.name}` : 'Филиал не найден';
+const isToday = date === today(tz);
+---
+<Crm title={title}>
+  {found ? (
+    <>
+      <div class="yc-head">
+        <p class="yc-crumbs"><a href={`/branches/${encodeURIComponent(branch!.id)}`}>{branch!.name}</a> / Расписание</p>
+        <h1>Расписание</h1>
+        <p>{branch!.name} · {isToday ? 'сегодня, ' : ''}{fmtDay(date, 'long')}</p>
+      </div>
+      {branches.length > 1 && (
+        <form class="yc-sched__branch" method="get" action="/schedule">
+          <label class="yc-field__label" for="sched-branch">Филиал</label>
+          <select class="yc-input" id="sched-branch" name="branch">
+            {branches.map((b) => <option value={b.id} selected={b.id === branch!.id}>{b.name}</option>)}
+          </select>
+          <input type="hidden" name="date" value={date} />
+          <input type="hidden" name="view" value={view} />
+          <button class="yc-btn yc-btn--ghost" type="submit">Показать</button>
+        </form>
+      )}
+
+      <div class="yc-desk" data-testid="desk">
+        <section class="yc-panel yc-desk__panel" aria-labelledby="desk-decide" data-testid="desk-decide">
+          <h2 id="desk-decide">Требуют решения <span class="yc-desk__count">{decide!.items.length}{decide!.nextCursor ? '+' : ''}</span></h2>
+          {decide!.items.length === 0 ? (
+            <p class="yc-empty">Все прошедшие сеансы отмечены.</p>
+          ) : (
+            <>
+              <p class="yc-desk__hint">Сеанс закончился, а приход или неявка не отмечены. Откройте запись и отметьте.</p>
+              <ul class="yc-desk__list">
+                {decide!.items.map((b) => (
+                  <li class="yc-desk__row">
+                    <a href={`/bookings/${encodeURIComponent(b.id)}`}>№{b.number} · {fmtRange(b.start, b.end, tz)}</a>
+                    <span>{b.resourceName} · {b.client.name ?? 'Без имени'} {b.client.phoneMasked}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
+
+        <section class="yc-panel yc-desk__panel" aria-labelledby="desk-day" data-testid="desk-day">
+          <h2 id="desk-day">Записи на {isToday ? 'сегодня' : fmtDay(date)} <span class="yc-desk__count">{dayList!.items.length}{dayList!.nextCursor ? '+' : ''}</span></h2>
+          {dayList!.items.length === 0 ? (
+            <p class="yc-empty">На этот день записей нет.</p>
+          ) : (
+            <ul class="yc-desk__list">
+              {dayList!.items.map((b) => (
+                <li class="yc-desk__row">
+                  <a href={`/bookings/${encodeURIComponent(b.id)}`}>{fmtRange(b.start, b.end, tz, false)} · {b.resourceName}</a>
+                  <span>
+                    {b.client.name ?? 'Без имени'} {b.client.phoneMasked}{' '}
+                    <span class={`yc-badge yc-badge--bk-${b.status}${b.needsDecision ? ' yc-badge--decide' : ''}`}>
+                      {b.needsDecision ? 'Требует решения' : STATUS_LABEL[b.status]}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {dayList!.nextCursor && <p class="yc-desk__hint">Показаны первые 100 записей дня – остальные в календаре.</p>}
+        </section>
+
+        <section class="yc-panel yc-desk__panel" aria-labelledby="desk-blocks" data-testid="desk-blocks">
+          <h2 id="desk-blocks">Блокировки <span class="yc-desk__count">{blocks.length}</span></h2>
+          {blocks.length === 0 ? (
+            <p class="yc-empty">На этот день мест не блокировали.</p>
+          ) : (
+            <ul class="yc-desk__list">
+              {blocks.map((b) => (
+                <li class="yc-desk__row">
+                  <strong>{b.block!.reasonName}</strong>
+                  <span>{resName(b.resourceIds)} · {fmtRange(b.start, b.end, tz)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {holds.length > 0 && <p class="yc-desk__hint">Сейчас оформляются на сайте: {holds.length}.</p>}
+          <p><a href={`/resources/${encodeURIComponent(branch!.id)}/blocks`}>Заблокировать место…</a></p>
+        </section>
+      </div>
+
+      <div class="yc-panel">
+        <BranchCalendar client:load branchId={branch!.id} timezone={tz} view={view} date={date} initial={calendar} />
+      </div>
+    </>
+  ) : (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Филиал не найден</h1>
+      <p>Такого филиала нет или он вне вашей зоны доступа. Выберите филиал в переключателе контекста.</p>
+      <p><a href="/">К списку филиалов</a></p>
+    </div>
+  )}
+</Crm>
