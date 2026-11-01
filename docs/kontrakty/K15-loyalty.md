@@ -1,0 +1,204 @@
+# K15. Баллы: счёт, партии, резерв, начисление, штраф, блокировка записи
+
+Статус: контракт Э2 (02.11.2026). Модуль-владелец: `loyalty` (`apps/api/src/modules/loyalty/*`). Таблицы: `loyalty_batches`, `loyalty_batch_moves`, `loyalty_accruals`, `loyalty_penalties`, `loyalty_reserves`, `loyalty_issues` (миграция `0202_loyalty.sql`), `loyalty_goods`, `loyalty_goods_branches`, `loyalty_goods_orders` (`0205_loyalty_goods.sql`).
+Основа: 07 §2–§14; 16 §5, §6, §7.3; 20 §4.4, §4.6, TC-09, TC-10; 18 §6.2 п.5, 10, 11, §6.3; K3 (журнал), K4 (события), K5 (запись), K9 (клиент), K10 (оплата).
+
+Пометки: «по умолчанию, ждёт заказчика (Q-xx)» – умолчание плана; «решение» – вывод архитектора.
+
+## 1. Счёт и единицы
+
+- Один бонусный счёт клиента на сеть (07 §3.1, 03): K3 `loyalty_client`, единица `POINT_CENTI` (сотые балла, 2,5 балла = 250), `minBalance = −5000` (−50 баллов, 07 §3.1, §9.1). Создаётся `ensureAccount` при первой операции, стартовый баланс 0 (07 §2 п.3).
+- Баланс считает только журнал K3 (триггер); модуль `loyalty` ведёт партии и резервы **поверх** журнала (K3 правило 5, ADR 0004).
+- Все команды модуля, меняющие счёт, сначала берут `lockAccounts(tx, [accountId])` (K3) – одна блокировка на клиента сериализует штраф, списание, резерв, начисление и истечение.
+
+## 2. Партии (07 §3.2, §5, §11)
+
+```ts
+interface LoyaltyBatch {
+  id: string; clientId: string;
+  source: 'visit' | 'manual';        // начисление за посещение / ручная корректировка «+»
+  accrualEntryId: number;            // K3 запись, создавшая партию
+  branchId: string | null; bookingId: string | null; visitId: string | null;
+  amountCenti: number; remainingCenti: number;   // remaining ≥ 0
+  expiresAt: string | null;          // NULL – бессрочно
+  status: 'active' | 'depleted' | 'expired';
+  accruedAt: string;
+}
+```
+
+- **Срок партии.** Поле есть с первого начисления; политика выключена: `loyalty.batch_ttl_days = null` (K7) – по умолчанию, ждёт заказчика (Q-43 / R-05: «бессрочно»). При включении срок ставится каждой новой партии при начислении: `accruedAt + N дней`, конец суток по зоне филиала визита (K8); старые партии срок не получают (15 §3.4).
+- **Порядок расходования – FEFO**: `expires_at NULLS LAST, accrued_at, id` (07 §11) – по умолчанию, ждёт заказчика (Q-43).
+- **Движения партий** – `journal.loyalty_batch_moves` (только вставка): `batch_id`, `ledger_entry_id`, `kind: 'spend_time' | 'spend_goods' | 'penalty' | 'expire' | 'return' | 'debt_cover' | 'manual'`, `delta_centi`, `ref`. `remaining_centi` партии – кэш, равный `amount − Σ|расходов| + Σ возвратов`; ночная сверка проверяет (16 §14).
+
+**Инвариант модели (решение):** `Σ remaining активных партий = max(0, баланс K3)`. Отрицательный баланс – это «долг» без партий. Из инварианта следуют правила:
+
+| Операция | Счёт K3 | Партии |
+|---|---|---|
+| Начисление +A при балансе B | `loyalty.accrual` +A | новая партия `amount=A`, `remaining = max(0, A − max(0, −B))`; погашенный долг – движение `debt_cover` |
+| Штраф −P (после обрезки, §5) | `loyalty.penalty` −P | расход FEFO из `remaining`, остаток P – в долг |
+| Списание на время / товар −S | `loyalty.spend_time` / `spend_goods` −S | только из `remaining` (FEFO); в долг не уходит никогда (§6) |
+| Истечение партии | `loyalty.expire` −remaining | партия `expired`, `remaining = 0` |
+| Возврат в партию +R | `loyalty.return` +R | §7 |
+
+## 3. Доступный баланс и резерв
+
+```ts
+interface LoyaltyBalanceDto {
+  balanceCenti: number;        // журнал K3
+  availableCenti: number;      // max(0, balance) − Σ активных резервов, не меньше 0 (07 §12.1 «доступно»)
+  reservedCenti: number;       // Σ активных резервов
+  nextExpiry: { at: string; centi: number } | null;
+  preBookingBlocked: boolean;  // balance ≤ −5000 (§8)
+  accrualBasis: 'planned';     // Э2: по расписанию (07 §4.3 – явная пометка в интерфейсе и отчётах)
+}
+export function getBalance(db: Db, clientId: string, at: Date): Promise<LoyaltyBalanceDto>;
+```
+
+**Резерв на время удержания (07 §6.3)** – `loyalty_reserves`:
+
+```ts
+interface LoyaltyReserve {
+  id: string; clientId: string; amountCenti: number;
+  holdId: string | null; bookingId: string | null;
+  holdSignature: string | null;   // sha256 отсортированных hold_item.id на момент резерва
+  status: 'hold' | 'booking' | 'spent' | 'released' | 'converted';
+  releaseReason: 'hold_expired' | 'hold_released' | 'hold_changed' | 'booking_cancelled' | 'no_show' | 'rescheduled_short' | 'replaced' | null;
+}
+```
+
+- **Создание** – клиент на шаге оформления выбирает «оплатить баллами» (K5 №новый, §11): `reserveForHold(tx, clientId, holdId)`. Условия (07 §6.2): удержание активно и принадлежит клиенту; все позиции – типы из `loyalty.points_resource_types` (Q-42 по умолчанию: аренда комнаты целиком баллами не оплачивается); `availableCenti ≥ Σ минут позиций × 100` (1 балл = 1 минута, 07 §6.1); не `preBookingBlocked`. Иначе `POINTS_INSUFFICIENT` / `POINTS_NOT_ALLOWED` / `LOYALTY_LIMIT_REACHED`. Повтор на то же удержание – старый резерв `released('replaced')`, новый создаётся (одна строка `hold` на удержание – частичный `UNIQUE`).
+- **Срок жизни = срок удержания** (решение по 07 §6.3 «резерв следует жизненному циклу брони»). Резерв в статусе `hold` **не хранит своего срока**: он активен, пока `holds.status = 'active' AND holds.expires_at > now` (или `converted` до обработки события). Перезапуск общего таймера удержания (01 §7.2, TC-06) автоматически продлевает резерв – рассинхрона таймеров нет по построению.
+- **Изменение удержания** (`hold.extended`, удаление позиции): резерв `released('hold_changed')`, клиент выбирает баллы заново; при подтверждении сверяется `holdSignature` – не совпало → `released('hold_changed')`. Так резерв не бывает меньше выбранного времени (07 §6.2).
+- **Подтверждение брони** (`booking.confirmed`, бронь с `hold_id`): резерв удержания → `converted`; на каждую бронь удержания – резерв `booking` на минуты этой брони (R-04: сеанс = бронь). Обработчик идемпотентен по `(holdId)`.
+- **Снятие:** `hold.expired` → `released('hold_expired')`; `booking.cancelled` → `released('booking_cancelled')`; `no_show.marked` → `released('no_show')` без списания – по умолчанию, ждёт заказчика (Q-46); `booking.rescheduled` → пересчёт на новые минуты, не хватает – `released('rescheduled_short')`.
+- **Списание** – только при оплате сеанса способом `points` (K10, §6): резерв брони → `spent`. Резерв – гарантия, а не условие: оплатить баллами в клубе можно и без резерва, если хватает доступных.
+- **Ошибка создания брони** – удержание остаётся `active` до истечения, резерв живёт с ним и снимается вместе с ним (07 §6.3 «не должен оставаться зависшим»).
+- Штраф может съесть `remaining`, занятый резервом (решение: штраф применяется всегда, 07 §8). Тогда при оплате `POINTS_INSUFFICIENT`, сотрудник выбирает другой способ (одним способом).
+
+## 4. Начисление за посещение (07 §4, 16 §5, TC-09)
+
+- **Условие (решение по 07 §4.1, §4.4 и K10 §1):** у брони есть активное посещение **и** живой платёж, способ которого не `points`. Срабатывает на любое из двух событий: `payment.recorded` (K10) и `visit.confirmed` (K4; ловит случай «исправили посещение и отметили приход заново, когда платёж уже был»).
+- **Сумма:** `pointsForMinutes(plannedMinutes)` (K3): минуты ÷ 6 с округлением **вниз до 0,5 балла** – по умолчанию, ждёт заказчика (Q-41; 07 §4.2 «с точностью 0,5»): 15 → 2,5; 20 → 3,0; 30 → 5; 45 → 7,5; 60 → 10. Минуты – **по расписанию** версии брони – по умолчанию, ждёт заказчика (Q-40 / R-06; 07 §4.3 допускает при пометке). Без умножения на число устройств (07 §4.5).
+- **Способ оплаты:** `points` – не начислять (`loyalty.accrue_for_points = false`), `certificate` – начислять (`loyalty.accrue_for_certificate = true`) – по умолчанию, ждёт заказчика (Q-40).
+- **Одно начисление на сеанс** (07 §4.4, §14): ключ K3 `loyalty-accrual:<visitId>` + `loyalty_accruals` с частичным `UNIQUE (booking_id) WHERE status = 'active'` – второе начисление на бронь невозможно базой.
+- **Исправление посещения** (`visit.reverted`): K3 `reverse` записи начисления, `loyalty_accruals.status = 'reversed'`, партия уменьшается (FEFO, если её уже частично потратили). Если сторно уводит баланс ниже −50 – обработчик не обходит предел: пишет `loyalty_issues` («требует решения», ссылка на посещение) и выходит; решает Директор ручной корректировкой (§9) – решение по 16 §19 последний абзац.
+- Начисление штатное, автор `system`; платёж при исправлении посещения не трогается (16 §5).
+
+## 5. Штраф за неявку (07 §8, §9.1, 16 §6, TC-10)
+
+- Срабатывает на `no_show.marked` (K4). Не срабатывает: на наступление времени, на отмену клубом (07 §8.2–8.3, TC-11 – события неявки нет).
+- **Только новые неявки:** неявки, отмеченные раньше `loyalty.penalties_from` (K7, дата запуска Э2), пропускаются (план 4.3 п.10).
+- **Номинал −5** (07 §8.1, константа подтверждённого правила). **Обрезка у предела** под блокировкой счёта: `applied = max(−500, −5000 − balance)`. Баланс −43 → −48; −48 → штраф −2 → −50; −50 → `applied = 0`: запись K3 не создаётся (K3 запрещает нулевую сумму), строка `loyalty_penalties` с `applied_centi = 0` сохраняет событие (07 §9.1 «событие неявки фиксируется»).
+- **Один штраф на бронь** (07 §8.4): ключ K3 `loyalty-penalty:<noShowId>` + `UNIQUE (booking_id) WHERE status = 'active'` в `loyalty_penalties`.
+- **Штраф за визит или за бронь** – `loyalty.penalty_scope` (K7): `'visit'` – по умолчанию, ждёт заказчика (Q-44 / R-07): брони клиента подряд без перерыва в одном филиале (конец одной = начало следующей, цепочку отдаёт `booking.adjacentChain`) = один штраф; вторая неявка цепочки пишет строку `merged` с `applied = 0` и `group_booking_id`. `'booking'` – штраф на каждую бронь.
+- **Исправление неявки** (`no_show.reverted`): K3 `reverse` записи штрафа; часть, ушедшая в долг, гасит долг; погашенные штрафом части партий возвращаются в свои партии по правилам §7, часть уже истёкшей партии сразу же истекает снова (`loyalty.expire` той же суммы) – истёкшие баллы не продлеваются (07 §2 п.11), а баланс K3 и партии остаются согласованы. Если в цепочке осталась другая активная неявка – штраф группы не снимается, а переходит на неё (строка `merged` становится `active`, запись K3 не меняется).
+- Штраф – в бонусный счёт, не в кассу (07 §8.1).
+
+## 6. Списание на время и товары
+
+- **Время** – обработчик способа `points` K10 §5: `required = минуты брони × 100`; для этой брони доступно `max(0, balance) − Σ резервов других удержаний и броней`; меньше – `POINTS_INSUFFICIENT` с `details { availableCenti, requiredCenti }` (07 §6.2: показать оба числа, доплату не предлагать). Расход FEFO, `loyalty.spend_time` −required, `ref: { type: 'payment' }`. Списание никогда не уводит баланс ниже 0 (решение: минус бывает только от штрафа, 07 §9).
+- **Товары** (07 §7) – только целиком (Q-47 по умолчанию), выдачу оформляет сотрудник в CRM при клиенте (решение: самостоятельная покупка из ЛК – после Э2, в ЛК – только каталог, 07 §12.4). Цены в рублях и в баллах – отдельные поля без пересчёта (07 §7.1). Остаток товара – необязательный (`stock NULL` – не ведётся), при ведении уменьшается под `FOR UPDATE` строки товара. Сертификата в каталоге нет и быть не может: у товара нет связи с сертификатами, а модуль сертификатов не принимает баллы как способ продажи (07 §7.3, K16 §2).
+- Невыданный или отменённый товар – возврат с причиной в исходные партии (07 §7.2, §10.4).
+
+## 7. Возврат в исходную партию (07 §6.4, §10.1–10.2, 18 §6.3 п.9)
+
+```ts
+/** Вернуть списание: по движениям исходной записи K3 (loyalty_batch_moves) в те же партии.
+ *  Часть партии с expires_at ≤ now → «не возвращено»: K3 не пишется, строка в loyalty_batch_moves не пишется,
+ *  в ответе и в истории клиента – notReturnedCenti с причиной 'expired' (07 §6.4 «операция остаётся в истории»).
+ *  Возвращённая часть: K3 loyalty.return +R (ссылка на исходную запись в refs.originalEntryId); если баланс отрицательный –
+ *  сначала гасится долг (движение debt_cover), остаток – в remaining исходной партии с её исходным expires_at. */
+export function returnSpend(tx: Tx, input: { originalEntryId: number; reason: string; idempotencyKey: string;
+  author: { type: 'staff' | 'system'; id: string | null }; occurredAt: Date }):
+  Promise<{ returnedCenti: number; notReturnedCenti: number; entryId: number | null }>;
+```
+
+Возврат за отменённый бонусный сеанс – это возврат платежа K10 (`refundPayment`), он вызывает `returnSpend`. Отмена брони до оплаты баллов не списывала – снимается только резерв (§3).
+
+## 8. Блокировка предварительной записи на −50 (07 §9.2–9.4)
+
+- `preBookingBlocked = balance ≤ −5000`. Снимается автоматически, когда баланс выше −50 (07 §9.4) – флага в базе нет, только вычисление.
+- **Где проверяется** (07 §9.2 «при выборе слота и при создании предварительной брони»):
+  1. ЛК и сайт – `GET /me/loyalty` отдаёт `preBookingBlocked`; остров расписания показывает текст 07 §9.2 до выбора слота.
+  2. `createHold` и `attachHold` (K5), если клиент известен, и `confirmHold` – через ворота `clients.assertCanBook` (K9): `loyalty` регистрирует ворота `registerBookingGate` при старте API; отказ – `LOYALTY_LIMIT_REACHED` 403 с текстом 07 §9.2 (решение: не `CLIENT_RESTRICTED` K5 – клиент и так видит свой баланс в ЛК, скрывать причину незачем, а 07 §9.2 требует её объяснить).
+  3. Бронь администратором (K11 №4) – тот же отказ. Обход – только с правом `loyalty.book_below_limit` (Владелец, Директор) и причиной: поле `overrideLoyaltyLimit: { reason }` в теле, запись аудита – по умолчанию, ждёт заказчика (Q-45 / R-13; 07 §9.3 «спецправо или подтверждение владельца»). Администратор обойти не может.
+- Не блокируются (07 §9.3): вход в ЛК, история, баланс, каталог, сервисные уведомления, обращение в клуб.
+
+## 9. Ручная корректировка и сторно (07 §10.3)
+
+```ts
+/** ± баллы с причиной (обязательна), право loyalty.adjust (Владелец, Директор – Q-48 по умолчанию).
+ *  «+» – новая партия source='manual' (срок – по loyalty.batch_ttl_days); «−» – расход FEFO, затем долг.
+ *  Ниже −50 – только с правом loyalty.adjust_below_limit (Владелец) через K3 allowBelowLimit (07 §3.1, §10.3). */
+export function adjust(tx: Tx, ctx: AccessContext, input: { clientId: string; deltaCenti: number; reason: string; ref?: { type: string; id: string } }, meta: AuditRequestMeta): Promise<{ entryId: number }>;
+```
+
+Исходная операция не меняется – корректировка всегда новая запись (07 §10.3, 16 §2.7). Закрытие `loyalty_issues` – тем же `adjust` со ссылкой на issue.
+
+## 10. Права (K1, шаг S2-01)
+
+| Действие | Роли | Основание |
+|---|---|---|
+| `loyalty.view` | Владелец, Директор, Администратор (клиент в зоне по K9) | 07 §13 блок «Бонусный счёт» |
+| `loyalty.adjust` | Владелец, Директор | Q-48 по умолчанию |
+| `loyalty.adjust_below_limit` | Владелец | 07 §3.1, §10.3 «специальное право» |
+| `loyalty.book_below_limit` | Владелец, Директор | Q-45 / R-13 по умолчанию |
+| `loyalty.goods.manage` | Владелец, Директор | 07 §7.1; решение по N-06 |
+| `loyalty.goods.issue` | Владелец, Директор, Администратор | 07 §7.2 выдача в клубе |
+
+## 11. API
+
+**Сайт и ЛК** (`/api/public/v1`, только своя карточка – `assertOwnClient`):
+
+| Метод и путь | Ответ / правила |
+|---|---|
+| `GET /me/loyalty` | `200 LoyaltyBalanceDto` |
+| `GET /me/loyalty/history?cursor=` | `200 { items: [{ at, type, deltaCenti, balanceAfterCenti, branchName \| null, bookingNumber \| null, note }], nextCursor }` – без внутренних комментариев (07 §12.2, 03 §8.3); «не возвращено» – строкой с `deltaCenti = 0` и пояснением |
+| `POST /holds/{holdId}/points-reserve` | `Idempotency-Key`; `201 { reserveId, amountCenti, availableCenti }`; ошибки §12 |
+| `DELETE /holds/{holdId}/points-reserve` | `200` – клиент передумал, резерв `released` |
+| `GET /goods?branchId=` | `200 { items: [{ id, name, description, imageUrl \| null, priceRubKop, pricePointsCenti, available }] }` – каталог (07 §12.4) |
+
+**CRM** (`/api/crm/v1`, дополняет K11):
+
+| # | Метод и путь | Право | Успех |
+|---|---|---|---|
+| 24 | `GET /clients/{clientId}/loyalty` | `loyalty.view` | `200 LoyaltyBalanceDto + { history[], issues[], blockedReason \| null }` (07 §13) |
+| 25 | `POST /clients/{clientId}/loyalty/adjust` | `loyalty.adjust` | `201 { entryId }`; `{ deltaCenti, reason, belowLimit?: true }` |
+| 26 | `GET /branches/{branchId}/goods`, `POST /goods`, `PATCH /goods/{id}` | `loyalty.view` / `loyalty.goods.manage` | карточки товаров, архив вместо удаления |
+| 27 | `POST /clients/{clientId}/goods-orders` | `loyalty.goods.issue` | `201 { orderId, entryId }` – `{ goodsId, branchId }` + `Idempotency-Key` |
+| 28 | `POST /goods-orders/{orderId}/return` | `loyalty.goods.issue` | `201 { returnedCenti, notReturnedCenti }`; причина обязательна |
+
+## 12. Ошибки
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `POINTS_INSUFFICIENT` | 409 | доступных меньше нужного (`details { availableCenti, requiredCenti }`) |
+| `POINTS_NOT_ALLOWED` | 422 | тип ресурса вне `loyalty.points_resource_types` |
+| `LOYALTY_LIMIT_REACHED` | 403 | баланс −50, новая предварительная запись (07 §9.2) |
+| `RESERVE_HOLD_INVALID` | 409 | удержание истекло, не своё, уже подтверждено |
+| `GOODS_UNAVAILABLE` | 409 | товар в архиве, не продаётся за баллы, нет в филиале, остаток 0 |
+| `COMMENT_REQUIRED` | 422 | корректировка или возврат без причины (общий код K11) |
+| `LIMIT_OVERRIDE_NOT_ALLOWED` | 403 | ниже −50 без права (K3) |
+
+## 13. Настройки (K7, шаг S2-01)
+
+| Ключ | Тип, уровень | По умолчанию | Основание |
+|---|---|---|---|
+| `loyalty.batch_ttl_days` | `int \| null`, сеть | `null` – бессрочно | Q-43 / R-05 |
+| `loyalty.penalty_scope` | `'visit' \| 'booking'`, сеть | `'visit'` | Q-44 / R-07 |
+| `loyalty.penalties_from` | дата-время, сеть | дата запуска Э2 | план 4.3 п.10 |
+| `loyalty.points_resource_types` | `string[]`, сеть | `['pc','vr_seat','ps_room']` | Q-42 |
+| `loyalty.accrue_for_points` | `boolean`, сеть | `false` | Q-40 / R-06 |
+| `loyalty.accrue_for_certificate` | `boolean`, сеть | `true` | Q-40 / R-06 |
+
+Константы подтверждённых правил (не настройки): штраф −5, предел −50, 1 балл = 1 минута, ставка 1 балл за 6 минут (07 §2).
+
+## 14. Проверка
+
+- property-based (fast-check): случайная последовательность начислений, штрафов, списаний, возвратов, истечений → `Σ remaining = max(0, баланс)`, `баланс = Σ записей K3`, партии не уходят в минус (16 §14).
+- TC-09: `payment.recorded` и `visit.confirmed` доставлены дважды, в любом порядке → одно начисление; оплата баллами → начисления нет.
+- TC-10: −48 → штраф −2 → −50; следующая неявка → `applied = 0`, баланс −50; `createHold` и `confirmHold` → `LOYALTY_LIMIT_REACHED`; CRM Администратор → отказ, Директор с причиной → бронь и аудит.
+- 15 мин → 250, 20 → 300, 30 → 500 (K3).
+- Резерв: удержание продлено добавлением слота → резерв активен до нового `expires_at`; истекло → `availableCenti` вернулся; два параллельных резерва одного клиента на разные удержания при балансе на один → один `POINTS_INSUFFICIENT`.
+- Возврат с истёкшей партией: часть вернулась с исходным сроком, часть «не возвращено», баланс вырос только на вернувшуюся (18 §6.3 п.9).
+- Отмена клубом → штрафа нет (TC-11).
