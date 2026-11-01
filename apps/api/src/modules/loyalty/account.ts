@@ -369,7 +369,8 @@ export async function reservedCenti(db: Db, clientId: string, at: Date, exclude:
   const r = await db.query<{ s: string | null }>(
     `SELECT sum(r.amount_centi) AS s FROM app.loyalty_reserves r
      WHERE r.client_id = $1 AND r.status IN ('hold','booking') AND ${reserveLiveSql('r', '$2')}
-       AND r.booking_id IS DISTINCT FROM $3::uuid AND (r.status <> 'hold' OR r.hold_id IS DISTINCT FROM $4::uuid)`,
+       AND ($3::uuid IS NULL OR r.booking_id IS DISTINCT FROM $3::uuid)
+       AND ($4::uuid IS NULL OR r.status <> 'hold' OR r.hold_id <> $4::uuid)`,
     [clientId, at, exclude.bookingId ?? null, exclude.holdId ?? null],
   );
   return num(r.rows[0]?.s);
