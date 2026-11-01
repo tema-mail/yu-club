@@ -18,6 +18,8 @@ interface MenuItem {
 
 const MENU: MenuItem[] = [
   { href: '/', label: 'Филиалы', action: 'network.view', active: (p) => p === '/' || p.startsWith('/branches/') },
+  { href: '/network/branches', label: 'Сеть', action: 'network.branch.update', active: (p) => p.startsWith('/network') },
+  { href: '/dictionaries', label: 'Справочники', action: 'dictionary.manage', active: (p) => p.startsWith('/dictionaries') },
 ];
 
 const { title } = Astro.props;

@@ -188,3 +188,112 @@ describe('блокировка и права (K1)', () => {
     expect(res2.statusCode).toBe(403);
   });
 });
+
+describe('адрес клиента за прокси (TRUSTED_PROXIES)', () => {
+  it('за доверенным прокси лимиты по IP раздельные по X-Forwarded-For; от недоверенного XFF игнорируется', async () => {
+    const small = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), {
+      staff: { pool, auth: staffAuthConfig('k'.repeat(40), { ipMaxFailures: 3 }), clock },
+    });
+    const attempt = (email: string, password: string, remoteAddress: string, xff?: string) =>
+      small.inject({
+        method: 'POST',
+        url: `${BASE}/login`,
+        payload: { email, password },
+        remoteAddress,
+        ...(xff ? { headers: { 'x-forwarded-for': xff } } : {}),
+      });
+    // Клиент A за прокси 172.18.0.5 (сеть Compose – доверенная): 4 неудачи → его IP закрыт.
+    for (let i = 0; i < 4; i += 1) expect((await attempt(`a${i}@yu.test`, 'bad', '172.18.0.5', '203.0.113.1')).statusCode).toBe(401);
+    expect((await attempt('owner@yu.test', PASSWORD, '172.18.0.5', '203.0.113.1')).statusCode).toBe(429);
+    // Клиент B за тем же прокси – свой лимит.
+    expect((await attempt('owner@yu.test', PASSWORD, '172.18.0.5', '203.0.113.2')).statusCode).toBe(200);
+    const ips = await db.client.query(
+      "SELECT DISTINCT host(ip) AS ip FROM app.staff_login_attempts WHERE ip << '203.0.113.0/24'::inet ORDER BY 1",
+    );
+    expect(ips.rows).toEqual([{ ip: '203.0.113.1' }, { ip: '203.0.113.2' }]);
+
+    // Недоверенный адрес подставляет разные XFF – лимит всё равно по адресу соединения.
+    for (let i = 0; i < 4; i += 1) {
+      expect((await attempt(`u${i}@yu.test`, 'bad', '198.51.100.7', `203.0.113.${50 + i}`)).statusCode).toBe(401);
+    }
+    expect((await attempt('owner@yu.test', PASSWORD, '198.51.100.7', '203.0.113.99')).statusCode).toBe(429);
+    await small.close();
+  });
+
+  it('кривой TRUSTED_PROXIES не проходит валидацию', () => {
+    expect(() => loadConfig({ TRUSTED_PROXIES: 'caddy; rm -rf' })).toThrow(/TRUSTED_PROXIES/);
+    expect(loadConfig({}).TRUSTED_PROXIES).toEqual(['127.0.0.0/8', '::1', '172.16.0.0/12']);
+  });
+});
+
+describe('обязательная смена пароля (must_change_password)', () => {
+  it('до смены – только session, password, logout; остальное 403 PASSWORD_CHANGE_REQUIRED', async () => {
+    await addStaff('fresh', 'director', { city: CITY_A });
+    await db.client.query('UPDATE app.staff SET must_change_password = true WHERE id = $1', [ids.fresh]);
+    const cookie = await loginAs('fresh', '10.9.0.77');
+    const s = await session(cookie);
+    expect(s.statusCode).toBe(200);
+    expect(s.json().staff.mustChangePassword).toBe(true);
+
+    const blocked = await app.inject({
+      method: 'POST', url: `${BASE}/staff/${ids.adminA}/end-sessions`, headers: { cookie }, payload: { reason: 'r' },
+    });
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error.code).toBe('PASSWORD_CHANGE_REQUIRED');
+    const dict = await app.inject({ method: 'GET', url: '/api/crm/v1/dictionaries/reasons', headers: { cookie } });
+    expect(dict.json().error.code).toBe('PASSWORD_CHANGE_REQUIRED');
+
+    const pw = await app.inject({
+      method: 'POST', url: `${BASE}/password`, headers: { cookie }, payload: { currentPassword: PASSWORD, newPassword: 'Новый-пароль-директора' },
+    });
+    expect(pw.statusCode).toBe(204);
+    expect((await session(cookie)).json().staff.mustChangePassword).toBe(false);
+    expect((await app.inject({ method: 'GET', url: '/api/crm/v1/dictionaries/reasons', headers: { cookie } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `${BASE}/logout`, headers: { cookie } })).statusCode).toBe(204);
+  });
+});
+
+describe('GET /api/crm/v1/me (K11 №1)', () => {
+  const me = (cookie?: string) => app.inject({ method: 'GET', url: '/api/crm/v1/me', ...(cookie ? { headers: { cookie } } : {}) });
+
+  it('Администратор видит только свой филиал и действия своей роли', async () => {
+    await addStaff('meadmin', 'admin', { branch: BR_B1 });
+    const res = await me(await loginAs('meadmin', '10.9.1.1'));
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.staff).toEqual({ id: ids.meadmin, firstName: 'Имя', lastName: 'Фамилия', role: 'admin', mustChangePassword: false });
+    expect(body.access).toEqual({ network: false, cityIds: [], branchIds: [BR_B1] });
+    expect(body.actions).toContain('booking.create');
+    expect(body.actions).not.toContain('staff.view');
+    expect(body.actions).not.toContain('dictionary.manage');
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
+
+  it('Владелец – вся сеть и все действия реестра; Директор – свой город', async () => {
+    const o = (await me(await loginAs('owner', '10.9.1.2'))).json();
+    expect(o.access.network).toBe(true);
+    expect(o.actions).toContain('dictionary.manage');
+    const d = (await me(await loginAs('director', '10.9.1.3'))).json();
+    expect(d.access).toEqual({ network: false, cityIds: [CITY_A], branchIds: [] });
+    expect(d.actions).toContain('staff.admin.assign');
+    expect(d.actions).not.toContain('staff.director.assign');
+  });
+
+  it('без куки – 401 AUTH_REQUIRED; заблокированный – 401 SESSION_REVOKED', async () => {
+    expect((await me()).json().error.code).toBe('AUTH_REQUIRED');
+    await addStaff('meblocked', 'admin', { branch: BR_B1 });
+    const cookie = await loginAs('meblocked', '10.9.1.4');
+    await db.client.query("UPDATE app.staff SET status = 'blocked' WHERE id = $1", [ids.meblocked]);
+    const res = await me(cookie);
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error.code).toBe('SESSION_REVOKED');
+  });
+
+  it('при must_change_password /me разрешён и отдаёт флаг', async () => {
+    await addStaff('menew', 'admin', { branch: BR_B1 });
+    await db.client.query('UPDATE app.staff SET must_change_password = true WHERE id = $1', [ids.menew]);
+    const res = await me(await loginAs('menew', '10.9.1.5'));
+    expect(res.statusCode).toBe(200);
+    expect(res.json().staff.mustChangePassword).toBe(true);
+  });
+});

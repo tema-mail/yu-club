@@ -2,7 +2,7 @@
 // На каждый запрос: GET /me + список филиалов зоны (K11 №1, №18) → locals; затем контекст сеть/город/филиал.
 // Права меню здесь лишь для показа; защищает сервер API (K1: чужое → 404).
 import { defineMiddleware } from 'astro:middleware';
-import { ApiError, crm, safeNext, type Branch, type Me } from './lib/api.ts';
+import { ApiError, crm, safeNext, serverCall, type Branch, type Me, type Staff } from './lib/api.ts';
 
 export const CTX_COOKIE = 'yu_ctx';
 
@@ -57,6 +57,8 @@ function unavailable(): Response {
   );
 }
 
+const PASSWORD_PAGE = '/account/password';
+
 export const onRequest = defineMiddleware(async (context, next) => {
   const { pathname, search } = context.url;
   if (pathname.startsWith('/api/')) return next();
@@ -77,6 +79,24 @@ export const onRequest = defineMiddleware(async (context, next) => {
     if (e instanceof ApiError && e.status === 401) {
       context.cookies.delete('yu_staff', { path: '/' });
       return isLogin ? next() : context.redirect(`/login?next=${encodeURIComponent(pathname + search)}`);
+    }
+    // K12: после сброса/засева пароля сервер пускает только в session/password/logout – ведём на смену пароля.
+    if (e instanceof ApiError && e.code === 'PASSWORD_CHANGE_REQUIRED') {
+      let staff: Staff & { mustChangePassword?: boolean };
+      try {
+        ({ staff } = await serverCall<{ staff: Staff & { mustChangePassword?: boolean } }>(cookie, '/auth/session'));
+      } catch {
+        return unavailable();
+      }
+      if (!staff.mustChangePassword) return context.redirect(pathname + search); // флаг уже снят – повторить
+      if (pathname.replace(/\/+$/, '') !== PASSWORD_PAGE) return context.redirect(PASSWORD_PAGE);
+      context.locals.me = { staff, access: { network: false, cityIds: [], branchIds: [] }, actions: [] };
+      context.locals.branches = [];
+      context.locals.cookie = cookie;
+      context.locals.ctx = { kind: 'none' };
+      const res = await next();
+      res.headers.set('cache-control', 'no-store');
+      return res;
     }
     return unavailable();
   }

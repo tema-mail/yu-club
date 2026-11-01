@@ -9,7 +9,7 @@ import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
-import { authenticate, staffAuthRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
+import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 
 export interface ServerDeps {
   staff?: StaffDeps;
@@ -19,7 +19,11 @@ export interface ServerDeps {
 }
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
-  const app = Fastify({ logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream } : { level: config.LOG_LEVEL } });
+  // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
+  const app = Fastify({
+    logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream } : { level: config.LOG_LEVEL },
+    trustProxy: config.TRUSTED_PROXIES,
+  });
 
   // Тело ошибки (ADR 0002): { error: { code, message, details?, requestId } }. Стек и SQL – только в лог.
   app.setErrorHandler((err: FastifyError | AppError, request, reply) => {
@@ -42,6 +46,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   if (deps.staff) {
     const staff = deps.staff;
     void app.register(async (scope) => staffAuthRoutes(scope, staff), { prefix: '/api/crm/v1/auth' });
+    void app.register(async (scope) => staffMeRoutes(scope, staff), { prefix: '/api/crm/v1' });
     void app.register(
       async (scope) =>
         dictionaryRoutes(scope, {
@@ -67,7 +72,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
 }
 
 /** Зависимости из окружения: пул yu_app (search_path=app,journal – model-dannyh §0), вход сотрудников и клиентов.
- *  SMS: в production – боевой адаптер (провайдер не выбран, R-18 → 503), иначе тестовый (код в лог стенда). */
+ *  SMS: APP_ENV=prod – боевой адаптер (провайдер не выбран, R-18 → 503); stage и dev – тестовый (код в лог сервера). */
 export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void> } {
   if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
@@ -75,7 +80,7 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
   if (config.SESSION_PEPPER) {
     deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
     const sms =
-      config.NODE_ENV === 'production' ? unconfiguredSmsSender : createDevSmsSender(config.NODE_ENV, (line) => console.info(line));
+      config.APP_ENV === 'prod' ? unconfiguredSmsSender : createDevSmsSender(config.APP_ENV, (line) => console.info(line));
     deps.clients = { pool, auth: clientAuthConfig(config.SESSION_PEPPER), sms };
   }
   return { deps, close: () => pool.end() };

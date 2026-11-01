@@ -282,14 +282,23 @@ export interface SessionInfo {
   sessionId: string;
   expiresAt: Date;
   idleExpiresAt: Date;
+  /** После сброса/засева: пока не сменит – только session, password, logout (K12). */
+  mustChangePassword: boolean;
 }
 
 /** Кука → сессия. null – нет, отозвана, истекла, простой (тогда отзывается 'idle') или сотрудник не active. */
 export async function resolveStaffSession(db: Db, cfg: StaffAuthConfig, rawToken: string, clock: Clock): Promise<SessionInfo | null> {
   if (rawToken.length === 0 || rawToken.length > 256) return null;
   const now = clock.now();
-  const r = await db.query<{ id: string; staff_id: string; last_seen_at: Date; expires_at: Date; status: string }>(
-    `SELECT s.id, s.staff_id, s.last_seen_at, s.expires_at, st.status
+  const r = await db.query<{
+    id: string;
+    staff_id: string;
+    last_seen_at: Date;
+    expires_at: Date;
+    status: string;
+    must_change_password: boolean;
+  }>(
+    `SELECT s.id, s.staff_id, s.last_seen_at, s.expires_at, st.status, st.must_change_password
      FROM app.staff_sessions s JOIN app.staff st ON st.id = s.staff_id
      WHERE s.token_hash = $1 AND s.revoked_at IS NULL`,
     [tokenHash(rawToken, cfg.sessionPepper)],
@@ -314,6 +323,7 @@ export async function resolveStaffSession(db: Db, cfg: StaffAuthConfig, rawToken
     sessionId: s.id,
     expiresAt: s.expires_at,
     idleExpiresAt: new Date(Math.min(lastSeen.getTime() + idleMs, s.expires_at.getTime())),
+    mustChangePassword: s.must_change_password,
   };
 }
 
@@ -412,19 +422,51 @@ export async function setBlocked(
   });
 }
 
-/** Смена своего пароля (K12 №4): все ДРУГИЕ сессии → password_changed. */
+/** Смена своего пароля (K12 №4): все ДРУГИЕ сессии → password_changed.
+ *  Неверный текущий пароль считается неудачной попыткой входа: лимит K12 и аудит auth.staff.login_failed. */
 export async function changePassword(
   pool: Pool,
+  cfg: StaffAuthConfig,
   clock: Clock,
   auditMeta: AuditRequestMeta,
   input: { staffId: string; sessionId: string; currentPassword: string; newPassword: string },
 ): Promise<void> {
-  const r = await pool.query<{ password_hash: string }>('SELECT password_hash FROM app.staff WHERE id = $1', [input.staffId]);
-  const hash = r.rows[0]?.password_hash;
-  if (!hash || !(await verifyPassword(hash, input.currentPassword))) throw invalid();
+  const now = clock.now();
+  const r = await pool.query<{ password_hash: string; email: string }>('SELECT password_hash, email FROM app.staff WHERE id = $1', [
+    input.staffId,
+  ]);
+  const row = r.rows[0];
+  if (!row) throw invalid();
+  const until = await lockedUntil(pool, cfg, row.email, auditMeta.ip, now);
+  if (until) {
+    await writeAudit(
+      pool,
+      auditMeta,
+      { action: 'auth.staff.login_failed', object: { type: 'staff', id: input.staffId }, after: { email: row.email }, reason: 'locked', result: 'denied' },
+      clock,
+    );
+    throw new AppError('LOGIN_LOCKED', 429, 'Слишком много попыток входа, попробуйте позже', {
+      retryAfterSec: Math.ceil((until.getTime() - now.getTime()) / 1000),
+    });
+  }
+  if (!(await verifyPassword(row.password_hash, input.currentPassword))) {
+    await recordAttempt(pool, row.email, input.staffId, auditMeta.ip, false, now);
+    await writeAudit(
+      pool,
+      auditMeta,
+      {
+        action: 'auth.staff.login_failed',
+        object: { type: 'staff', id: input.staffId },
+        after: { email: row.email },
+        reason: 'bad_current_password',
+        result: 'denied',
+      },
+      clock,
+    );
+    throw invalid();
+  }
   assertPasswordStrength(input.newPassword);
   const newHash = await hashPassword(input.newPassword);
-  const now = clock.now();
   await withTx(pool, async (tx) => {
     await tx.query(
       'UPDATE app.staff SET password_hash = $2, must_change_password = false, row_version = row_version + 1 WHERE id = $1',

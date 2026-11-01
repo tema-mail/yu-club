@@ -152,8 +152,8 @@ describe('assertCanManageStaff (04 §2 п.6, §4.2)', () => {
 
   it('Директор не назначает и не блокирует директоров и Владельца', () => {
     for (const op of ['create', 'change_role', 'change_scope', 'block', 'end_sessions'] as const) {
-      expect(() => assertCanManageStaff(director, op, t('director'))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
-      expect(() => assertCanManageStaff(director, op, t('owner'))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+      expect(() => assertCanManageStaff(director, op, t('director', { newRole: 'admin' }))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+      expect(() => assertCanManageStaff(director, op, t('owner', { newRole: 'admin' }))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
     }
   });
 
@@ -171,7 +171,7 @@ describe('assertCanManageStaff (04 §2 п.6, §4.2)', () => {
   it('никто не меняет себе роль и зону – даже Владелец', () => {
     for (const c of [owner, director]) {
       for (const op of ['change_role', 'change_scope'] as const) {
-        expect(() => assertCanManageStaff(c, op, { staffId: c.actor.staffId, role: 'admin', branchIds: [], cityIds: [] })).toThrow(
+        expect(() => assertCanManageStaff(c, op, { staffId: c.actor.staffId, role: 'admin', newRole: 'admin', branchIds: [], cityIds: [] })).toThrow(
           expect.objectContaining({ code: 'FORBIDDEN' }),
         );
       }
@@ -180,10 +180,25 @@ describe('assertCanManageStaff (04 §2 п.6, §4.2)', () => {
 
   it('Владельца не создаёт никто через CRM; Владелец назначает директора', () => {
     expect(() => assertCanManageStaff(owner, 'create', t('owner'))).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
-    expect(() => assertCanManageStaff(owner, 'change_role', t('owner', { staffId: 'other' }))).toThrow(
+    expect(() => assertCanManageStaff(owner, 'change_role', t('owner', { staffId: 'other', newRole: 'admin' }))).toThrow(
       expect.objectContaining({ code: 'FORBIDDEN' }),
     );
     expect(() => assertCanManageStaff(owner, 'create', t('director', { branchIds: [BR_B1] }))).not.toThrow();
+  });
+
+  it('change_role смотрит на новую роль: повысить до директора – только Владелец, до Владельца – никто', () => {
+    expect(() => assertCanManageStaff(director, 'change_role', t('admin', { staffId: 'x', newRole: 'director' }))).toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN' }),
+    );
+    expect(() => assertCanManageStaff(director, 'change_role', t('admin', { staffId: 'x', newRole: 'owner' }))).toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN' }),
+    );
+    expect(() => assertCanManageStaff(owner, 'change_role', t('admin', { staffId: 'x', newRole: 'director' }))).not.toThrow();
+    expect(() => assertCanManageStaff(owner, 'change_role', t('director', { staffId: 'x', newRole: 'admin' }))).not.toThrow();
+    expect(() => assertCanManageStaff(owner, 'change_role', t('admin', { staffId: 'x', newRole: 'owner' }))).toThrow(
+      expect.objectContaining({ code: 'FORBIDDEN' }),
+    );
+    expect(() => assertCanManageStaff(owner, 'change_role', t('admin', { staffId: 'x' }))).toThrow(/newRole/);
   });
 
   it('Администратор сотрудниками не управляет', () => {

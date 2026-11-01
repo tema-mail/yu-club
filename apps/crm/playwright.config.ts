@@ -8,7 +8,10 @@ export default defineConfig({
   testDir: 'tests',
   testMatch: '*.spec.ts',
   reporter: 'list',
-  use: { baseURL: `http://127.0.0.1:${CRM_PORT}`, trace: 'retain-on-failure' },
+  // Один мок на все файлы, а S0-15 меняет данные (создание, архив): файлы идут по очереди, каждый меняющий
+  // начинает с POST /__test/reset – чтение в crm.spec не видит чужих черновиков.
+  workers: 1,
+  use: { baseURL: `http://127.0.0.1:${CRM_PORT}`, trace: 'retain-on-failure', locale: 'ru-RU', timezoneId: 'Asia/Novosibirsk' },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {

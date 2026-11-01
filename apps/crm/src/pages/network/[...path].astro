@@ -1,0 +1,164 @@
+---
+// Сеть (S0-15, K11 №18 «CRUD по K13»): города и филиалы – список, создание, карточка с архивом и историей.
+// /network/branches[/new|/{id}], /network/cities[/new|/{id}]. Экран – Владельцу и Директору (network.branch.update);
+// города – только Владельцу (network.city.manage). Остальным – 404, как у несуществующей страницы; защищает сервер API.
+import Crm from '../../layouts/Crm.astro';
+import EntityList from '../../islands/EntityList.tsx';
+import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import { ApiError, BRANCH_STATUS_LABEL, serverCall, type Branch } from '../../lib/api.ts';
+
+interface City { id: string; slug: string; name: string; region: string | null; timezone: string; status: 'active' | 'archived'; rowVersion: number }
+type Hours = { weekday: number; open: string | null; close: string | null };
+type BranchFull = Branch & { rowVersion: number; weeklyHours?: Hours[] };
+
+const { me, cookie } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const [section = '', key = '', extra] = (Astro.params.path ?? '').split('/');
+
+if (!section) return Astro.redirect('/network/branches');
+
+let notFound = extra !== undefined || !can('network.branch.update') || !['branches', 'cities'].includes(section);
+if (section === 'cities' && !can('network.city.manage')) notFound = true;
+if (key === 'new' && section === 'branches' && !can('network.branch.create')) notFound = true;
+
+// Часовые пояса городов России (15 §5.1). Зона хранится строкой IANA.
+const TIMEZONES = [
+  ['Europe/Kaliningrad', 'Калининград (UTC+2)'], ['Europe/Moscow', 'Москва (UTC+3)'], ['Europe/Samara', 'Самара (UTC+4)'],
+  ['Asia/Yekaterinburg', 'Екатеринбург (UTC+5)'], ['Asia/Omsk', 'Омск (UTC+6)'], ['Asia/Novosibirsk', 'Новосибирск (UTC+7)'],
+  ['Asia/Tomsk', 'Томск (UTC+7)'], ['Asia/Krasnoyarsk', 'Красноярск (UTC+7)'], ['Asia/Irkutsk', 'Иркутск (UTC+8)'],
+  ['Asia/Yakutsk', 'Якутск (UTC+9)'], ['Asia/Vladivostok', 'Владивосток (UTC+10)'], ['Asia/Magadan', 'Магадан (UTC+11)'],
+  ['Asia/Kamchatka', 'Камчатка (UTC+12)'],
+].map(([value, label]) => ({ value: value!, label: label! }));
+const STATUS_OPTIONS = (['preparing', 'active', 'temporarily_closed'] as const).map((s) => ({ value: s, label: BRANCH_STATUS_LABEL[s] }));
+const SLUG_HINT = 'Часть адреса на сайте: латиница в нижнем регистре, цифры и дефис';
+
+async function load<T>(path: string): Promise<T | null> {
+  try {
+    return await serverCall<T>(cookie, path);
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 404 || e.status === 403)) return null;
+    throw e;
+  }
+}
+
+let cities: City[] = [];
+let branch: BranchFull | null = null;
+let city: City | null = null;
+if (!notFound) {
+  if (section === 'branches') cities = (await load<{ items: City[] }>('/cities?limit=100'))?.items ?? [];
+  if (section === 'branches' && key && key !== 'new') branch = await load<BranchFull>(`/branches/${encodeURIComponent(key)}`);
+  if (section === 'cities' && key && key !== 'new') city = await load<City>(`/cities/${encodeURIComponent(key)}`);
+  if (key && key !== 'new' && !branch && !city) notFound = true;
+}
+if (notFound) Astro.response.status = 404;
+
+const cityOptions = cities.map((c) => ({ value: c.id, label: c.name }));
+const branchFields = (creating: boolean): CardField[] => [
+  { kind: 'select', name: 'cityId', label: 'Город', required: true, readOnly: !creating, options: creating ? cityOptions : [{ value: branch?.cityId ?? '', label: branch?.cityName ?? '' }] },
+  { kind: 'text', name: 'name', label: 'Название', required: true },
+  { kind: 'text', name: 'address', label: 'Адрес', required: true },
+  { kind: 'text', name: 'slug', label: 'Адрес на сайте (slug)', required: true, hint: SLUG_HINT },
+  { kind: 'select', name: 'timezone', label: 'Часовой пояс', required: true, options: TIMEZONES, hint: 'Время записей и графика – в этой зоне' },
+  { kind: 'select', name: 'status', label: 'Статус', required: true, options: STATUS_OPTIONS, labels: BRANCH_STATUS_LABEL, readOnly: branch?.status === 'archived' },
+  { kind: 'weekly', name: 'weeklyHours', label: 'Базовый график', hint: 'Отметьте рабочие дни. Работа через полночь не поддерживается' },
+];
+const cityFields: CardField[] = [
+  { kind: 'text', name: 'name', label: 'Название', required: true },
+  { kind: 'text', name: 'slug', label: 'Адрес на сайте (slug)', required: true, hint: SLUG_HINT },
+  { kind: 'text', name: 'region', label: 'Регион' },
+  { kind: 'select', name: 'timezone', label: 'Часовой пояс', required: true, options: TIMEZONES, hint: 'Новые филиалы города получают эту зону' },
+];
+const defaultHours = [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, open: '10:00', close: '22:00' }));
+
+const tabs = [
+  { href: '/network/branches', label: 'Филиалы', on: section === 'branches' },
+  ...(can('network.city.manage') ? [{ href: '/network/cities', label: 'Города', on: section === 'cities' }] : []),
+];
+const title = notFound
+  ? 'Не найдено'
+  : branch?.name ?? city?.name ?? (key === 'new' ? (section === 'branches' ? 'Новый филиал' : 'Новый город') : section === 'branches' ? 'Филиалы' : 'Города');
+---
+<Crm title={title}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такой записи нет или она вне вашей зоны доступа. Проверьте ссылку.</p>
+      <p><a href="/">На главную</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        {key && <p class="yc-crumbs"><a href={`/network/${section}`}>{section === 'branches' ? 'Филиалы' : 'Города'}</a> / {title}</p>}
+        <h1>{title}</h1>
+        {branch && <p><span class={`yc-badge yc-badge--${branch.status}`}>{BRANCH_STATUS_LABEL[branch.status]}</span> · {branch.cityName}</p>}
+      </div>
+      {!key && (
+        <nav class="yc-tabs" aria-label="Сеть">
+          {tabs.map((t) => <a class="yc-tabs__link" href={t.href} aria-current={t.on ? 'page' : undefined}>{t.label}</a>)}
+          {section === 'branches' && can('network.branch.create') && <a class="yc-btn yc-tabs__action" href="/network/branches/new">Добавить филиал</a>}
+          {section === 'cities' && <a class="yc-btn yc-tabs__action" href="/network/cities/new">Добавить город</a>}
+        </nav>
+      )}
+
+      {section === 'branches' && !key && (
+        <section class="yc-panel" aria-label="Список филиалов">
+          <EntityList client:load testId="network-branches" endpoint="/branches" rowHref="/network/branches/{id}" pageSize={20}
+            search={{ label: 'Поиск по названию и адресу', param: 'q' }} archive={{ param: 'archived' }}
+            filters={[
+              { param: 'cityId', label: 'Город', options: [{ value: '', label: 'Все' }, ...cityOptions] },
+              { param: 'status', label: 'Статус', options: [{ value: '', label: 'Все' }, ...STATUS_OPTIONS] },
+            ]}
+            columns={[
+              { key: 'name', label: 'Филиал', main: true }, { key: 'cityName', label: 'Город' },
+              { key: 'address', label: 'Адрес' }, { key: 'status', label: 'Статус', badge: BRANCH_STATUS_LABEL },
+            ]}
+            emptyText={can('network.branch.create') ? 'Филиалов пока нет. Добавьте первый.' : 'В вашей зоне пока нет филиалов.'} />
+        </section>
+      )}
+
+      {section === 'cities' && !key && (
+        <section class="yc-panel" aria-label="Список городов">
+          <EntityList client:load testId="network-cities" endpoint="/cities" rowHref="/network/cities/{id}" pageSize={20}
+            search={{ label: 'Поиск по названию', param: 'q' }} archive={{ param: 'archived' }}
+            columns={[
+              { key: 'name', label: 'Город', main: true }, { key: 'region', label: 'Регион' },
+              { key: 'timezone', label: 'Часовой пояс' }, { key: 'branchCount', label: 'Филиалов' },
+            ]}
+            emptyText="Городов пока нет. Добавьте первый." />
+        </section>
+      )}
+
+      {section === 'branches' && key === 'new' && (
+        cityOptions.length === 0 ? (
+          <div class="yc-panel"><p class="yc-empty">Сначала добавьте город: филиал создаётся внутри города. <a href="/network/cities/new">Добавить город</a></p></div>
+        ) : (
+          <EntityCard client:load fields={branchFields(true)}
+            values={{ cityId: cities[0]?.id, timezone: cities[0]?.timezone, status: 'preparing', weeklyHours: defaultHours }}
+            save={{ method: 'POST', path: '/branches', label: 'Создать филиал', redirect: '/network/branches/{id}' }} />
+        )
+      )}
+
+      {branch && (
+        <EntityCard client:load fields={branchFields(false)} values={branch as unknown as Record<string, unknown>} rowVersion={branch.rowVersion}
+          save={branch.status === 'archived' ? undefined : { method: 'PATCH', path: `/branches/${branch.id}`, label: 'Сохранить', versioned: true }}
+          remove={can('network.branch.archive') ? {
+            what: 'Филиал', archived: branch.status === 'archived', versioned: true,
+            archivePath: `/branches/${branch.id}/archive`, restorePath: `/branches/${branch.id}/restore`,
+          } : undefined}
+          history={{ objectType: 'branch', objectId: branch.id, timezone: branch.timezone }} />
+      )}
+
+      {section === 'cities' && key === 'new' && (
+        <EntityCard client:load fields={cityFields} values={{ timezone: 'Asia/Novosibirsk' }}
+          save={{ method: 'POST', path: '/cities', label: 'Создать город', redirect: '/network/cities/{id}' }} />
+      )}
+
+      {city && (
+        <EntityCard client:load fields={cityFields} values={city as unknown as Record<string, unknown>} rowVersion={city.rowVersion}
+          save={city.status === 'archived' ? undefined : { method: 'PATCH', path: `/cities/${city.id}`, label: 'Сохранить', versioned: true }}
+          remove={{ what: 'Город', archived: city.status === 'archived', versioned: true, archivePath: `/cities/${city.id}/archive`, restorePath: `/cities/${city.id}/restore` }}
+          history={{ objectType: 'city', objectId: city.id, timezone: city.timezone }} />
+      )}
+    </>
+  )}
+</Crm>

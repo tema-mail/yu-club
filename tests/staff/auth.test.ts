@@ -273,6 +273,30 @@ describe('блокировка и завершение сессий', () => {
 });
 
 describe('смена пароля и TOTP', () => {
+  it('неверный текущий пароль – в лимит неудач и в аудит, как вход', async () => {
+    const clock = fixedClock('2026-11-19T12:00:00Z');
+    const s = await makeStaff();
+    const cur = ok(await login(pool, cfg, clock, { email: s.email, password: PASSWORD }, req));
+    const m = { ...ownerMeta(s.id), ip: '10.7.7.7' };
+    for (let i = 0; i < 10; i += 1) {
+      clock.advance(1000); // окно неудач – строго после последнего успешного входа
+      await expect(
+        changePassword(pool, cfg, clock, m, { staffId: s.id, sessionId: cur.sessionId, currentPassword: `bad-${i}`, newPassword: 'x'.repeat(12) }),
+      ).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
+    }
+    await expect(
+      changePassword(pool, cfg, clock, m, { staffId: s.id, sessionId: cur.sessionId, currentPassword: PASSWORD, newPassword: 'x'.repeat(12) }),
+    ).rejects.toMatchObject({ code: 'LOGIN_LOCKED' });
+    await expect(login(pool, cfg, clock, { email: s.email, password: PASSWORD }, { ...req, ip: '10.7.7.8' })).rejects.toMatchObject({
+      code: 'LOGIN_LOCKED',
+    });
+    const a = await db.client.query(
+      "SELECT count(*)::int AS n FROM journal.audit_events WHERE action = 'auth.staff.login_failed' AND object_id = $1 AND reason = 'bad_current_password'",
+      [s.id],
+    );
+    expect(a.rows[0].n).toBe(10);
+  });
+
   it('слабый пароль – PASSWORD_TOO_WEAK; смена завершает другие сессии, текущая остаётся', async () => {
     const clock = fixedClock('2026-11-19T07:00:00Z');
     const s = await makeStaff();
@@ -280,12 +304,12 @@ describe('смена пароля и TOTP', () => {
     const other = ok(await login(pool, cfg, clock, { email: s.email, password: PASSWORD }, req));
     const m = ownerMeta(s.id);
     await expect(
-      changePassword(pool, clock, m, { staffId: s.id, sessionId: cur.sessionId, currentPassword: PASSWORD, newPassword: 'short' }),
+      changePassword(pool, cfg, clock, m, { staffId: s.id, sessionId: cur.sessionId, currentPassword: PASSWORD, newPassword: 'short' }),
     ).rejects.toMatchObject({ code: 'PASSWORD_TOO_WEAK', httpStatus: 422 });
     await expect(
-      changePassword(pool, clock, m, { staffId: s.id, sessionId: cur.sessionId, currentPassword: 'не тот', newPassword: 'x'.repeat(12) }),
+      changePassword(pool, cfg, clock, m, { staffId: s.id, sessionId: cur.sessionId, currentPassword: 'не тот', newPassword: 'x'.repeat(12) }),
     ).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
-    await changePassword(pool, clock, m, {
+    await changePassword(pool, cfg, clock, m, {
       staffId: s.id,
       sessionId: cur.sessionId,
       currentPassword: PASSWORD,
