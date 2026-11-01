@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { writeDenied, type AuditRequestMeta } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { assertCanManageStaff, loadAccess, noNetwork, type AccessContext, type NetworkLookup, type StaffOp } from '../../core/permissions.ts';
+import { actionsOf, assertCanManageStaff, loadAccess, noNetwork, type AccessContext, type NetworkLookup, type StaffOp } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import {
   changePassword,
@@ -138,6 +138,22 @@ async function staffTarget(deps: StaffDeps, ctx: AccessContext, staffId: string,
 }
 
 // ---- маршруты
+
+/** K11 №1 GET /me (префикс /api/crm/v1): сотрудник, раскрытая зона и действия роли для меню.
+ *  Защита – на сервере (K1); меню лишь показывает. Разрешён и при must_change_password (CRM ведёт на смену). */
+export async function staffMeRoutes(app: FastifyInstance, deps: StaffDeps): Promise<void> {
+  app.get('/me', async (request, reply) => {
+    const { session, access } = await authenticate(deps, request, reply, { allowPasswordChange: true });
+    const staff = await getStaffPublic(deps.pool, session.staffId);
+    if (!staff) throw new AppError('SESSION_REVOKED', 401, 'Сессия завершена, войдите снова');
+    reply.header('cache-control', 'no-store');
+    return {
+      staff,
+      access: { network: access.network, cityIds: [...access.cityIds].sort(), branchIds: [...access.branchIds].sort() },
+      actions: actionsOf(access.role),
+    };
+  });
+}
 
 export async function staffAuthRoutes(app: FastifyInstance, deps: StaffDeps): Promise<void> {
   const clock = deps.clock ?? systemClock;

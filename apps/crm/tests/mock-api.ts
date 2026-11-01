@@ -97,7 +97,7 @@ export function buildMock() {
     if (req.url.startsWith(`${P}/auth/login`)) return;
     const s = currentStaff(req);
     if (!s) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
-    const allowed = [`${P}/auth/session`, `${P}/auth/password`, `${P}/auth/logout`];
+    const allowed = [`${P}/auth/session`, `${P}/auth/password`, `${P}/auth/logout`, `${P}/me`];
     if (s.mustChangePassword && !allowed.some((u) => req.url.startsWith(u))) {
       return fail(reply, 403, 'PASSWORD_CHANGE_REQUIRED', 'Сначала смените пароль');
     }
@@ -140,7 +140,7 @@ export function buildMock() {
 
   app.get(`${P}/me`, async (req) => {
     const s = currentStaff(req)!;
-    return { staff: publicStaff(s), access: access(s), actions: ACTIONS[s.role] };
+    return { staff: { ...publicStaff(s), mustChangePassword: s.mustChangePassword === true }, access: access(s), actions: ACTIONS[s.role] };
   });
 
   // Курсорная пагинация K11; MOCK_PAGE_SIZE ужимает страницу, чтобы e2e проходили по курсору до конца.

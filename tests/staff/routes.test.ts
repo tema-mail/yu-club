@@ -252,3 +252,48 @@ describe('обязательная смена пароля (must_change_password
     expect((await app.inject({ method: 'POST', url: `${BASE}/logout`, headers: { cookie } })).statusCode).toBe(204);
   });
 });
+
+describe('GET /api/crm/v1/me (K11 №1)', () => {
+  const me = (cookie?: string) => app.inject({ method: 'GET', url: '/api/crm/v1/me', ...(cookie ? { headers: { cookie } } : {}) });
+
+  it('Администратор видит только свой филиал и действия своей роли', async () => {
+    await addStaff('meadmin', 'admin', { branch: BR_B1 });
+    const res = await me(await loginAs('meadmin', '10.9.1.1'));
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.staff).toEqual({ id: ids.meadmin, firstName: 'Имя', lastName: 'Фамилия', role: 'admin', mustChangePassword: false });
+    expect(body.access).toEqual({ network: false, cityIds: [], branchIds: [BR_B1] });
+    expect(body.actions).toContain('booking.create');
+    expect(body.actions).not.toContain('staff.view');
+    expect(body.actions).not.toContain('dictionary.manage');
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
+
+  it('Владелец – вся сеть и все действия реестра; Директор – свой город', async () => {
+    const o = (await me(await loginAs('owner', '10.9.1.2'))).json();
+    expect(o.access.network).toBe(true);
+    expect(o.actions).toContain('dictionary.manage');
+    const d = (await me(await loginAs('director', '10.9.1.3'))).json();
+    expect(d.access).toEqual({ network: false, cityIds: [CITY_A], branchIds: [] });
+    expect(d.actions).toContain('staff.admin.assign');
+    expect(d.actions).not.toContain('staff.director.assign');
+  });
+
+  it('без куки – 401 AUTH_REQUIRED; заблокированный – 401 SESSION_REVOKED', async () => {
+    expect((await me()).json().error.code).toBe('AUTH_REQUIRED');
+    await addStaff('meblocked', 'admin', { branch: BR_B1 });
+    const cookie = await loginAs('meblocked', '10.9.1.4');
+    await db.client.query("UPDATE app.staff SET status = 'blocked' WHERE id = $1", [ids.meblocked]);
+    const res = await me(cookie);
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error.code).toBe('SESSION_REVOKED');
+  });
+
+  it('при must_change_password /me разрешён и отдаёт флаг', async () => {
+    await addStaff('menew', 'admin', { branch: BR_B1 });
+    await db.client.query('UPDATE app.staff SET must_change_password = true WHERE id = $1', [ids.menew]);
+    const res = await me(await loginAs('menew', '10.9.1.5'));
+    expect(res.statusCode).toBe(200);
+    expect(res.json().staff.mustChangePassword).toBe(true);
+  });
+});
