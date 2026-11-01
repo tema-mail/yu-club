@@ -248,6 +248,17 @@ describe('карточка и команды (K11 №5–12)', () => {
     await setTime('2026-11-14T05:00:00Z');
   });
 
+  it('перенос начавшегося сеанса (start <= now) – 409 INVALID_STATUS_TRANSITION, версия не меняется', async () => {
+    const b = valid(CrmBooking, (await create('admin', { ...slot(ids.pc1!, '2026-11-21T05:00:00Z'), client: { clientId: ids.client } })).json());
+    for (const at of ['2026-11-21T05:00:00Z', '2026-11-21T05:10:00Z']) {
+      await setTime(at);
+      const r = await req('admin', 'POST', `/bookings/${b.id}/reschedule`, { rowVersion: 1, ...slot(ids.pc1!, '2026-11-21T08:00:00Z'), reason: 'опоздал' });
+      expect([r.statusCode, r.json().error.code]).toEqual([409, 'INVALID_STATUS_TRANSITION']);
+    }
+    expect((await one<{ v: number }>(`SELECT current_version v FROM app.bookings WHERE id = $1`, [b.id])).v).toBe(1);
+    await setTime('2026-11-14T05:00:00Z');
+  });
+
   it('в ответах CRM нет полного телефона клиента (03 §14)', () => {
     const all = bodies.join('\n');
     for (const phone of ['+79131112233', '79131112233', '+79135554433']) expect(all).not.toContain(phone);
