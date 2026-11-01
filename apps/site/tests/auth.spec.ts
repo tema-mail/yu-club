@@ -47,8 +47,8 @@ test('полный вход: маска +7, код, согласие, кабин
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex, nofollow');
   const session = (await context.cookies()).find((c) => c.name === 'yu_client');
   expect(session?.httpOnly).toBe(true);
-  // Переключателей и «Моих записей» нет: ручек API под них ещё нет.
-  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  // Блок «Уведомления»: два переключателя (их проверяет notifications.spec.ts); «Моих записей» ещё нет.
+  await expect(page.getByRole('checkbox')).toHaveCount(2);
 
   await page.getByRole('button', { name: 'Выйти' }).click();
   await expect(page).toHaveURL(/localhost:\d+\/$/);

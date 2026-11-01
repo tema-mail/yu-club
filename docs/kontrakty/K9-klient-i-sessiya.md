@@ -51,7 +51,7 @@ export interface SmsSender {
 |---|---|---|---|---|
 | 1 | `POST /auth/otp/request` (`Idempotency-Key`) | `{ phone: string, purpose: 'login' }` | `202 { challengeId, resendAfterSec, expiresInSec }` – **всегда одинаковый**, есть аккаунт или нет (03 §5.2) | лимиты K7: не чаще `otp_resend_cooldown_seconds`, не больше `otp_max_per_phone_per_hour`, иначе `429 OTP_RATE_LIMITED` с `resendAfterSec`; новый код аннулирует прежний (`superseded_at`); код 6 цифр `crypto.randomInt`; в базе только HMAC; текст SMS без имени клиента |
 | 2 | `POST /auth/otp/verify` | `{ challengeId, code, consents?: { pdProcessing: boolean, marketing?: boolean }, documentVersion?: string }` | `200 { client: MeDto, isNew: boolean }` + `Set-Cookie: yu_client` | неверный код → `401 OTP_INVALID` (`details.attemptsLeft`); попытки кончились / истёк → `410 OTP_EXPIRED`; карточки нет → создаётся `active`; есть `guest` → становится `active`, `registered_at`, `phone_verified_at` (дубля нет, Q-09); новый клиент без `consents.pdProcessing = true` → `422 CONSENT_REQUIRED` (галочка пустая по умолчанию, N-01) и код не гасится |
-| 3 | `POST /auth/logout` | – | `204` + удаление куки | `revoke_reason='logout'`; push-подписки этого устройства – `logout` (решение) |
+| 3 | `POST /auth/logout` | – | `204` + удаление куки | `revoke_reason='logout'`; push-подписки, сохранённые из этой сессии (`push_subscriptions.session_id`), – `logout` в той же транзакции; другие устройства клиента не трогаются |
 
 Сессия: случайный токен 32 байта (base64url) в куке `yu_client` (HttpOnly, Secure, SameSite=Lax, срок `client.session_days`), в базе `token_hash = HMAC-SHA256(token, SESSION_PEPPER)`. Блокировка клиента завершает сессии (`blocked`). Код и токен не попадают в логи и аудит (03 §5.2, 04 §11.2) – тест S1-12 ищет код в выводе логов теста.
 
@@ -79,6 +79,7 @@ interface MyBookingDto extends BookingDto {   // BookingDto – K5; без inter
 | `PUT /me/notification-settings` `{ remindersEnabled: boolean, marketingEnabled: boolean }` (`Idempotency-Key`) | `200 MeDto`; пишет `client_consents` (`reminders`, `marketing`) и `client_notification_prefs`; включение рекламы = согласие с `documentVersion` (09 §5.1); событие `client.notification_prefs_changed` (K4); сервисные сообщения не выключаются (09 §5.3) |
 | `POST /me/push-subscriptions` `{ endpoint, keys: { p256dh, auth }, userAgent? }` | `201 { id }`; тот же `endpoint` у другого клиента → переносится на текущего (устройство сменило владельца, решение) |
 | `DELETE /me/push-subscriptions/{id}` | `204` всегда (чужой, отозванный и несуществующий id неотличимы); своя активная – `revoke_reason='unsubscribed'` |
+| `DELETE /me/push-subscriptions` `{ endpoint }` (в теле – адрес браузера не попадает в журнал запросов) | `204` всегда; гасит только свою активную подписку (`unsubscribed`) – для «выключить в этом браузере», без лишней записи (S1-15) |
 | `GET /push/vapid-public-key` (без входа) | `200 { publicKey }` – открытый ключ VAPID (base64url) для `pushManager.subscribe`; ключей на сервере нет – `503 PUSH_NOT_CONFIGURED`. Endpoint подписки – только известных push-сервисов (`422 PUSH_ENDPOINT_NOT_ALLOWED`, защита от SSRF); повтор той же подписки – `200` с тем же `id` (S1-15) |
 
 Курсор: base64url от `(start, id)` – стабильный порядок, `limit` 20 (17 §4.4).

@@ -370,6 +370,10 @@ a { color: inherit; }
 .yu-alert:empty { display: none; }
 .yu-account { display: grid; gap: var(--yu-sp-m); max-width: 720px; }
 .yu-account > * { min-width: 0; }
+.yu-account__block { display: grid; gap: var(--yu-sp-s); padding: var(--yu-sp-m); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); }
+.yu-account__block h2 { margin: 0; font-size: var(--yu-fs-l); }
+.yu-account__block p { margin: 0; }
+.yu-account__push { display: grid; gap: var(--yu-sp-xs); justify-items: start; padding-top: var(--yu-sp-s); border-top: 1px solid var(--yu-line-soft); }
 
 /* ── Подвал ─────────────────────────────────────────────── */
 .yu-footer { border-top: 1px solid var(--yu-line-soft); background: var(--yu-surface); font-size: var(--yu-fs-s); color: var(--yu-muted); }

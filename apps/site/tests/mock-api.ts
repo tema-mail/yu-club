@@ -96,7 +96,7 @@ export const MOCK_CODE = '123456';
 const MAX_ATTEMPTS = 5;
 
 interface Challenge { phone: string; attempts: number; expiresAt: number; used: boolean }
-interface MockClient { id: string; phone: string; firstName: string | null; lastName: string | null; status: 'active' | 'restricted' | 'blocked'; consent: boolean }
+interface MockClient { id: string; phone: string; firstName: string | null; lastName: string | null; status: 'active' | 'restricted' | 'blocked'; consent: boolean; prefs?: { remindersEnabled: boolean; marketingEnabled: boolean } }
 
 const challenges = new Map<string, Challenge>();
 const sessions = new Map<string, string>(); // token → clientId
@@ -130,10 +130,17 @@ function readCookie(header: string | undefined, name: string): string | undefine
   return undefined;
 }
 
+const prefsOf = (c: MockClient) => c.prefs ?? { remindersEnabled: true, marketingEnabled: false };
+// Push (K9 /me/push-subscriptions) – endpoint → clientId; журнал вызовов для e2e.
+const pushSubs = new Map<string, string>();
+const pushCalls: Array<{ method: string; body: unknown }> = [];
+// Открытый ключ VAPID – 65 байт (0x04 + нули): браузер в e2e не подписывается по-настоящему, метод подменён.
+const MOCK_VAPID = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 1)]).toString('base64url');
+
 function meDto(c: MockClient) {
   return {
     id: c.id, phoneMasked: maskPhone(c.phone), firstName: c.firstName, lastName: c.lastName, email: null, birthDate: null,
-    status: c.status, notifications: { remindersEnabled: true, marketingEnabled: false }, loyalty: null, certificates: null,
+    status: c.status, notifications: prefsOf(c), loyalty: null, certificates: null,
   };
 }
 
@@ -205,6 +212,54 @@ function registerClientAuth(app: FastifyInstance, P: string) {
     if (token) sessions.delete(token);
     reply.header('set-cookie', CLEAR);
     return reply.code(204).send();
+  });
+
+  const sessionClient = (req: { headers: { cookie?: string | undefined } }) => {
+    const token = readCookie(req.headers.cookie, 'yu_client');
+    return token ? clients.find((c) => c.id === sessions.get(token)) : undefined;
+  };
+
+  app.get(`${P}/push/vapid-public-key`, async () => ({ publicKey: MOCK_VAPID }));
+  app.get('/__test/push-calls', async () => pushCalls);
+
+  app.post(`${P}/me/push-subscriptions`, async (req, reply) => {
+    const c = sessionClient(req);
+    if (!c) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
+    const body = (req.body ?? {}) as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
+    if (typeof body.endpoint !== 'string' || typeof body.keys?.p256dh !== 'string' || typeof body.keys?.auth !== 'string') {
+      return fail(reply, 400, 'VALIDATION_FAILED', 'Неверные данные запроса');
+    }
+    pushCalls.push({ method: 'POST', body });
+    const created = pushSubs.get(body.endpoint) !== c.id;
+    pushSubs.set(body.endpoint, c.id);
+    return reply.code(created ? 201 : 200).send({ id: '0b0d0000-0000-4000-8000-000000000001' });
+  });
+
+  app.delete(`${P}/me/push-subscriptions`, async (req, reply) => {
+    const c = sessionClient(req);
+    if (!c) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
+    const body = (req.body ?? {}) as { endpoint?: unknown };
+    pushCalls.push({ method: 'DELETE', body });
+    if (typeof body.endpoint === 'string' && pushSubs.get(body.endpoint) === c.id) pushSubs.delete(body.endpoint);
+    return reply.code(204).send();
+  });
+
+  app.get(`${P}/me/notification-settings`, async (req, reply) => {
+    const c = sessionClient(req);
+    if (!c) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
+    return { ...prefsOf(c), serviceAlwaysOn: true, pushSubscriptions: [...pushSubs.values()].filter((id) => id === c.id).length };
+  });
+
+  app.put(`${P}/me/notification-settings`, async (req, reply) => {
+    const c = sessionClient(req);
+    if (!c) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
+    const key = req.headers['idempotency-key'];
+    if (typeof key !== 'string' || !key.trim()) return fail(reply, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Нужен заголовок Idempotency-Key');
+    const body = (req.body ?? {}) as { remindersEnabled?: unknown; marketingEnabled?: unknown };
+    if (typeof body.remindersEnabled !== 'boolean' || typeof body.marketingEnabled !== 'boolean') return fail(reply, 400, 'VALIDATION_FAILED', 'Неверные данные запроса');
+    if (c.phone.endsWith('0500')) return fail(reply, 500, 'INTERNAL', 'Внутренняя ошибка');
+    c.prefs = { remindersEnabled: body.remindersEnabled, marketingEnabled: body.marketingEnabled };
+    return { ...c.prefs, serviceAlwaysOn: true, pushSubscriptions: 0 };
   });
 
   app.get(`${P}/me`, async (req, reply) => {
