@@ -3,11 +3,12 @@
 // K1 (роли и зоны: объект вне зоны – 404 с телом, как у несуществующего), ADR 0002 (тело ошибки).
 // S0-15: города и филиалы (создание, правка с rowVersion, архив), хронология аудита (K2), справочники –
 // точно по apps/api/src/modules/dictionaries/routes.ts. S1-25: поиск и карточка клиента – по clients/routes.crm.ts.
-// S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts).
+// S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts). S1-24: ресурсы, график, блокировки, тарифы – mock-ops.ts.
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
 import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
 
 type Role = 'owner' | 'director' | 'admin';
@@ -358,6 +359,9 @@ function registerNetwork(app: FastifyInstance, P: string) {
     if (q.objectType === 'branch' && !access(s).branchIds.includes(q.objectId ?? '')) return notFound(reply);
     if (q.objectType === 'city' && !zoneCityIds(s).includes(q.objectId ?? '')) return notFound(reply);
     if (q.objectType === 'staff' && !staffTimelineVisible({ access, can }, s, q.objectId ?? '')) return notFound(reply);
+    // routes.crm.ts assertTimelineObject: комнаты, ресурсы, тарифы и прочее – пока только Владельцу (вне сети – 404).
+    const opsBranch = opsObjectBranch(q.objectType ?? '', q.objectId ?? '');
+    if (opsBranch !== undefined && (!opsBranch || !access(s).network)) return notFound(reply);
     if (q.objectType === 'client') {
       const c = clients.find((x) => x.id === q.objectId);
       if (!c || !clientInZone(s, c)) return notFound(reply);
@@ -670,12 +674,17 @@ export function buildMock() {
     clients = seedClients();
     audit = seedClientAudit();
     resetStaff();
+    resetOps();
     return { ok: true };
   });
 
   registerNetwork(app, P);
   registerDictionaries(app, P);
   registerClients(app, P);
+  registerOps(app, P, {
+    current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
+    reasons: () => dict.reasons, resourceTypes: () => dict['resource-types'], fail, audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),
+  });
   registerStaff(app, P, {
     staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
     endSessions: (id) => { for (const [t, sid] of sessions) if (sid === id) sessions.delete(t); },
