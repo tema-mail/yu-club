@@ -50,6 +50,14 @@ function req(who: string, method: 'GET' | 'POST', url: string, payload?: object)
 const at = (iso: string) => new Date(iso);
 const slot = (startIso: string, minutes: number) => interval(at(startIso), new Date(at(startIso).getTime() + minutes * 60_000));
 const booking = () => ({ type: 'booking' as const, id: randomUUID(), version: 1 });
+/** Строка брони для источника занятия: с S1-07 смена состава ищет будущие брони по таблице bookings. */
+async function bookingRow(db0: { query: pg.Pool['query'] }, id: string, resourceId: string, p: { start: Date; end: Date }): Promise<void> {
+  await db0.query(
+    `INSERT INTO app.bookings (id, checkout_id, branch_id, client_id, resource_id, period, price_kop, source, created_by_type)
+     VALUES ($1, $1, $2, $3, $4, tstzrange($5, $6, '[)'), 0, 'crm', 'system')`,
+    [id, ids.branch, ids.client, resourceId, p.start, p.end],
+  );
+}
 
 async function codeOf(p: Promise<unknown>): Promise<string> {
   try {
@@ -82,6 +90,7 @@ beforeAll(async () => {
   ids.branch = b.rows[0]!.id;
   await login('owner', 'owner');
   await login('admin', 'admin', ids.branch);
+  ids.client = (await db.client.query<{ id: string }>(`INSERT INTO app.clients (phone_e164, status, created_by_type, registered_at) VALUES ('+79130000099', 'active', 'system', now()) RETURNING id`)).rows[0]!.id;
 });
 afterAll(async () => {
   await app.close();
@@ -273,9 +282,12 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
     const cur = await expandToUnits(pool, ids.whole!, at('2026-11-25T10:00:00Z'));
     const future = booking();
     await runOccupancyCommand(pool, (c) => occupy(c, { branchId: ids.branch!, units: cur, period: slot('2026-11-25T10:00:00Z', 60), source: future, clientId: null }));
+    await bookingRow(db.client, future.id, ids.whole!, slot('2026-11-25T10:00:00Z', 60));
     ids.future = future.id;
     const seat = await expandToUnits(pool, ids.vr1!, at('2026-11-25T12:00:00Z'));
-    await runOccupancyCommand(pool, (c) => occupy(c, { branchId: ids.branch!, units: seat, period: slot('2026-11-25T12:00:00Z', 30), source: booking(), clientId: null }));
+    const seatSrc = booking();
+    await runOccupancyCommand(pool, (c) => occupy(c, { branchId: ids.branch!, units: seat, period: slot('2026-11-25T12:00:00Z', 30), source: seatSrc, clientId: null }));
+    await bookingRow(db.client, seatSrc.id, ids.vr1!, slot('2026-11-25T12:00:00Z', 30));
     const u = await req('owner', 'POST', `/branches/${ids.branch}/units`, { roomId: ids.room, code: 'PS5', name: 'PlayStation 5' });
     ps5.unit = u.json().id;
     const next = [units.VR1!, units.VR2!, ps5.unit];
@@ -291,6 +303,7 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
   it('после решения по брони – состав меняется с даты; старые брони хранят свои единицы', async () => {
     const before = await db.client.query(`SELECT unit_id, period::text FROM app.occupancy WHERE active AND period && '[2026-11-15,2026-11-16)' ORDER BY 1, 2`);
     await db.client.query(`UPDATE app.occupancy SET active = false, released_at = $2, release_reason = 'cancelled' WHERE source_id = $1`, [ids.future, at(NOW)]);
+    await db.client.query(`UPDATE app.bookings SET status = 'cancelled_by_client', cancelled_at = $2 WHERE id = $1`, [ids.future, at(NOW)]);
     const res = await changeComposition(pool, { resourceId: ids.whole!, unitIds: [units.VR1!, units.VR2!, ps5.unit], validFrom }, meta, clock);
     expect(res).toEqual({ affectedBookingIds: [], affectedHoldIds: [], affectedBlockIds: [], applied: true });
     expect((await expandToUnits(pool, ids.whole!, at('2026-11-15T10:00:00Z'))).unitIds).toEqual([units.VR1, units.VR2, units.PS4].sort());
@@ -339,7 +352,7 @@ describe('гонка «занятие ↔ смена состава» (реви�
       const old = await expandToUnits(pool, rid, start); // развёрнуто до транзакции – как у сайта между шагами
       const src = booking();
       const [occ, chg] = await Promise.all([
-        codeOf(runOccupancyCommand(pool, async (c) => (await occupy(c, { branchId: ids.branch!, units: old, period: p, source: src, clientId: null }), await c.query('SELECT pg_sleep(0.005)')))),
+        codeOf(runOccupancyCommand(pool, async (c) => (await occupy(c, { branchId: ids.branch!, units: old, period: p, source: src, clientId: null }), await bookingRow(c, src.id, rid, p), await c.query('SELECT pg_sleep(0.005)')))),
         (async () => {
           const c = await pool.connect();
           try {
