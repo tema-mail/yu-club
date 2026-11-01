@@ -28,7 +28,8 @@ const rows = (page: Page) => page.getByTestId('staff').locator('tbody tr');
 test('Директор: своя зона, создание только Администратора, временный пароль один раз', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await login(page, 'director@yu.test');
-  await page.goto('/staff');
+  await page.getByRole('navigation', { name: 'Разделы' }).getByRole('link', { name: 'Сотрудники' }).click();
+  await expect(page).toHaveURL(/\/staff$/);
   await expect(rows(page)).toHaveCount(2); // порция по 2 (MOCK_PAGE_SIZE)
   await page.getByRole('button', { name: 'Показать ещё' }).click();
   await expect(rows(page)).toHaveCount(3); // Админова, Директоров, Новиков – Новосибирск
@@ -73,6 +74,7 @@ test('Директор: своя зона, создание только Адм�
 
 test('Администратору экран сотрудников недоступен', async ({ page }) => {
   await login(page, 'admin@yu.test');
+  await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link', { name: 'Сотрудники' })).toHaveCount(0);
   for (const path of ['/staff', '/staff/new', '/staff/s-director', '/staff/s-admin']) {
     expect((await page.goto(path))?.status()).toBe(404);
     await expect(page.getByTestId('not-found')).toBeVisible();
