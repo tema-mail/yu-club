@@ -98,10 +98,12 @@ describe('0201: предел только для списаний', () => {
 
   it('вниз – прежнее правило (приход ниже предела отклонялся), снова вверх – новое', async () => {
     const a = await accountAtMinus60();
-    const applied = await migrateDown(db.client, 1);
-    expect(applied).toEqual(['0201']);
+    // Откат до 0201 включительно: младшие миграции Э2 (0202+) откатываются первыми и возвращаются следом.
+    const later = await db.client.query<{ n: number }>(`SELECT count(*)::int AS n FROM public.schema_migrations WHERE version >= '0201'`);
+    const applied = await migrateDown(db.client, later.rows[0]!.n);
+    expect(applied.at(-1)).toBe('0201');
     expect(await code(one(a.ref, 500, 'loyalty.accrual'))).toBe('BALANCE_BELOW_LIMIT');
-    expect(await migrateUp(db.client)).toEqual(['0201']);
+    expect(await migrateUp(db.client)).toEqual([...applied].reverse());
     await one(a.ref, 500, 'loyalty.accrual');
     expect(await getBalance(pool, a.id)).toBe(-5500);
     const fn = await db.client.query(`SELECT prosecdef FROM pg_proc WHERE proname = 'ledger_apply_balance'`);

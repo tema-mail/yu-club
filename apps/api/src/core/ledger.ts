@@ -31,7 +31,8 @@ function fail(code: LedgerErrorCode, message: string, details?: Record<string, u
 
 // ---- типы K3
 
-export type AccountKind = 'cash_branch' | 'loyalty_client' | 'certificate' | 'staff_payroll';
+/** cash_branch – наличные филиала, cash_branch_noncash – безнал филиала (карта и перевод; K17 §2, миграция 0202). */
+export type AccountKind = 'cash_branch' | 'cash_branch_noncash' | 'loyalty_client' | 'certificate' | 'staff_payroll';
 export type Unit = 'RUB_KOP' | 'POINT_CENTI'; // копейки; сотые балла (2,5 балла = 250)
 
 /** Целое минорных единиц. */
@@ -65,7 +66,7 @@ export type EntryType =
   | 'payroll.accrual' | 'payroll.penalty' | 'payroll.payout' | 'payroll.correction'
   | 'reversal';
 
-export type RefType = 'booking' | 'visit' | 'no_show' | 'event' | 'repair' | 'certificate' | 'shift' | 'goods_order';
+export type RefType = 'booking' | 'visit' | 'no_show' | 'event' | 'repair' | 'certificate' | 'shift' | 'goods_order' | 'payment';
 
 export interface EntryInput {
   account: AccountRef;
