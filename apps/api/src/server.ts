@@ -4,6 +4,7 @@ import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
 import { AppError } from './core/errors.ts';
 import './core/registry.ts'; // проверка реестров модулей на дубли – при старте (ADR 0002)
+import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { authenticate, staffAuthRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
@@ -44,6 +45,11 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
           authenticate: (request, reply) => authenticate(staff, request, reply),
         }),
       { prefix: '/api/crm/v1/dictionaries' },
+    );
+    void app.register(
+      async (scope) =>
+        clientCrmRoutes(scope, { pool: staff.pool, authenticate: (request, reply) => authenticate(staff, request, reply) }),
+      { prefix: '/api/crm/v1/clients' },
     );
   }
 
