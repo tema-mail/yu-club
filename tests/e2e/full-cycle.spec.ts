@@ -6,7 +6,7 @@
 // в занятое прошлым. Отменённые брони время освобождают; завершённая остаётся в истории (так и должно быть).
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import {
-  CRM_URL, DEMO_ADMIN, SITE_URL, SiteClient, at, branchBySlug, crmLogin, dayIn, ddmm, localPhone, logMark, otpCode,
+  CRM_URL, DEMO_ADMIN, SITE_URL, SiteClient, at, branchBySlug, branchSetting, crmLogin, dayIn, ddmm, localPhone, logMark, otpCode,
   hydrated, randomPhone, resourcesOf, sql, type BookingDto, type StandBranch, type StandResource,
 } from './stand.ts';
 
@@ -21,6 +21,7 @@ let client: SiteClient;
 const phone = randomPhone();
 let main: BookingDto;
 const leftovers: string[] = [];
+let arriveWindowSet = false;
 
 const timeIn = (iso: string, tz: string) =>
   new Intl.DateTimeFormat('ru-RU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(iso));
@@ -58,10 +59,15 @@ test.beforeAll(async ({ browser }) => {
   client = new SiteClient(site.request, phone);
   branch = await branchBySlug(site.request, 'moskva', 'arbat');
   pcs = (await resourcesOf(site.request, branch.id)).filter((r) => r.type === 'pc');
+  // Приход – не раньше visit.arrive_early_min до начала (Q-101, по умолчанию 30 мин). Бронь – на завтра, поэтому
+  // на время прогона окно филиала – сутки; после прогона настройка возвращается к наследованию.
+  await branchSetting('visit.arrive_early_min', branch.id, 1440);
+  arriveWindowSet = true;
   expect(pcs.length).toBeGreaterThan(0);
 });
 
 test.afterAll(async () => {
+  if (arriveWindowSet) await branchSetting('visit.arrive_early_min', branch.id, null);
   if (leftovers.length) await client.cleanup(leftovers).catch(() => undefined);
   await crm?.context().close();
   await site?.context().close();
@@ -149,6 +155,9 @@ test('CRM: Администратор видит бронь в календар�
   await expect(crm.getByTestId('booking-status')).toHaveText('Завершена');
   await expect(crm.getByTestId('booking-visit')).toContainText('завершено в');
   await expect(crm.getByTestId('booking-timeline').locator('li').filter({ hasText: 'Отмечен приход' })).toHaveCount(1);
+  // источник брони – в подписи первого события хронологии
+  await expect(crm.getByTestId('booking-timeline').locator('li').last()).toContainText('Запись создана на сайте');
+  await expect(crm.getByTestId('booking-timeline')).not.toContainText('Запись создана в CRM');
   await crm.screenshot({ path: test.info().outputPath('crm-booking-completed.png'), fullPage: true });
 
   const past = await myTab('Прошлые');
