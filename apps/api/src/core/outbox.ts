@@ -20,7 +20,8 @@ export interface EventRegistry {}
 
 export type EventType = keyof EventRegistry & string;
 export type EventPayload<T extends EventType> = EventRegistry[T];
-export type AggregateType = 'hold' | 'booking' | 'resource_block' | 'client';
+// payment – Э2 (K10 §6); certificate – резерв Э2 (K4 «События этапа 2», решение D2-09).
+export type AggregateType = 'hold' | 'booking' | 'resource_block' | 'client' | 'payment' | 'certificate';
 
 export interface EventEnvelope<T extends EventType = EventType> {
   eventId: string;
