@@ -129,3 +129,10 @@ export async function timezonesOf(db: Db | Tx, input: { cityIds: string[]; branc
   for (const row of r.rows) out.set(row.id, zone(row.timezone));
   return out;
 }
+
+/** Зоны всех городов сети без повторов (включая архивные) – для дат настроек уровня «сеть» (K7 HTTP):
+ *  у сети своей зоны нет, дата начала считается по самому западному городу, чтобы нигде не попасть в прошлый день. */
+export async function networkTimezones(db: Db | Tx): Promise<TimeZone[]> {
+  const r = await db.query<{ timezone: string }>('SELECT DISTINCT timezone FROM app.cities ORDER BY timezone');
+  return r.rows.map((row) => zone(row.timezone));
+}

@@ -5,6 +5,7 @@ import {
   getBranch,
   getBranches,
   isAcceptingBookings,
+  networkTimezones,
   openIntervals,
   openIntervalsBulk,
   timezonesOf,
@@ -144,6 +145,10 @@ describe('K13: чтение', () => {
     const z = await timezonesOf(db.client, { cityIds: [ids.msk!], branchIds: [ids['nsk-1']!] });
     expect(z.get(ids.msk!)).toBe('Europe/Moscow');
     expect(z.get(ids['nsk-1']!)).toBe('Asia/Novosibirsk');
+  });
+
+  it('networkTimezones – зоны городов без повторов, по алфавиту', async () => {
+    expect(await networkTimezones(db.client)).toEqual(['Asia/Novosibirsk', 'Europe/Moscow']);
   });
 
   it('openIntervals: одни «10:00–22:00» дают разные UTC в Москве и Новосибирске', async () => {
