@@ -4,22 +4,27 @@ import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
 import { AppError } from './core/errors.ts';
 import './core/registry.ts'; // проверка реестров модулей на дубли – при старте (ADR 0002)
+import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
+import { clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { authenticate, staffAuthRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 
 export interface ServerDeps {
   staff?: StaffDeps;
+  clients?: ClientPublicDeps;
+  /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
+  logStream?: NodeJS.WritableStream;
 }
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
-  const app = Fastify({ logger: { level: config.LOG_LEVEL } });
+  const app = Fastify({ logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream } : { level: config.LOG_LEVEL } });
 
   // Тело ошибки (ADR 0002): { error: { code, message, details?, requestId } }. Стек и SQL – только в лог.
   app.setErrorHandler((err: FastifyError | AppError, request, reply) => {
     if (err instanceof AppError) {
-      const retry = err.details?.retryAfterSec;
+      const retry = err.details?.retryAfterSec ?? err.details?.resendAfterSec;
       if (typeof retry === 'number') reply.header('retry-after', String(retry));
       const body: Record<string, unknown> = { code: err.code, message: err.message, requestId: request.id };
       if (err.details !== undefined) body.details = err.details;
@@ -53,15 +58,26 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     );
   }
 
+  if (deps.clients) {
+    const clients = deps.clients;
+    void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
+  }
+
   return app;
 }
 
-/** Зависимости из окружения: пул yu_app (search_path=app,journal – model-dannyh §0) и вход сотрудников. */
+/** Зависимости из окружения: пул yu_app (search_path=app,journal – model-dannyh §0), вход сотрудников и клиентов.
+ *  SMS: в production – боевой адаптер (провайдер не выбран, R-18 → 503), иначе тестовый (код в лог стенда). */
 export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void> } {
   if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
   const deps: ServerDeps = {};
-  if (config.SESSION_PEPPER) deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
+  if (config.SESSION_PEPPER) {
+    deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
+    const sms =
+      config.NODE_ENV === 'production' ? unconfiguredSmsSender : createDevSmsSender(config.NODE_ENV, (line) => console.info(line));
+    deps.clients = { pool, auth: clientAuthConfig(config.SESSION_PEPPER), sms };
+  }
   return { deps, close: () => pool.end() };
 }
 
