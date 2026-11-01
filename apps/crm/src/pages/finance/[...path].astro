@@ -1,0 +1,127 @@
+---
+// Раздел «Финансы» (S2-60, K17 №37–47): /finance – сводка контекста (сеть, город – таблица филиалов; филиал – его касса),
+// /finance/{branchId} – касса филиала: сводка, журнал движения (06 §10), закрытие месяца.
+// Доступ – finance.view.day (Владелец, Директор, Администратор). Остатки и период – только с finance.view;
+// Администратор видит сутки своего филиала без остатков. Чужой филиал – 404 (K1). Решает всё равно сервер.
+import Crm from '../../layouts/Crm.astro';
+import CashJournal, { type FinBranch } from '../../islands/CashJournal.tsx';
+import { ApiError, serverCall, type Branch } from '../../lib/api.ts';
+
+interface CategoryNode { id: string; name: string; children: Array<{ id: string; name: string }> }
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const segments = (Astro.params.path ?? '').split('/').filter(Boolean);
+
+const allowed = can('finance.view.day');
+const full = can('finance.view');
+let notFound = segments.length > 1;
+let branch: Branch | null = null;
+let scope: Branch[] = [];
+let scopeTitle = '';
+if (allowed && !notFound) {
+  if (segments[0]) {
+    branch = branches.find((b) => b.id === segments[0]) ?? null;
+    if (!branch) notFound = true;
+  } else if (ctx.kind === 'branch' || !full) {
+    branch = ctx.kind === 'branch' ? ctx.branch : (branches[0] ?? null);
+    if (!branch) notFound = true;
+  } else {
+    scope = ctx.kind === 'city' ? branches.filter((b) => b.cityId === ctx.cityId) : branches;
+    scopeTitle = ctx.kind === 'city' ? `${ctx.cityName} – весь город` : 'Вся сеть';
+  }
+}
+if (!allowed) Astro.response.status = 403;
+else if (notFound) Astro.response.status = 404;
+
+const todayIn = (tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+const toFin = (b: Branch): FinBranch => ({ id: b.id, name: b.name, cityName: b.cityName, timezone: b.timezone, today: todayIn(b.timezone) });
+
+// Имена авторов (staff.view – Владелец, Директор) и категорий (с архивом – у старых операций) для журнала.
+const staffNames: Record<string, string> = {};
+const categoryNames: Record<string, string> = {};
+if (branch) {
+  if (can('staff.view')) {
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const q: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+      const r: { items: Array<{ id: string; firstName: string; lastName: string }>; nextCursor: string | null } = await serverCall(cookie, `/staff?limit=100${q}`);
+      for (const s of r.items) staffNames[s.id] = `${s.firstName} ${s.lastName}`;
+      if (!r.nextCursor) break;
+      cursor = r.nextCursor;
+    }
+  }
+  try {
+    const tree = await serverCall<{ items: CategoryNode[] }>(cookie, '/finance/categories?includeArchived=true');
+    for (const c of tree.items) {
+      categoryNames[c.id] = c.name;
+      for (const sub of c.children) categoryNames[sub.id] = sub.name;
+    }
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 403) throw e;
+  }
+}
+const title = !allowed ? 'Нет доступа' : notFound ? 'Не найдено' : branch ? `Финансы – ${branch.name}` : 'Финансы';
+---
+<Crm title={title}>
+  {!allowed ? (
+    <div class="yc-panel" role="alert" data-testid="no-access">
+      <h1>Раздел недоступен</h1>
+      <p>Финансы видят Владелец, Директор и Администратор филиала.</p>
+      <p><a href="/">На главную</a></p>
+    </div>
+  ) : notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Не найдено</h1>
+      <p>Такого филиала нет или он вне вашей зоны доступа.</p>
+      <p><a href="/finance">К финансам</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        {branch && full && <p class="yc-crumbs"><a href="/finance">Финансы</a> · {branch.cityName}</p>}
+        <h1>{branch ? `Финансы – ${branch.name}` : 'Финансы'}</h1>
+        <p data-testid="fin-scope">{branch ? `${branch.cityName} · касса филиала: наличные и безнал` : scopeTitle}</p>
+      </div>
+      <CashJournal
+        client:load
+        mode={branch ? 'branch' : 'network'}
+        branches={branch ? [toFin(branch)] : scope.map(toFin)}
+        scopeTitle={scopeTitle}
+        full={full}
+        canCorrect={can('finance.correct')}
+        canClose={can('finance.period.close')}
+        meId={me.staff.id}
+        staffNames={staffNames}
+        categoryNames={categoryNames}
+      />
+    </>
+  )}
+</Crm>
+
+<style is:global>
+  /* Журнал и сводка кассы: на узком экране – прокрутка внутри блока, страница не шире экрана. */
+  .yc-fin__scroll{ max-width:100%; overflow-x:auto; border:1px solid var(--yc-line); border-radius:var(--yc-r-s); }
+  .yc-fin__table{ width:100%; min-width:56rem; border-collapse:collapse; font-size:var(--yc-fs-s); }
+  .yc-fin__table th,.yc-fin__table td{ padding:var(--yc-sp-2xs); border-bottom:1px solid var(--yc-line); text-align:left; vertical-align:top; }
+  .yc-fin__table thead th{ font-size:var(--yc-fs-xs); font-weight:600; color:var(--yc-muted); background:var(--yc-surface-2); }
+  .yc-fin__table tbody tr:last-child > *{ border-bottom:0; }
+  .yc-fin__table .yc-link{ min-height:var(--yc-tap); padding:0; }
+  .yc-fin__num{ text-align:right !important; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .yc-fin__sub{ display:block; font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .yc-fin__comment{ min-width:7rem; max-width:18rem; overflow-wrap:break-word; }
+  .yc-fin__at{ width:7rem; }
+  .yc-fin__err{ color:var(--yc-danger); }
+  .yc-fin__total > *{ font-weight:650; background:var(--yc-surface-2); }
+  .yc-fin__period,.yc-fin__filters{ display:grid; gap:var(--yc-sp-xs); align-items:end; }
+  .yc-fin__period > *,.yc-fin__filters > *{ min-width:0; }
+  .yc-fin__cards{ display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:var(--yc-sp-xs); margin:0; }
+  .yc-fin__cards > div{ min-width:0; padding:var(--yc-sp-xs); background:var(--yc-surface-2); border-radius:var(--yc-r-s); }
+  .yc-fin__cards dt{ font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .yc-fin__cards dd{ margin:0; font-size:var(--yc-fs-l); font-weight:650; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  @media (min-width:600px){
+    .yc-fin__period{ grid-template-columns:repeat(2, minmax(0,12rem)) auto; justify-content:start; }
+    .yc-fin__filters{ grid-template-columns:minmax(0,14rem) minmax(0,22rem); }
+    .yc-fin__cards{ grid-template-columns:repeat(auto-fill, minmax(11rem, 1fr)); }
+  }
+</style>
