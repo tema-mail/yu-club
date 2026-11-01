@@ -3,6 +3,7 @@
 // Клик по свободному слоту – удержание (POST /holds или /holds/{id}/items: сервер перезапускает общий таймер), по своему –
 // снять позицию. Таймер – HoldTimer от серверного expiresAt. Истёк – фраза и сброс выбора; ошибка выбор не сбрасывает.
 // Состояние слота видно не только цветом: знак в ячейке, подпись в легенде и aria-label у кнопки.
+// «Оформить запись» – шаг Checkout (S1-20) на месте сетки; таймер идёт и там, истечение возвращает к выбору.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ZONE_LABEL, ZONE_ORDER, type ZoneCode } from '../lib/api.ts';
 import {
@@ -10,6 +11,7 @@ import {
   type AvailabilityDto, type HoldDto, type SlotDto, type SlotState, type UiState,
 } from '../lib/booking.ts';
 import { ClientApiError } from '../lib/client.ts';
+import Checkout from './Checkout.tsx';
 import HoldTimer from './HoldTimer.tsx';
 
 export interface ScheduleBranch {
@@ -47,6 +49,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
   const [phase, setPhase] = useState<'held' | 'expiring'>('held');
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState<'pick' | 'checkout'>('pick');
   const holdRef = useRef<HoldDto | null>(null);
   const reqNo = useRef(0);
 
@@ -56,6 +59,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
     setHold(live);
     setDeadline(live ? holdDeadline(live) : null);
     setPhase('held');
+    if (!live) setStep('pick');
     if (live) sessionStorage.setItem(holdStoreKey(branch.id), live.id);
     else sessionStorage.removeItem(holdStoreKey(branch.id));
   }
@@ -164,6 +168,31 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
 
   const days = Array.from({ length: allDays ? branch.bookingWindow.maxDays : branch.bookingWindow.defaultDays }, (_, i) => addDays(today, i));
 
+  const statusLine = (
+    <div class="yu-sched__status" data-state={status.state} data-testid="schedule-status" role="status" aria-live="polite">
+      <span>{status.text}</span>
+      {status.state === 'load_error' && step === 'pick' && (
+        <button type="button" class="yu-btn yu-btn--ghost yu-btn--small" onClick={() => { setNotice(null); refresh(); }}>Повторить</button>
+      )}
+    </div>
+  );
+
+  if (step === 'checkout' && hold && deadline !== null) {
+    return (
+      <div class="yu-sched" data-testid="schedule">
+        {statusLine}
+        <section class="yu-checkout" aria-labelledby="checkout-title">
+          <h2 id="checkout-title" class="yu-hold__title">Оформление записи</h2>
+          <HoldTimer deadline={deadline} onPhase={setPhase} onExpire={expire} />
+          <Checkout
+            hold={hold} timezone={tz} onHold={adopt} onNotice={setNotice}
+            onBack={() => { setStep('pick'); refresh(); }}
+          />
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div class="yu-sched" data-testid="schedule">
       <div class="yu-sched__controls">
@@ -193,12 +222,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
         )}
       </div>
 
-      <div class="yu-sched__status" data-state={status.state} data-testid="schedule-status" role="status" aria-live="polite">
-        <span>{status.text}</span>
-        {status.state === 'load_error' && (
-          <button type="button" class="yu-btn yu-btn--ghost yu-btn--small" onClick={() => { setNotice(null); refresh(); }}>Повторить</button>
-        )}
-      </div>
+      {statusLine}
 
       {avail?.dayState === 'open' && all.length > 0 && (
         <div class="yu-sched__scroll" tabIndex={0} aria-label="Сетка расписания, листается вбок">
@@ -255,6 +279,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
           </ul>
           <p class="yu-hold__total">Итого: <strong data-testid="hold-total">{rub(hold.totalKop)}</strong></p>
           <div class="yu-hold__actions">
+            <button type="button" class="yu-btn" onClick={() => { setNotice(null); setStep('checkout'); }} disabled={busy}>Оформить запись</button>
             <button type="button" class="yu-btn yu-btn--ghost" onClick={cancel} disabled={busy}>Отменить выбор</button>
           </div>
         </section>
