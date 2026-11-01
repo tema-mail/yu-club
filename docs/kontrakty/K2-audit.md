@@ -80,7 +80,11 @@ export function objectTimeline(db: Db, ctx: AccessContext, object: { type: Audit
 | Уведомления | `notification.sent`, `notification.failed`, `notification.skipped` (системные, результат отправки) | `notification` |
 | Уведомления | `notification.push_subscribed`, `notification.push_unsubscribed` (клиент в ЛК; endpoint – только маска хоста, ключи не пишутся) | `client` |
 | Экспорт | `export.created` | `export` |
-| Э2–Э3 | `ledger.posted`, `ledger.reversed`, `loyalty.adjusted`, `certificate.*`, `repair.*`, `shift.*` | – |
+| Деньги (Э2, S2-02) | `payment.recorded`, `payment.refunded` | `payment` |
+| Деньги (Э2, S2-02) | `finance.operation.created`, `finance.operation.reversed`, `finance.operation.corrected`, `finance.category.created`, `finance.category.updated`, `finance.category.archived`, `finance.period.closed` | `finance_operation` / `finance_category` / `branch` |
+| Деньги (Э2, S2-02) | `cash_shift.opened`, `cash_shift.closed`, `cash_shift.resolved` | `cash_shift` |
+| Журнал K3 (Э2, S2-02) | `ledger.posted`, `ledger.reversed` (пишет модуль-потребитель, K3 правило 6) | `ledger_posting` |
+| Э2–Э3 | `loyalty.*` (S2-03), `certificate.*` (S2-04), `repair.*`, `shift.*` | – |
 
 Новый код действия добавляется только правкой этого реестра.
 
