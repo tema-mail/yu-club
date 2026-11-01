@@ -56,6 +56,7 @@ function show(f: CardField | undefined, v: unknown): string {
   if (v === null || v === undefined || v === '') return '–';
   if (f?.kind === 'weekly') return hoursText(v);
   if (typeof v === 'boolean') return v ? 'Да' : 'Нет';
+  if (Array.isArray(v)) return v.length ? v.map((x) => f?.labels?.[String(x)] ?? String(x)).join(', ') : '–';
   const opt = f?.options?.find((o) => o.value === String(v));
   if (opt) return opt.label;
   if (f?.labels?.[String(v)]) return f.labels[String(v)]!;
@@ -192,7 +193,8 @@ interface AuditView {
 
 const ACTION_LABEL: Record<string, string> = {
   created: 'Создание', updated: 'Изменение', archived: 'В архив', status_changed: 'Смена статуса', hours_changed: 'Изменение графика',
-  changed: 'Изменение',
+  changed: 'Изменение', blocked: 'Блокировка', unblocked: 'Разблокировка', contacts_changed: 'Изменение контактов',
+  role_changed: 'Смена роли', scope_changed: 'Смена назначений',
 };
 const REASON_LABEL: Record<string, string> = { create: 'Создание', update: 'Изменение', archive: 'В архив', restore: 'Из архива' };
 
@@ -239,6 +241,7 @@ function History({ h, fields, reloadKey }: { h: NonNullable<CardProps['history']
                   <strong>{title(e)}</strong> · {fmt.format(new Date(e.at))} ·{' '}
                   {e.actor ? `${e.actor.name}${e.actor.role ? ` (${ROLE_LABEL[e.actor.role]})` : ''}` : 'Система'}
                 </p>
+                {e.reason && !REASON_LABEL[e.reason] && <p class="yc-history__reason">Причина: {e.reason}</p>}
                 {keys.length > 0 && (
                   <ul class="yc-history__changes">
                     {keys.map((k) => {

@@ -3,10 +3,12 @@
 // K1 (роли и зоны: объект вне зоны – 404 с телом, как у несуществующего), ADR 0002 (тело ошибки).
 // S0-15: города и филиалы (создание, правка с rowVersion, архив), хронология аудита (K2), справочники –
 // точно по apps/api/src/modules/dictionaries/routes.ts. S1-25: поиск и карточка клиента – по clients/routes.crm.ts.
+// S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts).
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
 
 type Role = 'owner' | 'director' | 'admin';
 
@@ -67,15 +69,13 @@ const ACTIONS: Record<Role, string[]> = {
   ],
 };
 
-interface MockStaff {
-  id: string; email: string; password: string; firstName: string; lastName: string; role: Role;
-  cityIds: string[]; branchIds: string[]; mustChangePassword?: boolean;
-}
+type MockStaff = StaffRecord;
 
 const staff: MockStaff[] = [
   { id: 's-owner', email: 'owner@yu.test', password: MOCK_PASSWORD, firstName: 'Ольга', lastName: 'Владимирова', role: 'owner', cityIds: [], branchIds: [] },
   { id: 's-director', email: 'director@yu.test', password: MOCK_PASSWORD, firstName: 'Денис', lastName: 'Директоров', role: 'director', cityIds: ['c-nsk'], branchIds: [] },
-  { id: 's-admin', email: 'admin@yu.test', password: MOCK_PASSWORD, firstName: 'Анна', lastName: 'Админова', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'] },
+  { id: 's-admin', email: 'admin@yu.test', password: MOCK_PASSWORD, firstName: 'Анна', lastName: 'Админова', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], phone: '+79130000001' },
+  { id: 's-admin-tsk', email: 'tomsk@yu.test', password: MOCK_PASSWORD, firstName: 'Тимур', lastName: 'Томский', role: 'admin', cityIds: [], branchIds: ['b-tsk-lenina'] },
   // После засева/сброса: сервер пускает только в session, password, logout (K12).
   { id: 's-fresh', email: 'fresh@yu.test', password: MOCK_PASSWORD, firstName: 'Фёдор', lastName: 'Новиков', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], mustChangePassword: true },
 ];
@@ -357,6 +357,7 @@ function registerNetwork(app: FastifyInstance, P: string) {
     if (!can(s, 'audit.view') && !can(s, 'audit.view.own')) return forbidden(reply);
     if (q.objectType === 'branch' && !access(s).branchIds.includes(q.objectId ?? '')) return notFound(reply);
     if (q.objectType === 'city' && !zoneCityIds(s).includes(q.objectId ?? '')) return notFound(reply);
+    if (q.objectType === 'staff' && !staffTimelineVisible({ access, can }, s, q.objectId ?? '')) return notFound(reply);
     if (q.objectType === 'client') {
       const c = clients.find((x) => x.id === q.objectId);
       if (!c || !clientInZone(s, c)) return notFound(reply);
@@ -627,7 +628,7 @@ export function buildMock() {
     const email = String(body.email ?? '').trim().toLowerCase();
     const s = staff.find((x) => x.email === email);
     // K12: неверный email и неверный пароль – один и тот же ответ.
-    if (!s || s.password !== body.password) return fail(reply, 401, 'INVALID_CREDENTIALS', 'Неверная почта или пароль');
+    if (!s || s.password !== body.password || s.status === 'blocked') return fail(reply, 401, 'INVALID_CREDENTIALS', 'Неверная почта или пароль');
     const token = randomBytes(32).toString('base64url');
     sessions.set(token, s.id);
     reply.header('set-cookie', `yu_staff=${token}; HttpOnly; SameSite=Strict; Path=/`);
@@ -668,12 +669,17 @@ export function buildMock() {
     dict = seedDictionaries();
     clients = seedClients();
     audit = seedClientAudit();
+    resetStaff();
     return { ok: true };
   });
 
   registerNetwork(app, P);
   registerDictionaries(app, P);
   registerClients(app, P);
+  registerStaff(app, P, {
+    staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
+    endSessions: (id) => { for (const [t, sid] of sessions) if (sid === id) sessions.delete(t); },
+  });
   return app;
 }
 
