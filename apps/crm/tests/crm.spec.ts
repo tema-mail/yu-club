@@ -62,7 +62,7 @@ test('Администратор видит только свои филиалы
   await login(page, 'admin@yu.test');
   await expect(page).toHaveURL(/\/branches\/b-nsk-krasny$/);
   expect(await contextOptions(page)).toEqual(['Ю Клуб на Красном']);
-  await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Филиалы', 'Клиенты']);
+  await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Филиалы', 'Клиенты', 'Ресурсы']);
 
   const owner = await (await browser.newContext()).newPage();
   await login(owner, 'owner@yu.test');
