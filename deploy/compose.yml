@@ -61,6 +61,8 @@ services:
       APP_ENV: ${APP_ENV:-stage}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgres://yu_app:${YU_APP_PASSWORD}@postgres:5432/yu_club
+      # секрет HMAC сессий сотрудников (K12): генерирует deploy.sh один раз на сервере, значения в репо нет
+      SESSION_PEPPER: ${SESSION_PEPPER:?нет SESSION_PEPPER}
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
     depends_on:
       postgres: { condition: service_healthy }
