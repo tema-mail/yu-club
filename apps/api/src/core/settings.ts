@@ -49,6 +49,7 @@ export const SETTINGS = {
   'booking.max_hold_items': def(int(1, 20), 10, N, NET),
   'booking.max_anonymous_holds_per_branch': def(int(0, 500), 30, NB, BRANCH),
   'booking.client_cancel_enabled': def(z.boolean(), true, N, NET),
+  'visit.arrive_early_min': def(int(0, 1440), 30, ['network', 'city', 'branch'], BRANCH), // Q-101: приход не раньше чем за N мин
   'notifications.reminder_day_before_time': def(HHMM, '21:00', N, NET),
   'notifications.reminder_before_minutes': def(int(5, 120), 15, N, NET),
   'notifications.push_retry_limit': def(int(0, 5), 3, N, NET),

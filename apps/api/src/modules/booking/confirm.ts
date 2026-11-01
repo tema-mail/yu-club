@@ -175,7 +175,7 @@ export async function confirmHold(tx: Tx, clientId: string, holdId: string, cloc
     await writeAudit(
       tx,
       meta,
-      { action: 'booking.created', object: { type: 'booking', id: bookingId }, branchId: branch.id, after: { holdId: h.id, resourceId: r.id, start: period.start, end: period.end, priceKop: q.priceKop } },
+      { action: 'booking.created', object: { type: 'booking', id: bookingId }, branchId: branch.id, after: { holdId: h.id, resourceId: r.id, start: period.start, end: period.end, priceKop: q.priceKop, source: 'site' } },
       clock,
     );
     await publish(tx as OutboxTx, {

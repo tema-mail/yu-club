@@ -88,6 +88,30 @@ const timeline = (page: Page) => page.getByTestId('booking-timeline').locator('l
 const STARTED = 'b0000000-0000-4000-8000-000000000001'; // идёт сейчас (ПК 2)
 const ENDED = 'b0000000-0000-4000-8000-000000000002'; // прошёл без отметки (VR1)
 
+test('хронология: источник создания – сайт, CRM, старая запись без источника', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await card(page, STARTED);
+  await expect(timeline(page).last().locator('strong')).toHaveText('Запись создана на сайте');
+  await card(page, ENDED);
+  await expect(timeline(page).last().locator('strong')).toHaveText('Запись создана в CRM');
+  await card(page, 'bk-vrroom');
+  await expect(timeline(page).last().locator('strong')).toHaveText('Запись создана');
+});
+
+test('приход раньше окна (Q-101): кнопка неактивна с подсказкой, сервер отвечает ARRIVAL_TOO_EARLY', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await card(page, 'bk-pc1-evening'); // завтра 20:00, окно – за 30 мин
+  const btn = page.getByRole('button', { name: 'Отметить приход' });
+  await expect(btn).toBeDisabled();
+  await expect(page.getByTestId('arrive-hint')).toHaveText(`Можно отметить с ${day(1).slice(8, 10)}.${day(1).slice(5, 7)}, 19:30`);
+  const b = (await (await page.request.get('/api/crm/v1/bookings/bk-pc1-evening')).json()) as { rowVersion: number; allowedActions: string[]; arriveFrom: string };
+  expect(b.allowedActions).not.toContain('arrive');
+  const r = await page.request.post('/api/crm/v1/bookings/bk-pc1-evening/arrive', { headers: { 'idempotency-key': crypto.randomUUID() }, data: { rowVersion: b.rowVersion } });
+  expect(r.status()).toBe(409);
+  expect(((await r.json()) as { error: { code: string; message: string } }).error).toMatchObject({ code: 'ARRIVAL_TOO_EARLY', message: expect.stringContaining('с 19:30') });
+  await expect(page.getByTestId('booking-status')).toHaveText('Подтверждена');
+});
+
 test('отмена без комментария невозможна; окно «было → станет»; после отмены кнопок нет', async ({ page }) => {
   await login(page, 'admin@yu.test');
   await card(page, 'bk-pc1-evening');

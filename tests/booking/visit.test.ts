@@ -118,6 +118,8 @@ describe('приход и завершение (K11 №8–9)', () => {
   it('приход – arrived, одно посещение, событие visit.confirmed; повтор – INVALID_STATUS_TRANSITION, посещение одно (TC-09)', async () => {
     const a = await newClient();
     const id = await book(a, ids.pc1!, '2026-11-15T07:00:00Z', 90);
+    const saved = t;
+    t = Date.parse('2026-11-15T06:45:00Z'); // окно прихода (Q-101)
     expect(await codeOf(arrive(id, admin, 5))).toBe('VERSION_CONFLICT');
     expect(await codeOf(arrive(id, foreign, 1))).toBe('NOT_FOUND');
     const r = await arrive(id, admin, 1);
@@ -137,6 +139,33 @@ describe('приход и завершение (K11 №8–9)', () => {
     expect((await visits(id))[0]!.completed_at).toEqual(clock.now());
     expect(await codeOf(complete(id, admin, 3))).toBe('INVALID_STATUS_TRANSITION');
     expect(await liveRows(id)).toHaveLength(1); // завершение слот задним числом не освобождает
+    t = saved;
+  });
+
+  it('Q-101: приход не раньше чем за visit.arrive_early_min до начала (зона филиала); завершение – только после прихода', async () => {
+    const a = await newClient();
+    const id = await book(a, ids.vr2!, '2026-11-14T08:00:00Z'); // 15:00 Новосибирска
+    const saved = t;
+    expect(await codeOf(complete(id, admin, 1))).toBe('INVALID_STATUS_TRANSITION'); // без прихода
+    t = Date.parse('2026-11-14T07:29:00Z'); // за 31 мин
+    const err = await arrive(id, admin, 1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect(err).toMatchObject({ code: 'ARRIVAL_TOO_EARLY', httpStatus: 409, details: { arriveFrom: '2026-11-14T07:30:00.000Z' } });
+    expect((err as AppError).message).toContain('с 14:30'); // время филиала, не UTC
+    expect(await visits(id)).toEqual([]);
+    expect((await row(id)).row_version).toBe(1);
+    t = Date.parse('2026-11-14T07:30:00Z'); // за 30 мин – можно
+    expect(await arrive(id, admin, 1)).toMatchObject({ status: 'arrived' });
+
+    // уровень филиала перекрывает сеть: 0 – только с начала сеанса
+    await db.client.query(`INSERT INTO app.settings_values (key, level, branch_id, value, valid_from, created_by) VALUES ('visit.arrive_early_min', 'branch', $1, '0', '2026-01-01', $2)`, [ids.b1, SYS]);
+    const id2 = await book(a, ids.pc2!, '2026-11-14T10:00:00Z');
+    t = Date.parse('2026-11-14T09:59:00Z');
+    expect(await codeOf(arrive(id2, admin, 1))).toBe('ARRIVAL_TOO_EARLY');
+    t = Date.parse('2026-11-14T10:00:00Z');
+    expect(await arrive(id2, admin, 1)).toMatchObject({ status: 'arrived' });
+    await db.client.query(`DELETE FROM app.settings_values WHERE key = 'visit.arrive_early_min'`);
+    t = saved;
   });
 });
 
@@ -171,6 +200,8 @@ describe('неявка (K11 №10, R-08) и исправление (№11)', () 
   it('ошибочный приход – обратная запись и visit.reverted; новый приход – новое посещение, активное одно', async () => {
     const a = await newClient();
     const id = await book(a, ids.vr1!, '2026-11-16T07:00:00Z');
+    const saved = t;
+    t = Date.parse('2026-11-16T06:50:00Z');
     await arrive(id, admin, 1);
     await revert(id, owner, 2, 'Отметили не ту бронь');
     expect(await visits(id)).toEqual([{ status: 'reverted', completed_at: null, revert_reason: 'Отметили не ту бронь' }]);
@@ -185,5 +216,6 @@ describe('неявка (K11 №10, R-08) и исправление (№11)', () 
     expect(await codeOf(revert(id, owner, 5, 'x'))).toBe('INVALID_STATUS_TRANSITION');
     const audit = await db.client.query(`SELECT action FROM journal.audit_events WHERE object_id = $1 ORDER BY id`, [id]);
     expect(audit.rows.map((r) => r.action)).toEqual(['booking.created', 'visit.confirmed', 'visit.reverted', 'visit.confirmed', 'visit.completed']);
+    t = saved;
   });
 });

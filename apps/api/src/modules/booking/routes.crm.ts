@@ -23,7 +23,7 @@ import { compositionsDuring, listBookableResources } from '../resources/index.ts
 import { cancelBooking, checkRowVersion, createStaffBooking, guardStaff, lockBooking, notFound, rescheduleBooking, staffDenialOf } from './change.ts';
 import type { BookingStatus } from './confirm.ts';
 import { runOccupancyCommand } from './occupancy.ts';
-import { completeVisit, markArrived, markNoShow, revertVisit } from './visit.ts';
+import { arriveFrom, completeVisit, markArrived, markNoShow, revertVisit } from './visit.ts';
 
 export interface BookingCrmDeps {
   pool: Db & { connect(): Promise<pg.PoolClient> };
@@ -78,13 +78,13 @@ const stripRaw = <T extends { raw: unknown }>(x: T): Omit<T, 'raw'> => {
 };
 
 /** Действия карточки (считает сервер, K11): по статусу, времени и правам сотрудника на филиал брони. */
-function allowedActions(ctx: AccessContext, r: BookingRow, now: Date): CrmBooking['allowedActions'] {
+function allowedActions(ctx: AccessContext, r: BookingRow, now: Date, arriveAt: Date | null): CrmBooking['allowedActions'] {
   const at = { branchId: r.branch_id };
   const out: CrmBooking['allowedActions'] = [];
   if (r.status === 'confirmed') {
     if (can(ctx, 'booking.cancel', at)) out.push('cancel');
     if (can(ctx, 'booking.reschedule', at) && r.s.getTime() > now.getTime()) out.push('reschedule');
-    if (can(ctx, 'booking.visit.mark', at)) out.push('arrive');
+    if (arriveAt && arriveAt.getTime() <= now.getTime()) out.push('arrive'); // до окна прихода – нет (Q-101)
     if (can(ctx, 'booking.visit.mark', at) && r.s.getTime() <= now.getTime()) out.push('no_show');
   }
   if (r.status === 'arrived' && can(ctx, 'booking.visit.mark', at)) out.push('complete');
@@ -102,6 +102,7 @@ export async function crmBooking(db: Db, ctx: AccessContext, bookingId: string, 
     `SELECT version, resource_snapshot ->> 'name' AS name, lower(period) AS s, upper(period) AS e, price_kop, created_at, reason FROM journal.booking_versions WHERE booking_id = $1 ORDER BY version`,
     [r.id],
   );
+  const arrive = r.status === 'confirmed' && can(ctx, 'booking.visit.mark', { branchId: r.branch_id }) ? await arriveFrom(db, r.branch_id, r.s, now) : null;
   // кто отменил – роль автора; имя сотрудника – в хронологии (actorId), таблица staff – модуля staff (ADR 0002 п.1)
   const by = r.cancelled_by_type === 'staff' ? 'сотрудник' : r.cancelled_by_type === 'client' ? 'клиент' : 'система';
   return {
@@ -110,7 +111,8 @@ export async function crmBooking(db: Db, ctx: AccessContext, bookingId: string, 
     cancel: r.cancelled_at ? { at: iso(r.cancelled_at), by, reasonName: r.cancel_reason_name, comment: r.cancel_comment } : null,
     visit: r.arrived_at ? { arrivedAt: iso(r.arrived_at), completedAt: r.completed_at ? iso(r.completed_at) : null } : null,
     versions: versions.rows.map((v) => ({ version: v.version, resourceName: v.name, start: iso(v.s), end: iso(v.e), priceKop: Number(v.price_kop), createdAt: iso(v.created_at), reason: v.reason })),
-    allowedActions: allowedActions(ctx, r, now),
+    allowedActions: allowedActions(ctx, r, now, arrive),
+    arriveFrom: arrive ? iso(arrive) : null,
   };
 }
 

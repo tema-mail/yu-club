@@ -5,11 +5,12 @@
 // Повторная отметка прихода второго посещения не создаёт: переход arrived → arrived запрещён, а visits_one_active_idx
 // держит это и на уровне базы. Неявка посещения не создаёт. Ошибочный приход / неявка – обратная запись
 // (status 'reverted' с причиной и автором) и событие visit.reverted / no_show.reverted для Э2 (сторно баллов, штрафа).
-import { writeAudit, type AuditRequestMeta, type Tx } from '../../core/audit.ts';
+import { writeAudit, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import type { AccessContext } from '../../core/permissions.ts';
-import { durationMinutes, systemClock, type Clock } from '../../core/time.ts';
+import { resolveSetting } from '../../core/settings.ts';
+import { durationMinutes, formatLocal, systemClock, type Clock, type TimeZone } from '../../core/time.ts';
 import type { BookingStatus } from './confirm.ts';
 import { assertTransition, checkRowVersion, guardStaff, lockBooking, notFound, reasonOf, requireText, type LockedBooking } from './change.ts';
 
@@ -52,10 +53,21 @@ async function setStatus(tx: Tx, b: LockedBooking, to: BookingStatus): Promise<L
   return { ...b, status: to, rowVersion: b.rowVersion + 1 };
 }
 
+/** Q-101: с какого момента можно отметить приход – начало минус visit.arrive_early_min (значение на `at`, зона филиала). */
+export async function arriveFrom(db: Db | Tx, branchId: string, start: Date, at: Date): Promise<Date> {
+  const early = (await resolveSetting(db, 'visit.arrive_early_min', { branchId }, at)).value;
+  return new Date(start.getTime() - early * 60_000);
+}
+
 /** K11 №8: клиент пришёл – посещение и событие visit.confirmed (начисление баллов в Э2, ключ по visitId). */
 export async function markArrived(tx: Tx, bookingId: string, cmd: VisitCommand, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<LockedBooking> {
   const now = clock.now();
   const b = await begin(tx, bookingId, cmd, 'booking.visit.mark', 'visit.confirmed', 'arrived');
+  const from = await arriveFrom(tx, b.branchId, b.start, now);
+  if (now.getTime() < from.getTime()) {
+    const hm = formatLocal(from, b.timezone as TimeZone, 'time');
+    throw new AppError('ARRIVAL_TOO_EARLY', 409, `Приход можно отметить с ${hm} – не раньше чем за ${Math.round((b.start.getTime() - from.getTime()) / 60_000)} мин до начала`, { arriveFrom: from.toISOString() });
+  }
   const v = await tx.query<{ id: string }>(
     `INSERT INTO app.visits (booking_id, branch_id, client_id, arrived_at, marked_by) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
     [b.id, b.branchId, b.clientId, now, cmd.ctx.actor.staffId],
