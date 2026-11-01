@@ -2,4 +2,5 @@
 export const errors = {
   SLOT_TAKEN: 409, // подтверждённая бронь или мероприятие на этой единице
   SLOT_HELD: 409, // чужое активное удержание; или повтор после 40P01/40001 снова не прошёл (ADR 0004 §3)
+  RESOURCE_BLOCKED: 409, // блокировка / ремонт (K6 assertNotBlocked)
 } as const;

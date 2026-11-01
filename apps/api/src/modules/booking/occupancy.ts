@@ -14,6 +14,7 @@ import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { toPgRange, type Interval } from '../../core/time.ts';
 import type { UnitSet } from '../resources/index.ts';
+import { assertNotBlocked } from './blocks.ts';
 
 export type OccupySource =
   | { type: 'hold_item'; id: string; holdExpiresAt: Date }
@@ -55,7 +56,8 @@ export async function occupyMany(tx: Tx, branchId: string, items: OccupyItem[]):
     [all, branchId],
   );
   if (locked.rowCount !== all.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
-  // 2) assertNotBlocked – S1-04.
+  // 2) блокировки (K6 правило 2: в той же транзакции, после захвата строк единиц).
+  for (const i of items) await assertNotBlocked(tx, i.units.unitIds, i.period);
   // 3) все строки – одним INSERT в порядке unit_id.
   const rows = items
     .flatMap((i) => i.units.unitIds.map((u) => ({ u: u.toLowerCase(), i })))

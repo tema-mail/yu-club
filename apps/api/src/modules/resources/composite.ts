@@ -204,3 +204,31 @@ export async function attachInitialUnits(
   }
   return unitIds;
 }
+
+/** Единицы цели блокировки (K6 createBlock, S1-04) на момент `at`: единицы как есть; ресурс(ы) – состав на `at`;
+ *  комната – все активные единицы комнаты (включая PS4 без ресурса). Чужой филиал / нет / архив → RESOURCE_LINK_INVALID. */
+export async function unitsOfTarget(
+  tx: Tx,
+  branchId: string,
+  target: { type: 'unit' | 'resource' | 'room' | 'resources'; ids: string[] },
+  at: Date,
+): Promise<string[]> {
+  const invalid = () => new AppError('RESOURCE_LINK_INVALID', 422, 'Цель блокировки не найдена в этом филиале', { field: 'target.ids' });
+  if (target.ids.length === 0 || !target.ids.every(isUuid)) throw invalid();
+  const ids = sortIds(target.ids);
+  if (target.type === 'resource' && ids.length !== 1) throw invalid();
+  const table = target.type === 'unit' ? 'occupancy_units' : target.type === 'room' ? 'rooms' : 'resources';
+  const found = await tx.query(`SELECT 1 FROM app.${table} WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND status <> 'archived'`, [ids, branchId]);
+  if (found.rowCount !== ids.length) throw invalid();
+  if (target.type === 'unit') return ids;
+  const r =
+    target.type === 'room'
+      ? await tx.query<{ id: string }>(`SELECT id FROM app.occupancy_units WHERE room_id = ANY($1::uuid[]) AND status = 'active' ORDER BY id`, [ids])
+      : await tx.query<{ id: string }>(
+          `SELECT DISTINCT unit_id AS id FROM app.resource_units
+           WHERE resource_id = ANY($1::uuid[]) AND valid_from <= $2 AND (valid_to IS NULL OR valid_to > $2) ORDER BY 1`,
+          [ids, at],
+        );
+  if (r.rows.length === 0) throw invalid();
+  return r.rows.map((x) => x.id);
+}

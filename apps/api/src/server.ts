@@ -4,6 +4,7 @@ import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
 import { AppError } from './core/errors.ts';
 import './core/registry.ts'; // проверка реестров модулей на дубли – при старте (ADR 0002)
+import { blockRoutes } from './modules/booking/blocks.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
@@ -75,6 +76,15 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(
       async (scope) =>
         resourcesRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    void app.register(
+      async (scope) =>
+        blockRoutes(scope, {
           pool: staff.pool,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),

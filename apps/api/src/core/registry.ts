@@ -4,6 +4,7 @@
 import { coreErrors } from './errors.ts';
 import { ledgerErrors } from './ledger.ts';
 import { settingsAudit, settingsErrors } from './settings.ts';
+import { auditActions as bookingAudit } from '../modules/booking/audit.ts';
 import { errors as bookingErrors } from '../modules/booking/errors.ts';
 import { auditActions as clientsAudit } from '../modules/clients/audit.ts';
 import { errors as clientsErrors } from '../modules/clients/errors.ts';
@@ -17,7 +18,7 @@ import { auditActions as staffAudit } from '../modules/staff/audit.ts';
 import { errors as staffErrors } from '../modules/staff/errors.ts';
 
 const moduleErrors = { ledger: ledgerErrors, settings: settingsErrors, staff: staffErrors, dictionaries: dictionariesErrors, network: networkErrors, clients: clientsErrors, resources: resourcesErrors, booking: bookingErrors } as const;
-const moduleAudit = { settings: settingsAudit, staff: staffAudit, dictionaries: dictionariesAudit, network: networkAudit, clients: clientsAudit, resources: resourcesAudit } as const;
+const moduleAudit = { settings: settingsAudit, staff: staffAudit, dictionaries: dictionariesAudit, network: networkAudit, clients: clientsAudit, resources: resourcesAudit, booking: bookingAudit } as const;
 
 type ModuleErrors = typeof moduleErrors;
 export type ModuleErrorCode = { [M in keyof ModuleErrors]: keyof ModuleErrors[M] }[keyof ModuleErrors];
