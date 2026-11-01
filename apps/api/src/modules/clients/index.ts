@@ -161,6 +161,14 @@ export async function findOrCreateGuest(
   return toRef(upd.rows[0]!);
 }
 
+/** Строки клиентов FOR NO KEY UPDATE в порядке id (K6: замок «… → единицы → клиент»): команды одного клиента
+ *  (client_time, удержание) идут по очереди. Таблица clients – модуля clients (ADR 0002 п.1), booking зовёт отсюда. */
+export async function lockClients(tx: Tx, clientIds: string[]): Promise<void> {
+  const ids = [...new Set(clientIds.map((s) => s.toLowerCase()))].sort();
+  if (ids.length === 0) return;
+  await tx.query('SELECT id FROM app.clients WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE', [ids]);
+}
+
 /** Можно ли клиенту бронировать (K5 confirm, S1-13). blocked / restricted (пока не истёк срок) /
  *  deletion_requested / anonymized → CLIENT_RESTRICTED. С Э2 loyalty добавит проверку баланса сюда же. */
 export async function assertCanBook(tx: Tx, clientId: string, at: Date): Promise<void> {

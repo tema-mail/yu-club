@@ -105,6 +105,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
       async (scope) =>
         resourcesRoutes(scope, {
           pool: staff.pool,
+          usage: bookingsProvider,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
         }),

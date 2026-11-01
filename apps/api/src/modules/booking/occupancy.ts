@@ -15,6 +15,7 @@ import type pg from 'pg';
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { toPgRange, type Interval } from '../../core/time.ts';
+import { lockClients } from '../clients/index.ts';
 import { lockCompositions, type UnitSet } from '../resources/index.ts';
 import { assertNotBlocked } from './blocks.ts';
 
@@ -103,8 +104,7 @@ export type ClientTimeSource = { type: 'hold_item'; id: string; holdExpiresAt: D
  *  вызывающий (occupyMany, attach) откатывает до своей точки. */
 export async function insertClientTime(tx: Tx, rows: Array<{ clientId: string; period: Interval; source: ClientTimeSource }>): Promise<void> {
   if (rows.length === 0) return;
-  const clients = unitOrder(rows.map((r) => r.clientId));
-  await tx.query('SELECT id FROM app.clients WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE', [clients]);
+  await lockClients(tx, rows.map((r) => r.clientId));
   try {
     await tx.query(
       `INSERT INTO app.client_time (client_id, period, source_type, source_id, hold_expires_at)

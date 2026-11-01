@@ -11,6 +11,7 @@ import { AppError } from '../../apps/api/src/core/errors.ts';
 import { fixedClock, interval } from '../../apps/api/src/core/time.ts';
 import { occupy, occupyMany, runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
 import { changeComposition, expandToUnits, listBookableResources, type UnitSet } from '../../apps/api/src/modules/resources/index.ts';
+import { bookingsProvider } from '../../apps/api/src/modules/booking/providers.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -304,7 +305,7 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
     const before = await db.client.query(`SELECT unit_id, period::text FROM app.occupancy WHERE active AND period && '[2026-11-15,2026-11-16)' ORDER BY 1, 2`);
     await db.client.query(`UPDATE app.occupancy SET active = false, released_at = $2, release_reason = 'cancelled' WHERE source_id = $1`, [ids.future, at(NOW)]);
     await db.client.query(`UPDATE app.bookings SET status = 'cancelled_by_client', cancelled_at = $2 WHERE id = $1`, [ids.future, at(NOW)]);
-    const res = await changeComposition(pool, { resourceId: ids.whole!, unitIds: [units.VR1!, units.VR2!, ps5.unit], validFrom }, meta, clock);
+    const res = await changeComposition(pool, { resourceId: ids.whole!, unitIds: [units.VR1!, units.VR2!, ps5.unit], validFrom }, meta, clock, bookingsProvider);
     expect(res).toEqual({ affectedBookingIds: [], affectedHoldIds: [], affectedBlockIds: [], applied: true });
     expect((await expandToUnits(pool, ids.whole!, at('2026-11-15T10:00:00Z'))).unitIds).toEqual([units.VR1, units.VR2, units.PS4].sort());
     expect((await expandToUnits(pool, ids.whole!, at('2026-11-21T10:00:00Z'))).unitIds).toEqual([units.VR1, units.VR2, ps5.unit].sort());
@@ -319,7 +320,7 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
   it('прошлое не переписывается: validFrom раньше «сейчас» или последнего изменения – 400; Администратор – 403', async () => {
     const back = await req('owner', 'POST', `/resources/${ids.whole}/composition`, { unitIds: [units.VR1], validFrom: '2026-11-01T00:00:00Z' });
     expect(back.statusCode).toBe(400);
-    expect(await codeOf(changeComposition(pool, { resourceId: ids.whole!, unitIds: [units.VR1!], validFrom: at('2026-11-19T00:00:00Z') }, meta, clock))).toBe('VALIDATION_FAILED');
+    expect(await codeOf(changeComposition(pool, { resourceId: ids.whole!, unitIds: [units.VR1!], validFrom: at('2026-11-19T00:00:00Z') }, meta, clock, bookingsProvider))).toBe('VALIDATION_FAILED');
     const other = await req('owner', 'POST', `/resources/${ids.whole}/composition`, { unitIds: [randomUUID()], validFrom: '2026-12-01T00:00:00Z' });
     expect(other.json().error.code).toBe('RESOURCE_LINK_INVALID');
     const denied = await req('admin', 'POST', `/resources/${ids.whole}/composition`, { unitIds: [units.VR1], validFrom: '2026-12-01T00:00:00Z' });
@@ -357,7 +358,7 @@ describe('гонка «занятие ↔ смена состава» (реви�
           const c = await pool.connect();
           try {
             await c.query('BEGIN');
-            const res = await changeComposition(c, { resourceId: rid, unitIds: [ua!], validFrom: at('2026-12-01T00:00:00Z') }, meta, clock);
+            const res = await changeComposition(c, { resourceId: rid, unitIds: [ua!], validFrom: at('2026-12-01T00:00:00Z') }, meta, clock, bookingsProvider);
             await c.query('SELECT pg_sleep(0.005)');
             await c.query('COMMIT');
             return { applied: res.applied, bookingIds: [] as string[] };

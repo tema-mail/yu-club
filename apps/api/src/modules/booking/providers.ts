@@ -1,5 +1,6 @@
 // Реализации зависимостей других модулей по таблицам броней (после S1-07). Подключает server.ts:
-// network (K13) – список затронутых броней при изменении графика; clients (K9) – связь клиента с филиалами для
+// network (K13) – список затронутых броней при изменении графика; resources – будущие брони и удержания ресурса
+// при смене состава (futureUsage); clients (K9) – связь клиента с филиалами для
 // поиска в CRM. Модули network и clients booking не импортируют – получают эти объекты извне (ADR 0002).
 import type { Db, Tx } from '../../core/audit.ts';
 
@@ -25,6 +26,20 @@ export const bookingsProvider = {
       [input.branchId, input.from, input.to],
     );
     return r.rows;
+  },
+
+  /** resources ResourceUsageProvider (changeComposition): действующие брони ресурса и живые удержания с концом позже from. */
+  async futureUsage(tx: Db | Tx, resourceId: string, from: Date, now: Date): Promise<{ bookingIds: string[]; holdIds: string[] }> {
+    const b = await tx.query<{ id: string }>(
+      `SELECT id FROM app.bookings WHERE resource_id = $1 AND ${LIVE_BOOKING} AND upper(period) > $2 ORDER BY id`,
+      [resourceId, from],
+    );
+    const h = await tx.query<{ id: string }>(
+      `SELECT DISTINCT h.id FROM app.hold_items hi JOIN app.holds h ON h.id = hi.hold_id
+       WHERE hi.resource_id = $1 AND hi.status = 'active' AND upper(hi.period) > $2 AND h.status = 'active' AND h.expires_at > $3 ORDER BY h.id`,
+      [resourceId, from, now],
+    );
+    return { bookingIds: b.rows.map((x) => x.id), holdIds: h.rows.map((x) => x.id) };
   },
 };
 

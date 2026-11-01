@@ -97,7 +97,7 @@ describe('resources и booking: будущие брони и удержания 
 
   it('changeComposition видит бронь и удержание ресурса (id удержания, не позиции)', async () => {
     const u2 = await one(`INSERT INTO app.occupancy_units (branch_id, code, name) VALUES ($1, 'PC1b', 'PC1b') RETURNING id`, [ids.b1]);
-    const e = await codeOf(changeComposition(pool, { resourceId: ids.pc!, unitIds: [u2.id], validFrom: new Date('2026-11-15T00:00:00Z') }, meta, clock));
+    const e = await codeOf(changeComposition(pool, { resourceId: ids.pc!, unitIds: [u2.id], validFrom: new Date('2026-11-15T00:00:00Z') }, meta, clock, bookingsProvider));
     expect(e).toBeInstanceOf(AppError);
     expect((e as AppError).details).toEqual({ bookingIds: [ids.booking], holdIds: [ids.hold], blockIds: [] });
   });

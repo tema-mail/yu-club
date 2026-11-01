@@ -5,7 +5,7 @@
 // прошлое не переписывается – брони хранят свои единицы снимком (occupancy, с S1-07 booking_versions.unit_ids).
 import { writeAudit, type AuditRequestMeta, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { systemClock, type Clock } from '../../core/time.ts';
+import type { Clock } from '../../core/time.ts';
 import { assertBookable, getResource, isUuid } from './index.ts';
 
 export interface UnitSet {
@@ -64,20 +64,11 @@ async function checkUnits(tx: Tx, branchId: string, unitIds: string[]): Promise<
   }
 }
 
-/** Будущие брони и удержания ресурса (с S1-07 – по таблицам броней и удержаний): действующие брони ресурса
- *  (confirmed / arrived) и активные позиции живых удержаний с концом позже `from`. holdIds – id удержаний.
- *  Таблицы принадлежат booking (ADR 0002): чтение здесь, а не через booking/index, – иначе цикл resources ↔ booking. */
-export async function futureUsage(tx: Tx, resourceId: string, from: Date, now: Date = from): Promise<{ bookingIds: string[]; holdIds: string[] }> {
-  const b = await tx.query<{ id: string }>(
-    `SELECT id FROM app.bookings WHERE resource_id = $1 AND status IN ('confirmed','arrived') AND upper(period) > $2 ORDER BY id`,
-    [resourceId, from],
-  );
-  const h = await tx.query<{ id: string }>(
-    `SELECT DISTINCT h.id FROM app.hold_items hi JOIN app.holds h ON h.id = hi.hold_id
-     WHERE hi.resource_id = $1 AND hi.status = 'active' AND upper(hi.period) > $2 AND h.status = 'active' AND h.expires_at > $3 ORDER BY h.id`,
-    [resourceId, from, now],
-  );
-  return { bookingIds: b.rows.map((x) => x.id), holdIds: h.rows.map((x) => x.id) };
+/** Будущие брони и удержания ресурса: действующие брони (confirmed / arrived) и активные позиции живых удержаний
+ *  с концом позже `from`; holdIds – id удержаний. Таблицы принадлежат booking (ADR 0002 п.1) – реализацию даёт
+ *  booking/providers.ts (bookingsProvider.futureUsage), server.ts передаёт её в маршруты ресурсов. */
+export interface ResourceUsageProvider {
+  futureUsage(tx: Tx, resourceId: string, from: Date, now: Date): Promise<{ bookingIds: string[]; holdIds: string[] }>;
 }
 
 /** Активные блокировки, выбранные по этому ресурсу и идущие после `from` (ревизия S1-04 п.3): их единицы развёрнуты
@@ -98,7 +89,8 @@ export async function changeComposition(
   tx: Tx,
   input: { resourceId: string; unitIds: string[]; validFrom: Date; dryRun?: boolean },
   meta: AuditRequestMeta,
-  clock: Clock = systemClock,
+  clock: Clock,
+  usageProvider: ResourceUsageProvider,
 ): Promise<{ affectedBookingIds: string[]; affectedHoldIds: string[]; affectedBlockIds: string[]; applied: boolean }> {
   const lock = isUuid(input.resourceId)
     ? await tx.query<{ branch_id: string; status: string }>('SELECT branch_id, status FROM app.resources WHERE id = $1 FOR UPDATE', [input.resourceId])
@@ -119,7 +111,7 @@ export async function changeComposition(
   }
   const before = await compositionAt(tx, input.resourceId, input.validFrom);
   const same = before.length === unitIds.length && before.every((u, i) => u === unitIds[i]);
-  const usage = same ? { bookingIds: [], holdIds: [] } : await futureUsage(tx, input.resourceId, input.validFrom, now);
+  const usage = same ? { bookingIds: [], holdIds: [] } : await usageProvider.futureUsage(tx, input.resourceId, input.validFrom, now);
   const blockIds = same ? [] : await futureBlocks(tx, input.resourceId, input.validFrom);
   const result = { affectedBookingIds: usage.bookingIds, affectedHoldIds: usage.holdIds, affectedBlockIds: blockIds, applied: false };
   if (same || input.dryRun) return result;
