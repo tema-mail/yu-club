@@ -69,13 +69,15 @@ const ACTIONS: Record<Role, string[]> = {
 
 interface MockStaff {
   id: string; email: string; password: string; firstName: string; lastName: string; role: Role;
-  cityIds: string[]; branchIds: string[];
+  cityIds: string[]; branchIds: string[]; mustChangePassword?: boolean;
 }
 
 const staff: MockStaff[] = [
   { id: 's-owner', email: 'owner@yu.test', password: MOCK_PASSWORD, firstName: 'Ольга', lastName: 'Владимирова', role: 'owner', cityIds: [], branchIds: [] },
   { id: 's-director', email: 'director@yu.test', password: MOCK_PASSWORD, firstName: 'Денис', lastName: 'Директоров', role: 'director', cityIds: ['c-nsk'], branchIds: [] },
   { id: 's-admin', email: 'admin@yu.test', password: MOCK_PASSWORD, firstName: 'Анна', lastName: 'Админова', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'] },
+  // После засева/сброса: сервер пускает только в session, password, logout (K12).
+  { id: 's-fresh', email: 'fresh@yu.test', password: MOCK_PASSWORD, firstName: 'Фёдор', lastName: 'Новиков', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], mustChangePassword: true },
 ];
 
 const sessions = new Map<string, string>(); // токен → staffId
@@ -494,7 +496,12 @@ export function buildMock() {
 
   app.addHook('preHandler', async (req, reply) => {
     if (req.url.startsWith(`${P}/auth/login`) || req.url === '/__test/reset') return;
-    if (!currentStaff(req)) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
+    const s = currentStaff(req);
+    if (!s) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
+    const allowed = [`${P}/auth/session`, `${P}/auth/password`, `${P}/auth/logout`, `${P}/me`];
+    if (s.mustChangePassword && !allowed.some((u) => req.url.startsWith(u))) {
+      return fail(reply, 403, 'PASSWORD_CHANGE_REQUIRED', 'Сначала смените пароль');
+    }
   });
 
   app.post(`${P}/auth/login`, async (req, reply) => {
@@ -519,7 +526,7 @@ export function buildMock() {
   app.get(`${P}/auth/session`, async (req) => {
     const s = currentStaff(req)!;
     const now = Date.now();
-    return { staff: publicStaff(s), expiresAt: new Date(now + 12 * 3600e3).toISOString(), idleExpiresAt: new Date(now + 30 * 60e3).toISOString() };
+    return { staff: { ...publicStaff(s), mustChangePassword: s.mustChangePassword === true }, expiresAt: new Date(now + 12 * 3600e3).toISOString(), idleExpiresAt: new Date(now + 30 * 60e3).toISOString() };
   });
 
   app.post(`${P}/auth/password`, async (req, reply) => {
@@ -527,13 +534,14 @@ export function buildMock() {
     const body = (req.body ?? {}) as { currentPassword?: string; newPassword?: string };
     if (body.currentPassword !== s.password) return fail(reply, 401, 'INVALID_CREDENTIALS', 'Текущий пароль указан неверно');
     if (String(body.newPassword ?? '').length < 12) return fail(reply, 422, 'PASSWORD_TOO_WEAK', 'Новый пароль – не короче 12 символов');
-    // Мок не меняет пароль по-настоящему: тесты идут параллельно на общих учётках.
+    // Мок не меняет пароль по-настоящему: тесты идут параллельно на общих учётках. Флаг смены – снимает.
+    s.mustChangePassword = false;
     return reply.code(204).send();
   });
 
   app.get(`${P}/me`, async (req) => {
     const s = currentStaff(req)!;
-    return { staff: publicStaff(s), access: access(s), actions: ACTIONS[s.role] };
+    return { staff: { ...publicStaff(s), mustChangePassword: s.mustChangePassword === true }, access: access(s), actions: ACTIONS[s.role] };
   });
 
   app.post('/__test/reset', async () => {

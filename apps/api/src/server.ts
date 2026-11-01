@@ -6,14 +6,15 @@ import { AppError } from './core/errors.ts';
 import './core/registry.ts'; // проверка реестров модулей на дубли – при старте (ADR 0002)
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
-import { authenticate, staffAuthRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
+import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 
 export interface ServerDeps {
   staff?: StaffDeps;
 }
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
-  const app = Fastify({ logger: { level: config.LOG_LEVEL } });
+  // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
+  const app = Fastify({ logger: { level: config.LOG_LEVEL }, trustProxy: config.TRUSTED_PROXIES });
 
   // Тело ошибки (ADR 0002): { error: { code, message, details?, requestId } }. Стек и SQL – только в лог.
   app.setErrorHandler((err: FastifyError | AppError, request, reply) => {
@@ -36,6 +37,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   if (deps.staff) {
     const staff = deps.staff;
     void app.register(async (scope) => staffAuthRoutes(scope, staff), { prefix: '/api/crm/v1/auth' });
+    void app.register(async (scope) => staffMeRoutes(scope, staff), { prefix: '/api/crm/v1' });
     void app.register(
       async (scope) =>
         dictionaryRoutes(scope, {

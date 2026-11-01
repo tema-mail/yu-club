@@ -209,17 +209,20 @@ export type StaffOp = 'create' | 'update_profile' | 'change_role' | 'change_scop
 export function assertCanManageStaff(
   ctx: AccessContext,
   op: StaffOp,
-  target: { staffId?: string; role: StaffRole; branchIds: string[]; cityIds: string[] },
+  target: { staffId?: string; role: StaffRole; branchIds: string[]; cityIds: string[]; newRole?: StaffRole },
 ): void {
   const blockOp = op === 'block' || op === 'unblock' || op === 'end_sessions';
-  const action = blockOp ? 'staff.block' : target.role === 'admin' ? 'staff.admin.assign' : 'staff.director.assign';
+  // change_role: важна и новая роль – повысить до директора/Владельца может только Владелец.
+  if (op === 'change_role' && target.newRole === undefined) throw new Error('assertCanManageStaff: для change_role нужен newRole');
+  const roles = op === 'change_role' ? [target.role, target.newRole!] : [target.role];
+  const action = blockOp ? 'staff.block' : roles.every((r) => r === 'admin') ? 'staff.admin.assign' : 'staff.director.assign';
   if (!roleAllows(ctx.role, action)) throw forbidden(action);
   // 1. Никто не меняет себе роль и зону.
   if (target.staffId === ctx.actor.staffId && (op === 'change_role' || op === 'change_scope')) throw forbidden(action);
   // 2. Директоров и Владельца трогает только Владелец.
-  if ((target.role === 'owner' || target.role === 'director') && ctx.role !== 'owner') throw forbidden(action);
-  // 3. Владельца создаёт только установка (CLI), не CRM.
-  if (target.role === 'owner' && (op === 'create' || op === 'change_role')) throw forbidden(action);
+  if (roles.some((r) => r === 'owner' || r === 'director') && ctx.role !== 'owner') throw forbidden(action);
+  // 3. Владельца создаёт только установка (CLI), не CRM: ни создать, ни назначить ролью, ни снять с роли.
+  if (roles.includes('owner') && (op === 'create' || op === 'change_role')) throw forbidden(action);
   // 4. Не-Владелец – только в пределах своей зоны.
   if (!ctx.network) {
     const outside =

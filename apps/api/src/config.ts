@@ -13,6 +13,13 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   // Секрет HMAC токенов сессий (K12). Без него вход сотрудников выключен.
   SESSION_PEPPER: z.string().min(32, 'не короче 32 символов').optional(),
+  // Прокси, чьему X-Forwarded-For верим (адреса и IPv4-CIDR через запятую) – как TRUSTED_PROXIES в CRM.
+  // От остальных XFF игнорируется: request.ip – адрес соединения. Нужен лимиту входа K12 по IP.
+  TRUSTED_PROXIES: z
+    .string()
+    .default('127.0.0.0/8,::1,172.16.0.0/12')
+    .transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean))
+    .refine((list) => list.every((x) => /^[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(x)), 'адреса или CIDR через запятую'),
 });
 
 export type Config = z.infer<typeof schema>;

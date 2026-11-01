@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { writeDenied, type AuditRequestMeta } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { assertCanManageStaff, loadAccess, noNetwork, type AccessContext, type NetworkLookup, type StaffOp } from '../../core/permissions.ts';
+import { actionsOf, assertCanManageStaff, loadAccess, noNetwork, type AccessContext, type NetworkLookup, type StaffOp } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import {
   changePassword,
@@ -62,8 +62,14 @@ export function reqInfo(request: FastifyRequest): ReqInfo {
   return info;
 }
 
-/** Кука → сессия → контекст доступа. Нет куки – AUTH_REQUIRED; отозвана/истекла/блок – SESSION_REVOKED. */
-export async function authenticate(deps: StaffDeps, request: FastifyRequest, reply: FastifyReply): Promise<StaffRequestContext> {
+/** Кука → сессия → контекст доступа. Нет куки – AUTH_REQUIRED; отозвана/истекла/блок – SESSION_REVOKED.
+ *  Пока must_change_password – всё, кроме маршрутов с allowPasswordChange, получает PASSWORD_CHANGE_REQUIRED. */
+export async function authenticate(
+  deps: StaffDeps,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  opts: { allowPasswordChange?: boolean } = {},
+): Promise<StaffRequestContext> {
   const clock = deps.clock ?? systemClock;
   const token = readCookie(request.headers.cookie, STAFF_COOKIE);
   if (!token) throw new AppError('AUTH_REQUIRED', 401, 'Нужно войти');
@@ -71,6 +77,9 @@ export async function authenticate(deps: StaffDeps, request: FastifyRequest, rep
   if (!session) {
     clearSessionCookie(reply);
     throw new AppError('SESSION_REVOKED', 401, 'Сессия завершена, войдите снова');
+  }
+  if (session.mustChangePassword && !opts.allowPasswordChange) {
+    throw new AppError('PASSWORD_CHANGE_REQUIRED', 403, 'Сначала смените пароль');
   }
   const actor = { kind: 'staff' as const, staffId: session.staffId, sessionId: session.sessionId };
   const access = await loadAccess(deps.pool, actor, clock.now(), deps.network ?? noNetwork);
@@ -130,6 +139,22 @@ async function staffTarget(deps: StaffDeps, ctx: AccessContext, staffId: string,
 
 // ---- маршруты
 
+/** K11 №1 GET /me (префикс /api/crm/v1): сотрудник, раскрытая зона и действия роли для меню.
+ *  Защита – на сервере (K1); меню лишь показывает. Разрешён и при must_change_password (CRM ведёт на смену). */
+export async function staffMeRoutes(app: FastifyInstance, deps: StaffDeps): Promise<void> {
+  app.get('/me', async (request, reply) => {
+    const { session, access } = await authenticate(deps, request, reply, { allowPasswordChange: true });
+    const staff = await getStaffPublic(deps.pool, session.staffId);
+    if (!staff) throw new AppError('SESSION_REVOKED', 401, 'Сессия завершена, войдите снова');
+    reply.header('cache-control', 'no-store');
+    return {
+      staff,
+      access: { network: access.network, cityIds: [...access.cityIds].sort(), branchIds: [...access.branchIds].sort() },
+      actions: actionsOf(access.role),
+    };
+  });
+}
+
 export async function staffAuthRoutes(app: FastifyInstance, deps: StaffDeps): Promise<void> {
   const clock = deps.clock ?? systemClock;
 
@@ -153,16 +178,16 @@ export async function staffAuthRoutes(app: FastifyInstance, deps: StaffDeps): Pr
   });
 
   app.get('/session', async (request, reply) => {
-    const { session } = await authenticate(deps, request, reply);
+    const { session } = await authenticate(deps, request, reply, { allowPasswordChange: true });
     const staff = await getStaffPublic(deps.pool, session.staffId);
     if (!staff) throw new AppError('SESSION_REVOKED', 401, 'Сессия завершена, войдите снова');
     return { staff, expiresAt: session.expiresAt.toISOString(), idleExpiresAt: session.idleExpiresAt.toISOString() };
   });
 
   app.post('/password', async (request, reply) => {
-    const { session, meta } = await authenticate(deps, request, reply);
+    const { session, meta } = await authenticate(deps, request, reply, { allowPasswordChange: true });
     const body = parse(passwordBody, request.body);
-    await changePassword(deps.pool, clock, meta, { staffId: session.staffId, sessionId: session.sessionId, ...body });
+    await changePassword(deps.pool, deps.auth, clock, meta, { staffId: session.staffId, sessionId: session.sessionId, ...body });
     return reply.code(204).send();
   });
 
