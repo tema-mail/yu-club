@@ -65,7 +65,9 @@ describe('реестр K7', () => {
     expect(SETTINGS['notifications.reminder_before_minutes'].systemDefault).toBe(15);
     expect(SETTINGS['booking.max_anonymous_holds_per_branch'].systemDefault).toBe(30);
     expect(SETTINGS['booking.max_anonymous_holds_per_branch'].levels).toEqual(['network', 'branch']);
-    expect(Object.keys(SETTINGS)).toHaveLength(20);
+    expect(SETTINGS['visit.arrive_early_min'].systemDefault).toBe(30); // Q-101
+    expect(SETTINGS['visit.arrive_early_min'].levels).toEqual(['network', 'city', 'branch']);
+    expect(Object.keys(SETTINGS)).toHaveLength(21);
   });
 
   it('системное значение каждого ключа проходит его же схему', () => {

@@ -45,6 +45,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const STEP: Record<string, number> = { pc: 30, vr_seat: 15, room_whole: 15, ps_room: 30, composite: 15 };
 const WINDOW_DAYS = 14;
+const ARRIVE_EARLY_MIN = 30; // visit.arrive_early_min по умолчанию (Q-101)
 const MAX_DAYS = 7;
 const OCCUPYING: Status[] = ['confirmed', 'arrived', 'completed', 'no_show'];
 const ACTOR_ROLE: Record<string, string> = { owner: 'owner', director: 'director', admin: 'admin' };
@@ -69,7 +70,8 @@ function seed(): Bk[] {
     return {
       id, number: nextNumber++, branchId, clientId, status: 'confirmed', source, rowVersion: 1, internalComment: null, cancel: null, visit: null,
       versions: [{ version: 1, resourceId, resourceName: r.name, start: iso(s), end: iso(e), priceKop: price(r.type, s, e), createdAt: created, reason: null, unitIds: [...(db.composition[resourceId] ?? [])] }],
-      timeline: [{ id: randomUUID(), at: created, action: 'booking.confirmed', actorType: source === 'site' ? 'client' : 'staff', actorId: null, actorRole: null, before: null, after: { status: 'confirmed', source }, reason: null, result: 'success' }],
+      // как у API: booking.created с источником; у bk-vrroom – старая запись без источника (до Q-101)
+      timeline: [{ id: randomUUID(), at: created, action: 'booking.created', actorType: source === 'site' ? 'client' : 'staff', actorId: null, actorRole: null, before: null, after: id === 'bk-vrroom' ? { resourceId } : { resourceId, source }, reason: null, result: 'success' }],
     };
   };
   const K = 'b-nsk-krasny';
@@ -121,13 +123,14 @@ export function registerBooking(app: FastifyInstance, P: string, d: BookingDeps)
       source: b.source, rowVersion: b.rowVersion, needsDecision: needsDecision(b, now),
     };
   }
+  const arriveFrom = (b: Bk) => ms(cur(b).start) - ARRIVE_EARLY_MIN * 60_000;
   function allowed(s: Staffish, b: Bk, now: number): CrmBooking['allowedActions'] {
     const out: CrmBooking['allowedActions'] = [];
     const st = ms(cur(b).start);
     if (b.status === 'confirmed') {
       if (d.can(s, 'booking.cancel')) out.push('cancel');
       if (d.can(s, 'booking.reschedule') && st > now) out.push('reschedule');
-      if (d.can(s, 'booking.visit.mark')) out.push('arrive');
+      if (d.can(s, 'booking.visit.mark') && arriveFrom(b) <= now) out.push('arrive');
       if (d.can(s, 'booking.visit.mark') && st <= now) out.push('no_show');
     }
     if (b.status === 'arrived' && d.can(s, 'booking.visit.mark')) out.push('complete');
@@ -140,6 +143,7 @@ export function registerBooking(app: FastifyInstance, P: string, d: BookingDeps)
       ...row(b, now), branchId: b.branchId, timezone: d.branches().find((x) => x.id === b.branchId)!.timezone, resourceId: v.resourceId,
       currentVersion: v.version, priceKop: v.priceKop, internalComment: b.internalComment, cancel: b.cancel, visit: b.visit,
       versions: b.versions.map(({ unitIds: _u, ...x }) => (void _u, x)), allowedActions: allowed(s, b, now),
+      arriveFrom: b.status === 'confirmed' && d.can(s, 'booking.visit.mark') ? iso(arriveFrom(b)) : null,
     };
   }
 
@@ -405,6 +409,9 @@ export function registerBooking(app: FastifyInstance, P: string, d: BookingDeps)
 
   app.post(`${P}/bookings/:bookingId/arrive`, visitCommand('arrive', 'booking.visit.mark', 'arrived', (reply, s, b) => {
     if (b.status !== 'confirmed') return transition(reply, b.status, 'arrived'), false;
+    if (Date.now() < arriveFrom(b)) {
+      return d.fail(reply, 409, 'ARRIVAL_TOO_EARLY', `Приход можно отметить с ${localHM(arriveFrom(b))} – не раньше чем за ${ARRIVE_EARLY_MIN} мин до начала`, { arriveFrom: iso(arriveFrom(b)) }), false;
+    }
     b.visit = { arrivedAt: iso(Date.now()), completedAt: null };
     b.timeline.push(event(s, 'visit.confirmed', { status: b.status }, { status: 'arrived', visitId: randomUUID() }));
     return true;

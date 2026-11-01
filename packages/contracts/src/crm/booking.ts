@@ -63,6 +63,8 @@ export const CrmBooking = CrmBookingRow.extend({
   visit: z.strictObject({ arrivedAt: Iso, completedAt: Iso.nullable() }).nullable(),
   versions: z.array(z.strictObject({ version: z.int(), resourceName: z.string(), start: Iso, end: Iso, priceKop: z.int(), createdAt: Iso, reason: z.string().nullable() })),
   allowedActions: z.array(CrmAction),
+  /** С какого момента можно отметить приход (Q-101, visit.arrive_early_min); null – приход сейчас не про эту бронь. */
+  arriveFrom: Iso.nullable(),
 });
 export const AuditEventView = z.strictObject({
   id: z.string(),

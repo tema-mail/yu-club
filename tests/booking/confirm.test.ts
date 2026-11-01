@@ -122,6 +122,7 @@ describe('подтверждение по HTTP (K5 №12)', () => {
     expect(v.unit_ids).toHaveLength(1);
     expect((await one<{ n: number }>(`SELECT count(*)::int n FROM app.outbox_events WHERE event_type = 'booking.confirmed' AND aggregate_id = $1`, [body.bookings[0].id])).n).toBe(1);
     expect((await one<{ n: number }>(`SELECT count(*)::int n FROM journal.audit_events WHERE action = 'booking.created' AND object_id = $1`, [body.bookings[0].id])).n).toBe(1);
+    expect((await one<{ after: { source: string } }>(`SELECT after FROM journal.audit_events WHERE action = 'booking.created' AND object_id = $1`, [body.bookings[0].id])).after.source).toBe('site');
     const occ = await db.client.query(`SELECT source_type, hold_expires_at FROM app.occupancy WHERE active AND source_id = $1`, [body.bookings[0].id]);
     expect(occ.rows).toEqual([{ source_type: 'booking', hold_expires_at: null }]);
     expect((await db.client.query('SELECT * FROM journal.append_only_violations()')).rows).toEqual([]);

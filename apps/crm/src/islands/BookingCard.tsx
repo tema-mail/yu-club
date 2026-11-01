@@ -3,7 +3,7 @@
 // записи с «было → станет»; комментарий отмены и причина исправления обязательны. Устаревшая карточка (409 по
 // rowVersion) – понятное сообщение и перечитывание карточки. Двойной клик – одна операция (кнопки заняты до ответа).
 import type { ComponentChildren } from 'preact';
-import { useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   STATUS_LABEL, bookingApi, bookingError, fmtRange, fmtRub, inZone, isConflict, type BookingCard as Card, type CrmBooking, type TimelineEvent,
 } from '../lib/booking.ts';
@@ -19,7 +19,6 @@ export interface BookingCardProps {
 type DialogKind = 'cancel' | 'no_show' | 'revert_visit' | 'reschedule';
 const EVENT_LABEL: Record<string, string> = {
   'booking.confirmed': 'Запись создана',
-  'booking.created': 'Запись создана в CRM',
   'booking.cancelled': 'Запись отменена',
   'booking.rescheduled': 'Запись перенесена',
   'booking.updated': 'Изменён служебный комментарий',
@@ -32,6 +31,13 @@ const EVENT_LABEL: Record<string, string> = {
 const ACTOR: Record<string, string> = { owner: 'Владелец', director: 'Директор', admin: 'Администратор' };
 const actorOf = (e: TimelineEvent) => (e.actorType === 'staff' ? (e.actorRole ? ACTOR[e.actorRole] ?? 'Сотрудник' : 'Сотрудник') : e.actorType === 'client' ? 'Клиент' : 'Система');
 const SOURCE = { site: 'Сайт', crm: 'CRM' } as const;
+/** booking.created пишут и сайт, и CRM – источник в after.source; у старых записей его нет. */
+const CREATED_AT: Record<string, string> = { site: 'Запись создана на сайте', crm: 'Запись создана в CRM' };
+const labelOf = (e: TimelineEvent) => {
+  if (e.action !== 'booking.created') return EVENT_LABEL[e.action] ?? e.action;
+  const src = (e.after as { source?: unknown } | null)?.source;
+  return (typeof src === 'string' && CREATED_AT[src]) || 'Запись создана';
+};
 
 export default function BookingCard({ initial, reasons, canComment }: BookingCardProps) {
   const [b, setB] = useState<Card>(initial);
@@ -126,6 +132,18 @@ export default function BookingCard({ initial, reasons, canComment }: BookingCar
     revert_visit: `${STATUS_LABEL.confirmed} · отметка «${b.status === 'no_show' ? 'неявка' : 'пришёл'}» снимается`,
   };
   const title: Record<DialogKind, string> = { cancel: 'Отменить запись?', no_show: 'Отметить неявку?', revert_visit: 'Исправить отметку?', reschedule: 'Перенести запись' };
+  // Q-101: до окна прихода сервер не даёт arrive, но присылает arriveFrom – кнопка видна неактивной с подсказкой
+  const arriveLater = !can('arrive') && b.arriveFrom !== null;
+  const arriveFromText = b.arriveFrom
+    ? inZone(b.arriveFrom, tz).date === inZone(Date.now(), tz).date ? inZone(b.arriveFrom, tz).hm : at(b.arriveFrom)
+    : '';
+  useEffect(() => {
+    if (!arriveLater || !b.arriveFrom) return;
+    const wait = Date.parse(b.arriveFrom) - Date.now() + 1000;
+    if (wait > 6 * 3600_000) return; // далёкое окно – откроется при следующем входе в карточку
+    const t = setTimeout(() => void reload(), Math.max(wait, 0));
+    return () => clearTimeout(t);
+  }, [arriveLater, b.arriveFrom]);
   const minutes = Math.round((Date.parse(b.end) - Date.parse(b.start)) / 60_000);
 
   return (
@@ -140,9 +158,15 @@ export default function BookingCard({ initial, reasons, canComment }: BookingCar
       </div>
       <p class={`yc-alert ${notice ? (notice.ok ? 'yc-alert--ok' : 'yc-alert--error') : ''}`} role="status" aria-live="polite" data-testid="booking-notice">{notice?.text ?? ''}</p>
 
-      {b.allowedActions.length > 0 && (
+      {(b.allowedActions.length > 0 || arriveLater) && (
         <section class="yc-panel yc-bk__actions" aria-label="Действия" data-testid="booking-actions">
           {can('arrive') && <button type="button" class="yc-btn" disabled={busy} onClick={() => void run(() => bookingApi.arrive(b.id, b.rowVersion), 'Приход отмечен.')}>Отметить приход</button>}
+          {arriveLater && (
+            <span>
+              <button type="button" class="yc-btn" disabled aria-describedby="bk-arrive-hint">Отметить приход</button>{' '}
+              <span id="bk-arrive-hint" class="yc-field__hint" data-testid="arrive-hint">Можно отметить с {arriveFromText}</span>
+            </span>
+          )}
           {can('complete') && <button type="button" class="yc-btn" disabled={busy} onClick={() => void run(() => bookingApi.complete(b.id, b.rowVersion), 'Сеанс завершён.')}>Завершить сеанс</button>}
           {can('no_show') && <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => openDialog('no_show')}>Неявка…</button>}
           {can('revert_visit') && <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => openDialog('revert_visit')}>Исправить отметку…</button>}
@@ -209,7 +233,7 @@ export default function BookingCard({ initial, reasons, canComment }: BookingCar
           <ol class="yc-history" data-testid="booking-timeline">
             {[...b.timeline].sort((x, y) => Date.parse(y.at) - Date.parse(x.at)).map((e) => (
               <li class="yc-history__item" key={e.id}>
-                <span class="yc-history__head"><strong>{EVENT_LABEL[e.action] ?? e.action}</strong> · {at(e.at)} · {actorOf(e)}</span>
+                <span class="yc-history__head"><strong>{labelOf(e)}</strong> · {at(e.at)} · {actorOf(e)}</span>
                 {e.reason && <span class="yc-field__hint">Причина: {e.reason}</span>}
                 {e.action === 'booking.rescheduled' && <Moved e={e} tz={tz} />}
               </li>

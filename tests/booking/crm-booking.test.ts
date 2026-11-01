@@ -115,7 +115,7 @@ describe('бронь администратором (K11 №4)', () => {
     const [r1, r2] = [await create('admin', body, key), await create('admin', body, key)];
     expect(r1.statusCode).toBe(201);
     const b = valid(CrmBooking, r1.json());
-    expect(b).toMatchObject({ status: 'confirmed', source: 'crm', priceKop: 40000, internalComment: 'постоянный', client: { id: ids.client, name: 'Анна Смирнова', isGuest: false }, allowedActions: ['cancel', 'reschedule', 'arrive'] });
+    expect(b).toMatchObject({ status: 'confirmed', source: 'crm', priceKop: 40000, internalComment: 'постоянный', client: { id: ids.client, name: 'Анна Смирнова', isGuest: false }, allowedActions: ['cancel', 'reschedule'], arriveFrom: '2026-11-15T04:30:00.000Z' }); // приход – за 30 мин (Q-101)
     expect(b.client.phoneMasked).not.toContain('1112233');
     expect(r2.headers['idempotent-replay']).toBe('true');
     expect((await one<{ n: number }>(`SELECT count(*)::int n FROM app.bookings WHERE client_id = $1`, [ids.client])).n).toBe(1);
@@ -214,6 +214,7 @@ describe('карточка и команды (K11 №5–12)', () => {
     const b = valid(CrmBooking, (await create('admin', { ...slot(ids.pc1!, '2026-11-18T05:00:00Z'), client: { clientId: ids.client } })).json());
     const card = valid(CrmBookingCard, (await req('admin', 'GET', `/bookings/${b.id}`)).json());
     expect(card.timeline.map((e) => e.action)).toEqual(['booking.created']);
+    expect(card.timeline[0]!.after).toMatchObject({ source: 'crm' });
     expect(card.versions).toHaveLength(1);
     const patched = await req('admin', 'PATCH', `/bookings/${b.id}`, { rowVersion: 1, internalComment: 'VIP' });
     expect(valid(CrmBooking, patched.json())).toMatchObject({ internalComment: 'VIP', rowVersion: 2 });
@@ -234,12 +235,21 @@ describe('карточка и команды (K11 №5–12)', () => {
     const moved = valid(CrmBooking, (await req('admin', 'POST', `/bookings/${b.id}/reschedule`, { rowVersion: 1, ...slot(ids.vr2!, '2026-11-19T06:00:00Z', 30), reason: 'Попросил' })).json());
     expect(moved).toMatchObject({ currentVersion: 2, resourceId: ids.vr2, priceKop: 20000, rowVersion: 2 });
     expect(moved.versions.map((v) => [v.version, v.reason])).toEqual([[1, null], [2, 'Попросил']]);
-    const arrived = valid(CrmBooking, (await req('admin', 'POST', `/bookings/${b.id}/arrive`, { rowVersion: 2 })).json());
-    expect(arrived).toMatchObject({ status: 'arrived', allowedActions: ['complete'], visit: { arrivedAt: '2026-11-14T05:00:00.000Z', completedAt: null } });
-    expect((await req('admin', 'POST', `/bookings/${b.id}/arrive`, { rowVersion: 3 })).json().error.code).toBe('INVALID_STATUS_TRANSITION');
-    expect(valid(CrmBooking, (await req('admin', 'POST', `/bookings/${b.id}/complete`, { rowVersion: 3 })).json()).status).toBe('completed');
     const ns = await req('admin', 'POST', `/bookings/${ids.booking}/no-show`, { rowVersion: 1 });
     expect(ns.json().error).toMatchObject({ code: 'INVALID_STATUS_TRANSITION', details: { reason: 'not_started' } });
+    // Q-101: сеанс в 13:00 Новосибирска – за 31 мин отказ и arrive нет в allowedActions, за 30 – можно
+    expect((await req('admin', 'POST', `/bookings/${b.id}/complete`, { rowVersion: 2 })).json().error.code).toBe('INVALID_STATUS_TRANSITION'); // без прихода
+    await setTime('2026-11-19T05:29:00Z');
+    const early = await req('admin', 'POST', `/bookings/${b.id}/arrive`, { rowVersion: 2 });
+    expect([early.statusCode, early.json().error]).toEqual([409, expect.objectContaining({ code: 'ARRIVAL_TOO_EARLY', message: expect.stringContaining('с 12:30'), details: { arriveFrom: '2026-11-19T05:30:00.000Z' } })]);
+    const before = valid(CrmBookingCard, (await req('admin', 'GET', `/bookings/${b.id}`)).json());
+    expect(before).toMatchObject({ allowedActions: ['cancel', 'reschedule'], arriveFrom: '2026-11-19T05:30:00.000Z' });
+    await setTime('2026-11-19T05:30:00Z');
+    expect(valid(CrmBookingCard, (await req('admin', 'GET', `/bookings/${b.id}`)).json()).allowedActions).toContain('arrive');
+    const arrived = valid(CrmBooking, (await req('admin', 'POST', `/bookings/${b.id}/arrive`, { rowVersion: 2 })).json());
+    expect(arrived).toMatchObject({ status: 'arrived', allowedActions: ['complete'], arriveFrom: null, visit: { arrivedAt: '2026-11-19T05:30:00.000Z', completedAt: null } });
+    expect((await req('admin', 'POST', `/bookings/${b.id}/arrive`, { rowVersion: 3 })).json().error.code).toBe('INVALID_STATUS_TRANSITION');
+    expect(valid(CrmBooking, (await req('admin', 'POST', `/bookings/${b.id}/complete`, { rowVersion: 3 })).json()).status).toBe('completed');
     await setTime('2026-11-15T05:20:00Z');
     expect(valid(CrmBooking, (await req('admin', 'POST', `/bookings/${ids.booking}/no-show`, { rowVersion: 1 })).json()).status).toBe('no_show');
     const revert = await req('admin', 'POST', `/bookings/${ids.booking}/revert-visit`, { rowVersion: 2, reason: 'ошибка' });

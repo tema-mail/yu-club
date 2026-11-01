@@ -14,5 +14,6 @@ export const errors = {
   HOLD_LIMIT_REACHED: 422, // позиций больше booking.max_hold_items
   BOOKING_NOT_CANCELLABLE: 409, // отмена клиентом не из confirmed, после начала или выключена (K5 №13, R-12)
   INVALID_STATUS_TRANSITION: 409, // переход не разрешён dict_status_transitions (K11)
+  ARRIVAL_TOO_EARLY: 409, // приход раньше окна visit.arrive_early_min до начала (Q-101, details.arriveFrom)
   COMMENT_REQUIRED: 422, // отмена без комментария, исправление/перенос без причины (K11, 01 §12)
 } as const;
