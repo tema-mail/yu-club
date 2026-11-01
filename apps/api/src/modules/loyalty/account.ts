@@ -357,11 +357,12 @@ export const holdSignatureSql = (holdIdExpr: string): string =>
   `(SELECT encode(sha256(convert_to(coalesce(string_agg(hi.id::text, ',' ORDER BY hi.id), ''), 'UTF8')), 'hex')
     FROM app.hold_items hi WHERE hi.hold_id = ${holdIdExpr} AND hi.status = 'active')`;
 
-/** Резерв «занят»: резерв брони, или резерв удержания при живом удержании с той же подписью (ленивое снятие, K15 §3). */
+/** Резерв «занят»: резерв брони; резерв удержания при живом удержании с той же подписью (ленивое снятие, K15 §3)
+ *  или при уже подтверждённом удержании, пока booking.confirmed не перевёл резерв на брони («converted до обработки»). */
 export const reserveLiveSql = (r: string, atParam: string): string =>
   `(${r}.status = 'booking' OR (${r}.status = 'hold' AND EXISTS (
-     SELECT 1 FROM app.holds h WHERE h.id = ${r}.hold_id AND h.status = 'active' AND h.expires_at > ${atParam}
-       AND ${r}.hold_signature = ${holdSignatureSql(`${r}.hold_id`)})))`;
+     SELECT 1 FROM app.holds h WHERE h.id = ${r}.hold_id AND (h.status = 'converted' OR (h.status = 'active' AND h.expires_at > ${atParam}
+       AND ${r}.hold_signature = ${holdSignatureSql(`${r}.hold_id`)})))))`;
 
 /** Σ занятых резервов клиента; exclude – не считать резерв этой брони или этого удержания (оплата той же брони). */
 export async function reservedCenti(db: Db, clientId: string, at: Date, exclude: { bookingId?: string; holdId?: string } = {}): Promise<number> {
