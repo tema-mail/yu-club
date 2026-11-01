@@ -1,0 +1,10 @@
+---
+// /{city}/{branch}/rooms/ – промежуточный сегмент без своей страницы (карта сайта п.2.11): 301 на раздел филиала.
+// Нет такого филиала – 404.
+import { findBranch } from '../../../../lib/api.ts';
+
+const { city = '', branch = '' } = Astro.params;
+const { network } = Astro.locals;
+if (network && !findBranch(network, city, branch)) return Astro.rewrite('/404/');
+return Astro.redirect(`/${city}/${branch}/#rooms`, 301);
+---

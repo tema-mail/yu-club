@@ -18,7 +18,7 @@ export interface ScheduleBranch {
   id: string; name: string; timezone: string;
   bookingWindow: { defaultDays: number; maxDays: number };
 }
-export interface ScheduleResource { id: string; name: string; zone: ZoneCode; stepMinutes: number; roomName: string | null }
+export interface ScheduleResource { id: string; name: string; zone: ZoneCode; stepMinutes: number; roomName: string | null; roomId: string | null }
 
 interface Props {
   branch: ScheduleBranch;
@@ -26,6 +26,8 @@ interface Props {
   /** Сегодня по зоне филиала – с сервера страницы. */
   today: string;
   zone: ZoneCode | null;
+  /** Предвыбор комнаты со страницы комнаты (S1-21): в сетке – только её места, каждое отдельно (12 §7.2). */
+  room: { id: string; name: string } | null;
 }
 
 const STATE_WORD: Record<SlotState, string> = {
@@ -36,10 +38,11 @@ const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
 
 type Notice = { state: UiState; text: string };
 
-export default function Schedule({ branch, resources, today, zone: initialZone }: Props) {
+export default function Schedule({ branch, resources, today, zone: initialZone, room: initialRoom }: Props) {
   const tz = branch.timezone;
   const [date, setDate] = useState(today);
   const [zone, setZone] = useState<ZoneCode | null>(initialZone);
+  const [room, setRoom] = useState(initialRoom);
   const [allDays, setAllDays] = useState(false);
   const [avail, setAvail] = useState<AvailabilityDto | null>(null);
   const [load, setLoad] = useState<'loading' | 'ok' | 'error'>('loading');
@@ -160,7 +163,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
 
   // ── Что показать ─────────────────────────────────────────
   const zones = ZONE_ORDER.filter((z) => resources.some((r) => r.zone === z));
-  const shown = resources.filter((r) => !zone || r.zone === zone);
+  const shown = resources.filter((r) => (!zone || r.zone === zone) && (!room || r.roomId === room.id));
   const rows = shown.map((r) => ({ r, slots: avail?.resources.find((x) => x.resourceId === r.id)?.slots ?? [] }));
   const all = rows.flatMap((x) => x.slots);
   const hasFree = avail?.dayState === 'open' && all.some((s) => s.state === 'free' || s.state === 'mine');
@@ -225,12 +228,13 @@ export default function Schedule({ branch, resources, today, zone: initialZone }
             </button>
           )}
         </div>
-        {zones.length > 1 && (
+        {(zones.length > 1 || room) && (
           <div class="yu-sched__zones" role="group" aria-label="Зона">
-            <button type="button" class="yu-sched__zone" aria-pressed={zone === null} onClick={() => setZone(null)}>Все зоны</button>
+            <button type="button" class="yu-sched__zone" aria-pressed={zone === null && !room} onClick={() => { setRoom(null); setZone(null); }}>Все зоны</button>
             {zones.map((z) => (
-              <button type="button" key={z} class="yu-sched__zone" aria-pressed={zone === z} onClick={() => setZone(z)}>{ZONE_LABEL[z]}</button>
+              <button type="button" key={z} class="yu-sched__zone" aria-pressed={zone === z && !room} onClick={() => { setRoom(null); setZone(z); }}>{ZONE_LABEL[z]}</button>
             ))}
+            {room && <button type="button" class="yu-sched__zone" aria-pressed="true" data-testid="room-filter">{room.name}</button>}
           </div>
         )}
       </div>
