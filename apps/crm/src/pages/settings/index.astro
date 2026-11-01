@@ -1,0 +1,112 @@
+---
+// Настройки с наследованием (K7 «HTTP CRM»): уровень сеть / город / филиал – из контекста или ?scope=&id=.
+// Значения, источник («свой уровень» / «унаследовано от …»), будущие изменения и «можно ли менять» считает сервер.
+// Смотреть – Владелец и Директор своей зоны (settings.branch.manage); Администратору раздел недоступен (403).
+import Crm from '../../layouts/Crm.astro';
+import SettingsScreen, { type SettingsPage } from '../../islands/SettingsScreen.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+
+const { me, branches, ctx, cookie } = Astro.locals;
+const q = Astro.url.searchParams;
+const allowed = me.actions.includes('settings.branch.manage');
+
+type Level = 'network' | 'city' | 'branch';
+const cityAccess = (cityId: string) => me.access.network || me.access.cityIds.includes(cityId);
+const cityName = (cityId: string) => branches.find((b) => b.cityId === cityId)?.cityName ?? 'Город';
+
+// Уровень по умолчанию – контекст: филиал → филиал, город → город, сеть → сеть.
+let level: Level = ctx.kind === 'branch' ? 'branch' : ctx.kind === 'city' ? 'city' : 'network';
+let id: string | null = ctx.kind === 'branch' ? ctx.branch.id : ctx.kind === 'city' ? ctx.cityId : null;
+// ?level=city:<id> – отправка формы без скрипта; ?scope=&id= – адрес для ссылок.
+const [lvScope, lvId] = (q.get('level') ?? '').split(':');
+const raw = q.get('scope') ?? lvScope;
+if (raw === 'network' || raw === 'city' || raw === 'branch') {
+  level = raw;
+  id = raw === 'network' ? null : (q.get('id') ?? lvId ?? null);
+}
+if (level === 'network' && !me.access.network) {
+  const first = branches[0];
+  level = 'branch';
+  id = first?.id ?? null;
+}
+
+// Варианты уровня: сеть (Владелец), города зоны, филиалы зоны.
+const options: Array<{ value: string; label: string; group: string }> = [];
+if (me.access.network) options.push({ value: 'network', label: 'Вся сеть', group: 'Сеть' });
+for (const cityId of [...new Set(branches.map((b) => b.cityId))]) {
+  if (cityAccess(cityId)) options.push({ value: `city:${cityId}`, label: `${cityName(cityId)} – весь город`, group: cityName(cityId) });
+  for (const b of branches.filter((x) => x.cityId === cityId)) options.push({ value: `branch:${b.id}`, label: b.name, group: cityName(cityId) });
+}
+const current = level === 'network' ? 'network' : `${level}:${id ?? ''}`;
+const groups = [...new Set(options.map((o) => o.group))];
+
+let page: SettingsPage | null = null;
+let status = 200;
+if (!allowed) status = 403;
+else if (level !== 'network' && !id) status = 404;
+else {
+  try {
+    page = await serverCall<SettingsPage>(cookie, `/settings?scope=${level}${id ? `&id=${encodeURIComponent(id)}` : ''}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 403)) throw e;
+    status = e.status;
+  }
+}
+if (status !== 200) Astro.response.status = status;
+
+const scopeTitle = !page
+  ? ''
+  : page.scope.level === 'network'
+    ? 'Вся сеть'
+    : page.scope.level === 'city'
+      ? `${cityName(page.scope.id!)} – весь город`
+      : `${page.scope.name ?? 'Филиал'}${page.scope.city ? ` · ${page.scope.city.name}` : ''}`;
+const cityLabel = page?.scope.level === 'city' ? cityName(page.scope.id!) : (page?.scope.city?.name ?? null);
+---
+<Crm title="Настройки">
+  {status === 403 ? (
+    <div class="yc-panel" role="alert" data-testid="no-access">
+      <h1>Раздел недоступен</h1>
+      <p>Настройки сети, городов и филиалов видят Владелец и Директор. Если нужно что-то поменять – обратитесь к Директору филиала.</p>
+      <p><a href="/">На главную</a></p>
+    </div>
+  ) : status === 404 || !page ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Не найдено</h1>
+      <p>Такого города или филиала нет, или он вне вашей зоны доступа. Выберите уровень ниже или в переключателе контекста.</p>
+      <p><a href="/settings">К настройкам</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>Настройки</h1>
+        <p data-testid="settings-scope">{scopeTitle}</p>
+      </div>
+      {options.length > 1 && (
+        <form class="yc-sched__branch" method="get" action="/settings" id="settings-level">
+          <label class="yc-field__label" for="settings-level-select">Уровень</label>
+          <select class="yc-input" id="settings-level-select" name="level">
+            {groups.map((g) => (
+              <optgroup label={g}>
+                {options.filter((o) => o.group === g).map((o) => <option value={o.value} selected={o.value === current}>{o.label}</option>)}
+              </optgroup>
+            ))}
+          </select>
+          <button class="yc-btn yc-btn--ghost" type="submit">Показать</button>
+        </form>
+      )}
+      <SettingsScreen client:load page={page} cityLabel={cityLabel} isOwner={me.staff.role === 'owner'} />
+    </>
+  )}
+</Crm>
+
+<script>
+  // Значение «network» / «city:<id>» / «branch:<id>» → ?scope=&id= (адрес страницы стабилен для ссылок).
+  const form = document.getElementById('settings-level') as HTMLFormElement | null;
+  form?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const v = (form.elements.namedItem('level') as HTMLSelectElement).value;
+    const [scope, id] = v === 'network' ? ['network', ''] : v.split(':');
+    location.assign(`/settings?scope=${scope}${id ? `&id=${encodeURIComponent(id)}` : ''}`);
+  });
+</script>
