@@ -8,7 +8,11 @@ import { blockRoutes } from './modules/booking/blocks.ts';
 import { blockListRoutes } from './modules/booking/blocks.routes.list.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
-import { clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
+import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
+import { attachVisitorHolds } from './modules/booking/hold.ts';
+import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
+import { bookingsProvider, clientBranchLinks } from './modules/booking/providers.ts';
+import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
@@ -81,6 +85,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
       async (scope) =>
         networkRoutes(scope, {
           pool: staff.pool,
+          bookings: bookingsProvider,
+          targets: calendarTargets,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
         }),
@@ -119,7 +125,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     );
     void app.register(
       async (scope) =>
-        clientCrmRoutes(scope, { pool: staff.pool, authenticate: (request, reply) => authenticate(staff, request, reply) }),
+        clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
     );
   }
@@ -130,10 +136,28 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   }
 
   if (deps.clients) {
-    const clients = deps.clients;
+    // K5: при входе удержания посетителя переходят к клиенту (attach в транзакции входа).
+    const clients: ClientPublicDeps = { ...deps.clients, hooks: { onLogin: attachVisitorHolds, ...deps.clients.hooks } };
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     const push = deps.notifications ?? { vapidPublicKey: null };
     void app.register(async (scope) => notificationPublicRoutes(scope, { clients, ...push }), { prefix: '/api/public/v1' });
+    void app.register(
+      async (scope) =>
+        bookingPublicRoutes(scope, {
+          pool: clients.pool as Parameters<typeof bookingPublicRoutes>[1]['pool'],
+          ...(clients.clock ? { clock: clients.clock } : {}),
+          identify: async (request, reply) => {
+            if (!/(?:^|;\s*)yu_client=/.test(request.headers.cookie ?? '')) return null;
+            try {
+              return { clientId: (await authenticateClient(clients, request, reply)).clientId };
+            } catch (err) {
+              if (err instanceof AppError && err.code === 'SESSION_REVOKED') return null;
+              throw err;
+            }
+          },
+        }),
+      { prefix: '/api/public/v1' },
+    );
   }
 
   return app;

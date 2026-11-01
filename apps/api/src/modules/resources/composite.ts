@@ -64,31 +64,31 @@ async function checkUnits(tx: Tx, branchId: string, unitIds: string[]): Promise<
   }
 }
 
-/** Будущие брони и удержания ресурса: активные строки occupancy с концом позже `from`, чей набор единиц равен составу
- *  ресурса на начало интервала строки (так их пишет occupy через expandToUnits).
- *  Решение до S1-06/S1-07: таблиц holds/bookings ещё нет, источник → ресурс определяется по набору единиц. Ресурсы с
- *  одинаковым составом попадут оба – это перестраховка (лишний отказ), не пропуск брони.
- *  Пока нет hold_items, holdIds – id позиций удержаний (source_id). */
-export async function futureUsage(tx: Tx, resourceId: string, from: Date): Promise<{ bookingIds: string[]; holdIds: string[] }> {
-  const r = await tx.query<{ source_type: string; source_id: string }>(
-    `WITH src AS (
-       SELECT o.source_type, o.source_id, min(lower(o.period)) AS start, array_agg(o.unit_id ORDER BY o.unit_id) AS units
-       FROM app.occupancy o
-       WHERE o.active AND o.source_type IN ('booking','hold_item') AND upper(o.period) > $2
-         AND o.unit_id IN (SELECT unit_id FROM app.resource_units WHERE resource_id = $1)
-         AND NOT EXISTS (SELECT 1 FROM app.occupancy x WHERE x.active AND x.source_type = o.source_type AND x.source_id = o.source_id
-                         AND x.unit_id NOT IN (SELECT unit_id FROM app.resource_units WHERE resource_id = $1))
-       GROUP BY o.source_type, o.source_id)
-     SELECT source_type, source_id FROM src
-     WHERE units = (SELECT array_agg(unit_id ORDER BY unit_id) FROM app.resource_units
-                    WHERE resource_id = $1 AND valid_from <= src.start AND (valid_to IS NULL OR valid_to > src.start))
-     ORDER BY source_type, source_id`,
+/** Будущие брони и удержания ресурса (с S1-07 – по таблицам броней и удержаний): действующие брони ресурса
+ *  (confirmed / arrived) и активные позиции живых удержаний с концом позже `from`. holdIds – id удержаний.
+ *  Таблицы принадлежат booking (ADR 0002): чтение здесь, а не через booking/index, – иначе цикл resources ↔ booking. */
+export async function futureUsage(tx: Tx, resourceId: string, from: Date, now: Date = from): Promise<{ bookingIds: string[]; holdIds: string[] }> {
+  const b = await tx.query<{ id: string }>(
+    `SELECT id FROM app.bookings WHERE resource_id = $1 AND status IN ('confirmed','arrived') AND upper(period) > $2 ORDER BY id`,
     [resourceId, from],
   );
-  return {
-    bookingIds: r.rows.filter((x) => x.source_type === 'booking').map((x) => x.source_id),
-    holdIds: r.rows.filter((x) => x.source_type === 'hold_item').map((x) => x.source_id),
-  };
+  const h = await tx.query<{ id: string }>(
+    `SELECT DISTINCT h.id FROM app.hold_items hi JOIN app.holds h ON h.id = hi.hold_id
+     WHERE hi.resource_id = $1 AND hi.status = 'active' AND upper(hi.period) > $2 AND h.status = 'active' AND h.expires_at > $3 ORDER BY h.id`,
+    [resourceId, from, now],
+  );
+  return { bookingIds: b.rows.map((x) => x.id), holdIds: h.rows.map((x) => x.id) };
+}
+
+/** Активные блокировки, выбранные по этому ресурсу и идущие после `from` (ревизия S1-04 п.3): их единицы развёрнуты
+ *  по старому составу – новая единица осталась бы незаблокированной. Решение: отказ со списком, как для броней. */
+async function futureBlocks(tx: Tx, resourceId: string, from: Date): Promise<string[]> {
+  const r = await tx.query<{ id: string }>(
+    `SELECT id FROM app.resource_blocks
+     WHERE status = 'active' AND upper(period) > $2 AND target_type IN ('resource','resources') AND $1::uuid = ANY(target_ids) ORDER BY id`,
+    [resourceId, from],
+  );
+  return r.rows.map((x) => x.id);
 }
 
 /** K6: изменить состав с даты. Есть активные брони/удержания ресурса с end > validFrom → COMPOSITION_HAS_FUTURE_BOOKINGS
@@ -99,7 +99,7 @@ export async function changeComposition(
   input: { resourceId: string; unitIds: string[]; validFrom: Date; dryRun?: boolean },
   meta: AuditRequestMeta,
   clock: Clock = systemClock,
-): Promise<{ affectedBookingIds: string[]; affectedHoldIds: string[]; applied: boolean }> {
+): Promise<{ affectedBookingIds: string[]; affectedHoldIds: string[]; affectedBlockIds: string[]; applied: boolean }> {
   const lock = isUuid(input.resourceId)
     ? await tx.query<{ branch_id: string; status: string }>('SELECT branch_id, status FROM app.resources WHERE id = $1 FOR UPDATE', [input.resourceId])
     : { rows: [] };
@@ -119,13 +119,15 @@ export async function changeComposition(
   }
   const before = await compositionAt(tx, input.resourceId, input.validFrom);
   const same = before.length === unitIds.length && before.every((u, i) => u === unitIds[i]);
-  const usage = same ? { bookingIds: [], holdIds: [] } : await futureUsage(tx, input.resourceId, input.validFrom);
-  const result = { affectedBookingIds: usage.bookingIds, affectedHoldIds: usage.holdIds, applied: false };
+  const usage = same ? { bookingIds: [], holdIds: [] } : await futureUsage(tx, input.resourceId, input.validFrom, now);
+  const blockIds = same ? [] : await futureBlocks(tx, input.resourceId, input.validFrom);
+  const result = { affectedBookingIds: usage.bookingIds, affectedHoldIds: usage.holdIds, affectedBlockIds: blockIds, applied: false };
   if (same || input.dryRun) return result;
-  if (usage.bookingIds.length > 0 || usage.holdIds.length > 0) {
-    throw new AppError('COMPOSITION_HAS_FUTURE_BOOKINGS', 409, 'У ресурса есть будущие брони – решите каждую до смены состава', {
+  if (usage.bookingIds.length > 0 || usage.holdIds.length > 0 || blockIds.length > 0) {
+    throw new AppError('COMPOSITION_HAS_FUTURE_BOOKINGS', 409, 'У ресурса есть будущие брони или блокировки – решите каждую до смены состава', {
       bookingIds: usage.bookingIds,
       holdIds: usage.holdIds,
+      blockIds,
     });
   }
   await tx.query(`UPDATE app.resource_units SET valid_to = $2 WHERE resource_id = $1 AND valid_to IS NULL`, [input.resourceId, input.validFrom]);
@@ -231,4 +233,41 @@ export async function unitsOfTarget(
         );
   if (r.rows.length === 0) throw invalid();
   return r.rows.map((x) => x.id);
+}
+
+/** Для транзакции занятия (ревизия S1-02 п.1): строки ресурсов FOR SHARE по id – против FOR UPDATE в changeComposition,
+ *  затем сверка: переданные единицы = состав на начало интервала. Иначе состав сменили между expandToUnits и записью →
+ *  COMPOSITE_CHANGED (K5). Вызывать до захвата единиц: порядок замков «ресурсы → единицы» у всех команд один. */
+export async function lockCompositions(tx: Tx, items: Array<{ resourceId: string; unitIds: string[]; at: Date }>): Promise<void> {
+  const ids = sortIds(items.map((i) => i.resourceId));
+  if (!ids.every(isUuid)) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
+  const r = await tx.query('SELECT id FROM app.resources WHERE id = ANY($1::uuid[]) ORDER BY id FOR SHARE', [ids]);
+  if (r.rowCount !== ids.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
+  for (const i of items) {
+    const now = await compositionAt(tx, i.resourceId, i.at);
+    const sent = sortIds(i.unitIds);
+    if (now.length !== sent.length || now.some((u, k) => u !== sent[k])) {
+      throw new AppError('COMPOSITE_CHANGED', 409, 'Конфигурация изменилась, выберите заново', { resourceId: i.resourceId });
+    }
+  }
+}
+
+export interface CompositionRow {
+  unitId: string;
+  validFrom: Date;
+  validTo: Date | null;
+}
+
+/** Состав многих ресурсов за интервал одним запросом – для сетки доступности (S1-05): строки, действующие в [from, to). */
+export async function compositionsDuring(db: Tx, resourceIds: string[], from: Date, to: Date): Promise<Map<string, CompositionRow[]>> {
+  const out = new Map<string, CompositionRow[]>(resourceIds.map((id) => [id, []]));
+  const ids = resourceIds.filter(isUuid);
+  if (ids.length === 0) return out;
+  const r = await db.query<{ resource_id: string; unit_id: string; valid_from: Date; valid_to: Date | null }>(
+    `SELECT resource_id, unit_id, valid_from, valid_to FROM app.resource_units
+     WHERE resource_id = ANY($1::uuid[]) AND valid_from < $3 AND (valid_to IS NULL OR valid_to > $2) ORDER BY resource_id, unit_id`,
+    [ids, from, to],
+  );
+  for (const row of r.rows) out.get(row.resource_id)?.push({ unitId: row.unit_id, validFrom: row.valid_from, validTo: row.valid_to });
+  return out;
 }

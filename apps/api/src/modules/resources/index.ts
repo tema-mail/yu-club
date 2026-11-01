@@ -5,7 +5,7 @@ import type { Db, Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 
 // Состав и единицы – K6 (composite.ts).
-export { changeComposition, expandToUnits, unitsOfTarget, type UnitSet } from './composite.ts';
+export { changeComposition, compositionsDuring, expandToUnits, lockCompositions, unitsOfTarget, type CompositionRow, type UnitSet } from './composite.ts';
 
 export interface ResourceInfo {
   id: string;
@@ -73,3 +73,13 @@ export function assertBookable(r: ResourceInfo): void {
     throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи', { resourceId: r.id });
   }
 }
+
+/** network CalendarTargets (K13): комната / ресурс существует, не в архиве и принадлежит филиалу. */
+export const calendarTargets = {
+  async belongsToBranch(db: Db | Tx, target: { type: 'room' | 'resource'; id: string }, branchId: string): Promise<boolean> {
+    if (!isUuid(target.id) || !isUuid(branchId)) return false;
+    const table = target.type === 'room' ? 'app.rooms' : 'app.resources';
+    const r = await db.query(`SELECT 1 FROM ${table} WHERE id = $1 AND branch_id = $2 AND status <> 'archived'`, [target.id, branchId]);
+    return r.rowCount === 1;
+  },
+};

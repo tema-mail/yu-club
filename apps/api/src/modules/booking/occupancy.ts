@@ -8,12 +8,14 @@
 // второй получает чистый 23P01. Цена – команды одной единицы идут по очереди (миллисекунды). Видимость против блокировок
 // сохраняется: FOR UPDATE в createBlock конфликтует с FOR NO KEY UPDATE так же, как с FOR SHARE.
 // 40P01/40001 – повтор всей команды один раз (runOccupancyCommand), вторая неудача → SLOT_HELD.
-// client_time (запрет пересечений клиента, 0108) появится в S1-06: до неё clientId должен быть null.
+// client_time (запрет пересечений клиента по сети, 0108): одна строка на позицию, одним INSERT после occupancy;
+// перед ним – строка клиента FOR NO KEY UPDATE (порядок замков «ресурсы → единицы → клиент»): команды одного клиента
+// идут по очереди, взаимного ожидания на EXCLUDE client_time нет.
 import type pg from 'pg';
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { toPgRange, type Interval } from '../../core/time.ts';
-import type { UnitSet } from '../resources/index.ts';
+import { lockCompositions, type UnitSet } from '../resources/index.ts';
 import { assertNotBlocked } from './blocks.ts';
 
 export type OccupySource =
@@ -48,14 +50,11 @@ async function conflictError(tx: Tx, items: OccupyItem[]): Promise<AppError> {
 /** K6: занять единицы всех позиций команды одним INSERT. Ошибка любой позиции – ничего не вставлено. */
 export async function occupyMany(tx: Tx, branchId: string, items: OccupyItem[]): Promise<void> {
   if (items.length === 0) return;
-  if (items.some((i) => i.clientId !== null)) throw new Error('booking.occupy: client_time появится с 0108 (S1-06) – clientId пока null');
-  const all = unitOrder(items.flatMap((i) => i.units.unitIds));
+  if (items.some((i) => i.clientId !== null && i.source.type === 'event')) throw new Error('booking.occupy: у мероприятия нет client_time');
+  // 0) строки ресурсов FOR SHARE и сверка состава (против changeComposition) – до единиц: порядок «ресурсы → единицы».
+  await lockCompositions(tx, items.map((i) => ({ resourceId: i.units.resourceId, unitIds: i.units.unitIds, at: i.period.start })));
   // 1) строки единиц в порядке id: очередь команд одной единицы и видимость против блокировок (createBlock – FOR UPDATE).
-  const locked = await tx.query(
-    `SELECT id FROM app.occupancy_units WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND status = 'active' ORDER BY id FOR NO KEY UPDATE`,
-    [all, branchId],
-  );
-  if (locked.rowCount !== all.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
+  await lockUnitsForWrite(tx, branchId, items.flatMap((i) => i.units.unitIds));
   // 2) блокировки (K6 правило 2: в той же транзакции, после захвата строк единиц).
   for (const i of items) await assertNotBlocked(tx, i.units.unitIds, i.period);
   // 3) все строки – одним INSERT в порядке unit_id.
@@ -80,6 +79,10 @@ export async function occupyMany(tx: Tx, branchId: string, items: OccupyItem[]):
         rows.map((r) => (r.i.source.type === 'hold_item' ? r.i.source.holdExpiresAt : null)),
       ],
     );
+    await insertClientTime(
+      tx,
+      items.flatMap((i) => (i.clientId === null ? [] : [{ clientId: i.clientId, period: i.period, source: i.source as ClientTimeSource }])),
+    );
     await tx.query('RELEASE SAVEPOINT occupy');
   } catch (err) {
     const e = err as { code?: string; constraint?: string };
@@ -87,8 +90,91 @@ export async function occupyMany(tx: Tx, branchId: string, items: OccupyItem[]):
       await tx.query('ROLLBACK TO SAVEPOINT occupy');
       throw await conflictError(tx, items);
     }
+    if (err instanceof AppError && err.code === 'CLIENT_OVERLAP') {
+      await tx.query('ROLLBACK TO SAVEPOINT occupy');
+    }
     throw err;
   }
+}
+
+export type ClientTimeSource = { type: 'hold_item'; id: string; holdExpiresAt: Date } | { type: 'booking'; id: string };
+
+/** client_time одним INSERT (K6 шаг 3). Пересечение у клиента по сети → CLIENT_OVERLAP. Своего SAVEPOINT нет:
+ *  вызывающий (occupyMany, attach) откатывает до своей точки. */
+export async function insertClientTime(tx: Tx, rows: Array<{ clientId: string; period: Interval; source: ClientTimeSource }>): Promise<void> {
+  if (rows.length === 0) return;
+  const clients = unitOrder(rows.map((r) => r.clientId));
+  await tx.query('SELECT id FROM app.clients WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE', [clients]);
+  try {
+    await tx.query(
+      `INSERT INTO app.client_time (client_id, period, source_type, source_id, hold_expires_at)
+       SELECT * FROM unnest($1::uuid[], $2::tstzrange[], $3::text[], $4::uuid[], $5::timestamptz[])`,
+      [
+        rows.map((r) => r.clientId),
+        rows.map((r) => toPgRange(r.period)),
+        rows.map((r) => r.source.type),
+        rows.map((r) => r.source.id),
+        rows.map((r) => (r.source.type === 'hold_item' ? r.source.holdExpiresAt : null)),
+      ],
+    );
+  } catch (err) {
+    const e = err as { code?: string; constraint?: string };
+    if (e.code === '23P01' && e.constraint === 'client_time_no_overlap') {
+      throw new AppError('CLIENT_OVERLAP', 409, 'У вас уже есть запись на это время');
+    }
+    throw err;
+  }
+}
+
+/** K6 release: погасить строки источников (отмена, перенос, удаление позиции, истечение). $now – из Clock команды. */
+export async function releaseSources(
+  tx: Tx,
+  source: { type: 'hold_item' | 'booking' | 'event'; ids: string[] },
+  reason: 'released' | 'cancelled' | 'rescheduled' | 'converted' | 'expired',
+  now: Date,
+): Promise<void> {
+  if (source.ids.length === 0) return;
+  const params = [source.type, source.ids, now, reason];
+  await tx.query(
+    `UPDATE app.occupancy SET active = false, released_at = $3, release_reason = $4 WHERE active AND source_type = $1 AND source_id = ANY($2::uuid[])`,
+    params,
+  );
+  if (source.type !== 'event') {
+    await tx.query(
+      `UPDATE app.client_time SET active = false, released_at = $3, release_reason = $4 WHERE active AND source_type = $1 AND source_id = ANY($2::uuid[])`,
+      params,
+    );
+  }
+}
+
+/** Строки единиц FOR NO KEY UPDATE по id – перед ЛЮБОЙ записью в occupancy (occupy, convertHoldItem, перенос;
+ *  ревизия S1-02 п.2). Нет единицы в филиале / архив → RESOURCE_UNAVAILABLE. */
+export async function lockUnitsForWrite(tx: Tx, branchId: string, unitIds: string[]): Promise<void> {
+  const all = unitOrder(unitIds);
+  const locked = await tx.query(
+    `SELECT id FROM app.occupancy_units WHERE id = ANY($1::uuid[]) AND branch_id = $2 AND status = 'active' ORDER BY id FOR NO KEY UPDATE`,
+    [all, branchId],
+  );
+  if (locked.rowCount !== all.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
+}
+
+/** K6 convertHoldItem: строки позиции удержания → бронь без окна свободного слота (K5 confirm шаг 5).
+ *  Единицы уже захвачены вызывающим (lockUnitsForWrite). Строк меньше, чем единиц позиции (часть погашена
+ *  истечением), → HOLD_EXPIRED: вся транзакция откатывается. Так же client_time (ровно 1 строка, если есть клиент). */
+export async function convertHoldItem(tx: Tx, now: Date, item: { id: string; unitIds: string[]; clientId: string | null }, booking: { id: string; version: 1 }): Promise<void> {
+  const o = await tx.query(
+    `UPDATE app.occupancy SET source_type = 'booking', source_id = $2, booking_version = $3, hold_expires_at = NULL
+     WHERE active AND source_type = 'hold_item' AND source_id = $1 AND hold_expires_at > $4 RETURNING unit_id`,
+    [item.id, booking.id, booking.version, now],
+  );
+  if ((o.rowCount ?? 0) < item.unitIds.length) throw new AppError('HOLD_EXPIRED', 410, 'Время на оформление истекло, слоты освобождены');
+  if (item.clientId === null) return;
+  const c = await tx.query(
+    `UPDATE app.client_time SET source_type = 'booking', source_id = $2, hold_expires_at = NULL
+     WHERE active AND source_type = 'hold_item' AND source_id = $1 AND hold_expires_at > $3 RETURNING id`,
+    [item.id, booking.id, now],
+  );
+  if (c.rowCount !== 1) throw new AppError('HOLD_EXPIRED', 410, 'Время на оформление истекло, слоты освобождены');
 }
 
 /** K6 occupy – одна позиция. */

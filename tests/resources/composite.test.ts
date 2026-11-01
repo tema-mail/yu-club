@@ -50,6 +50,14 @@ function req(who: string, method: 'GET' | 'POST', url: string, payload?: object)
 const at = (iso: string) => new Date(iso);
 const slot = (startIso: string, minutes: number) => interval(at(startIso), new Date(at(startIso).getTime() + minutes * 60_000));
 const booking = () => ({ type: 'booking' as const, id: randomUUID(), version: 1 });
+/** Строка брони для источника занятия: с S1-07 смена состава ищет будущие брони по таблице bookings. */
+async function bookingRow(db0: { query: pg.Pool['query'] }, id: string, resourceId: string, p: { start: Date; end: Date }): Promise<void> {
+  await db0.query(
+    `INSERT INTO app.bookings (id, checkout_id, branch_id, client_id, resource_id, period, price_kop, source, created_by_type)
+     VALUES ($1, $1, $2, $3, $4, tstzrange($5, $6, '[)'), 0, 'crm', 'system')`,
+    [id, ids.branch, ids.client, resourceId, p.start, p.end],
+  );
+}
 
 async function codeOf(p: Promise<unknown>): Promise<string> {
   try {
@@ -82,6 +90,7 @@ beforeAll(async () => {
   ids.branch = b.rows[0]!.id;
   await login('owner', 'owner');
   await login('admin', 'admin', ids.branch);
+  ids.client = (await db.client.query<{ id: string }>(`INSERT INTO app.clients (phone_e164, status, created_by_type, registered_at) VALUES ('+79130000099', 'active', 'system', now()) RETURNING id`)).rows[0]!.id;
 });
 afterAll(async () => {
   await app.close();
@@ -273,15 +282,18 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
     const cur = await expandToUnits(pool, ids.whole!, at('2026-11-25T10:00:00Z'));
     const future = booking();
     await runOccupancyCommand(pool, (c) => occupy(c, { branchId: ids.branch!, units: cur, period: slot('2026-11-25T10:00:00Z', 60), source: future, clientId: null }));
+    await bookingRow(db.client, future.id, ids.whole!, slot('2026-11-25T10:00:00Z', 60));
     ids.future = future.id;
     const seat = await expandToUnits(pool, ids.vr1!, at('2026-11-25T12:00:00Z'));
-    await runOccupancyCommand(pool, (c) => occupy(c, { branchId: ids.branch!, units: seat, period: slot('2026-11-25T12:00:00Z', 30), source: booking(), clientId: null }));
+    const seatSrc = booking();
+    await runOccupancyCommand(pool, (c) => occupy(c, { branchId: ids.branch!, units: seat, period: slot('2026-11-25T12:00:00Z', 30), source: seatSrc, clientId: null }));
+    await bookingRow(db.client, seatSrc.id, ids.vr1!, slot('2026-11-25T12:00:00Z', 30));
     const u = await req('owner', 'POST', `/branches/${ids.branch}/units`, { roomId: ids.room, code: 'PS5', name: 'PlayStation 5' });
     ps5.unit = u.json().id;
     const next = [units.VR1!, units.VR2!, ps5.unit];
     const dry = await req('owner', 'POST', `/resources/${ids.whole}/composition`, { unitIds: next, validFrom: validFrom.toISOString(), dryRun: true });
     expect(dry.statusCode).toBe(200);
-    expect(dry.json()).toEqual({ affectedBookingIds: [future.id], affectedHoldIds: [], applied: false });
+    expect(dry.json()).toEqual({ affectedBookingIds: [future.id], affectedHoldIds: [], affectedBlockIds: [], applied: false });
     const refused = await req('owner', 'POST', `/resources/${ids.whole}/composition`, { unitIds: next, validFrom: validFrom.toISOString() });
     expect(refused.statusCode).toBe(409);
     expect(refused.json().error).toMatchObject({ code: 'COMPOSITION_HAS_FUTURE_BOOKINGS', details: { bookingIds: [future.id], holdIds: [] } });
@@ -291,8 +303,9 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
   it('после решения по брони – состав меняется с даты; старые брони хранят свои единицы', async () => {
     const before = await db.client.query(`SELECT unit_id, period::text FROM app.occupancy WHERE active AND period && '[2026-11-15,2026-11-16)' ORDER BY 1, 2`);
     await db.client.query(`UPDATE app.occupancy SET active = false, released_at = $2, release_reason = 'cancelled' WHERE source_id = $1`, [ids.future, at(NOW)]);
+    await db.client.query(`UPDATE app.bookings SET status = 'cancelled_by_client', cancelled_at = $2 WHERE id = $1`, [ids.future, at(NOW)]);
     const res = await changeComposition(pool, { resourceId: ids.whole!, unitIds: [units.VR1!, units.VR2!, ps5.unit], validFrom }, meta, clock);
-    expect(res).toEqual({ affectedBookingIds: [], affectedHoldIds: [], applied: true });
+    expect(res).toEqual({ affectedBookingIds: [], affectedHoldIds: [], affectedBlockIds: [], applied: true });
     expect((await expandToUnits(pool, ids.whole!, at('2026-11-15T10:00:00Z'))).unitIds).toEqual([units.VR1, units.VR2, units.PS4].sort());
     expect((await expandToUnits(pool, ids.whole!, at('2026-11-21T10:00:00Z'))).unitIds).toEqual([units.VR1, units.VR2, ps5.unit].sort());
     const after = await db.client.query(`SELECT unit_id, period::text FROM app.occupancy WHERE active AND period && '[2026-11-15,2026-11-16)' ORDER BY 1, 2`);
@@ -312,4 +325,60 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
     const denied = await req('admin', 'POST', `/resources/${ids.whole}/composition`, { unitIds: [units.VR1], validFrom: '2026-12-01T00:00:00Z' });
     expect(denied.statusCode).toBe(403);
   });
+});
+
+describe('гонка «занятие ↔ смена состава» (ревизия S1-02 п.1)', () => {
+  it('40 пар: либо бронь записана и смена состава отказала с ней в списке, либо смена прошла и занятие – COMPOSITE_CHANGED', async () => {
+    const outcomes = { booked: 0, changed: 0 };
+    for (let k = 0; k < 40; k++) {
+      const r = await db.client.query<{ id: string }>(
+        `INSERT INTO app.resources (branch_id, room_id, resource_type, name) VALUES ($1, $2, 'composite', $3) RETURNING id`,
+        [ids.branch, ids.room, `2 VR ${k}`],
+      );
+      const rid = r.rows[0]!.id;
+      // свои две единицы на каждую пару: иначе брони прошлых пар того же состава попали бы в список (перестраховка futureUsage)
+      const own = await db.client.query<{ id: string }>(
+        `INSERT INTO app.occupancy_units (branch_id, room_id, code, name) VALUES ($1, $2, $3, $3), ($1, $2, $4, $4) RETURNING id`,
+        [ids.branch, ids.room, `R${k}A`, `R${k}B`],
+      );
+      const [ua, ub] = own.rows.map((x) => x.id);
+      await db.client.query(`INSERT INTO app.resource_units (resource_id, unit_id, valid_from) SELECT $1, u, $2 FROM unnest($3::uuid[]) u`, [
+        rid,
+        at(NOW),
+        [ua, ub],
+      ]);
+      const start = new Date(at('2026-12-10T00:00:00Z').getTime() + k * 3_600_000);
+      const p = interval(start, new Date(start.getTime() + 30 * 60_000));
+      const old = await expandToUnits(pool, rid, start); // развёрнуто до транзакции – как у сайта между шагами
+      const src = booking();
+      const [occ, chg] = await Promise.all([
+        codeOf(runOccupancyCommand(pool, async (c) => (await occupy(c, { branchId: ids.branch!, units: old, period: p, source: src, clientId: null }), await bookingRow(c, src.id, rid, p), await c.query('SELECT pg_sleep(0.005)')))),
+        (async () => {
+          const c = await pool.connect();
+          try {
+            await c.query('BEGIN');
+            const res = await changeComposition(c, { resourceId: rid, unitIds: [ua!], validFrom: at('2026-12-01T00:00:00Z') }, meta, clock);
+            await c.query('SELECT pg_sleep(0.005)');
+            await c.query('COMMIT');
+            return { applied: res.applied, bookingIds: [] as string[] };
+          } catch (e) {
+            await c.query('ROLLBACK');
+            if (e instanceof AppError && e.code === 'COMPOSITION_HAS_FUTURE_BOOKINGS') return { applied: false, bookingIds: e.details!.bookingIds as string[] };
+            throw e;
+          } finally {
+            c.release();
+          }
+        })(),
+      ]);
+      if (occ === 'ok') {
+        expect(chg).toEqual({ applied: false, bookingIds: [src.id] });
+        outcomes.booked++;
+      } else {
+        expect(occ).toBe('COMPOSITE_CHANGED');
+        expect(chg.applied).toBe(true);
+        outcomes.changed++;
+      }
+    }
+    expect(outcomes.booked + outcomes.changed).toBe(40);
+  }, 60_000);
 });

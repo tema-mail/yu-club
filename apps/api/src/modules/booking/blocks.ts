@@ -53,14 +53,15 @@ export async function assertNotBlocked(tx: Tx, unitIds: string[], period: Interv
   if (r.rowCount === 1) throw new AppError('RESOURCE_BLOCKED', 409, 'Место временно недоступно');
 }
 
-/** Активные строки занятости на единицах за период: брони и живые удержания (истёкшие на $now – не держат слот).
- *  До S1-06 (holds) affectedHoldIds – id позиций удержаний (source_id). */
+/** Активные строки занятости на единицах за период: брони (id брони) и живые удержания (id удержания через позицию;
+ *  истёкшие на $now – не держат слот). */
 async function affected(tx: Tx, unitIds: string[], period: Interval, now: Date): Promise<{ bookingIds: string[]; holdIds: string[] }> {
   const r = await tx.query<{ source_type: string; source_id: string }>(
-    `SELECT DISTINCT source_type, source_id FROM app.occupancy
-     WHERE active AND unit_id = ANY($1::uuid[]) AND period && $2::tstzrange
-       AND (source_type = 'booking' OR (source_type = 'hold_item' AND hold_expires_at > $3))
-     ORDER BY source_type, source_id`,
+    `SELECT DISTINCT o.source_type, CASE WHEN o.source_type = 'hold_item' THEN hi.hold_id ELSE o.source_id END AS source_id
+     FROM app.occupancy o LEFT JOIN app.hold_items hi ON o.source_type = 'hold_item' AND hi.id = o.source_id
+     WHERE o.active AND o.unit_id = ANY($1::uuid[]) AND o.period && $2::tstzrange
+       AND (o.source_type = 'booking' OR (o.source_type = 'hold_item' AND o.hold_expires_at > $3))
+     ORDER BY 1, 2`,
     [unitIds, toPgRange(period), now],
   );
   return {

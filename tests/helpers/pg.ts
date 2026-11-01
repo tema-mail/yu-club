@@ -64,6 +64,8 @@ export default async function setup(project: TestProject): Promise<() => Promise
     password,
     port,
     persistent: false,
+    // гонки K6 держат пул ≥ 50 в двух файлах сразу (composite, confirm) – 100 по умолчанию не хватает
+    postgresFlags: ['-c', 'max_connections=300'],
     onLog: () => {},
   });
   await server.initialise();
