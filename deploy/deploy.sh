@@ -38,7 +38,7 @@ cd $ROOT/src/deploy
 DC=(docker compose --env-file $ROOT/.env -f compose.yml)
 GIT_SHA=$REV "\${DC[@]}" build --pull -q api
 "\${DC[@]}" up -d --wait postgres
-"\${DC[@]}" run --rm migrate
+"\${DC[@]}" run --rm -T migrate </dev/null   # без stdin: иначе run съест остаток этого скрипта
 GIT_SHA=$REV "\${DC[@]}" up -d --wait api
 docker image prune -f --filter label=project=yu-club >/dev/null
 echo "→ контейнеры: \$(docker ps --filter name=yu-club- --format '{{.Names}} {{.Status}}' | tr '\n' ';')"
