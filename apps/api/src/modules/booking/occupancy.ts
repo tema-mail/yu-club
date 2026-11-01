@@ -9,8 +9,8 @@
 // сохраняется: FOR UPDATE в createBlock конфликтует с FOR NO KEY UPDATE так же, как с FOR SHARE.
 // 40P01/40001 – повтор всей команды один раз (runOccupancyCommand), вторая неудача → SLOT_HELD.
 // client_time (запрет пересечений клиента по сети, 0108): одна строка на позицию, одним INSERT после occupancy;
-// перед ним – строка клиента FOR NO KEY UPDATE (порядок замков «ресурсы → единицы → клиент»): команды одного клиента
-// идут по очереди, взаимного ожидания на EXCLUDE client_time нет.
+// перед ним – строка клиента FOR NO KEY UPDATE (clients.lockClients): команды одного клиента идут по очереди, взаимного
+// ожидания на EXCLUDE client_time нет. Команды клиента берут этот замок раньше ресурсов (hold.ts lockOwner) – здесь повтор.
 import type pg from 'pg';
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';

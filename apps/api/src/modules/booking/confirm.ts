@@ -1,5 +1,5 @@
 // S1-07. K5 №12: подтверждение удержания в брони – одна транзакция, без окна свободного слота.
-// Порядок замков у всех команд один: удержание FOR UPDATE → ресурсы FOR SHARE → единицы FOR NO KEY UPDATE → клиент.
+// Порядок замков у всех команд один: удержание FOR UPDATE → клиент → ресурсы FOR SHARE → единицы FOR NO KEY UPDATE.
 // 8 повторных проверок 01 §8.2: филиал, график, ресурс, пересечения (строки удержания живы – convertHoldItem),
 // активность удержания, блокировки, ограничения клиента (clients.assertCanBook), совместимость состава.
 // Цена – pricing.quote на каждую позицию, у слитой брони – сумма (нет тарифа → TARIFF_NOT_CONFIGURED, не 0 ₽). Позиции одного ресурса встык –
@@ -12,7 +12,7 @@ import { AppError } from '../../core/errors.ts';
 import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { contains, durationMinutes, instantToLocal, systemClock, toPgRange, type Clock, type Interval } from '../../core/time.ts';
-import { assertCanBook } from '../clients/index.ts';
+import { assertCanBook, lockClients } from '../clients/index.ts';
 import { getBranch, isAcceptingBookings, openIntervals, type BranchInfo } from '../network/index.ts';
 import { quote } from '../pricing/tariff.ts';
 import { assertBookable, getResource, lockCompositions } from '../resources/index.ts';
@@ -131,6 +131,7 @@ export async function confirmHold(tx: Tx, clientId: string, holdId: string, cloc
     )
   ).rows;
   if (items.length === 0) throw holdExpired();
+  await lockClients(tx, [clientId]); // порядок замков: удержание → клиент → ресурсы → единицы (hold.ts lockOwner)
   // замки «ресурсы → единицы» и совместимость состава (COMPOSITE_CHANGED)
   await lockCompositions(tx, items.map((i) => ({ resourceId: i.resource_id, unitIds: i.unit_ids, at: i.s })));
   await lockUnitsForWrite(tx, branch.id, items.flatMap((i) => i.unit_ids));
