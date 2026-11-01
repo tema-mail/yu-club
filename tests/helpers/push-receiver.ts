@@ -80,6 +80,7 @@ export interface PushReceiver {
 export async function startPushReceiver(): Promise<PushReceiver> {
   const received: ReceivedPush[] = [];
   const respond = new Map<string, number | 'hang'>();
+  let origin = '';
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
@@ -89,13 +90,14 @@ export async function startPushReceiver(): Promise<PushReceiver> {
       const r = respond.get(path) ?? 201;
       if (r === 'hang') return;
       res.statusCode = r;
+      if (r >= 300 && r < 400) res.setHeader('location', `${origin}/redirected`);
       res.end();
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const addr = server.address();
   if (!addr || typeof addr !== 'object') throw new Error('нет адреса приёмника');
-  const origin = `http://127.0.0.1:${addr.port}`;
+  origin = `http://127.0.0.1:${addr.port}`;
   return {
     origin,
     received,

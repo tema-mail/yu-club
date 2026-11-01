@@ -144,12 +144,16 @@ export function classifyStatus(status: number): PushOutcome {
   return { kind: 'rejected', status }; // 400, 401/403 (VAPID), 413 – повтор не поможет
 }
 
-export type FetchLike = (url: string, init: { method: 'POST'; headers: Record<string, string>; body: Buffer; signal: AbortSignal }) => Promise<{ status: number }>;
+export type FetchLike = (
+  url: string,
+  init: { method: 'POST'; headers: Record<string, string>; body: Buffer; signal: AbortSignal; redirect: 'manual' },
+) => Promise<{ status: number }>;
 
 /** Отправка с тайм-аутом. Тайм-аут и сетевой сбой – неизвестный исход, повтор допустим (Topic схлопнет дубль, K14). */
 export async function sendPushRequest(req: PushRequest, fetchImpl: FetchLike, timeoutMs = 10_000): Promise<PushOutcome> {
   try {
-    const res = await fetchImpl(req.url, { method: 'POST', headers: req.headers, body: req.body, signal: AbortSignal.timeout(timeoutMs) });
+    // redirect: 'manual' – по 3xx не идём на другой адрес (SSRF через редирект push-сервиса); 3xx = rejected.
+    const res = await fetchImpl(req.url, { method: 'POST', headers: req.headers, body: req.body, signal: AbortSignal.timeout(timeoutMs), redirect: 'manual' });
     return classifyStatus(res.status);
   } catch {
     return { kind: 'timeout' };
