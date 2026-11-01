@@ -4,10 +4,12 @@
 // S0-15: города и филиалы (создание, правка с rowVersion, архив), хронология аудита (K2), справочники –
 // точно по apps/api/src/modules/dictionaries/routes.ts. S1-25: поиск и карточка клиента – по clients/routes.crm.ts.
 // S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts). S1-24: ресурсы, график, блокировки, тарифы – mock-ops.ts.
+// S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts).
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { registerBooking, resetBooking } from './mock-booking.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
 import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
 
@@ -675,6 +677,7 @@ export function buildMock() {
     audit = seedClientAudit();
     resetStaff();
     resetOps();
+    resetBooking();
     return { ok: true };
   });
 
@@ -684,6 +687,16 @@ export function buildMock() {
   registerOps(app, P, {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
     reasons: () => dict.reasons, resourceTypes: () => dict['resource-types'], fail, audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),
+  });
+  registerBooking(app, P, {
+    current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
+    reasons: () => dict.reasons as Array<DictRow & { id: string }>, clients: () => clients, normalizePhone, maskPhone, fail,
+    guest: (phoneE164, firstName, lastName) => {
+      const c: MockClient = { id: randomUUID(), status: 'guest', firstName, lastName, phoneE164, email: null, birthDate: null, statusReason: null, statusUntil: null,
+        registrationSource: 'crm', phoneVerifiedAt: null, registeredAt: null, createdAt: new Date().toISOString(), lastLoginAt: null, rowVersion: 1, links: [] };
+      clients.push(c);
+      return c;
+    },
   });
   registerStaff(app, P, {
     staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
