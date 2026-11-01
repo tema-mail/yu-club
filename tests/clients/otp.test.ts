@@ -51,7 +51,7 @@ beforeAll(async () => {
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 6 });
 });
 beforeEach(() => {
-  sms = createDevSmsSender('test');
+  sms = createDevSmsSender('dev');
 });
 afterAll(async () => {
   await pool.end();
@@ -129,8 +129,10 @@ describe('запрос кода', () => {
     clock.advance(2 * MIN);
   });
 
-  it('тестовый адаптер в production не создаётся', () => {
-    expect(() => createDevSmsSender('production')).toThrow(/production/);
+  it('тестовый адаптер: dev и stage – можно, prod и прочее – запрещён', () => {
+    expect(() => createDevSmsSender('stage')).not.toThrow();
+    expect(() => createDevSmsSender('prod')).toThrow(/APP_ENV=prod/);
+    expect(() => createDevSmsSender('production')).toThrow(/APP_ENV/);
   });
 });
 

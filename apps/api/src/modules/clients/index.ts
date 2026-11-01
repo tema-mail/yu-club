@@ -52,6 +52,9 @@ export function normalizePhone(input: string): string {
   const plus = raw.startsWith('+');
   const digits = plus ? raw.slice(1) : raw;
   if (!/^\d+$/.test(digits)) throw badPhone();
+  // «+8 913…», «+8 383…», «+8 800…» – российский номер с «+» перед 8: ошибка ввода, не +7 (решение – отклонить,
+  // пусть человек проверит номер). Коды +83/+89 не выданы, +88x короче 13 цифр не бывает; +81/+84/+86 не задеты.
+  if (plus && digits.length === 11 && digits[0] === '8' && '389'.includes(digits[1]!)) throw badPhone();
   let e164: string;
   if (plus) e164 = `+${digits}`;
   else if (digits.length === 11 && (digits[0] === '8' || digits[0] === '7')) e164 = `+7${digits.slice(1)}`;

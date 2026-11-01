@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Writable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from '../../apps/api/src/modules/clients/otp.ts';
@@ -17,7 +17,7 @@ let pool: pg.Pool;
 let app: FastifyInstance;
 let logs = '';
 const clock = fixedClock('2026-11-20T07:00:00Z');
-const sms = createDevSmsSender('test');
+const sms = createDevSmsSender('dev');
 const hookCalls: Array<{ clientId: string; visitorId: string | null }> = [];
 const codes: string[] = [];
 const tokens: string[] = [];
@@ -173,14 +173,59 @@ describe('боевой адаптер без провайдера и окруж�
     await prod.close();
   });
 
-  it('production → боевой адаптер, иначе тестовый', async () => {
-    const env = { DATABASE_URL: db.url, SESSION_PEPPER: 'z'.repeat(40) };
-    const prod = depsFromConfig(loadConfig({ ...env, NODE_ENV: 'production' }));
+  it('адаптер выбирается по APP_ENV, не по NODE_ENV: prod – боевой; stage – тестовый, вход работает, код в лог сервера', async () => {
+    const env = { DATABASE_URL: db.url, SESSION_PEPPER: 'z'.repeat(40), LOG_LEVEL: 'silent' };
+    const prod = depsFromConfig(loadConfig({ ...env, APP_ENV: 'prod', NODE_ENV: 'development' }));
     expect(prod.deps.clients?.sms).toBe(unconfiguredSmsSender);
-    const dev = depsFromConfig(loadConfig({ ...env, NODE_ENV: 'development' }));
-    expect(dev.deps.clients?.sms).not.toBe(unconfiguredSmsSender);
+    const stage = depsFromConfig(loadConfig({ ...env, APP_ENV: 'stage', NODE_ENV: 'production' }));
+    expect(stage.deps.clients?.sms).not.toBe(unconfiguredSmsSender);
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'info').mockImplementation((line: string) => void lines.push(line));
+    const stageApp = buildServer(loadConfig({ ...env, APP_ENV: 'stage' }), stage.deps);
+    const res = await stageApp.inject({
+      method: 'POST',
+      url: `${BASE}/auth/otp/request`,
+      headers: { 'idempotency-key': randomUUID() },
+      payload: { phone: '+79134000010', purpose: 'login' },
+    });
+    spy.mockRestore();
+    expect(res.statusCode).toBe(202);
+    expect(lines.join('\n')).toMatch(/\[sms:dev\] \+7 ••• ••• ••-10: Код для входа: \d{6}\./);
+    await stageApp.close();
     await prod.close();
-    await dev.close();
+    await stage.close();
+  });
+});
+
+describe('лимит по IP за доверенным прокси', () => {
+  it('X-Forwarded-For от доверенного прокси: разные клиенты – разные лимиты; от чужого адреса XFF не учитывается', async () => {
+    const ipApp = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), {
+      clients: { pool, auth: clientAuthConfig('c'.repeat(40), { maxPerIpPerHour: 2 }), sms: createDevSmsSender('dev'), clock },
+    });
+    let n = 0;
+    const ask = (remoteAddress: string, xff?: string) =>
+      ipApp.inject({
+        method: 'POST',
+        url: `${BASE}/auth/otp/request`,
+        remoteAddress,
+        headers: { 'idempotency-key': randomUUID(), ...(xff ? { 'x-forwarded-for': xff } : {}) },
+        payload: { phone: `+7913500${String(++n).padStart(4, '0')}`, purpose: 'login' },
+      });
+    // клиент A через Caddy (127.0.0.1 – в TRUSTED_PROXIES по умолчанию)
+    expect((await ask('127.0.0.1', '198.51.100.1')).statusCode).toBe(202);
+    expect((await ask('127.0.0.1', '198.51.100.1')).statusCode).toBe(202);
+    expect((await ask('127.0.0.1', '198.51.100.1')).statusCode).toBe(429);
+    // клиент B через тот же прокси – свой лимит
+    expect((await ask('127.0.0.1', '198.51.100.2')).statusCode).toBe(202);
+    // чужой адрес подделывает XFF клиента B – считается по адресу соединения
+    expect((await ask('203.0.113.7', '198.51.100.2')).statusCode).toBe(202);
+    expect((await ask('203.0.113.7', '198.51.100.2')).statusCode).toBe(202);
+    expect((await ask('203.0.113.7', '198.51.100.2')).statusCode).toBe(429);
+    const ips = await db.client.query<{ ip: string }>(
+      "SELECT DISTINCT host(ip) AS ip FROM app.client_otp_challenges WHERE phone_e164 LIKE '+7913500%' ORDER BY 1",
+    );
+    expect(ips.rows.map((r) => r.ip)).toEqual(['198.51.100.1', '198.51.100.2', '203.0.113.7']);
+    await ipApp.close();
   });
 });
 

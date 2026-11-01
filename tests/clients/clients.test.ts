@@ -76,6 +76,14 @@ describe('телефон', () => {
     ['+375 29 123-45-67', '+375291234567'],
   ])('%s → %s', (input, e164) => expect(normalizePhone(input)).toBe(e164));
 
+  it('«+8» с 11 цифрами (российский номер с лишним плюсом) – ошибка ввода; +81/+84 – обычные коды', () => {
+    for (const bad of ['+8 913 123-45-67', '+8 (383) 123-45-67', '+8 800 555-35-35']) {
+      expect(() => normalizePhone(bad)).toThrow(expect.objectContaining({ code: 'VALIDATION_FAILED' }));
+    }
+    expect(normalizePhone('+81 3 1234 5678')).toBe('+81312345678');
+    expect(normalizePhone('+84 912 345 678')).toBe('+84912345678');
+  });
+
   it.each(['', '123', '+7 913 123', '+7913123456789', 'abc', '+0123456789', '89131234567x'])('«%s» → VALIDATION_FAILED', (input) => {
     expect(() => normalizePhone(input)).toThrow(expect.objectContaining({ code: 'VALIDATION_FAILED', httpStatus: 400 }));
   });

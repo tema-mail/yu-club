@@ -30,9 +30,9 @@ export interface DevSmsSender extends SmsSender {
 }
 
 /** Тестовый адаптер: сообщение остаётся в памяти и (если дан log) пишется в лог стенда.
- *  В production не создаётся – там код в лог попасть не может. */
-export function createDevSmsSender(env: string, log?: (line: string) => void): DevSmsSender {
-  if (env === 'production') throw new Error('SMS: тестовый адаптер запрещён в production (K9)');
+ *  При APP_ENV=prod не создаётся – на бою код в лог попасть не может (stage и dev – можно). */
+export function createDevSmsSender(appEnv: string, log?: (line: string) => void): DevSmsSender {
+  if (appEnv !== 'dev' && appEnv !== 'stage') throw new Error(`SMS: тестовый адаптер запрещён при APP_ENV=${appEnv} (K9)`);
   const sent: DevSmsSender['sent'] = [];
   return {
     sent,
