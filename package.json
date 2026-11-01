@@ -11,10 +11,13 @@
     "node": ">=22.18"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
     "embedded-postgres": "16.15.0-beta.19",
-    "typescript": "^7.0.2",
+    "eslint": "^10.14.0",
+    "typescript": "~6.0.0",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^5.0.5"
   },
   "allowScripts": {
@@ -23,6 +26,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "dev:api": "node apps/api/src/server.ts"
+    "dev:api": "node apps/api/src/server.ts",
+    "lint": "eslint ."
   }
 }
