@@ -32,7 +32,8 @@ async function main(): Promise<void> {
 
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 5 });
   pool.on('error', (err) => log('error', 'пул yu_app: ошибка простаивающего соединения', { err: errText(err) }));
-  const boss = new PgBoss({ connectionString: bossUrl, schema: 'pgboss', max: 3 });
+  // createSchema: false – схему pgboss с владельцем yu_boss создаёт выкладка; права CREATE на базу у yu_boss нет.
+  const boss = new PgBoss({ connectionString: bossUrl, schema: 'pgboss', max: 3, createSchema: false });
   boss.on('error', (err) => log('error', 'pg-boss', { err: errText(err) }));
   await boss.start();
 
