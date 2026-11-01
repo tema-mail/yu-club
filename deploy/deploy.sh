@@ -28,6 +28,10 @@ echo "→ выкладываю $REV на $DOMAIN"
 
 # 1. код
 git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/backups; chmod 700 $ROOT/backups; rm -rf $ROOT/src.new; mkdir $ROOT/src.new; tar -x -C $ROOT/src.new; rm -rf $ROOT/src.old; [ -d $ROOT/src ] && mv $ROOT/src $ROOT/src.old; mv $ROOT/src.new $ROOT/src; echo $REV > $ROOT/src/REVISION"
+# CRM собирается здесь (дерево чистое = HEAD): на стенде astro build не помещается в память
+PATH="$HOME/.local/node/bin:$PATH" npm run -s build -w @yu/crm >/dev/null
+tar -C apps/crm -cf - dist | "${SSH[@]}" "set -e; mkdir -p $ROOT/src/apps/crm; tar -x -C $ROOT/src/apps/crm"
+echo "→ CRM собрана на маке и отправлена"
 
 # 2. окружение – один раз, пароли генерируются на сервере
 "${SSH[@]}" "set -e; test -f $ROOT/.env || { umask 077; printf 'APP_ENV=stage\nPUBLIC_SITE_URL=https://%s\nPOSTGRES_PASSWORD=%s\nYU_OWNER_PASSWORD=%s\nYU_APP_PASSWORD=%s\nDATA_DIR=%s/data\nBACKUP_DIR=%s/backups\nBACKUP_RETENTION_DAYS=14\nCADDY_NETWORK=dzenbot_default\n' $DOMAIN \$(openssl rand -hex 24) \$(openssl rand -hex 24) \$(openssl rand -hex 24) $ROOT $ROOT > $ROOT/.env; echo '→ создан $ROOT/.env (600)'; }; chmod 600 $ROOT/.env"
@@ -39,7 +43,8 @@ git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/b
 set -euo pipefail
 cd $ROOT/src/deploy
 DC=(docker compose --env-file $ROOT/.env -f compose.yml)
-GIT_SHA=$REV "\${DC[@]}" build --pull -q api crm </dev/null
+GIT_SHA=$REV "\${DC[@]}" build --pull -q api </dev/null   # по одному образу – меньше пик памяти
+"\${DC[@]}" build --pull -q crm </dev/null
 "\${DC[@]}" up -d --wait postgres </dev/null
 "\${DC[@]}" run --rm -T migrate </dev/null   # без stdin: иначе run съест остаток этого скрипта
 GIT_SHA=$REV "\${DC[@]}" up -d --wait api crm </dev/null
