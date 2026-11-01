@@ -1,0 +1,128 @@
+---
+// Клиенты (S1-25, K11 №15–16): поиск по телефону, ФИО, email или ID и карточка клиента.
+// /clients – список (телефон всегда маскирован), /clients/{id} – карточка. Экран – при client.view.basic.
+// Полные контакты (телефон, email, дата рождения) – только из `full`, его API отдаёт лишь при client.view.full;
+// без права блока нет вовсе, и в разметку ничего не попадает. Клиент вне зоны – 404, как несуществующий (K1).
+// Записи, посещения и согласия появятся с бронированием (S1-07…S1-10): API их пока не отдаёт – и экран не показывает.
+// Экспорта нет: маршрута выгрузки в API нет, Администратору он не положен вовсе (client.export – только Владелец).
+import Crm from '../../layouts/Crm.astro';
+import EntityList from '../../islands/EntityList.tsx';
+import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+
+type ClientStatus = 'guest' | 'active' | 'restricted' | 'blocked' | 'deletion_requested' | 'anonymized';
+interface ClientCard {
+  id: string; status: ClientStatus; firstName: string | null; lastName: string | null; phoneMasked: string;
+  isGuest: boolean; phoneVerified: boolean; registeredAt: string | null; rowVersion: number;
+  full: {
+    phoneE164: string | null; email: string | null; birthDate: string | null; statusReason: string | null; statusUntil: string | null;
+    registrationSource: string | null; createdAt: string; lastLoginAt: string | null;
+  } | null;
+}
+
+const STATUS_LABEL: Record<ClientStatus, string> = {
+  guest: 'Гость', active: 'Активен', restricted: 'Ограничен', blocked: 'Заблокирован',
+  deletion_requested: 'Запрошено удаление', anonymized: 'Обезличен',
+};
+const SOURCE_LABEL: Record<string, string> = { site: 'Сайт', account: 'Личный кабинет', crm: 'CRM' };
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const [key = '', extra] = (Astro.params.path ?? '').split('/');
+
+let notFound = extra !== undefined || !can('client.view.basic');
+let client: ClientCard | null = null;
+if (!notFound && key) {
+  try {
+    client = await serverCall<ClientCard>(cookie, `/clients/${encodeURIComponent(key)}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 403 && e.status !== 400)) throw e;
+    notFound = true;
+  }
+}
+if (notFound) Astro.response.status = 404;
+
+// Время – в зоне выбранного филиала (K8); в контексте сети/города – первого филиала зоны.
+const timezone = (ctx.kind === 'branch' ? ctx.branch.timezone : branches[0]?.timezone) ?? 'Asia/Novosibirsk';
+const fmt = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short', timeZone: timezone });
+const at = (v: string | null) => (v ? fmt.format(new Date(v)) : '–');
+const day = (v: string | null) => (v ? v.split('-').reverse().join('.') : '–');
+const nameOf = (c: { firstName: string | null; lastName: string | null }) =>
+  [c.lastName, c.firstName].filter(Boolean).join(' ') || 'Без имени';
+
+const statusOptions = (Object.keys(STATUS_LABEL) as ClientStatus[]).map((s) => ({ value: s, label: STATUS_LABEL[s] }));
+// Подписи полей для истории. Без client.view.full ключи ПДн в историю не выводим, даже маскированные (K2).
+const historyFields: CardField[] = [
+  { kind: 'select', name: 'status', label: 'Статус', options: statusOptions },
+  { kind: 'text', name: 'firstName', label: 'Имя' }, { kind: 'text', name: 'lastName', label: 'Фамилия' },
+  { kind: 'text', name: 'phoneE164', label: 'Телефон' }, { kind: 'text', name: 'email', label: 'Email' },
+  { kind: 'text', name: 'birthDate', label: 'Дата рождения' },
+];
+const historyOmit = client?.full ? [] : ['phoneE164', 'email', 'birthDate'];
+
+const title = notFound ? 'Не найдено' : client ? nameOf(client) : 'Клиенты';
+const seesAll = me.access.network;
+---
+<Crm title={title}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такого клиента нет или он вне вашей зоны доступа. Проверьте ссылку или найдите клиента по телефону.</p>
+      <p><a href="/clients">К поиску клиентов</a></p>
+    </div>
+  ) : client ? (
+    <>
+      <div class="yc-head">
+        <p class="yc-crumbs"><a href="/clients">Клиенты</a> / {title}</p>
+        <h1>{title}</h1>
+        <p><span class={`yc-badge yc-badge--${client.status}`} data-testid="client-status">{STATUS_LABEL[client.status]}</span></p>
+      </div>
+      <section class="yc-panel" aria-labelledby="client-main" data-testid="client-main">
+        <h2 id="client-main">Клиент</h2>
+        <dl class="yc-props">
+          <dt>Фамилия</dt><dd>{client.lastName ?? '–'}</dd>
+          <dt>Имя</dt><dd>{client.firstName ?? '–'}</dd>
+          <dt>Телефон</dt><dd>{client.phoneMasked || '–'}</dd>
+          <dt>Телефон подтверждён</dt><dd>{client.phoneVerified ? 'Да' : 'Нет'}</dd>
+          <dt>Статус</dt><dd>{STATUS_LABEL[client.status]}{client.isGuest ? ' – без регистрации на сайте' : ''}</dd>
+          <dt>Зарегистрирован</dt><dd>{at(client.registeredAt)}</dd>
+          <dt>ID</dt><dd>{client.id}</dd>
+        </dl>
+      </section>
+      {client.full && (
+        <section class="yc-panel" aria-labelledby="client-full" data-testid="client-full">
+          <h2 id="client-full">Контакты и данные</h2>
+          <dl class="yc-props">
+            <dt>Телефон</dt><dd>{client.full.phoneE164 ?? '–'}</dd>
+            <dt>Email</dt><dd>{client.full.email ?? '–'}</dd>
+            <dt>Дата рождения</dt><dd>{day(client.full.birthDate)}</dd>
+            {client.full.statusReason && <><dt>Причина статуса</dt><dd>{client.full.statusReason}</dd></>}
+            {client.full.statusUntil && <><dt>Статус до</dt><dd>{at(client.full.statusUntil)}</dd></>}
+            <dt>Источник регистрации</dt>
+            <dd>{client.full.registrationSource ? SOURCE_LABEL[client.full.registrationSource] ?? client.full.registrationSource : '–'}</dd>
+            <dt>Карточка создана</dt><dd>{at(client.full.createdAt)}</dd>
+            <dt>Последний вход</dt><dd>{at(client.full.lastLoginAt)}</dd>
+          </dl>
+        </section>
+      )}
+      <EntityCard client:load historyOnly fields={historyFields} values={{}}
+        history={{ objectType: 'client', objectId: client.id, timezone, omit: historyOmit }} />
+    </>
+  ) : (
+    <>
+      <div class="yc-head"><h1>Клиенты</h1></div>
+      <section class="yc-panel" aria-label="Поиск клиентов">
+        <EntityList client:load testId="clients" endpoint="/clients" rowHref="/clients/{id}" pageSize={20}
+          search={{ label: 'Телефон, ФИО, email или ID', param: 'q' }}
+          filters={[{ param: 'status', label: 'Статус', options: [{ value: '', label: 'Все' }, ...statusOptions] }]}
+          columns={[
+            { key: 'lastName', label: 'Фамилия', main: true }, { key: 'firstName', label: 'Имя' },
+            { key: 'phoneMasked', label: 'Телефон' }, { key: 'status', label: 'Статус', badge: STATUS_LABEL },
+          ]}
+          emptyText={seesAll
+            ? 'Клиентов пока нет.'
+            : 'Здесь клиенты, которые бывали в филиалах вашей зоны. Любого другого найдите по полному номеру телефона.'} />
+      </section>
+    </>
+  )}
+</Crm>
