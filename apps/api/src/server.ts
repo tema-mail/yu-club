@@ -7,6 +7,7 @@ import './core/registry.ts'; // проверка реестров модулей
 import { blockRoutes } from './modules/booking/blocks.ts';
 import { blockListRoutes } from './modules/booking/blocks.routes.list.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
+import { registerBookingGate } from './modules/clients/index.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
@@ -16,6 +17,11 @@ import { bookingsProvider, clientBranchLinks } from './modules/booking/providers
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { registerPaymentMethod } from './modules/finance/methods.ts';
+import { loyaltyGate } from './modules/loyalty/gate.ts';
+import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
+import { loyaltyCrmRoutes } from './modules/loyalty/routes.crm.ts';
+import { loyaltyPublicRoutes } from './modules/loyalty/routes.public.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { networkRoutes } from './modules/network/routes.ts';
 import { networkPublicRoutes, type NetworkPublicDeps } from './modules/network/routes.public.ts';
@@ -42,10 +48,21 @@ export interface ServerDeps {
   logStream?: NodeJS.WritableStream;
 }
 
+/** Реестры модулей на процесс (ворота записи K9, способы оплаты K10 §5), а buildServer зовут повторно (тесты) –
+ *  регистрируем один раз. Модули друг друга не импортируют (ADR 0002): связывает их только этот файл. */
+let hooksRegistered = false;
+function registerModuleHooks(): void {
+  if (hooksRegistered) return;
+  registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
+  registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
+  hooksRegistered = true;
+}
+
 /** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
 export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
+  registerModuleHooks();
   // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
   const app = Fastify({
     logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream } : { level: config.LOG_LEVEL },
@@ -160,6 +177,17 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
     );
+    // K15 №24–28: бонусный счёт и товары за баллы; зона клиента – через брони (clientBranchLinks)
+    void app.register(
+      async (scope) =>
+        loyaltyCrmRoutes(scope, {
+          pool: staff.pool,
+          links: clientBranchLinks,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
   }
 
   if (deps.network) {
@@ -173,6 +201,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     const push = deps.notifications ?? { vapidPublicKey: null };
     void app.register(async (scope) => notificationPublicRoutes(scope, { clients, ...push }), { prefix: '/api/public/v1' });
+    // K15 §11: баллы в ЛК – баланс, история, резерв на своё удержание, каталог
+    void app.register(async (scope) => loyaltyPublicRoutes(scope, { clients }), { prefix: '/api/public/v1' });
     void app.register(
       async (scope) =>
         bookingPublicRoutes(scope, {

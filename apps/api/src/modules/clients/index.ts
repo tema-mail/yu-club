@@ -169,9 +169,35 @@ export async function lockClients(tx: Tx, clientIds: string[]): Promise<void> {
   await tx.query('SELECT id FROM app.clients WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE', [ids]);
 }
 
-/** Можно ли клиенту бронировать (K5 confirm, S1-13). blocked / restricted (пока не истёк срок) /
- *  deletion_requested / anonymized → CLIENT_RESTRICTED. С Э2 loyalty добавит проверку баланса сюда же. */
-export async function assertCanBook(tx: Tx, clientId: string, at: Date): Promise<void> {
+/** Э2 (S2-33, K9): ворота записи другого модуля – регистрирует server.ts при старте (как провайдеры, ADR 0002).
+ *  Ворота сами решают, принять ли override (loyalty: право loyalty.book_below_limit проверяет маршрут CRM). */
+export interface BookingGate {
+  name: string;
+  check(tx: Tx, input: { clientId: string; at: Date; override?: { reason: string; staffId: string } }): Promise<void>;
+}
+
+const bookingGates = new Map<string, BookingGate>();
+
+/** Дубль имени – ошибка программиста: падает старт. */
+export function registerBookingGate(gate: BookingGate): void {
+  if (bookingGates.has(gate.name)) throw new Error(`registerBookingGate: ворота «${gate.name}» уже зарегистрированы`);
+  bookingGates.set(gate.name, gate);
+}
+
+/** Только для тестов: снять ворота. */
+export function clearBookingGates(): void {
+  bookingGates.clear();
+}
+
+/** Можно ли клиенту бронировать (K5 hold/attach/confirm, S1-13). blocked / restricted (пока не истёк срок) /
+ *  deletion_requested / anonymized → CLIENT_RESTRICTED; затем – зарегистрированные ворота (Э2: loyalty −50,
+ *  LOYALTY_LIMIT_REACHED). Без ворот поведение Э1 не меняется; opts необязателен – вызовы Э1 совместимы. */
+export async function assertCanBook(
+  tx: Tx,
+  clientId: string,
+  at: Date,
+  opts: { override?: { loyaltyLimit?: { reason: string; staffId: string } } } = {},
+): Promise<void> {
   const r = await tx.query<{ status: ClientStatus; status_until: Date | null }>(
     'SELECT status, status_until FROM app.clients WHERE id = $1',
     [clientId],
@@ -183,6 +209,19 @@ export async function assertCanBook(tx: Tx, clientId: string, at: Date): Promise
     row.status === 'guest' ||
     (row.status === 'restricted' && row.status_until !== null && row.status_until <= at);
   if (!ok) throw new AppError('CLIENT_RESTRICTED', 403, 'Запись для этого клиента ограничена', { status: row.status });
+  await assertBookingGates(tx, clientId, at, opts);
+}
+
+/** Только ворота записи, без статуса клиента: удержание (K5 №6, attach) проверяет −50, а CLIENT_RESTRICTED по-прежнему
+ *  отдаёт подтверждение (K5 №12) – контракт Э1 удержания не меняется. */
+export async function assertBookingGates(
+  tx: Tx,
+  clientId: string,
+  at: Date,
+  opts: { override?: { loyaltyLimit?: { reason: string; staffId: string } } } = {},
+): Promise<void> {
+  const override = opts.override?.loyaltyLimit;
+  for (const gate of bookingGates.values()) await gate.check(tx, { clientId, at, ...(override ? { override } : {}) });
 }
 
 /** Для уведомлений (П7). Нет строки – значения по умолчанию (напоминания вкл., реклама выкл., 09 §5.1). */
