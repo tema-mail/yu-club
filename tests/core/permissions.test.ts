@@ -18,6 +18,7 @@ import {
 } from '../../apps/api/src/core/permissions.ts';
 import { networkLookup } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestBranch } from '../helpers/network.ts';
 
 const CITY_A = 'aaaaaaaa-0000-4000-8000-00000000000a';
 const CITY_B = 'bbbbbbbb-0000-4000-8000-00000000000b';
@@ -262,6 +263,7 @@ describe('loadAccess и назначения (БД)', () => {
 
   beforeAll(async () => {
     db = await createTestDatabase({ migrate: true });
+    for (const [id, cityId] of [[BR_A1, CITY_A], [BR_A2, CITY_A], [BR_B1, CITY_B]] as const) await createTestBranch(db.client, { id, cityId });
   });
   afterAll(async () => {
     await db.drop();

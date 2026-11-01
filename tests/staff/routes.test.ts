@@ -6,6 +6,7 @@ import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestBranch, createTestCity } from '../helpers/network.ts';
 
 const PASSWORD = 'Пароль-для-маршрутов-1';
 const CITY_A = 'aaaaaaaa-0000-4000-8000-00000000000a';
@@ -44,6 +45,8 @@ const session = (cookie: string) => app.inject({ method: 'GET', url: `${BASE}/se
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
+  await createTestCity(db.client, { id: CITY_A });
+  await createTestBranch(db.client, { id: BR_B1 });
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 4 });
   // Город A ещё не раскрывается в филиалы (модуль network – S0-11): Директору даём город и филиал отдельно.
   await addStaff('owner', 'owner');

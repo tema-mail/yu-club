@@ -7,6 +7,7 @@ import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestBranch, createTestCity } from '../helpers/network.ts';
 
 const PASSWORD = 'Пароль-хронологии-1';
 const BR_A = 'aaaaaaaa-0000-4000-8000-0000000000a1';
@@ -50,6 +51,9 @@ const get = (who: string, q: string) => app.inject({ method: 'GET', url: `${URL}
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
+  await createTestCity(db.client, { id: CITY_A });
+  await createTestBranch(db.client, { id: BR_A }); // намеренно не в CITY_A – см. проверку «филиал A не в городе A»
+  await createTestBranch(db.client, { id: BR_B });
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 4 });
   app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), { staff: { pool, auth: staffAuthConfig('t'.repeat(40)), clock } });
   await addStaff('owner', 'owner');

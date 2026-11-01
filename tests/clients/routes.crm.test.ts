@@ -6,6 +6,7 @@ import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestBranch } from '../helpers/network.ts';
 
 const PASSWORD = 'Пароль-для-клиентов-1';
 const BR_1 = 'bbbbbbbb-0000-4000-8000-0000000000b1';
@@ -38,6 +39,7 @@ const get = (key: string | null, url: string) => app.inject({ method: 'GET', url
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
+  await createTestBranch(db.client, { id: BR_1 });
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 4 });
   app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), { staff: { pool, auth: staffAuthConfig('k'.repeat(40)), clock } });
   await addStaff('owner', 'owner');

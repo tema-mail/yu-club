@@ -7,6 +7,7 @@ import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/
 import type { StaffDeps } from '../../apps/api/src/modules/staff/routes.crm.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestBranch } from '../helpers/network.ts';
 
 const PASSWORD = 'Пароль-справочников-1';
 const BASE = '/api/crm/v1/dictionaries';
@@ -49,6 +50,7 @@ async function reasonId(domain: string, code: string): Promise<string> {
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
+  await createTestBranch(db.client, { id: 'cccccccc-0000-4000-8000-000000000001' });
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 4 });
   const clock = fixedClock('2026-11-22T07:00:00Z');
   const staffDeps: StaffDeps = { pool, auth: staffAuthConfig('d'.repeat(40)), clock };

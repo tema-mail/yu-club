@@ -6,6 +6,7 @@ import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestBranch } from '../helpers/network.ts';
 
 const PASSWORD = 'Пароль-сотрудников-1';
 const CITY_A = 'aaaaaaaa-0000-4000-8000-00000000000a';
@@ -56,6 +57,7 @@ async function rowVersion(key: string): Promise<number> {
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
+  for (const [id, cityId] of [[BR_A1, CITY_A], [BR_A2, CITY_A], [BR_B1, CITY_B]] as const) await createTestBranch(db.client, { id, cityId });
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 4 });
   app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), { staff: { pool, auth: staffAuthConfig('s'.repeat(40)), clock } });
   await addStaff('owner', 'owner', 'Аов');
