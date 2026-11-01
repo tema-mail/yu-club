@@ -30,6 +30,7 @@ interface BranchDto {
 interface ZoneDto { code: 'pc' | 'vr' | 'ps'; name: string }   // группировка для сайта (12 §7)
 interface ResourceDto {
   id: string; branchId: string; roomId: string | null; roomName: string | null;
+  roomSlug: string | null;                             // rooms.slug – адрес карточки комнаты на сайте, английскими словами (карта сайта п.5)
   type: 'pc' | 'vr_seat' | 'ps_room' | 'room_whole' | 'composite';
   zone: ZoneDto['code']; name: string; stepMinutes: number;
   selfBookable: true;                                  // несамостоятельные (PS4) не отдаются вовсе (01 §5.2)

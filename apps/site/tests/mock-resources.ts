@@ -12,12 +12,14 @@ type Zone = 'pc' | 'vr' | 'ps';
 // id – UUID, как в API (z.uuid() в теле удержания): ресурс `0b0e{4 цифры филиала}-…-{код}`, комната `0b0f…`.
 const CODE: Record<string, string> = { pc1: '01', pc2: '02', pc3: '03', pc4: '04', pc5: '05', vr1: '11', vr2: '12', 'vr-room': '13', 'ps5-1': '21', 'ps5-2': '22', 'ps5-3': '23', 'pc-zone': '31', vr: '32', kosmos: '41' };
 export const resourceId = (branchId: string, code: string) => `0b0e${branchId.slice(-4)}-0000-4000-8000-0000000000${CODE[code] ?? '99'}`;
+// Адрес комнаты – rooms.slug, английскими словами по карте сайта п.5; «Космос» – своё название, транслит.
+const ROOM_SLUG: Record<string, string> = { 'pc-zone': 'pc-zone', vr: 'vr-ps4-room', 'ps5-1': 'ps5-room-1', 'ps5-2': 'ps5-room-2', 'ps5-3': 'ps5-room-3', kosmos: 'kosmos' };
 const roomId = (branchId: string, code: string) => `0b0f${branchId.slice(-4)}-0000-4000-8000-0000000000${CODE[code] ?? '99'}`;
 
 /** Все ресурсы филиала, включая комнату в архиве (published = false). */
 function allResources(branchId: string) {
   const r = (id: string, zone: Zone, type: string, name: string, room: string, roomName: string, stepMinutes: number, published = true) =>
-    ({ published, dto: { id: resourceId(branchId, id), branchId, roomId: roomId(branchId, room), roomName, type, zone, name, stepMinutes, selfBookable: true as const } });
+    ({ published, dto: { id: resourceId(branchId, id), branchId, roomId: roomId(branchId, room), roomName, roomSlug: ROOM_SLUG[room] ?? room, type, zone, name, stepMinutes, selfBookable: true as const } });
   return [
     ...[1, 2, 3, 4, 5].map((n) => r(`pc${n}`, 'pc', 'pc', `ПК ${n}`, 'pc-zone', 'Зал ПК', 30)),
     r('vr1', 'vr', 'vr_seat', 'VR 1', 'vr', 'Комната VR+PS4', 15),

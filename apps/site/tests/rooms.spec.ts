@@ -8,7 +8,7 @@ test.use({ baseURL: `http://localhost:${STAGE_PORT}` });
 
 const MOCK = `http://127.0.0.1:${MOCK_PORT}`;
 const KRASNY = '0b0b0000-0000-4000-8000-000000000011';
-const VR_ROOM = '/novosibirsk/krasny-prospekt/rooms/komnata-vr-ps4/';
+const VR_ROOM = '/novosibirsk/krasny-prospekt/rooms/vr-ps4-room/';
 
 test.beforeEach(async ({ request }) => {
   await request.post(`${MOCK}/__test/booking-reset`);
@@ -30,11 +30,11 @@ test('карточка комнаты: заголовок, крошки, canonic
   await expect(formats).toContainText('каждое бронируется независимо');
   await expect(formats).toContainText('вся комната целиком');
   await expect(page.locator('main')).not.toContainText(/вместим|человек|гост[ея]й до/i);
-  await expect(page.getByRole('link', { name: 'Комната PS5 1' })).toHaveAttribute('href', '/novosibirsk/krasny-prospekt/rooms/komnata-ps5-1/');
+  await expect(page.getByRole('link', { name: 'Комната PS5 1' })).toHaveAttribute('href', '/novosibirsk/krasny-prospekt/rooms/ps5-room-1/');
 });
 
 test('404 на архивную и несуществующую комнату, 301 с /rooms/', async ({ page, request }) => {
-  for (const path of ['/novosibirsk/krasny-prospekt/rooms/kosmos/', '/novosibirsk/krasny-prospekt/rooms/net-takoy/', '/novosibirsk/gorskiy/rooms/zal-pk/']) {
+  for (const path of ['/novosibirsk/krasny-prospekt/rooms/kosmos/', '/novosibirsk/krasny-prospekt/rooms/net-takoy/', '/novosibirsk/gorskiy/rooms/pc-zone/']) {
     const res = await page.goto(path);
     expect(res?.status(), path).toBe(404);
     await expect(page.getByTestId('not-found')).toBeVisible();
@@ -50,7 +50,7 @@ test('филиал → комната → «Записаться»: распис
   await page.getByRole('link', { name: 'Комната VR+PS4' }).click();
   await expect(page).toHaveURL(new RegExp(`${VR_ROOM}$`));
   await page.getByTestId('room-book').click();
-  await expect(page).toHaveURL(/\/schedule\/\?branch=novosibirsk\/krasny-prospekt&zone=vr&room=komnata-vr-ps4$/);
+  await expect(page).toHaveURL(/\/schedule\/\?branch=novosibirsk\/krasny-prospekt&zone=vr&room=vr-ps4-room$/);
   await expect(page.getByTestId('room-filter')).toHaveText('Комната VR+PS4');
   await page.getByRole('button', { name: /^Завтра/ }).click();
   await expect(page.getByRole('button', { name: 'VR 1, 10:00–10:15, свободно', exact: true })).toBeVisible();
@@ -64,10 +64,10 @@ test('пустое состояние: у филиала нет опублико
   await request.post(`${MOCK}/__test/resources-empty`, { data: { branchId: KRASNY } });
   await page.goto('/novosibirsk/krasny-prospekt/');
   await expect(page.getByTestId('zones-empty')).toContainText('Комнаты клуба пока не опубликованы');
-  expect((await page.goto('/novosibirsk/krasny-prospekt/rooms/zal-pk/'))?.status()).toBe(404);
+  expect((await page.goto('/novosibirsk/krasny-prospekt/rooms/pc-zone/'))?.status()).toBe(404);
   await request.post(`${MOCK}/__test/resources-empty`, { data: { branchId: null } });
 
-  await page.goto('/novosibirsk/akademgorodok/rooms/zal-pk/');
+  await page.goto('/novosibirsk/akademgorodok/rooms/pc-zone/');
   await expect(page.getByTestId('room-closed')).toBeVisible();
   await expect(page.getByTestId('room-book')).toHaveCount(0);
 });
@@ -75,7 +75,7 @@ test('пустое состояние: у филиала нет опублико
 test('бой: карточки комнат в sitemap.xml, архивной нет', async ({ request }) => {
   const sitemap = await (await request.get(`http://127.0.0.1:${PROD_PORT}/sitemap.xml`)).text();
   expect(sitemap).toContain(`<loc>https://yu-club.test${VR_ROOM}</loc>`);
-  expect(sitemap).toContain('<loc>https://yu-club.test/tomsk/lenina/rooms/zal-pk/</loc>');
+  expect(sitemap).toContain('<loc>https://yu-club.test/tomsk/lenina/rooms/pc-zone/</loc>');
   expect(sitemap).not.toContain('kosmos');
 });
 

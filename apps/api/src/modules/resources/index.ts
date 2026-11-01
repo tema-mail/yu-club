@@ -12,6 +12,7 @@ export interface ResourceInfo {
   branchId: string;
   roomId: string | null;
   roomName: string | null;
+  roomSlug: string | null; // rooms.slug – адрес комнаты на сайте (карта сайта п.5)
   roomStatus: string | null;
   type: string;
   name: string;
@@ -34,7 +35,7 @@ const ZONE_SQL = `CASE r.resource_type
       ELSE 'pc' END
   END`;
 
-export const RESOURCE_INFO_SELECT = `SELECT r.id, r.branch_id AS "branchId", r.room_id AS "roomId", rm.name AS "roomName",
+export const RESOURCE_INFO_SELECT = `SELECT r.id, r.branch_id AS "branchId", r.room_id AS "roomId", rm.name AS "roomName", rm.slug AS "roomSlug",
     rm.status AS "roomStatus", r.resource_type AS type, r.name, r.status, r.self_bookable AS "selfBookable",
     coalesce(r.step_minutes_override, t.step_minutes)::int AS "stepMinutes", ${ZONE_SQL} AS zone
   FROM app.resources r

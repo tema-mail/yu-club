@@ -533,6 +533,17 @@
                               "null"
                             ]
                           },
+                          "roomSlug": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[a-z0-9-]{1,64}$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "type": {
                             "type": "string",
                             "enum": [
@@ -569,6 +580,7 @@
                           "branchId",
                           "roomId",
                           "roomName",
+                          "roomSlug",
                           "type",
                           "zone",
                           "name",

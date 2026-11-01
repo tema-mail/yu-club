@@ -16,7 +16,7 @@ const ids: Record<string, string> = {};
 
 const CITY_KEYS = ['id', 'slug', 'name', 'timezone'];
 const BRANCH_KEYS = ['id', 'cityId', 'slug', 'name', 'address', 'timezone', 'status', 'phone', 'publicContacts', 'bookingWindow', 'holdMinutes'];
-const RESOURCE_KEYS = ['id', 'branchId', 'roomId', 'roomName', 'type', 'zone', 'name', 'stepMinutes', 'selfBookable'];
+const RESOURCE_KEYS = ['id', 'branchId', 'roomId', 'roomName', 'roomSlug', 'type', 'zone', 'name', 'stepMinutes', 'selfBookable'];
 const sorted = (o: object) => Object.keys(o).sort();
 
 async function one<T = { id: string }>(sql: string, values: unknown[] = []): Promise<T> {
@@ -141,7 +141,7 @@ describe('K5 №3–4: филиал и его ресурсы', () => {
     expect(r.headers['cache-control']).toContain('public');
     const items = r.json().items;
     expect(items).toEqual([
-      { id: ids.pc1, branchId: ids.krasny, roomId: expect.any(String), roomName: 'Зал ПК', type: 'pc', zone: 'pc', name: 'ПК 1', stepMinutes: 30, selfBookable: true },
+      { id: ids.pc1, branchId: ids.krasny, roomId: expect.any(String), roomName: 'Зал ПК', roomSlug: 'hall', type: 'pc', zone: 'pc', name: 'ПК 1', stepMinutes: 30, selfBookable: true },
     ]);
     expect(sorted(items[0])).toEqual([...RESOURCE_KEYS].sort());
     expect((await app.inject({ method: 'GET', url: `${P}/branches/${ids.krasny}/resources?zone=vr` })).json().items).toEqual([]);

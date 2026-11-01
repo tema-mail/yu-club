@@ -51,6 +51,7 @@ export interface ResourceDto {
   branchId: string;
   roomId: string | null;
   roomName: string | null;
+  roomSlug: string | null;
   type: string;
   zone: 'pc' | 'vr' | 'ps';
   name: string;
@@ -164,6 +165,7 @@ export async function networkPublicRoutes(app: FastifyInstance, deps: NetworkPub
       branchId: x.branchId,
       roomId: x.roomId,
       roomName: x.roomName,
+      roomSlug: x.roomSlug,
       type: x.type,
       zone: x.zone,
       name: x.name,

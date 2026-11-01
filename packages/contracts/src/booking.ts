@@ -33,6 +33,7 @@ export const ResourceDto = z.strictObject({
   branchId: Uuid,
   roomId: Uuid.nullable(),
   roomName: z.string().nullable(),
+  roomSlug: z.string().regex(/^[a-z0-9-]{1,64}$/).nullable(), // rooms.slug, адрес /{city}/{branch}/rooms/{roomSlug}/
   type: z.enum(['pc', 'vr_seat', 'ps_room', 'room_whole', 'composite']),
   zone: Zone,
   name: z.string(),
