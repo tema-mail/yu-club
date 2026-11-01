@@ -255,3 +255,78 @@ export async function writeDenied(
     log(err);
   }
 }
+
+// ---- хронология объекта (K2 objectTimeline, 16 §16)
+
+export interface AuditEventRow {
+  id: string; // bigint строкой – он же курсор
+  at: Date;
+  action: string;
+  objectType: string;
+  objectId: string | null;
+  actorType: 'staff' | 'client' | 'system' | 'anonymous';
+  actorId: string | null;
+  actorRole: StaffRole | null;
+  before: unknown;
+  after: unknown;
+  reason: string | null;
+  result: AuditResult;
+}
+
+/** События объекта, новые сверху, порциями по курсору (id < cursor). Право на объект проверяет вызывающий
+ *  (K1 assertCan c audit.view); onlyActorId – для audit.view.own (Администратор видит только свои действия).
+ *  before/after уже маскированы при записи (redact); ip наружу не отдаётся (K2 правило 4). */
+export async function objectTimeline(
+  db: Db,
+  filter: { objectType: AuditObjectType; objectId: string; onlyActorId?: string },
+  page: { cursor?: string; limit: number },
+): Promise<{ items: AuditEventRow[]; nextCursor: string | null }> {
+  if (page.cursor !== undefined && !/^\d{1,18}$/.test(page.cursor)) throw new Error('objectTimeline: неверный курсор');
+  const values: unknown[] = [filter.objectType, filter.objectId];
+  let where = 'object_type = $1 AND object_id = $2';
+  if (filter.onlyActorId !== undefined) {
+    values.push(filter.onlyActorId);
+    where += ` AND actor_type = 'staff' AND actor_id = $${values.length}`;
+  }
+  if (page.cursor !== undefined) {
+    values.push(page.cursor);
+    where += ` AND id < $${values.length}::bigint`;
+  }
+  values.push(page.limit + 1);
+  const r = await db.query<{
+    id: string;
+    occurred_at: Date;
+    action: string;
+    object_type: string;
+    object_id: string | null;
+    actor_type: AuditEventRow['actorType'];
+    actor_id: string | null;
+    actor_role: StaffRole | null;
+    before: unknown;
+    after: unknown;
+    reason: string | null;
+    result: AuditResult;
+  }>(
+    `SELECT id::text AS id, occurred_at, action, object_type, object_id, actor_type, actor_id, actor_role, before, after, reason, result
+     FROM journal.audit_events WHERE ${where} ORDER BY id DESC LIMIT $${values.length}`,
+    values,
+  );
+  const rows = r.rows.slice(0, page.limit);
+  return {
+    items: rows.map((x) => ({
+      id: x.id,
+      at: x.occurred_at,
+      action: x.action,
+      objectType: x.object_type,
+      objectId: x.object_id,
+      actorType: x.actor_type,
+      actorId: x.actor_id,
+      actorRole: x.actor_role,
+      before: x.before,
+      after: x.after,
+      reason: x.reason,
+      result: x.result,
+    })),
+    nextCursor: r.rows.length > page.limit ? rows.at(-1)!.id : null,
+  };
+}
