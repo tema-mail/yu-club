@@ -201,6 +201,38 @@ describe('права (K1 block.manage)', () => {
   });
 });
 
+describe('Директор и блокировки (ревизия S1-04 п.3–4)', () => {
+  it('Директор своего города блокирует – 201; Директор чужого города – 404', async () => {
+    const tsk = await db.client.query<{ id: string }>(`INSERT INTO app.cities (code, slug, name, timezone) VALUES ('tsk', 'tsk', 'Томск', 'Asia/Tomsk') RETURNING id`);
+    const nsk = (await db.client.query<{ city_id: string }>('SELECT city_id FROM app.branches WHERE id = $1', [ids.branch])).rows[0]!.city_id;
+    for (const [key, city] of [['director', nsk], ['director_tsk', tsk.rows[0]!.id]] as const) {
+      const r = await db.client.query<{ id: string }>(
+        `INSERT INTO app.staff (first_name, last_name, email, role, password_hash) VALUES ('И', 'Ф', $1, 'director', $2) RETURNING id`,
+        [`${key}@yu.test`, await hashPassword(PASSWORD)],
+      );
+      await db.client.query(
+        `INSERT INTO app.staff_assignments (staff_id, scope_type, city_id, valid_from, created_by) VALUES ($1, 'city', $2, '2026-01-01', $1)`,
+        [r.rows[0]!.id, city],
+      );
+      const res = await app.inject({ method: 'POST', url: `${BASE}/auth/login`, payload: { email: `${key}@yu.test`, password: PASSWORD } });
+      cookies[key] = String(res.headers['set-cookie']).split(';')[0]!;
+    }
+    const body = { target: { type: 'resource', ids: [ids.pc] }, start: '2026-11-21T10:00:00Z', end: '2026-11-21T11:00:00Z', reasonId: ids.reason_repair };
+    expect((await req('director', 'POST', `/branches/${ids.branch}/blocks`, body)).statusCode).toBe(201);
+    expect((await req('director_tsk', 'POST', `/branches/${ids.branch}/blocks`, body)).statusCode).toBe(404);
+  });
+
+  it('смена состава ресурса с активной блокировкой по нему – отказ со списком блокировок', async () => {
+    const r = await req('owner', 'POST', `/branches/${ids.branch}/blocks`, {
+      target: { type: 'resource', ids: [ids.whole] }, start: '2026-11-22T10:00:00Z', end: '2026-11-22T11:00:00Z', reasonId: ids.reason_repair,
+    });
+    const blockId = r.json().block.id;
+    const c = await req('owner', 'POST', `/resources/${ids.whole}/composition`, { unitIds: [units.VR1, units.VR2], validFrom: '2026-11-22T00:00:00Z' });
+    expect(c.statusCode).toBe(409);
+    expect(c.json().error).toMatchObject({ code: 'COMPOSITION_HAS_FUTURE_BOOKINGS', details: { blockIds: [blockId] } });
+  });
+});
+
 describe('гонка «блокировка ↔ занятие» (K6 §Проверка)', () => {
   it('100 пар: либо RESOURCE_BLOCKED у занятия, либо бронь в affectedBookingIds блокировки', async () => {
     const ownerCtx: AccessContext = {

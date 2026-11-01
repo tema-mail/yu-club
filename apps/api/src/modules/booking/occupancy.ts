@@ -13,7 +13,7 @@ import type pg from 'pg';
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { toPgRange, type Interval } from '../../core/time.ts';
-import type { UnitSet } from '../resources/index.ts';
+import { lockCompositions, type UnitSet } from '../resources/index.ts';
 import { assertNotBlocked } from './blocks.ts';
 
 export type OccupySource =
@@ -49,6 +49,8 @@ async function conflictError(tx: Tx, items: OccupyItem[]): Promise<AppError> {
 export async function occupyMany(tx: Tx, branchId: string, items: OccupyItem[]): Promise<void> {
   if (items.length === 0) return;
   if (items.some((i) => i.clientId !== null)) throw new Error('booking.occupy: client_time появится с 0108 (S1-06) – clientId пока null');
+  // 0) строки ресурсов FOR SHARE и сверка состава (против changeComposition) – до единиц: порядок «ресурсы → единицы».
+  await lockCompositions(tx, items.map((i) => ({ resourceId: i.units.resourceId, unitIds: i.units.unitIds, at: i.period.start })));
   const all = unitOrder(items.flatMap((i) => i.units.unitIds));
   // 1) строки единиц в порядке id: очередь команд одной единицы и видимость против блокировок (createBlock – FOR UPDATE).
   const locked = await tx.query(

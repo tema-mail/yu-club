@@ -91,6 +91,17 @@ export async function futureUsage(tx: Tx, resourceId: string, from: Date): Promi
   };
 }
 
+/** Активные блокировки, выбранные по этому ресурсу и идущие после `from` (ревизия S1-04 п.3): их единицы развёрнуты
+ *  по старому составу – новая единица осталась бы незаблокированной. Решение: отказ со списком, как для броней. */
+async function futureBlocks(tx: Tx, resourceId: string, from: Date): Promise<string[]> {
+  const r = await tx.query<{ id: string }>(
+    `SELECT id FROM app.resource_blocks
+     WHERE status = 'active' AND upper(period) > $2 AND target_type IN ('resource','resources') AND $1::uuid = ANY(target_ids) ORDER BY id`,
+    [resourceId, from],
+  );
+  return r.rows.map((x) => x.id);
+}
+
 /** K6: изменить состав с даты. Есть активные брони/удержания ресурса с end > validFrom → COMPOSITION_HAS_FUTURE_BOOKINGS
  *  со списком (сотрудник решает каждую вручную, 01 §12–13). dryRun – только список. Права проверяет вызывающий
  *  (resources.manage, routes.ts). validFrom в прошлом или раньше последнего открытия состава – VALIDATION_FAILED. */
@@ -99,7 +110,7 @@ export async function changeComposition(
   input: { resourceId: string; unitIds: string[]; validFrom: Date; dryRun?: boolean },
   meta: AuditRequestMeta,
   clock: Clock = systemClock,
-): Promise<{ affectedBookingIds: string[]; affectedHoldIds: string[]; applied: boolean }> {
+): Promise<{ affectedBookingIds: string[]; affectedHoldIds: string[]; affectedBlockIds: string[]; applied: boolean }> {
   const lock = isUuid(input.resourceId)
     ? await tx.query<{ branch_id: string; status: string }>('SELECT branch_id, status FROM app.resources WHERE id = $1 FOR UPDATE', [input.resourceId])
     : { rows: [] };
@@ -120,12 +131,14 @@ export async function changeComposition(
   const before = await compositionAt(tx, input.resourceId, input.validFrom);
   const same = before.length === unitIds.length && before.every((u, i) => u === unitIds[i]);
   const usage = same ? { bookingIds: [], holdIds: [] } : await futureUsage(tx, input.resourceId, input.validFrom);
-  const result = { affectedBookingIds: usage.bookingIds, affectedHoldIds: usage.holdIds, applied: false };
+  const blockIds = same ? [] : await futureBlocks(tx, input.resourceId, input.validFrom);
+  const result = { affectedBookingIds: usage.bookingIds, affectedHoldIds: usage.holdIds, affectedBlockIds: blockIds, applied: false };
   if (same || input.dryRun) return result;
-  if (usage.bookingIds.length > 0 || usage.holdIds.length > 0) {
-    throw new AppError('COMPOSITION_HAS_FUTURE_BOOKINGS', 409, 'У ресурса есть будущие брони – решите каждую до смены состава', {
+  if (usage.bookingIds.length > 0 || usage.holdIds.length > 0 || blockIds.length > 0) {
+    throw new AppError('COMPOSITION_HAS_FUTURE_BOOKINGS', 409, 'У ресурса есть будущие брони или блокировки – решите каждую до смены состава', {
       bookingIds: usage.bookingIds,
       holdIds: usage.holdIds,
+      blockIds,
     });
   }
   await tx.query(`UPDATE app.resource_units SET valid_to = $2 WHERE resource_id = $1 AND valid_to IS NULL`, [input.resourceId, input.validFrom]);
@@ -231,4 +244,21 @@ export async function unitsOfTarget(
         );
   if (r.rows.length === 0) throw invalid();
   return r.rows.map((x) => x.id);
+}
+
+/** Для транзакции занятия (ревизия S1-02 п.1): строки ресурсов FOR SHARE по id – против FOR UPDATE в changeComposition,
+ *  затем сверка: переданные единицы = состав на начало интервала. Иначе состав сменили между expandToUnits и записью →
+ *  COMPOSITE_CHANGED (K5). Вызывать до захвата единиц: порядок замков «ресурсы → единицы» у всех команд один. */
+export async function lockCompositions(tx: Tx, items: Array<{ resourceId: string; unitIds: string[]; at: Date }>): Promise<void> {
+  const ids = sortIds(items.map((i) => i.resourceId));
+  if (!ids.every(isUuid)) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
+  const r = await tx.query('SELECT id FROM app.resources WHERE id = ANY($1::uuid[]) ORDER BY id FOR SHARE', [ids]);
+  if (r.rowCount !== ids.length) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
+  for (const i of items) {
+    const now = await compositionAt(tx, i.resourceId, i.at);
+    const sent = sortIds(i.unitIds);
+    if (now.length !== sent.length || now.some((u, k) => u !== sent[k])) {
+      throw new AppError('COMPOSITE_CHANGED', 409, 'Конфигурация изменилась, выберите заново', { resourceId: i.resourceId });
+    }
+  }
 }

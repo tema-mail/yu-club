@@ -281,7 +281,7 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
     const next = [units.VR1!, units.VR2!, ps5.unit];
     const dry = await req('owner', 'POST', `/resources/${ids.whole}/composition`, { unitIds: next, validFrom: validFrom.toISOString(), dryRun: true });
     expect(dry.statusCode).toBe(200);
-    expect(dry.json()).toEqual({ affectedBookingIds: [future.id], affectedHoldIds: [], applied: false });
+    expect(dry.json()).toEqual({ affectedBookingIds: [future.id], affectedHoldIds: [], affectedBlockIds: [], applied: false });
     const refused = await req('owner', 'POST', `/resources/${ids.whole}/composition`, { unitIds: next, validFrom: validFrom.toISOString() });
     expect(refused.statusCode).toBe(409);
     expect(refused.json().error).toMatchObject({ code: 'COMPOSITION_HAS_FUTURE_BOOKINGS', details: { bookingIds: [future.id], holdIds: [] } });
@@ -292,7 +292,7 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
     const before = await db.client.query(`SELECT unit_id, period::text FROM app.occupancy WHERE active AND period && '[2026-11-15,2026-11-16)' ORDER BY 1, 2`);
     await db.client.query(`UPDATE app.occupancy SET active = false, released_at = $2, release_reason = 'cancelled' WHERE source_id = $1`, [ids.future, at(NOW)]);
     const res = await changeComposition(pool, { resourceId: ids.whole!, unitIds: [units.VR1!, units.VR2!, ps5.unit], validFrom }, meta, clock);
-    expect(res).toEqual({ affectedBookingIds: [], affectedHoldIds: [], applied: true });
+    expect(res).toEqual({ affectedBookingIds: [], affectedHoldIds: [], affectedBlockIds: [], applied: true });
     expect((await expandToUnits(pool, ids.whole!, at('2026-11-15T10:00:00Z'))).unitIds).toEqual([units.VR1, units.VR2, units.PS4].sort());
     expect((await expandToUnits(pool, ids.whole!, at('2026-11-21T10:00:00Z'))).unitIds).toEqual([units.VR1, units.VR2, ps5.unit].sort());
     const after = await db.client.query(`SELECT unit_id, period::text FROM app.occupancy WHERE active AND period && '[2026-11-15,2026-11-16)' ORDER BY 1, 2`);
@@ -312,4 +312,60 @@ describe('смена состава (K6 changeComposition, 02 §8.4)', () => {
     const denied = await req('admin', 'POST', `/resources/${ids.whole}/composition`, { unitIds: [units.VR1], validFrom: '2026-12-01T00:00:00Z' });
     expect(denied.statusCode).toBe(403);
   });
+});
+
+describe('гонка «занятие ↔ смена состава» (ревизия S1-02 п.1)', () => {
+  it('40 пар: либо бронь записана и смена состава отказала с ней в списке, либо смена прошла и занятие – COMPOSITE_CHANGED', async () => {
+    const outcomes = { booked: 0, changed: 0 };
+    for (let k = 0; k < 40; k++) {
+      const r = await db.client.query<{ id: string }>(
+        `INSERT INTO app.resources (branch_id, room_id, resource_type, name) VALUES ($1, $2, 'composite', $3) RETURNING id`,
+        [ids.branch, ids.room, `2 VR ${k}`],
+      );
+      const rid = r.rows[0]!.id;
+      // свои две единицы на каждую пару: иначе брони прошлых пар того же состава попали бы в список (перестраховка futureUsage)
+      const own = await db.client.query<{ id: string }>(
+        `INSERT INTO app.occupancy_units (branch_id, room_id, code, name) VALUES ($1, $2, $3, $3), ($1, $2, $4, $4) RETURNING id`,
+        [ids.branch, ids.room, `R${k}A`, `R${k}B`],
+      );
+      const [ua, ub] = own.rows.map((x) => x.id);
+      await db.client.query(`INSERT INTO app.resource_units (resource_id, unit_id, valid_from) SELECT $1, u, $2 FROM unnest($3::uuid[]) u`, [
+        rid,
+        at(NOW),
+        [ua, ub],
+      ]);
+      const start = new Date(at('2026-12-10T00:00:00Z').getTime() + k * 3_600_000);
+      const p = interval(start, new Date(start.getTime() + 30 * 60_000));
+      const old = await expandToUnits(pool, rid, start); // развёрнуто до транзакции – как у сайта между шагами
+      const src = booking();
+      const [occ, chg] = await Promise.all([
+        codeOf(runOccupancyCommand(pool, async (c) => (await occupy(c, { branchId: ids.branch!, units: old, period: p, source: src, clientId: null }), await c.query('SELECT pg_sleep(0.005)')))),
+        (async () => {
+          const c = await pool.connect();
+          try {
+            await c.query('BEGIN');
+            const res = await changeComposition(c, { resourceId: rid, unitIds: [ua!], validFrom: at('2026-12-01T00:00:00Z') }, meta, clock);
+            await c.query('SELECT pg_sleep(0.005)');
+            await c.query('COMMIT');
+            return { applied: res.applied, bookingIds: [] as string[] };
+          } catch (e) {
+            await c.query('ROLLBACK');
+            if (e instanceof AppError && e.code === 'COMPOSITION_HAS_FUTURE_BOOKINGS') return { applied: false, bookingIds: e.details!.bookingIds as string[] };
+            throw e;
+          } finally {
+            c.release();
+          }
+        })(),
+      ]);
+      if (occ === 'ok') {
+        expect(chg).toEqual({ applied: false, bookingIds: [src.id] });
+        outcomes.booked++;
+      } else {
+        expect(occ).toBe('COMPOSITE_CHANGED');
+        expect(chg.applied).toBe(true);
+        outcomes.changed++;
+      }
+    }
+    expect(outcomes.booked + outcomes.changed).toBe(40);
+  }, 60_000);
 });
