@@ -22,9 +22,22 @@ NEIGHBOURS=${YU_NEIGHBOURS:-"https://gaz-mag.ru/ https://lupa.45.12.72.227.nip.i
 cd "$(dirname "$0")/.."
 SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$HOST")
 
+RESET=0
+case "${1:-}" in
+  --reset-stage) RESET=1 ;;
+  "") ;;
+  *) echo "Неизвестный аргумент: $1 (есть только --reset-stage)"; exit 1 ;;
+esac
+
 [ -z "$(git status --porcelain -- apps db deploy package.json package-lock.json .dockerignore)" ] || { echo "Есть незакоммиченные правки – сначала коммит"; exit 1; }
 REV=$(git rev-parse --short HEAD)
 echo "→ выкладываю $REV на $DOMAIN"
+# --reset-stage (ADR 0001): база стенда пересоздаётся – бэкап → drop/create → миграции с нуля → deploy/seed-stand.sh.
+# Только на сервере с APP_ENV=stage; на проде миграции идут лишь по порядку.
+if [ "$RESET" = 1 ]; then
+  "${SSH[@]}" "grep -qx 'APP_ENV=stage' $ROOT/.env" || { echo "!!! --reset-stage только для APP_ENV=stage в $ROOT/.env – отказ"; exit 1; }
+  echo "→ режим --reset-stage: база стенда будет пересоздана"
+fi
 
 # 1. код
 git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/backups; chmod 700 $ROOT/backups; rm -rf $ROOT/src.new; mkdir $ROOT/src.new; tar -x -C $ROOT/src.new; rm -rf $ROOT/src.old; [ -d $ROOT/src ] && mv $ROOT/src $ROOT/src.old; mv $ROOT/src.new $ROOT/src; echo $REV > $ROOT/src/REVISION"
@@ -46,11 +59,30 @@ DC=(docker compose --env-file $ROOT/.env -f compose.yml)
 GIT_SHA=$REV "\${DC[@]}" build --pull -q api </dev/null   # по одному образу – меньше пик памяти
 "\${DC[@]}" build --pull -q crm </dev/null
 "\${DC[@]}" up -d --wait postgres </dev/null
-"\${DC[@]}" run --rm -T migrate </dev/null   # без stdin: иначе run съест остаток этого скрипта
+if [ "$RESET" = 1 ]; then
+  grep -qx 'APP_ENV=stage' $ROOT/.env || { echo "!!! не stage – отказ"; exit 1; }
+  BACKUP_DB=yu_club bash $ROOT/src/deploy/backup.sh </dev/null
+  "\${DC[@]}" stop crm api </dev/null
+  docker exec yu-club-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
+    -c "DROP DATABASE IF EXISTS yu_club WITH (FORCE)" -c "CREATE DATABASE yu_club OWNER yu_owner" \
+    -c "REVOKE ALL ON DATABASE yu_club FROM PUBLIC"
+  echo "→ база yu_club пересоздана (бэкап выше)"
+fi
+# без stdin: иначе run съест остаток этого скрипта
+if ! OUT=\$("\${DC[@]}" run --rm -T migrate </dev/null 2>&1); then
+  echo "\$OUT" | tail -5
+  if echo "\$OUT" | grep -q 'порядок нарушен'; then
+    echo "!!! порядок миграций на стенде нарушен (миграция из параллельной ветки) – нужен deploy/deploy.sh --reset-stage"
+  fi
+  exit 1
+fi
+echo "\$OUT" | grep -E 'Применены|Нечего' || true
 GIT_SHA=$REV "\${DC[@]}" up -d --wait api crm </dev/null
 docker image prune -f --filter label=project=yu-club >/dev/null
 echo "→ контейнеры: \$(docker ps --filter name=yu-club- --format '{{.Names}} {{.Status}}' | tr '\n' ';')"
 REMOTE
+# после пересоздания – засев: Владелец с текущим паролем с мака (без обязательной смены), демо-данные
+[ "$RESET" = 1 ] && YU_OWNER_READY=1 deploy/seed-stand.sh
 
 # 4. общий Caddy – только свой блок
 codes() { for u in $NEIGHBOURS; do printf '%s ' "$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$u")"; done; }
