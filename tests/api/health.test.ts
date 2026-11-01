@@ -45,6 +45,8 @@ describe('вход сотрудников из окружения', () => {
     const app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), full.deps);
     const res = await app.inject({ method: 'GET', url: '/api/crm/v1/auth/session' });
     expect(res.json().error.code).toBe('AUTH_REQUIRED');
+    const dict = await app.inject({ method: 'GET', url: '/api/crm/v1/dictionaries/reasons' });
+    expect(dict.json().error.code).toBe('AUTH_REQUIRED');
     await app.close();
     await full.close();
   });

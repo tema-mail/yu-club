@@ -3,9 +3,8 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
-import { dictionaryRoutes } from '../../apps/api/src/modules/dictionaries/routes.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
-import { authenticate, type StaffDeps } from '../../apps/api/src/modules/staff/routes.crm.ts';
+import type { StaffDeps } from '../../apps/api/src/modules/staff/routes.crm.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -53,11 +52,7 @@ beforeAll(async () => {
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 4 });
   const clock = fixedClock('2026-11-22T07:00:00Z');
   const staffDeps: StaffDeps = { pool, auth: staffAuthConfig('d'.repeat(40)), clock };
-  app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), { staff: staffDeps });
-  void app.register(
-    async (scope) => dictionaryRoutes(scope, { pool, clock, authenticate: (rq, rp) => authenticate(staffDeps, rq, rp) }),
-    { prefix: BASE },
-  );
+  app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), { staff: staffDeps }); // справочники подключает server.ts
   await staff('owner', 'owner');
   await staff('director', 'director', 'cccccccc-0000-4000-8000-000000000001');
   await staff('admin', 'admin', 'cccccccc-0000-4000-8000-000000000001');
