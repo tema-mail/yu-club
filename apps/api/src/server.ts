@@ -22,7 +22,7 @@ import { resourcesRoutes } from './modules/resources/routes.ts';
 import { pricingRoutes } from './modules/pricing/routes.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
-import { startDispatcher, type SenderDeps } from './modules/notifications/sender.ts';
+import type { SenderDeps } from './modules/notifications/sender.ts';
 import { vapidKeys } from './modules/notifications/webpush.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
@@ -191,9 +191,8 @@ async function main(): Promise<void> {
   const app = buildServer(config, deps);
   if (!deps.staff) app.log.warn('Вход сотрудников выключен: нужны DATABASE_URL и SESSION_PEPPER');
   if (sender && !sender.vapid) app.log.warn('Web Push выключен: нет VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT');
-  const stopDispatcher = sender ? startDispatcher(sender, { log: (err) => app.log.error({ err }, 'notifications: диспетчер') }) : () => {};
+  // Диспетчер уведомлений, outbox и истечение удержаний – в отдельном процессе apps/api/src/worker.ts.
   app.addHook('onClose', async () => {
-    stopDispatcher();
     await close();
   });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
