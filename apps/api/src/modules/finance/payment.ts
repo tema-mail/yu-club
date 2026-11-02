@@ -33,9 +33,9 @@ import {
 
 export interface PaymentBookings {
   /** Бронь без блокировки: филиал и клиент – чтобы взять счета до строки брони (bookingLookup.facts). */
-  facts(tx: Tx, bookingId: string): Promise<{ branchId: string; clientId: string } | null>;
+  facts(db: Db, bookingId: string): Promise<{ branchId: string; clientId: string } | null>;
   /** Бронь под FOR SHARE (paymentBookingProvider.payableBooking, S2-05). */
-  payableBooking(tx: Tx, bookingId: string): Promise<{
+  payableBooking(db: Db, bookingId: string): Promise<{
     bookingId: string; branchId: string; clientId: string; status: string; payable: boolean; version: number; priceKop: number; minutes: number; resourceType: string;
   } | null>;
 }
