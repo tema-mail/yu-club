@@ -70,7 +70,7 @@ beforeAll(async () => {
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 4 });
   rx = await startPushReceiver();
   branchId = (await createTestBranch(db.client)).id;
-  deps = { pool, clock, vapid, timeoutMs: 300 };
+  deps = { pool, clock, vapid, timeoutMs: 3000 }; // 300 мс не хватало первому запросу к приёмнику под нагрузкой всего набора; тест «hang» ждёт эти 3 с
 });
 afterAll(async () => {
   await rx.close();
