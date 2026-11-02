@@ -2,7 +2,8 @@
 // Журнал – K17 №37 всеми страницами периода; сводка считается из тех же операций (детализация = итог), остаток
 // «сейчас» по каждому месту – K17 №38 с deltaKop = 0 (только ролям с finance.view). Администратор (finance.view.day)
 // видит только текущие сутки и ни одного остатка: колонки нет, предпросмотр не вызывается (решение 02.11 K17).
-// Сторно – окном внутри записи с обязательной причиной; у сеанса, продажи сертификата и возврата кнопок нет –
+// Сторно – окном внутри записи с обязательной причиной; «Исправить» открывает форму OperationForm (событие
+// yc-finance:correct). У сеанса, продажи сертификата и возврата кнопок нет –
 // их исправляют возвратом платежа или отменой продажи. Закрытие месяца – только Владелец, через окно подтверждения.
 // Суммы с сервера – целые копейки; в интерфейсе – рубли без плавающей арифметики.
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -457,6 +458,13 @@ export default function CashJournal(p: CashJournalProps) {
                 {dlgError && <p class="yc-alert yc-alert--error" role="alert">{dlgError}</p>}
                 <div class="yc-dialog__actions">
                   <button class="yc-btn yc-btn--ghost" type="button" onClick={closeRecord}>Закрыть</button>
+                  {p.canCorrect && !noReverseReason(open) && (open.kind === 'income' || open.kind === 'expense') && (
+                    <button class="yc-btn yc-btn--ghost" type="button" onClick={() => {
+                      const op = open;
+                      closeRecord();
+                      window.dispatchEvent(new CustomEvent('yc-finance:correct', { detail: op }));
+                    }}>Исправить…</button>
+                  )}
                   {p.canCorrect && !noReverseReason(open) && (
                     <button class="yc-btn yc-btn--danger" type="button" onClick={() => setReversing(true)}>Сторно…</button>
                   )}

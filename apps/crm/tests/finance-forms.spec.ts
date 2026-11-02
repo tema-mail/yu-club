@@ -139,6 +139,41 @@ test('Закрытый месяц: операцию прошлым месяце�
   await expect(dlg(page)).toContainText('закрыт: операцию этим месяцем не внести. Исправление – операцией текущей датой.');
 });
 
+test('Исправление через запись журнала: причина обязательна, закрытый месяц – отказ без сторно, затем сторно + новая', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, KRASNY);
+  await journalRow(page, 'Игровой сеанс').getByRole('button', { name: /Открыть операцию/ }).click();
+  await expect(page.getByTestId('fin-record').getByRole('button', { name: 'Исправить…' })).toHaveCount(0);
+  await page.getByTestId('fin-record').getByRole('button', { name: 'Закрыть' }).click();
+
+  await journalRow(page, 'Салфетки и моющее').getByRole('button', { name: /Открыть операцию/ }).click();
+  await page.getByTestId('fin-record').getByRole('button', { name: 'Исправить…' }).click();
+  await expect(dlg(page).getByRole('heading')).toHaveText(/Исправить операцию №\d+/);
+  await expect(dlg(page).getByLabel('Сумма, ₽')).toHaveValue('300,00');
+  await expect(dlg(page).getByLabel('Подкатегория')).toHaveValue(/.+/);
+  await dlg(page).getByLabel('Сумма, ₽').fill('350');
+  await dlg(page).getByRole('button', { name: 'Сохранить' }).click();
+  await expect(dlg(page)).toContainText('Укажите причину исправления.');
+  await dlg(page).getByLabel('Причина исправления').fill('Ошиблись в сумме чека');
+  // Месяц закрыт предыдущим тестом: новая операция прошлым месяцем – отказ, исходная не сторнирована.
+  const prevDay = await page.evaluate(() => {
+    const t = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Novosibirsk' }).format(new Date());
+    const [y, m] = t.split('-').map(Number) as [number, number];
+    return m === 1 ? `${y - 1}-12-20` : `${y}-${String(m - 1).padStart(2, '0')}-20`;
+  });
+  const today = await dlg(page).getByLabel('Дата').inputValue();
+  await dlg(page).getByLabel('Дата').fill(prevDay);
+  await dlg(page).getByRole('button', { name: 'Сохранить' }).click();
+  await expect(dlg(page)).toContainText('закрыт: операцию этим месяцем не внести');
+  await dlg(page).getByLabel('Дата').fill(today);
+  await dlg(page).getByRole('button', { name: 'Сохранить' }).click();
+  await expect(page.getByTestId('op-saved')).toHaveText(/Операция №\d+ исправлена: сторно №\d+, новая операция №\d+ на 350,00\s₽\./);
+  await expect(journalRow(page, 'Салфетки и моющее')).toHaveCount(2);
+  await expect(journalRow(page, 'Салфетки и моющее').filter({ hasText: 'Сторнирована' })).toContainText('300,00');
+  await expect(journalRow(page, 'Салфетки и моющее').filter({ hasText: 'Проведена' })).toContainText('350,00');
+  await expect(journalRow(page, 'Ошиблись в сумме чека')).toContainText('Сторно');
+});
+
 test('390 px: форма расхода без горизонтальной прокрутки, кнопки ≥ 44 px', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await login(page, 'owner@yu.test');

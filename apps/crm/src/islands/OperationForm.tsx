@@ -2,7 +2,9 @@
 // целые копейки разбором строки (без плавающей арифметики). До сохранения – «остаток после» (K17 №38), но только
 // ролям с finance.view: Администратору маршрут отвечает 403, он видит лишь результат команды (решение 02.11 K17).
 // Ключ идемпотентности – один на открытую форму: двойной клик и повтор после обрыва связи дают одну операцию.
-// Успех – событие yc-finance:changed: журнал (CashJournal) перечитывается сам.
+// Успех – событие yc-finance:changed: журнал (CashJournal) перечитывается сам. Исправление (K17 №45, только Владелец):
+// журнал шлёт yc-finance:correct с операцией – та же форма открывается с её значениями и обязательной причиной;
+// сервер делает сторно + новую операцию одной транзакцией, отказ новой (закрытый месяц и т. п.) откатывает и сторно.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { API_PREFIX, ApiError } from '../lib/api.ts';
 
@@ -15,6 +17,13 @@ export interface OperationFormProps {
   full: boolean;
   /** Активные категории расхода, два уровня (K17 №46). */
   categories: CategoryOption[];
+  /** finance.correct: слушать «Исправить» из записи журнала. */
+  canCorrect: boolean;
+}
+/** Что нужно форме из операции журнала для исправления. */
+export interface CorrectTarget {
+  id: string; number: number; kind: string; method: Method | null; amountKop: number; source: string | null;
+  categoryId: string | null; subcategoryId: string | null; comment: string | null; occurredAt: string;
 }
 type Kind = 'income' | 'expense';
 type Method = 'cash' | 'card' | 'transfer';
@@ -91,6 +100,8 @@ export default function OperationForm(p: OperationFormProps) {
   const [preview, setPreview] = useState<{ currentKop: number; afterKop: number; allowed: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const [target, setTarget] = useState<CorrectTarget | null>(null);
+  const [reason, setReason] = useState('');
   const key = useRef('');
   const inflight = useRef(false); // двойной клик в одном такте: состояние busy ещё не перерисовано
   const dialog = useRef<HTMLDialogElement>(null);
@@ -103,7 +114,7 @@ export default function OperationForm(p: OperationFormProps) {
   // Предпросмотр «остатка после» (06 §8): только finance.view, с задержкой на ввод.
   useEffect(() => {
     setPreview(null);
-    if (!p.full || !kind || kop === null) return;
+    if (!p.full || !kind || kop === null || target) return; // при исправлении сторно меняет остаток – подсказка была бы неверной
     const t = setTimeout(async () => {
       try {
         const r = await send<{ currentKop: number; afterKop: number; allowed: boolean }>(
@@ -117,19 +128,33 @@ export default function OperationForm(p: OperationFormProps) {
       }
     }, 300);
     return () => clearTimeout(t);
-  }, [kind, kop, place, p.full, p.branch.id]);
+  }, [kind, kop, place, p.full, p.branch.id, target]);
 
-  const start = (k: Kind) => {
-    const now = nowIn(p.branch.timezone);
+  useEffect(() => {
+    if (!p.canCorrect) return;
+    const onCorrect = (ev: Event) => {
+      const op = (ev as CustomEvent<CorrectTarget>).detail;
+      if (op.kind !== 'income' && op.kind !== 'expense') return;
+      start(op.kind, op);
+    };
+    window.addEventListener('yc-finance:correct', onCorrect);
+    return () => window.removeEventListener('yc-finance:correct', onCorrect);
+  }, [p.canCorrect]);
+
+  const start = (k: Kind, op?: CorrectTarget) => {
+    const at = op ? new Date(op.occurredAt) : new Date();
+    const tz = p.branch.timezone;
     setKind(k);
-    setSource('event');
-    setAmount('');
-    setMethod('cash');
-    setCategoryId('');
-    setSubcategoryId('');
-    setDate(now.date);
-    setTime(now.time);
-    setComment('');
+    setTarget(op ?? null);
+    setReason('');
+    setSource(op?.source && SOURCES.some(([v]) => v === op.source) ? op.source : 'event');
+    setAmount(op ? rub(op.amountKop).replace(' ₽', '') : '');
+    setMethod(op?.method ?? 'cash');
+    setCategoryId(op?.categoryId ?? '');
+    setSubcategoryId(op?.subcategoryId ?? '');
+    setDate(new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(at));
+    setTime(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(at));
+    setComment(op?.comment ?? '');
     setErrors({});
     setFormError('');
     setNotice('');
@@ -145,7 +170,9 @@ export default function OperationForm(p: OperationFormProps) {
     if (!(e instanceof ApiError)) return { text: 'Не удалось сохранить. Повторите.' };
     const d = e.details ?? {};
     switch (e.code) {
-      case 'COMMENT_REQUIRED': return { field: 'comment', text: 'Укажите комментарий: на что потрачены деньги.' };
+      case 'COMMENT_REQUIRED':
+        if (d.field === 'reason') return { field: 'reason', text: 'Укажите причину исправления.' };
+        return { field: 'comment', text: 'Укажите комментарий: на что потрачены деньги.' };
       case 'SUBCATEGORY_REQUIRED': return { field: 'subcategoryId', text: 'Выберите подкатегорию.' };
       case 'CATEGORY_ARCHIVED': return { field: 'categoryId', text: 'Категория в архиве – выберите другую.' };
       case 'INVALID_AMOUNT': return { field: 'amount', text: 'Сумма – больше нуля, не больше двух знаков после запятой.' };
@@ -172,6 +199,7 @@ export default function OperationForm(p: OperationFormProps) {
     if (kind === 'expense' && !category) errs.categoryId = 'Выберите категорию.';
     if (kind === 'expense' && category && category.children.length > 0 && !subcategoryId) errs.subcategoryId = 'Выберите подкатегорию.';
     if (kind === 'expense' && !comment.trim()) errs.comment = 'Укажите комментарий: на что потрачены деньги.';
+    if (target && !reason.trim()) errs.reason = 'Укажите причину исправления.';
     if (!date || !time) errs.date = 'Укажите дату и время.';
     else if (Date.parse(toInstant(date, time, p.branch.timezone)) > Date.now()) errs.date = 'Дата операции – не в будущем.';
     setErrors(errs);
@@ -184,6 +212,13 @@ export default function OperationForm(p: OperationFormProps) {
     setBusy(true);
     inflight.current = true;
     try {
+      if (target) {
+        const r = await send<{ reversal: Saved; replacement: Saved }>(`/finance/operations/${target.id}/correct`, { reason: reason.trim(), replacement: { kind, ...body } }, key.current);
+        close();
+        setNotice(`Операция №${target.number} исправлена: сторно №${r.reversal.number}, новая операция №${r.replacement.number} на ${rub(r.replacement.amountKop)}.`);
+        window.dispatchEvent(new CustomEvent('yc-finance:changed'));
+        return;
+      }
       const r = await send<Saved>(`/branches/${encodeURIComponent(p.branch.id)}/finance/${kind}`, body, key.current);
       close();
       const after = r.balanceAfterKop === undefined ? '' : ` Остаток (${PLACE[r.place]}) после: ${rub(r.balanceAfterKop)}.`;
@@ -191,7 +226,7 @@ export default function OperationForm(p: OperationFormProps) {
       window.dispatchEvent(new CustomEvent('yc-finance:changed'));
     } catch (err) {
       const x = explain(err);
-      if (x.field && ['amount', 'categoryId', 'subcategoryId', 'comment', 'date', 'source'].includes(x.field)) setErrors({ [x.field]: x.text });
+      if (x.field && ['amount', 'categoryId', 'subcategoryId', 'comment', 'date', 'source', 'reason'].includes(x.field)) setErrors({ [x.field]: x.text });
       else setFormError(x.text);
     } finally {
       inflight.current = false;
@@ -213,7 +248,8 @@ export default function OperationForm(p: OperationFormProps) {
       <dialog ref={dialog} class="yc-dialog yc-dialog--wide" aria-labelledby="op-title" onClose={() => setKind(null)}>
         {kind && (
           <form class="yc-dialog__body" novalidate onSubmit={submit}>
-            <h2 id="op-title">{kind === 'income' ? 'Доход' : 'Расход'} · {p.branch.name}</h2>
+            <h2 id="op-title">{target ? `Исправить операцию №${target.number}` : `${kind === 'income' ? 'Доход' : 'Расход'} · ${p.branch.name}`}</h2>
+            {target && <p class="yc-field__hint">Исходная операция останется в журнале со сторно текущей датой; ниже – значения новой операции.</p>}
             {kind === 'income' ? (
               <label class="yc-field">
                 <span class="yc-field__label">Источник</span>
@@ -282,6 +318,13 @@ export default function OperationForm(p: OperationFormProps) {
                 Остаток ({PLACE[place]}): {rub(preview.currentKop)} → {rub(preview.afterKop)}
                 {!preview.allowed && '. Денег не хватит: отрицательный остаток запрещён – внесите поступление или уменьшите сумму.'}
               </p>
+            )}
+            {target && (
+              <label class="yc-field">
+                <span class="yc-field__label">Причина исправления</span>
+                <textarea class="yc-input" rows={2} maxLength={2000} value={reason} onInput={(e) => setReason(e.currentTarget.value)} {...inv('reason')} />
+                {err('reason')}
+              </label>
             )}
             {formError && <p class="yc-alert yc-alert--error" role="alert">{formError}</p>}
             <div class="yc-dialog__actions">
