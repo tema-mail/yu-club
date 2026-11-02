@@ -30,7 +30,7 @@ import {
 import { categoryDenialOf, createCategory, listCategories, updateCategory } from './categories.ts';
 import { closeMonth, correctOperation, reverseOperation } from './corrections.ts';
 import { branchSummary, networkSummary } from './summary.ts';
-import { closeShift, openShift, resolveShift, type CashShiftDto } from './shift.ts';
+import { closeShift, currentShift, listShifts, openShift, resolveShift, type CashShiftDto } from './shift.ts';
 
 export interface FinanceCrmDeps {
   pool: Db & { connect(): Promise<pg.PoolClient> };
@@ -248,6 +248,16 @@ export async function financeCrmRoutes(app: FastifyInstance, deps: FinanceCrmDep
       return { shift: shapeShift(ctx, r.shift), operation: r.operation ? shape(ctx, r.operation) : null };
     }, 200),
   );
+
+  // №55–56 чтение смены (K17 §7): Администратору – без expected/diff и в списке только свои
+  app.get('/branches/:branchId/cash-shifts/current', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    return currentShift(deps.pool, access, (request.params as { branchId: string }).branchId, clock);
+  });
+  app.get('/branches/:branchId/cash-shifts', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    return listShifts(deps.pool, access, (request.params as { branchId: string }).branchId, request.query);
+  });
 
   // №47 закрытие месяца
   app.post(
