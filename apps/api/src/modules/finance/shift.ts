@@ -3,8 +3,8 @@
 // остаток и расхождение он не получает (это делает HTTP-слой по finance.view). Закрытие: expected = остаток места cash,
 // diff = counted − expected; diff = 0 и при открытии сошлось – closed, иначе needs_resolution: само ничего не проводится.
 // Решает Директор или Владелец (finance.shift.resolve): correct – операция correction на diff со ссылкой на смену
-// (в эту смену, без требования открытой), accept – «принято без проводки»; причина обязательна, аудит. correct после
-// открытия следующей смены сдвигает её opening_expected на diff – решённое расхождение повторно не всплывает.
+// (в эту смену, без требования открытой), accept – «принято без проводки»; причина обязательна, аудит. Решение (любое)
+// после открытия следующей смены сдвигает её opening_expected на diff – решённое расхождение повторно не всплывает.
 // Порядок: оба места денег (lockPlaces) → смена FOR UPDATE → перечитать → проверить. Внешних вызовов нет.
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -201,12 +201,16 @@ export async function resolveShift(
       occurredAt: now, author, postingId: posting.postingId, reversalOf: null, shiftId: shift.id,
     });
     await writeAudit(tx, meta, { action: 'finance.operation.created', object: { type: 'finance_operation', id }, branchId: branch.id, cityId: branch.cityId, after: operation }, clock);
-    // Открытая сейчас смена открывалась после закрытия этой (одна открытая на филиал, всё под lockPlaces) и взяла ожидаемый
-    // остаток без этой корректировки: учитываем её, иначе то же расхождение всплывёт как openingDiff следующей смены.
+  }
+  // correct и accept одинаково признают пересчёт фактом (K17 «Решения 02.11»; отличие – только операция correction).
+  // Открытая сейчас смена открывалась после закрытия этой (одна открытая на филиал, всё под lockPlaces) и взяла ожидаемый
+  // остаток без этого решения: сдвигаем её opening_expected на diff, иначе то же расхождение всплывёт как её openingDiff.
+  const closingDiff = shift.closingDiffKop ?? 0;
+  if (closingDiff !== 0) {
     const next = await tx.query<{ id: string }>(
       `UPDATE app.cash_shifts SET opening_expected_kop = opening_expected_kop + $2, row_version = row_version + 1
        WHERE branch_id = $1 AND status = 'open' AND opened_at >= $3 RETURNING id`,
-      [branch.id, diff, shift.closedAt],
+      [branch.id, closingDiff, shift.closedAt],
     );
     adjustedShiftId = next.rows[0]?.id ?? null;
   }

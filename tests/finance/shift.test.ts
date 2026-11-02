@@ -148,4 +148,20 @@ describe('кассовая смена', () => {
     const c2 = await close(admin, s2.id, 700);
     expect(c2).toMatchObject({ status: 'closed', openingExpectedKop: 700, openingDiffKop: 0, closingDiffKop: 0 });
   });
+  it('accept по смене 1 после открытия смены 2 тоже сдвигает openingExpected смены 2; проводки нет, ссылка в аудите', async () => {
+    const b = await branchWithShifts();
+    const admin = ctx('admin', [b]);
+    const s1 = await open(admin, b, 0);
+    await income(ctx('owner'), b, 1_000);
+    await close(admin, s1.id, 700);
+    const s2 = await open(admin, b, 700);
+    expect(s2.openingDiffKop).toBe(-300);
+    const a = await resolve(ctx('director', [b]), s1.id, 'accept', 'приняли пересчёт');
+    expect(a.operation).toBeNull();
+    expect(await cash(b)).toBe(1_000);
+    const s2now = await db.client.query(`SELECT opening_expected_kop::int AS e FROM app.cash_shifts WHERE id = $1`, [s2.id]);
+    expect(s2now.rows[0].e).toBe(700);
+    const audit = await db.client.query(`SELECT after FROM journal.audit_events WHERE action = 'cash_shift.resolved' AND object_id = $1`, [s1.id]);
+    expect(audit.rows[0].after).toMatchObject({ resolution: 'accept', openingAdjustedShiftId: s2.id });
+  });
 });
