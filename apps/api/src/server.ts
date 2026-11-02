@@ -26,6 +26,7 @@ import { financeCrmRoutes } from './modules/finance/routes.crm.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { createCertificatePaymentMethod } from './modules/certificates/payment-method.ts';
 import { certificateCrmRoutes } from './modules/certificates/routes.crm.ts';
+import { certificatePublicRoutes } from './modules/certificates/routes.public.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
 import type { SenderDeps } from './modules/notifications/sender.ts';
@@ -191,6 +192,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     const push = deps.notifications ?? { vapidPublicKey: null };
     void app.register(async (scope) => notificationPublicRoutes(scope, { clients, ...push }), { prefix: '/api/public/v1' });
+    // ЛК «Мои сертификаты» (K16 §8): только чтение, CERT_PEPPER не нужен
+    void app.register(async (scope) => certificatePublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     void app.register(
       async (scope) =>
         bookingPublicRoutes(scope, {
