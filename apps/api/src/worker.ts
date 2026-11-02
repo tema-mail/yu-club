@@ -3,7 +3,8 @@
 // подписки баллов (K15: штраф за неявку, резерв, начисление и paid_other по PaymentLookup finance),
 // доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение партий баллов раз в 10 мин, истечение удержаний раз в 15 с
 // (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер
-// запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts).
+// запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts) и ночную сверку 16 §14 раз в сутки
+// (modules/reports/reconcile.ts, 03:30 по RECONCILE_TIMEZONE; ручной запуск – командой из того же файла).
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
 //
 // Окружение: DATABASE_URL – рантайм yu_app (данные модулей); PGBOSS_DATABASE_URL – роль yu_boss, владелец
@@ -15,7 +16,7 @@ import { PgBoss } from 'pg-boss';
 import pg from 'pg';
 import { loadConfig } from './config.ts';
 import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/outbox-worker.ts';
-import { systemClock, type Clock } from './core/time.ts';
+import { systemClock, type Clock, type LocalTime, type TimeZone } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
 import { startCertificateExpiry } from './modules/certificates/lifecycle.ts';
 import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
@@ -26,6 +27,7 @@ import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
 import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
+import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
 import { vapidKeys, type VapidKeys } from './modules/notifications/webpush.ts';
 
 const log = (level: 'info' | 'error', msg: string, extra: Record<string, unknown> = {}): void => {
@@ -37,6 +39,8 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 
 export interface WorkerTasks {
   outbox: OutboxWorker;
+  /** Ночная сверка: tick() – проверить «пора ли» и выполнить (тесты). */
+  reconcile: { tick(): Promise<unknown> };
   /** Остановить таймеры и outbox (pg-boss и пулы закрывает вызывающий). */
   stop(): Promise<void>;
 }
@@ -54,6 +58,8 @@ export async function startWorkerTasks(opts: {
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
   logger?: WorkerLogger;
+  /** Ночная сверка (S2-80): время и зона расписания, частота проверки «пора ли»; по умолчанию 03:30 Europe/Moscow, раз в минуту. */
+  reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
   /** Чтение оплаты для начисления баллов и снятия резерва paid_other (K15 §3–4); по умолчанию – finance paymentLookup (K10, S2-20). */
   payments?: PaymentLookup;
 }): Promise<WorkerTasks> {
@@ -98,9 +104,23 @@ export async function startWorkerTasks(opts: {
     { pool: opts.pool, vapid: opts.vapid, clock, bookings: bookingLookup },
     { intervalMs: opts.dispatcherIntervalMs ?? 30_000, log: (err) => logger.error({ err: errText(err) }, 'notifications: диспетчер') },
   );
+  const reconcileLogger: ReconcileLogger = opts.reconcile?.logger ?? {
+    info: (obj, msg) => log('info', msg, obj),
+    error: (obj, msg) => logger.error(obj, msg),
+  };
+  const reconcile = startNightlyReconcile({
+    pool: opts.pool,
+    clock,
+    logger: reconcileLogger,
+    ...(opts.reconcile?.at ? { at: opts.reconcile.at } : {}),
+    ...(opts.reconcile?.timeZone ? { timeZone: opts.reconcile.timeZone } : {}),
+    ...(opts.reconcile?.intervalMs ? { intervalMs: opts.reconcile.intervalMs } : {}),
+  });
   return {
     outbox,
+    reconcile,
     stop: async () => {
+      reconcile.stop();
       holds.stop();
       certificates.stop();
       loyaltyExpiry.stop();
@@ -127,10 +147,12 @@ async function main(): Promise<void> {
     config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY && config.VAPID_SUBJECT
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
-  const tasks = await startWorkerTasks({ pool, boss, vapid });
-  log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, партий баллов 10 мин, сгорание сертификатов 5 мин, отправка 30 с', {
+  const schedule = scheduleFromEnv();
+  const tasks = await startWorkerTasks({ pool, boss, vapid, reconcile: schedule });
+  log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, партий баллов 10 мин, сгорание сертификатов 5 мин, отправка 30 с, сверка раз в сутки', {
     version: config.GIT_SHA,
     webPush: Boolean(vapid),
+    reconcileAt: `${schedule.at} ${schedule.timeZone}`,
   });
 
   // Процесс держат соединения pg-boss и LISTEN outbox; таймеры удержаний и уведомлений – unref.

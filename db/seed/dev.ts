@@ -1,13 +1,14 @@
 // S0-18. Тестовые данные Э0: 2 города, 3 филиала в разных зонах, демо-значения справочников,
 // сотрудники трёх ролей с назначениями. Ресурсы, тарифы, исключения графика, демо-клиенты – S1-28 (db/seed/resources.ts):
-// CLI ниже запускает его следом за засевом Э0, тем же окружением.
+// CLI ниже запускает его следом за засевом Э0, тем же окружением, затем Э2 (db/seed/commerce.ts: касса, категории,
+// сертификаты, баллы, оплаченные и неоплаченные брони) – если задан CERT_PEPPER.
 // Повторный запуск не плодит дубли: всё ищется по коду/email и создаётся, только если нет.
 // Демо-данные помечены (19 §10.1): коды городов и филиалов с префиксом demo-, email @demo.yu-club.test,
 // комментарий DEMO_MARK; код демо-причин – demo_*. На прод не попадают: при APP_ENV/NODE_ENV = production
 // засев отказывается работать до первого запроса к базе.
 // Города и филиалы создаются командами модуля network – с графиком 10:00–22:00 и аудитом (actor system).
 //
-// CLI: APP_ENV=stage DATABASE_URL=... SEED_PASSWORD=... node db/seed/dev.ts
+// CLI: APP_ENV=stage DATABASE_URL=... SEED_PASSWORD=... [CERT_PEPPER=...] node db/seed/dev.ts
 // (пароль демо-сотрудников – только из окружения; уже созданным сотрудникам пароль не меняется).
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
@@ -17,6 +18,7 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { systemClock, type Clock } from '../../apps/api/src/core/time.ts';
 import { createBranch, createCity, setBranchStatus } from '../../apps/api/src/modules/network/commands.ts';
 import { assertPasswordStrength, hashPassword, withTx, type Pool } from '../../apps/api/src/modules/staff/auth.ts';
+import { certificateLines, seedCommerce } from './commerce.ts';
 import { seedResources } from './resources.ts';
 
 export const DEMO_MARK = 'DEMO: тестовые данные Э0 (db/seed/dev.ts), не для прода';
@@ -168,6 +170,14 @@ async function cli(): Promise<void> {
     console.log(`Засев Э0: создано ${JSON.stringify(r.created)}; вход: director@${DEMO_EMAIL_DOMAIN}, admin@${DEMO_EMAIL_DOMAIN}`);
     const e1 = await seedResources(pool, { env: process.env });
     console.log(`Засев Э1: создано ${JSON.stringify(e1.created)}`);
+    const pepper = process.env.CERT_PEPPER;
+    if (pepper) {
+      const e2 = await seedCommerce(pool, { env: process.env, certPepper: pepper });
+      console.log(`Засев Э2: создано ${JSON.stringify(e2.created)}`);
+      for (const line of certificateLines(e2, process.env)) console.log(line);
+    } else {
+      console.log('Засев Э2 пропущен: нет CERT_PEPPER (нужен для продажи демо-сертификатов)');
+    }
   } finally {
     await pool.end();
   }
