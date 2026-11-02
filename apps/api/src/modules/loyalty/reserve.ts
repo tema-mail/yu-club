@@ -5,7 +5,7 @@
 // под блокировкой или обработчиком события. Подтверждение брони: резерв удержания с неизменной подписью (по позициям
 // 'converted') → converted, на каждую бронь – резерв 'booking' в пределах доступного; подпись разошлась – hold_changed. Снятие: отмена брони, неявка (без списания, Q-46), перенос (не хватает – rescheduled_short),
 // оплата не баллами (paid_other). Списание (spent) – способ оплаты points (S2-37).
-// Порядок везде: openAccount (блокировка счёта) → перечитать из базы → проверить.
+// Порядок везде: openAccount (блокировка счёта – до строк брони и удержания, K17 «Решения 02.11») → перечитать → проверить.
 import { writeAudit, type AuditRequestMeta } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import type { Tx } from '../../core/ledger.ts';
@@ -18,7 +18,7 @@ import { LIMIT_MESSAGE } from './gate.ts';
 
 export type ReleaseReason = 'hold_expired' | 'hold_released' | 'hold_changed' | 'booking_cancelled' | 'no_show' | 'rescheduled_short' | 'replaced' | 'paid_other';
 
-export interface ReserveBookings extends Pick<LoyaltyBookings, 'payableBooking'> {
+export interface ReserveBookings extends Pick<LoyaltyBookings, 'payableBooking' | 'bookingClient'> {
   /** Брони, созданные подтверждением удержания (booking/providers.ts holdBookings). */
   holdBookings(tx: Tx, holdId: string): Promise<Array<{ bookingId: string; clientId: string; status: string; minutes: number }>>;
 }
@@ -151,9 +151,11 @@ export async function reconcileBookingReserve(
   deps: { bookings: ReserveBookings; payments?: PaymentLookup; clock: Clock },
 ): Promise<ReleaseReason | 'resized' | 'none'> {
   const now = deps.clock.now();
+  const clientId = await deps.bookings.bookingClient(tx, bookingId);
+  if (!clientId) return 'none';
+  const acc = await openAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь → проверить
   const b = await deps.bookings.payableBooking(tx, bookingId);
-  if (!b) return 'none';
-  const acc = await openAccount(tx, b.clientId, now);
+  if (!b || b.clientId !== acc.clientId) return 'none';
   const r = (await tx.query<{ id: string; amount_centi: string }>(`SELECT id, amount_centi FROM app.loyalty_reserves WHERE booking_id = $1 AND status = 'booking' FOR UPDATE`, [bookingId])).rows[0];
   if (!r) return 'none';
   if (b.status.startsWith('cancelled')) {

@@ -17,6 +17,7 @@ import type { PaymentMethod } from '../../apps/api/src/modules/finance/methods.t
 import { createBatch, debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import type { PaymentLookup } from '../../apps/api/src/modules/loyalty/accrual.ts';
 import { registerReserveHandlers, reserveForHold, RESERVE_HANDLERS, settleStaleReserves } from '../../apps/api/src/modules/loyalty/reserve.ts';
+import { lockAccounts } from '../../apps/api/src/core/ledger.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const SYS = '00000000-0000-0000-0000-000000000001';
@@ -250,5 +251,44 @@ describe('ревизия 02.11: резерв, снятый изменением 
     const b = await bal(c);
     expect(b.reservedCenti).toBeLessThanOrEqual(b.balanceCenti);
     expect((await reserves(c)).filter((x) => x.status === 'booking')).toEqual([]);
+  });
+});
+
+/** Единый порядок K17 «Решения 02.11»: команда под счётом баллов берёт бронь FOR UPDATE, пока обработчик ждёт блокировку.
+ *  Обработчик в порядке «бронь FOR SHARE → счёт» даёт 40P01. */
+async function underAccountThenBooking(clientId: string, bookingId: string, handler: () => Promise<unknown>): Promise<void> {
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const acc = await one(`SELECT id FROM app.ledger_accounts WHERE kind = 'loyalty_client' AND owner_id = $1`, [clientId]);
+    await lockAccounts(c, [acc.id]);
+    const run = handler();
+    for (let i = 0; i < 200; i++) {
+      if ((await one<{ n: number }>(`SELECT count(*)::int n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`)).n > 0) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await c.query('SELECT 1 FROM app.bookings WHERE id = $1 FOR UPDATE', [bookingId]);
+    await c.query('COMMIT');
+    await run;
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
+}
+
+describe('ревизия 02.11: порядок блокировок – счёт до брони', () => {
+  it('обработчик отмены брони параллельно с командой «счёт → бронь» – без дедлока, резерв снят', async () => {
+    const c = await clientWith(10_000);
+    const h = await hold(c, [slot(ids.b1pc1!, 60)]);
+    await reserve(c, h.id);
+    const b = await confirmed(c, h);
+    const reasonId = (await one(`SELECT id FROM app.dict_reasons WHERE domain = 'booking_cancel_club' AND code = 'equipment_failure'`)).id;
+    const rv = Number((await one<{ row_version: number }>('SELECT row_version FROM app.bookings WHERE id = $1', [b])).row_version);
+    await runOccupancyCommand(pool, (tx) => cancelBooking(tx, b, { kind: 'staff', ctx: owner, rowVersion: rv, initiator: 'club', reasonId, comment: 'сломался' }, staffMeta(), clock));
+    const ev = await eventOf('booking.cancelled', 'bookingId', b);
+    await underAccountThenBooking(c, b, () => deliver(RESERVE_HANDLERS.bookingCancelled, ev));
+    expect((await reserves(c)).filter((x) => x.status === 'released').map((x) => x.release_reason)).toEqual(['booking_cancelled']);
   });
 });
