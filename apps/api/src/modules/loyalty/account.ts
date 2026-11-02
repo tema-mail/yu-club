@@ -375,6 +375,15 @@ export async function reservedCenti(db: Db, clientId: string, at: Date, exclude:
   return num(r.rows[0]?.s);
 }
 
+/** Доступно для оплаты этой брони – как в chargePoints: max(0, баланс) − резервы, кроме резерва самой брони; не меньше 0. */
+export async function availableForBookingCenti(db: Db, clientId: string, at: Date, bookingId: string): Promise<number> {
+  const id = clientId.toLowerCase();
+  const bal = num(
+    (await db.query<{ balance: string }>(`SELECT balance FROM app.ledger_accounts WHERE kind = 'loyalty_client' AND owner_type = 'client' AND owner_id = $1`, [id])).rows[0]?.balance,
+  );
+  return Math.max(0, Math.max(0, bal) - (await reservedCenti(db, id, at, { bookingId })));
+}
+
 export interface LoyaltyBalanceDto {
   balanceCenti: number;
   availableCenti: number;

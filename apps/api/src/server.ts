@@ -30,7 +30,7 @@ import { pricingRoutes } from './modules/pricing/routes.ts';
 import { settingsRoutes } from './modules/settings/routes.crm.ts';
 import { financeCrmRoutes } from './modules/finance/routes.crm.ts';
 import { paymentRoutes } from './modules/finance/routes.payments.ts';
-import { getBalance as loyaltyBalance } from './modules/loyalty/account.ts';
+import { availableForBookingCenti as loyaltyAvailableForBooking } from './modules/loyalty/account.ts';
 import { createCertificatePaymentMethod, verifyCertificatePin } from './modules/certificates/payment-method.ts';
 import { certificateCrmRoutes } from './modules/certificates/routes.crm.ts';
 import { certificatePublicRoutes } from './modules/certificates/routes.public.ts';
@@ -159,10 +159,10 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
             payableBooking: (db, id) => paymentBookingProvider.payableBooking(db, id),
             payableInPeriod: (db, input) => paymentBookingProvider.payableInPeriod(db, input),
           },
-          pointsAvailable: async (_db, clientId, at) => {
+          pointsAvailable: async (_db, clientId, at, bookingId) => {
             const c = await staff.pool.connect();
             try {
-              return (await loyaltyBalance(c, clientId, at)).availableCenti;
+              return await loyaltyAvailableForBooking(c, clientId, at, bookingId);
             } finally {
               c.release();
             }

@@ -24,8 +24,8 @@ export interface PaymentRoutesDeps {
   bookings: PaymentBookings & UnpaidBookings;
   /** Сертификаты (K16): проверка кода своей транзакцией и pepper для request_hash. Нет – способ certificate недоступен. */
   certificates?: { pepper: string; verify: (input: { number: string; pin: string }, meta: AuditRequestMeta) => Promise<{ certificateId: string }> };
-  /** Доступные баллы клиента (loyalty getBalance().availableCenti) – подсказка экрану; проверяет обработчик points. */
-  pointsAvailable?: (db: Db, clientId: string, at: Date) => Promise<number>;
+  /** Баллы, доступные для оплаты этой брони (её собственный резерв не вычитается, как в обработчике points) – подсказка экрану; проверяет обработчик points. */
+  pointsAvailable?: (db: Db, clientId: string, at: Date, bookingId: string) => Promise<number>;
   clock?: Clock;
 }
 
@@ -120,7 +120,7 @@ export async function paymentRoutes(app: FastifyInstance, deps: PaymentRoutesDep
       const s = await resolveSettings(deps.pool, ['payment.certificate_topup_enabled', 'loyalty.points_resource_types'], { branchId: b.branchId }, now);
       const pointsType = s['loyalty.points_resource_types'].value.includes(b.resourceType);
       const pointsOn = Boolean(paymentMethodHandler('points') && deps.pointsAvailable);
-      const pointsAvailableCenti = pointsOn ? await deps.pointsAvailable!(deps.pool, b.clientId, now) : null;
+      const pointsAvailableCenti = pointsOn ? await deps.pointsAvailable!(deps.pool, b.clientId, now, bookingId) : null;
       const pointsRequiredCenti = pointsOn && pointsType ? b.minutes * 100 : null;
       const due = session && !session.activePaymentId ? b.priceKop : (session?.amountDueKop ?? b.priceKop);
       let allowedMethods: PaymentMethod[] = [];

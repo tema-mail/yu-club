@@ -10,6 +10,7 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { createCertificatePaymentMethod } from '../../apps/api/src/modules/certificates/payment-method.ts';
 import { sellCertificate } from '../../apps/api/src/modules/certificates/sale.ts';
+import { createBatch, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { registerPaymentMethod } from '../../apps/api/src/modules/finance/methods.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
@@ -45,14 +46,14 @@ function req(who: string, method: 'GET' | 'POST', url: string, payload?: object,
 }
 const bodyWithoutRequestId = (b: { error: Record<string, unknown> }) => ({ ...b.error, requestId: undefined });
 
-async function booking(branch: string, status = 'arrived', priceKop = 30_000): Promise<string> {
+async function booking(branch: string, status = 'arrived', priceKop = 30_000, clientId = ids.client): Promise<string> {
   const start = new Date(Date.parse('2026-11-15T01:00:00Z') + slot++ * 3_600_000);
   const end = new Date(start.getTime() + 3_600_000);
   const res = ids[`pc_${branch}`]!;
   const b = await db.client.query<{ id: string }>(
     `INSERT INTO app.bookings (checkout_id, branch_id, client_id, resource_id, period, price_kop, source, created_by_type, status)
      VALUES (gen_random_uuid(), $1, $2, $3, tstzrange($4, $5, '[)'), $6, 'crm', 'staff', $7) RETURNING id`,
-    [branch, ids.client, res, start, end, priceKop, status],
+    [branch, clientId, res, start, end, priceKop, status],
   );
   await db.client.query(
     `INSERT INTO journal.booking_versions (booking_id, version, resource_id, period, branch_timezone, unit_ids, resource_snapshot, price_kop, price_snapshot, created_by_type)
@@ -98,6 +99,28 @@ describe('оплата в CRM', () => {
     await req('admin', 'POST', `/bookings/${b}/payment`, { lines: [{ method: 'cash', amountKop: 30_000 }] });
     const after = (await req('admin', 'GET', `/bookings/${b}/payment`)).json();
     expect(after).toMatchObject({ allowedMethods: [], session: { status: 'paid' }, payment: { status: 'active', lines: [{ method: 'cash' }] } });
+  });
+
+  it('№19: свой резерв баллов под эту бронь не вычитается – points предлагается, оплата баллами проходит', async () => {
+    const clientId = (await db.client.query<{ id: string }>(`INSERT INTO app.clients (phone_e164, first_name, status, created_by_type, registered_at) VALUES ('+79130000004', 'Р', 'active', 'system', now()) RETURNING id`)).rows[0]!.id;
+    const c = await pool.connect();
+    try {
+      await c.query('BEGIN');
+      await openAccount(c, clientId, clock.now());
+      const p = await postPoints(c, clientId, { amount: 6_000, type: 'loyalty.accrual', branchId: null, occurredAt: clock.now() }, randomUUID(), SYSTEM_AUTHOR);
+      await createBatch(c, { clientId, entryId: p.entryId, amount: 6_000, balanceBefore: p.balanceBefore, source: 'visit', branchId: null, expiresAt: null, accruedAt: clock.now() });
+      await c.query('COMMIT');
+    } finally {
+      c.release();
+    }
+    const b = await booking(ids.lenina!, 'arrived', 30_000, clientId);
+    await db.client.query(`INSERT INTO app.loyalty_reserves (client_id, amount_centi, booking_id, status) VALUES ($1, 6000, $2, 'booking')`, [clientId, b]);
+    const v = (await req('admin', 'GET', `/bookings/${b}/payment`)).json();
+    expect(v).toMatchObject({ pointsAvailableCenti: 6_000, pointsRequiredCenti: 6_000 });
+    expect(v.allowedMethods).toContain('points');
+    const paid = await req('admin', 'POST', `/bookings/${b}/payment`, { lines: [{ method: 'points', amountKop: 30_000 }] });
+    expect(paid.statusCode).toBe(201);
+    expect(paid.json().session.status).toBe('paid');
   });
 
   it('№20: Администратор проводит; повтор с ключом – тот же paymentId; новый ключ – ALREADY_PAID; без ключа – 400', async () => {
