@@ -175,6 +175,8 @@ interface CashSummaryDto {
 | 48 | `GET /branches/{branchId}/finance/summary?from=&to=`, `GET /finance/summary?from=&to=` (сеть) | `finance.view` | `200 CashSummaryDto` / `{ branches: CashSummaryDto[], total }` |
 | 49 | `POST /branches/{branchId}/cash-shifts/open`, `POST /cash-shifts/{id}/close` | `finance.shift.operate` | `201 { shiftId }` / `200 { status }` – без `expected` и `diff` для Администратора |
 | 50 | `POST /cash-shifts/{id}/resolve` | `finance.shift.resolve` | `200`; `{ action: 'correct' \| 'accept', reason }` |
+| 55 | `GET /branches/{branchId}/cash-shifts/current` | `finance.shift.operate` | `200 { enabled, openShift \| null }`: `enabled` – `finance.cash_shift_enabled` филиала (видит и Администратор); `openShift` – `{ shiftId, branchId, status, openedAt, openedBy, closedAt, closedBy }`, с `finance.view` – плюс все поля `CashShiftDto` (counted/expected/diff, решение) |
+| 56 | `GET /branches/{branchId}/cash-shifts?status=open\|closed\|needs_resolution\|resolved&cursor=&limit=` | `finance.shift.operate` | `200 { items, nextCursor }`, новые сверху (`opened_at`, `id`); с `finance.view` – все смены филиала с суммами; без него (Администратор) – только свои (открыл или закрыл), без сумм. Чужой филиал – `404`; чтение без аудита |
 
 Все изменяющие – `Idempotency-Key` обязателен (ADR 0004).
 

@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { writeAudit, type AuditRequestMeta, type Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { post, type Tx } from '../../core/ledger.ts';
-import type { AccessContext } from '../../core/permissions.ts';
+import { can, type AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { assertNotNegative, assertPeriodOpen, authorOf, guardFinance, insertOperation, lockPlaces, requireComment, type FinanceOperationDto } from './cashbox.ts';
@@ -235,4 +235,64 @@ export async function resolveShift(
     clock,
   );
   return { shift: dto, operation };
+}
+
+// ---- чтение (K17 №55–56): без аудита; суммы – только с finance.view на филиал (06 §14)
+
+/** Смена без сумм – Администратору: кто и когда открыл и закрыл, статус. */
+export type CashShiftBriefDto = Pick<CashShiftDto, 'branchId' | 'status' | 'openedAt' | 'openedBy' | 'closedAt' | 'closedBy'> & { shiftId: string };
+export type CashShiftReadDto = (CashShiftDto & { shiftId: string }) | CashShiftBriefDto;
+
+function readShape(full: boolean, s: CashShiftDto): CashShiftReadDto {
+  if (full) return { shiftId: s.id, ...s };
+  return { shiftId: s.id, branchId: s.branchId, status: s.status, openedAt: s.openedAt, openedBy: s.openedBy, closedAt: s.closedAt, closedBy: s.closedBy };
+}
+
+/** Филиал в зоне и finance.shift.operate (чужой и несуществующий – 404, без права – 403); full – есть finance.view. */
+async function guardRead(db: Db, ctx: AccessContext, branchId: string) {
+  const branch = await guardFinance(db, ctx, branchId, 'finance.shift.operate', { action: 'cash_shift.opened' });
+  return { branch, full: can(ctx, 'finance.view', { branchId: branch.id }) };
+}
+
+/** K17 №55: флаг смены филиала и открытая смена (или null). */
+export async function currentShift(db: Db, ctx: AccessContext, branchId: string, clock: Clock = systemClock): Promise<{ enabled: boolean; openShift: CashShiftReadDto | null }> {
+  const { branch, full } = await guardRead(db, ctx, branchId);
+  const enabled = (await resolveSetting(db, 'finance.cash_shift_enabled', { branchId: branch.id }, clock.now())).value;
+  const r = await db.query<ShiftRow>(`SELECT * FROM app.cash_shifts WHERE branch_id = $1 AND status = 'open'`, [branch.id]);
+  return { enabled, openShift: r.rows[0] ? readShape(full, toDto(r.rows[0])) : null };
+}
+
+const listShiftsSchema = z.object({
+  status: z.enum(['open', 'closed', 'needs_resolution', 'resolved']).optional(),
+  cursor: z.string().regex(/^\d{1,16}:[0-9a-f-]{36}$/i).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+/** K17 №56: смены филиала, новые сверху (opened_at, id). Без finance.view – только свои (открыл или закрыл), без сумм. */
+export async function listShifts(db: Db, ctx: AccessContext, branchId: string, raw: unknown): Promise<{ items: CashShiftReadDto[]; nextCursor: string | null }> {
+  const { branch, full } = await guardRead(db, ctx, branchId);
+  const q = parse(listShiftsSchema, raw);
+  const params: unknown[] = [branch.id];
+  let where = 'branch_id = $1';
+  if (q.status) {
+    params.push(q.status);
+    where += ` AND status = $${params.length}`;
+  }
+  if (!full) {
+    params.push(ctx.actor.staffId);
+    where += ` AND (opened_by = $${params.length} OR closed_by = $${params.length})`;
+  }
+  if (q.cursor) {
+    const [ms, id] = q.cursor.split(':');
+    params.push(new Date(Number(ms)), id);
+    where += ` AND (opened_at, id) < ($${params.length - 1}, $${params.length}::uuid)`;
+  }
+  params.push(q.limit + 1);
+  const r = await db.query<ShiftRow>(`SELECT * FROM app.cash_shifts WHERE ${where} ORDER BY opened_at DESC, id DESC LIMIT $${params.length}`, params);
+  const rows = r.rows.slice(0, q.limit);
+  const last = rows.at(-1);
+  return {
+    items: rows.map((row) => readShape(full, toDto(row))),
+    nextCursor: r.rows.length > q.limit && last ? `${last.opened_at.getTime()}:${last.id}` : null,
+  };
 }
