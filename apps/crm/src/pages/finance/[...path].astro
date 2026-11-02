@@ -5,9 +5,10 @@
 // Администратор видит сутки своего филиала без остатков. Чужой филиал – 404 (K1). Решает всё равно сервер.
 import Crm from '../../layouts/Crm.astro';
 import CashJournal, { type FinBranch } from '../../islands/CashJournal.tsx';
+import OperationForm, { type CategoryOption } from '../../islands/OperationForm.tsx';
 import { ApiError, serverCall, type Branch } from '../../lib/api.ts';
 
-interface CategoryNode { id: string; name: string; children: Array<{ id: string; name: string }> }
+interface CategoryNode { id: string; kind: 'income' | 'expense'; name: string; status: 'active' | 'archived'; children: Array<{ id: string; name: string; status: 'active' | 'archived' }> }
 
 const { me, cookie, ctx, branches } = Astro.locals;
 const can = (a: string) => me.actions.includes(a);
@@ -40,6 +41,7 @@ const toFin = (b: Branch): FinBranch => ({ id: b.id, name: b.name, cityName: b.c
 // Имена авторов (staff.view – Владелец, Директор) и категорий (с архивом – у старых операций) для журнала.
 const staffNames: Record<string, string> = {};
 const categoryNames: Record<string, string> = {};
+const expenseCategories: CategoryOption[] = [];
 if (branch) {
   if (can('staff.view')) {
     let cursor: string | null = null;
@@ -56,6 +58,9 @@ if (branch) {
     for (const c of tree.items) {
       categoryNames[c.id] = c.name;
       for (const sub of c.children) categoryNames[sub.id] = sub.name;
+      if (c.kind === 'expense' && c.status === 'active') {
+        expenseCategories.push({ id: c.id, name: c.name, children: c.children.filter((x) => x.status === 'active').map((x) => ({ id: x.id, name: x.name })) });
+      }
     }
   } catch (e) {
     if (!(e instanceof ApiError) || e.status !== 403) throw e;
@@ -83,6 +88,16 @@ const title = !allowed ? 'Нет доступа' : notFound ? 'Не найден
         <h1>{branch ? `Финансы – ${branch.name}` : 'Финансы'}</h1>
         <p data-testid="fin-scope">{branch ? `${branch.cityName} · касса филиала: наличные и безнал` : scopeTitle}</p>
       </div>
+      {branch && (
+        <OperationForm
+          client:load
+          branch={{ id: branch.id, name: branch.name, timezone: branch.timezone }}
+          canIncome={can('finance.income.create')}
+          canExpense={can('finance.expense.create')}
+          full={full}
+          categories={expenseCategories}
+        />
+      )}
       <CashJournal
         client:load
         mode={branch ? 'branch' : 'network'}
@@ -113,6 +128,8 @@ const title = !allowed ? 'Нет доступа' : notFound ? 'Не найден
   .yc-fin__at{ width:7rem; }
   .yc-fin__err{ color:var(--yc-danger); }
   .yc-fin__total > *{ font-weight:650; background:var(--yc-surface-2); }
+  .yc-fin__actions{ display:grid; gap:var(--yc-sp-xs); }
+  .yc-fin__actions > *{ min-width:0; }
   .yc-fin__period,.yc-fin__filters{ display:grid; gap:var(--yc-sp-xs); align-items:end; }
   .yc-fin__period > *,.yc-fin__filters > *{ min-width:0; }
   .yc-fin__cards{ display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:var(--yc-sp-xs); margin:0; }
