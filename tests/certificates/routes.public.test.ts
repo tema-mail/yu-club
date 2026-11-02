@@ -14,6 +14,7 @@ import { sellCertificate, type CertificateDto } from '../../apps/api/src/modules
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestPayment } from '../helpers/payment.ts';
 
 const BASE = '/api/public/v1';
 const PEPPER = 'cert-pepper-'.padEnd(40, 'p');
@@ -84,12 +85,13 @@ beforeAll(async () => {
     [branchId, me, resource],
   )).rows[0].id as string;
   const handler = createCertificatePaymentMethod({ pepper: PEPPER });
+  const paymentId = await createTestPayment(db.client, booking);
   const author = { type: 'staff' as const, id: ownerId };
   const charged = await tx((t) =>
     handler.charge(t, {
       session: { id: booking, bookingId: booking, branchId, clientId: me, amountDueKop: 30_000, bookingVersion: 1, status: 'unpaid', activePaymentId: null, rowVersion: 1 },
       lineNo: 1, amountKop: 30_000, minutes: 60, resourceType: 'pc', certificate: { number: r.certificate.number, pin: r.pin },
-      idempotencyKey: `payment:${booking}:1:1`, author, occurredAt: T0, mode: 'exact', paymentId: randomUUID(),
+      idempotencyKey: `payment:${booking}:1:1`, author, occurredAt: T0, mode: 'exact', paymentId,
     }),
   );
   await tx((t) =>

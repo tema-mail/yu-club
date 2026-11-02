@@ -15,6 +15,7 @@ import { getCertificate, sellCertificate, type CertificateDto } from '../../apps
 import type { ChargeResult } from '../../apps/api/src/modules/finance/methods.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestPayment } from '../helpers/payment.ts';
 
 const PEPPER = 'cert-pepper-'.padEnd(40, 'z');
 const T0 = new Date('2026-11-14T05:00:00Z');
@@ -82,6 +83,7 @@ async function redeem(cert: { certificate: CertificateDto; pin: string }, amount
     [otherBranch, clientId, resourceId],
   );
   const id = b.rows[0]!.id;
+  const paymentId = await createTestPayment(pool, id);
   const session = { id, bookingId: id, branchId: otherBranch, clientId, amountDueKop: amountKop, bookingVersion: 1, status: 'unpaid' as const, activePaymentId: null, rowVersion: 1 };
   return tx((t) =>
     handler.charge(t, {
@@ -95,7 +97,7 @@ async function redeem(cert: { certificate: CertificateDto; pin: string }, amount
       author: { type: 'staff', id: ownerId },
       occurredAt: at,
       mode: 'exact',
-      paymentId: randomUUID(),
+      paymentId,
     }),
   );
 }

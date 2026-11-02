@@ -17,6 +17,7 @@ import type { PaymentMethod } from '../../apps/api/src/modules/finance/methods.t
 import { debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { ACCRUAL_HANDLERS, registerAccrualHandlers, type PaymentLookup } from '../../apps/api/src/modules/loyalty/accrual.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestPayment } from '../helpers/payment.ts';
 
 const SYS = '00000000-0000-0000-0000-000000000001';
 let now = new Date('2026-11-15T07:00:00Z');
@@ -69,7 +70,7 @@ async function book(clientId: string, minutes: number): Promise<string> {
 const arrive = async (id: string) => runOccupancyCommand(pool, async (c) => markArrived(c, id, { ctx: owner, rowVersion: await rowVersion(id) }, meta(), clock));
 const revert = async (id: string) => runOccupancyCommand(pool, async (c) => revertVisit(c, id, { ctx: owner, rowVersion: await rowVersion(id), reason: 'ошибка' }, meta(), clock));
 async function pay(bookingId: string, clientId: string, methods: PaymentMethod[]): Promise<string> {
-  const paymentId = randomUUID();
+  const paymentId = await createTestPayment(db.client, bookingId);
   payments.set(paymentId, { paymentId, bookingId, methods, status: 'active' });
   await inTx((tx) =>
     publish(tx, {
