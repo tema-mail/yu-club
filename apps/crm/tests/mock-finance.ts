@@ -116,6 +116,25 @@ export function recordMoney(v: {
   return { id: op.id };
 }
 
+/** Для мока смены (shift.ts): остаток места «наличные» – expected при открытии и закрытии. */
+export const cashBalance = (branchId: string) => bal(branchId, 'cash');
+
+/** resolveShift correct: операция correction на diff в этой смене (закрытый месяц и минус кассы – те же отказы).
+ *  Без finance.view остаток после операции срезается вызывающим (как shape журнала). */
+export function recordShiftCorrection(v: { branchId: string; timezone: string; diffKop: number; comment: string; authorId: string; shiftId: string }): Op {
+  const month = monthOf(Date.now(), v.timezone);
+  if (periods.has(`${v.branchId}:${month}`)) throw new Fail(409, 'PERIOD_CLOSED', 'Месяц закрыт: исправление – операцией текущей датой', { month });
+  if (bal(v.branchId, 'cash') + v.diffKop < 0) {
+    throw new Fail(409, 'CASH_INSUFFICIENT', 'Недостаточно денег в кассе: внесите поступление или проверьте начальный остаток', { place: 'cash', currentKop: bal(v.branchId, 'cash'), afterKop: bal(v.branchId, 'cash') + v.diffKop });
+  }
+  const op = insert({
+    branchId: v.branchId, kind: 'correction', place: 'cash', method: 'cash', direction: v.diffKop > 0 ? 'in' : 'out', amountKop: Math.abs(v.diffKop), source: null,
+    categoryId: null, subcategoryId: null, comment: v.comment, ref: { type: 'shift', id: v.shiftId }, receiptIssued: null, occurredAt: new Date().toISOString(), authorId: v.authorId, reversalOf: null,
+  });
+  op.shiftId = v.shiftId;
+  return op;
+}
+
 export function resetFinance(branches: BranchLite[]): void {
   ops = [];
   balances = new Map();

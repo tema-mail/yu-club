@@ -6,7 +6,7 @@
 // S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts). S1-24: ресурсы, график, блокировки, тарифы – mock-ops.ts.
 // S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts). S2-60/61: касса – mock-finance.ts (по finance/routes.crm.ts).
 // S2-67/68: сертификаты – mock-certificates.ts (по certificates/routes.crm.ts). S2-65/66: баллы – mock-loyalty.ts (по loyalty/routes.crm.ts).
-// S2-63/64: оплата сеанса – mock-payments.ts (по finance/routes.payments.ts).
+// S2-63/64: оплата сеанса – mock-payments.ts (по finance/routes.payments.ts). S2-62: смена – mock-shifts.ts (по finance/shift.ts).
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
@@ -17,6 +17,7 @@ import { registerFinance, resetFinance } from './mock-finance.ts';
 import { registerLoyalty, resetLoyalty } from './mock-loyalty.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
 import { registerPayments, resetPayments } from './mock-payments.ts';
+import { registerShifts, resetShifts } from './mock-shifts.ts';
 import { registerSettings, resetSettings } from './mock-settings.ts';
 import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
 
@@ -701,6 +702,7 @@ export function buildMock() {
     resetCertificates(branches);
     resetLoyalty();
     resetPayments();
+    resetShifts();
     return { ok: true };
   });
 
@@ -739,6 +741,11 @@ export function buildMock() {
   sessions.set(serviceToken, 's-owner');
   resetPayments();
   registerPayments(app, P, {
+    current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
+    ownerCookie: () => `yu_staff=${serviceToken}`,
+  });
+  resetShifts();
+  registerShifts(app, P, {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
     ownerCookie: () => `yu_staff=${serviceToken}`,
   });
