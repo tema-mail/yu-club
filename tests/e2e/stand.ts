@@ -19,6 +19,8 @@ const PG_CT = process.env.YU_PG_CT ?? 'yu-club-postgres';
 const secret = (name: string) => readFileSync(join(CFG, name), 'utf8').trim();
 /** Демо-Администратор филиала Арбат (db/seed/dev.ts), пароль – ~/.config/yu-club/demo-pass. */
 export const DEMO_ADMIN = { email: 'admin@demo.yu-club.test', password: () => secret('demo-pass') };
+/** Демо-Директор города Новосибирск (филиал «на Красном»), пароль тот же. */
+export const DEMO_DIRECTOR = { email: 'director@demo.yu-club.test', password: () => secret('demo-pass') };
 export const OWNER = { email: () => secret('admin-login'), password: () => secret('admin-pass') };
 
 // ── ssh ─────────────────────────────────────────────────────
@@ -37,12 +39,21 @@ export function sql(query: string): string[] {
 /** Настройка K7 уровня филиала на стенде – через HTTP API настроек CRM (K7 «HTTP CRM») от имени Владельца:
  *  вход, текущий rowVersion из GET /settings, PUT с датой «сегодня по зоне филиала» (действует с этой минуты)
  *  или POST …/reset (value = null – вернуть к наследованию). Аудит пишет сам API (source crm). */
-export async function branchSetting(key: string, branchId: string, value: unknown): Promise<void> {
+export const branchSetting = (key: string, branchId: string, value: unknown) => setting(key, `scope=branch&id=${encodeURIComponent(branchId)}`, value);
+/** То же на уровне сети (ключи только уровня сети, например loyalty.penalties_from). */
+export const networkSetting = (key: string, value: unknown) => setting(key, 'scope=network', value);
+
+/** Вход в CRM API (кука сотрудника в своём контексте запросов). */
+export async function crmApi(email: string, password: string): Promise<APIRequestContext> {
   const api = await pwRequest.newContext({ baseURL: CRM_URL, ignoreHTTPSErrors: true, extraHTTPHeaders: { origin: CRM_URL } });
+  const login = await api.post('/api/crm/v1/auth/login', { data: { email, password } });
+  if (!login.ok()) throw await apiError(login);
+  return api;
+}
+
+async function setting(key: string, q: string, value: unknown): Promise<void> {
+  const api = await crmApi(OWNER.email(), OWNER.password());
   try {
-    const login = await api.post('/api/crm/v1/auth/login', { data: { email: OWNER.email(), password: OWNER.password() } });
-    if (!login.ok()) throw await apiError(login);
-    const q = `scope=branch&id=${encodeURIComponent(branchId)}`;
     const list = await api.get(`/api/crm/v1/settings?${q}`);
     if (!list.ok()) throw await apiError(list);
     const page = (await list.json()) as { scope: { today: string }; items: Array<{ key: string; rowVersion: string; source: { own: boolean } }> };
@@ -51,8 +62,8 @@ export async function branchSetting(key: string, branchId: string, value: unknow
     const headers = { 'idempotency-key': randomUUID() };
     const res =
       value === null
-        ? await api.post(`/api/crm/v1/settings/${key}/reset?${q}`, { headers, data: { rowVersion: item!.rowVersion, reason: 'e2e S1-27: возврат к наследованию' } })
-        : await api.put(`/api/crm/v1/settings/${key}?${q}`, { headers, data: { value, validFrom: page.scope.today, rowVersion: item!.rowVersion, reason: 'e2e S1-27' } });
+        ? await api.post(`/api/crm/v1/settings/${key}/reset?${q}`, { headers, data: { rowVersion: item!.rowVersion, reason: 'e2e: возврат к наследованию' } })
+        : await api.put(`/api/crm/v1/settings/${key}?${q}`, { headers, data: { value, validFrom: page.scope.today, rowVersion: item!.rowVersion, reason: 'e2e' } });
     if (!res.ok()) throw await apiError(res);
   } finally {
     await api.dispose();
