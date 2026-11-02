@@ -1,6 +1,7 @@
 // «К оплате» на рабочем столе (S2-64) на моке mock-payments.ts: до прихода записи в списке нет, пришедший без оплаты –
 // есть (время по зоне филиала, браузер – в Москве), после оплаты в карточке и возврата «Назад» – исчезает, после полного
-// возврата – снова в списке с пометкой; 390 px без горизонтальной прокрутки.
+// возврата – снова в списке с пометкой; в ленте календаря у пришедшего – «к оплате», после оплаты – «оплачено»;
+// 390 px без горизонтальной прокрутки.
 import { expect, test, type Page } from '@playwright/test';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
@@ -48,6 +49,10 @@ test('пришедший без оплаты – в списке; после о�
   // время по зоне филиала (Новосибирск), хотя браузер в Москве
   await expect(row).toContainText(`№${card.number} · ${hm(card.start)}–${hm(card.end)} · ПК 2`);
   await expect(row).toContainText('к оплате 300,00 ₽');
+  const calItem = page.getByTestId('cal-lane-res-pc2').getByTestId('cal-item');
+  await expect(calItem.getByTestId('cal-pay')).toHaveText('к оплате');
+  await expect(calItem).toHaveAttribute('aria-label', /Пришёл, к оплате$/);
+  await expect(page.getByTestId('cal-lane-res-pc1').getByTestId('cal-pay')).toHaveCount(0); // не пришедшие – без отметки
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await list.screenshot({ path: `${SHOTS}/unpaid-desk-390.png` });
@@ -61,6 +66,9 @@ test('пришедший без оплаты – в списке; после о�
   await page.goBack();
   await expect(list.getByTestId('unpaid-row')).toHaveCount(0);
   await expect(list).toContainText('Все пришедшие сегодня оплатили.');
+  await expect(calItem.getByTestId('cal-pay')).toHaveText('оплачено');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByTestId('calendar').screenshot({ path: `${SHOTS}/calendar-paid-1440.png` });
 });
 
 test('после полного возврата запись снова к оплате, с пометкой', async ({ page }) => {

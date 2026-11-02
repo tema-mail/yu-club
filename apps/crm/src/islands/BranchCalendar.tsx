@@ -3,7 +3,10 @@
 // что видит запись на сайте (availability), поэтому занятость в CRM и на сайте одна. Время – в зоне филиала.
 // Широкая лента прокручивается внутри блока, страница на 390 px не едет. Режим pick – выбор слота для переноса.
 // В режиме browse смена даты и вида – переход по адресу (?date=&view=): рабочий стол страницы считается на ту же дату.
+// S2-64: у пришедших и завершённых – отметка оплаты (K10 №23 POST /bookings/payment-status): «к оплате» или «оплачено».
+// Нет права на статусы оплаты или ошибка – календарь работает без отметки.
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { browserCall } from '../lib/api.ts';
 import {
   MAX_DAYS, STATUS_LABEL, addDays, bookingApi, bookingError, fmtDay, fmtRange, hmOf, inZone, isLocalDate, today as todayIn, zonedMs,
   type CalendarDto, type CalendarItem,
@@ -28,6 +31,27 @@ export interface BranchCalendarProps {
   reloadKey?: number;
 }
 
+type PayStatus = 'unpaid' | 'paid' | 'partially_refunded' | 'refunded';
+type PayMap = ReadonlyMap<string, PayStatus>;
+const PAY_IDS_MAX = 200; // K10 №23: bookingIds ≤ 200 за запрос
+const ID_RE = /^[0-9a-f-]{36}$/i;
+const visited = (i: CalendarItem) => i.kind === 'booking' && (i.booking!.status === 'arrived' || i.booking!.status === 'completed');
+/** Отметка оплаты: только у пришедших и завершённых и только если статус известен. */
+const payMark = (i: CalendarItem, pay: PayMap): string | null => {
+  const st = visited(i) ? pay.get(i.id) : undefined;
+  return st === undefined ? null : st === 'paid' || st === 'partially_refunded' ? 'оплачено' : 'к оплате';
+};
+
+async function loadPay(items: CalendarItem[]): Promise<Map<string, PayStatus>> {
+  const ids = [...new Set(items.filter((i) => visited(i) && ID_RE.test(i.id)).map((i) => i.id))];
+  const out = new Map<string, PayStatus>();
+  for (let k = 0; k < ids.length; k += PAY_IDS_MAX) {
+    const r = await browserCall<{ items: Array<{ bookingId: string; status: PayStatus }> }>('/bookings/payment-status', { method: 'POST', body: { bookingIds: ids.slice(k, k + PAY_IDS_MAX) } });
+    for (const x of r.items) out.set(x.bookingId, x.status);
+  }
+  return out;
+}
+
 const PX_PER_MIN = 1.1; // час ≈ 66 px: плотно, но подпись брони читается
 const SLOT_MIN = 30;
 const DAY_MIN = 24 * 60;
@@ -39,11 +63,12 @@ const itemClass = (i: CalendarItem, highlight?: string) => {
   const b = i.booking!;
   return `yc-cal__item yc-cal__item--${b.status}${b.needsDecision ? ' yc-cal__item--decide' : ''}${i.id === highlight ? ' yc-cal__item--current' : ''}`;
 };
-const itemLabel = (i: CalendarItem, tz: string) => {
+const itemLabel = (i: CalendarItem, tz: string, pay: PayMap) => {
   const time = fmtRange(i.start, i.end, tz);
   if (i.kind === 'booking') {
     const b = i.booking!;
-    return `Бронь №${b.number}, ${time}, ${b.clientName ?? 'без имени'} ${b.phoneMasked}, ${STATUS_LABEL[b.status]}${b.needsDecision ? ', требует решения' : ''}`;
+    const mark = payMark(i, pay);
+    return `Бронь №${b.number}, ${time}, ${b.clientName ?? 'без имени'} ${b.phoneMasked}, ${STATUS_LABEL[b.status]}${b.needsDecision ? ', требует решения' : ''}${mark ? `, ${mark}` : ''}`;
   }
   return `${itemText(i)}, ${time}`;
 };
@@ -73,6 +98,7 @@ export default function BranchCalendar(props: BranchCalendarProps) {
   const [loading, setLoading] = useState(!props.initial);
   const [skipFirst, setSkipFirst] = useState(!!props.initial);
   const [retry, setRetry] = useState(0);
+  const [pay, setPay] = useState<PayMap>(new Map());
 
   const from = date;
   const to = view === 'week' ? addDays(date, MAX_DAYS - 1) : date;
@@ -93,6 +119,15 @@ export default function BranchCalendar(props: BranchCalendarProps) {
       alive = false;
     };
   }, [branchId, from, to, retry, props.reloadKey]);
+
+  useEffect(() => {
+    if (!data || !data.items.some(visited)) return setPay(new Map());
+    let alive = true;
+    loadPay(data.items).then((m) => alive && setPay(m), () => alive && setPay(new Map()));
+    return () => {
+      alive = false;
+    };
+  }, [data]);
 
   /** browse – полный переход (рабочий стол на странице считается на ту же дату), pick – только календарь. */
   const show = (d: string, v: CalendarView) => {
@@ -136,12 +171,13 @@ export default function BranchCalendar(props: BranchCalendarProps) {
       )}
       {data && data.resources.length === 0 && <p class="yc-empty">В филиале нет ресурсов для записи. Добавьте их в разделе «Ресурсы».</p>}
       {data && data.resources.length > 0 && (view === 'day'
-        ? <DayGrid data={data} date={date} tz={tz} nowLocal={nowLocal} mode={mode} onSlot={props.onSlot} highlight={props.highlightId} />
-        : <WeekGrid data={data} from={from} to={to} tz={tz} onDay={(d) => show(d, 'day')} highlight={props.highlightId} />)}
+        ? <DayGrid data={data} date={date} tz={tz} nowLocal={nowLocal} mode={mode} onSlot={props.onSlot} highlight={props.highlightId} pay={pay} />
+        : <WeekGrid data={data} from={from} to={to} tz={tz} onDay={(d) => show(d, 'day')} highlight={props.highlightId} pay={pay} />)}
       <ul class="yc-cal__legend" aria-label="Обозначения">
         <li><i class="yc-cal__key yc-cal__item--confirmed" />подтверждена</li>
         <li><i class="yc-cal__key yc-cal__item--arrived" />пришёл</li>
         <li><i class="yc-cal__key yc-cal__item--decide" />требует решения</li>
+        <li><strong>к оплате</strong>&nbsp;– пришёл, оплата не проведена</li>
         <li><i class="yc-cal__key yc-cal__item--hold" />оформляется на сайте</li>
         <li><i class="yc-cal__key yc-cal__item--block" />блокировка</li>
       </ul>
@@ -151,10 +187,10 @@ export default function BranchCalendar(props: BranchCalendarProps) {
 
 interface DayProps {
   data: CalendarDto; date: string; tz: string; nowLocal: { date: string; minutes: number };
-  mode: 'browse' | 'pick'; onSlot: BranchCalendarProps['onSlot']; highlight?: string;
+  mode: 'browse' | 'pick'; onSlot: BranchCalendarProps['onSlot']; highlight?: string; pay: PayMap;
 }
 
-function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight }: DayProps) {
+function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight, pay }: DayProps) {
   // Видимый отрезок: часы работы дня, расширенные до броней вне часов; по умолчанию 10–22.
   const range = useMemo(() => {
     const spans = [...data.openIntervals, ...data.items].map((x) => [minutesIn(x.start, date, tz), minutesIn(x.end, date, tz)] as const).filter(([s, e]) => e > s);
@@ -225,15 +261,16 @@ function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight }: DayProps
                   const s = minutesIn(i.start, date, tz);
                   const e = minutesIn(i.end, date, tz);
                   const style = { left: `${x(s)}px`, width: `${Math.max(x(e) - x(s), 6)}px` };
+                  const mark = payMark(i, pay);
                   const body = (
                     <>
-                      <span class="yc-cal__item-time">{fmtRange(i.start, i.end, tz, false)}</span>
+                      <span class="yc-cal__item-time">{fmtRange(i.start, i.end, tz, false)}{mark && <> · <strong data-testid="cal-pay">{mark}</strong></>}</span>
                       <span class="yc-cal__item-text">{itemText(i)}</span>
                     </>
                   );
                   return i.kind === 'booking' && mode === 'browse'
-                    ? <a class={itemClass(i, highlight)} style={style} href={`/bookings/${encodeURIComponent(i.id)}`} aria-label={itemLabel(i, tz)} data-testid="cal-item">{body}</a>
-                    : <span class={itemClass(i, highlight)} style={style} role="img" aria-label={itemLabel(i, tz)} data-testid="cal-item">{body}</span>;
+                    ? <a class={itemClass(i, highlight)} style={style} href={`/bookings/${encodeURIComponent(i.id)}`} aria-label={itemLabel(i, tz, pay)} data-testid="cal-item">{body}</a>
+                    : <span class={itemClass(i, highlight)} style={style} role="img" aria-label={itemLabel(i, tz, pay)} data-testid="cal-item">{body}</span>;
                 })}
                 {isToday && nowLocal.minutes >= range.start && nowLocal.minutes <= range.end && (
                   <span class="yc-cal__now" style={{ left: `${x(nowLocal.minutes)}px` }} aria-hidden="true" />
@@ -247,7 +284,7 @@ function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight }: DayProps
   );
 }
 
-function WeekGrid({ data, from, to, tz, onDay, highlight }: { data: CalendarDto; from: string; to: string; tz: string; onDay: (d: string) => void; highlight?: string }) {
+function WeekGrid({ data, from, to, tz, onDay, highlight, pay }: { data: CalendarDto; from: string; to: string; tz: string; onDay: (d: string) => void; highlight?: string; pay: PayMap }) {
   const days: string[] = [];
   for (let d = from; d <= to; d = addDays(d, 1)) days.push(d);
   const hoursOf = (d: string) => {
@@ -284,10 +321,10 @@ function WeekGrid({ data, from, to, tz, onDay, highlight }: { data: CalendarDto;
                         {items.map((i) => (
                           <li>
                             {i.kind === 'booking'
-                              ? <a class={itemClass(i, highlight)} href={`/bookings/${encodeURIComponent(i.id)}`} aria-label={itemLabel(i, tz)} data-testid="cal-item">
-                                  <span class="yc-cal__item-time">{fmtRange(i.start, i.end, tz, false)}</span> <span class="yc-cal__item-text">{itemText(i)}</span>
+                              ? <a class={itemClass(i, highlight)} href={`/bookings/${encodeURIComponent(i.id)}`} aria-label={itemLabel(i, tz, pay)} data-testid="cal-item">
+                                  <span class="yc-cal__item-time">{fmtRange(i.start, i.end, tz, false)}{payMark(i, pay) && <> · <strong data-testid="cal-pay">{payMark(i, pay)}</strong></>}</span> <span class="yc-cal__item-text">{itemText(i)}</span>
                                 </a>
-                              : <span class={itemClass(i, highlight)} role="img" aria-label={itemLabel(i, tz)} data-testid="cal-item">
+                              : <span class={itemClass(i, highlight)} role="img" aria-label={itemLabel(i, tz, pay)} data-testid="cal-item">
                                   <span class="yc-cal__item-time">{fmtRange(i.start, i.end, tz, false)}</span> <span class="yc-cal__item-text">{itemText(i)}</span>
                                 </span>}
                           </li>
