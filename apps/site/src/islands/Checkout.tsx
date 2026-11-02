@@ -56,7 +56,7 @@ export default function Checkout({ hold, timezone, onHold, onNotice, onBack, res
   const confirmKey = useRef(crypto.randomUUID());
   const inFlight = useRef(false);
   const [loyalty, setLoyalty] = useState<LoyaltyBalanceDto | null>(null);
-  const [paying, setPaying] = useState(false);
+  const [paying, setPaying] = useState<null | boolean>(null); // выбор, ждущий ответа сервера (true – баллами)
   const requiredCenti = hold.items.reduce((s, i) => s + (Date.parse(i.end) - Date.parse(i.start)) / 60_000, 0) * 100;
 
   // Баланс – когда удержание уже клиента (сводка). Без входа баллов нет – блок не показываем.
@@ -66,8 +66,8 @@ export default function Checkout({ hold, timezone, onHold, onNotice, onBack, res
   }, [mode, hold.owner, reserve]);
 
   async function choosePoints(usePoints: boolean) {
-    if (paying || usePoints === (reserve !== null)) return;
-    setPaying(true);
+    if (paying !== null || usePoints === (reserve !== null)) return;
+    setPaying(usePoints);
     onNotice(null);
     try {
       if (usePoints) {
@@ -81,9 +81,10 @@ export default function Checkout({ hold, timezone, onHold, onNotice, onBack, res
       onNotice(describeError(e));
       if (usePoints) onReserve(null);
     } finally {
-      setPaying(false);
+      setPaying(null);
     }
   }
+  const usingPoints = paying ?? reserve !== null;
 
   async function attach(): Promise<void> {
     try {
@@ -223,11 +224,11 @@ export default function Checkout({ hold, timezone, onHold, onNotice, onBack, res
               <fieldset class="yu-pay" data-testid="payment">
                 <legend class="yu-field__label">Оплата</legend>
                 <label class="yu-check">
-                  <input type="radio" name="pay" checked={reserve === null} disabled={paying} onChange={() => choosePoints(false)} />
+                  <input type="radio" name="pay" checked={!usingPoints} disabled={paying !== null} onChange={() => choosePoints(false)} />
                   <span>В клубе, при визите – {rub(hold.totalKop)}</span>
                 </label>
                 <label class="yu-check">
-                  <input type="radio" name="pay" checked={reserve !== null} disabled={paying || !canPoints} onChange={() => choosePoints(true)} data-testid="pay-points" />
+                  <input type="radio" name="pay" checked={usingPoints} disabled={paying !== null || !canPoints} onChange={() => choosePoints(true)} data-testid="pay-points" />
                   <span>Баллами – {points(requiredCenti)} {pointsWord(requiredCenti)} (доступно {points(loyalty.availableCenti + (reserve?.amountCenti ?? 0))})</span>
                 </label>
                 {!enough && reserve === null && (
