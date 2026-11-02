@@ -449,6 +449,10 @@ a.yu-zone__room-name:hover { color: var(--yu-accent); }
 .yu-hold__actions { display: flex; flex-wrap: wrap; gap: var(--yu-sp-2xs); }
 .yu-checkout__body { display: grid; gap: var(--yu-sp-s); max-width: 640px; }
 .yu-checkout__body > * { min-width: 0; margin: 0; }
+.yu-pay { display: grid; gap: var(--yu-sp-2xs); margin: 0; padding: var(--yu-sp-s); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); }
+.yu-pay > * { margin: 0; min-width: 0; }
+.yu-pay .yu-check { min-height: var(--yu-tap); align-items: center; }
+.yu-pay input:disabled + span { color: var(--yu-dim); }
 .yu-sched__status[hidden], .yu-hold__items[hidden] { display: none; }
 
 /* ── Мои записи в ЛК (S1-17) ─────────────────────────────── */

@@ -4,14 +4,16 @@
 // снять позицию. Таймер – HoldTimer от серверного expiresAt. Истёк – фраза и сброс выбора; ошибка выбор не сбрасывает.
 // Состояние слота видно не только цветом: знак в ячейке, подпись в легенде и aria-label у кнопки.
 // «Оформить запись» – шаг Checkout (S1-20) на месте сетки; таймер идёт и там, истечение возвращает к выбору.
+// Э2 (S2-72): вошедший клиент с балансом −50 видит текст 07 §9.2 до выбора слота, слоты недоступны. Резерв баллов
+// (выбор в Checkout) живёт здесь: сменился состав удержания – резерв снят сервером (K15 §3), говорим об этом фразой.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ZONE_LABEL, ZONE_ORDER, type ZoneCode } from '../lib/api.ts';
 import {
-  UI_STATES, addDays, bookingApi, dayLabel, describeError, holdDeadline, holdStoreKey, rub, timeIn,
+  LIMIT_TEXT, UI_STATES, addDays, bookingApi, loyaltyApi, dayLabel, describeError, holdDeadline, holdStoreKey, rub, timeIn,
   type AvailabilityDto, type HoldDto, type SlotDto, type SlotState, type UiState,
 } from '../lib/booking.ts';
 import { ClientApiError } from '../lib/client.ts';
-import Checkout from './Checkout.tsx';
+import Checkout, { RESERVE_DROPPED, holdSignature, type PointsReserve } from './Checkout.tsx';
 import HoldTimer from './HoldTimer.tsx';
 
 export interface ScheduleBranch {
@@ -54,12 +56,25 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<'pick' | 'checkout'>('pick');
   const holdRef = useRef<HoldDto | null>(null);
+  const [limited, setLimited] = useState(false);
+  const [reserve, setReserve] = useState<PointsReserve | null>(null);
+  const reserveRef = useRef<PointsReserve | null>(null);
   const checkoutTitle = useRef<HTMLHeadingElement>(null);
   const firstStep = useRef(true);
   const reqNo = useRef(0);
 
+  function keepReserve(r: PointsReserve | null) {
+    reserveRef.current = r;
+    setReserve(r);
+  }
+
   function adopt(h: HoldDto | null) {
     const live = h && h.status === 'active' && h.items.length > 0 ? h : null;
+    const r = reserveRef.current;
+    if (r && (!live || holdSignature(live) !== r.signature)) {
+      keepReserve(null);
+      if (live) setNotice({ state: 'held', text: RESERVE_DROPPED });
+    }
     holdRef.current = live;
     setHold(live);
     setDeadline(live ? holdDeadline(live) : null);
@@ -68,6 +83,11 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
     if (live) sessionStorage.setItem(holdStoreKey(branch.id), live.id);
     else sessionStorage.removeItem(holdStoreKey(branch.id));
   }
+
+  // −50 (07 §9.2): проверка при открытии – чтобы объяснить до выбора слота; без входа (401) ограничения нет.
+  useEffect(() => {
+    loyaltyApi.balance().then((b) => setLimited(b.preBookingBlocked)).catch(() => undefined);
+  }, []);
 
   // Удержание переживает перезагрузку: восстанавливаем по id, срок – серверный.
   useEffect(() => {
@@ -196,12 +216,13 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
   if (step === 'checkout' && hold && deadline !== null) {
     return (
       <div class="yu-sched" data-testid="schedule">
-        {statusLine}
+        {limited && <p class="yu-notice" role="alert" data-testid="loyalty-limit-banner">{LIMIT_TEXT}</p>}
+      {statusLine}
         <section class="yu-checkout" aria-labelledby="checkout-title">
           <h2 id="checkout-title" class="yu-hold__title" ref={checkoutTitle} tabIndex={-1}>Оформление записи</h2>
           <HoldTimer deadline={deadline} onPhase={setPhase} onExpire={expire} />
           <Checkout
-            hold={hold} timezone={tz} onHold={adopt} onNotice={setNotice}
+            hold={hold} timezone={tz} onHold={adopt} onNotice={setNotice} reserve={reserve} onReserve={keepReserve}
             onBack={() => { setStep('pick'); refresh(); }}
           />
         </section>
@@ -239,6 +260,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
         )}
       </div>
 
+      {limited && <p class="yu-notice" role="alert" data-testid="loyalty-limit-banner">{LIMIT_TEXT}</p>}
       {statusLine}
 
       {avail?.dayState === 'open' && all.length > 0 && (
@@ -258,7 +280,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
                 </span>
                 {slots.map((s) => {
                   const label = `${r.name}, ${timeIn(s.start, tz)}–${timeIn(s.end, tz)}, ${STATE_WORD[s.state]}`;
-                  const active = s.state === 'free' || s.state === 'mine';
+                  const active = s.state === 'mine' || (s.state === 'free' && !limited);
                   return (
                     <button
                       type="button" key={s.start} class={`yu-slot yu-slot--${s.state}`} data-state={s.state}

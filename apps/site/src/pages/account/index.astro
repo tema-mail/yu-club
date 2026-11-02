@@ -1,12 +1,20 @@
 ---
 // Личный кабинет (S1-17, карта сайта 3.6): целиком за входом – сессию проверяет middleware через GET /me (K9).
 // Сейчас: профиль, блок «Уведомления» (переключатели и push в браузере – остров NotificationSettings, K9
-// /me/notification-settings, /me/push-subscriptions), «Мои записи» (остров MyBookings, K9 /me/bookings, /me/visits) и выход.
+// /me/notification-settings, /me/push-subscriptions), «Мои записи» (остров MyBookings, K9 /me/bookings, /me/visits),
+// «Баллы» (остров Loyalty, K15 §11; каталог – клуба из выбора посетителя или первого в сети),
+// «Мои сертификаты» (остров MyCertificates, K16 §8) и выход.
+import Loyalty from '../../islands/Loyalty.tsx';
 import MyBookings from '../../islands/MyBookings.tsx';
+import MyCertificates from '../../islands/MyCertificates.tsx';
 import NotificationSettings from '../../islands/NotificationSettings.tsx';
 import Site from '../../layouts/Site.astro';
 
 const me = Astro.locals.client!;
+const { network, choice } = Astro.locals;
+const branches = (network ?? []).flatMap((c) => c.branches.map((b) => ({ city: c.slug, b })));
+const pick = branches.find((x) => choice && x.city === choice.city && x.b.slug === choice.branch) ?? branches[0];
+const goodsBranch = pick ? { id: pick.b.id, name: pick.b.name } : null;
 const name = [me.firstName, me.lastName].filter(Boolean).join(' ');
 ---
 <Site title="Личный кабинет – Ю-Клуб" noindex>
@@ -26,6 +34,8 @@ const name = [me.firstName, me.lastName].filter(Boolean).join(' ');
       </div>
     </dl>
     <MyBookings client:load />
+    <Loyalty client:load branch={goodsBranch} />
+    <MyCertificates client:load />
     <NotificationSettings
       client:load
       remindersEnabled={me.notifications.remindersEnabled}

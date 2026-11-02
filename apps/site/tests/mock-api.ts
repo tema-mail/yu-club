@@ -7,6 +7,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import * as K from '../../../packages/contracts/src/booking.ts';
+import { registerCommerce } from './mock-commerce.ts';
 import { registerResources, resourceId, seedResources } from './mock-resources.ts';
 
 export { resourceId };
@@ -72,6 +73,19 @@ export function buildMock() {
 
 
   registerClientAuth(app, P);
+  registerCommerce(app, P, { // баллы и сертификаты (Э2) – tests/mock-commerce.ts; до записи: ворота −50 на POST /holds
+    sessionClient: (cookie) => {
+      const c = clients.find((x) => x.id === clientOf(cookie));
+      return c ? { id: c.id, phone: c.phone } : null;
+    },
+    holdView: (id) => {
+      const h = holds.get(id);
+      if (!h) return null;
+      const items = h.items.filter((i) => i.status === 'active').map((i) => ({ id: i.id, minutes: (i.end - i.start) / MIN, type: findResource(i.resourceId)!.type }));
+      return { clientId: h.clientId, live: isLive(h, Date.now()), items };
+    },
+    fail,
+  });
   registerBooking(app, P);
   return app;
 }

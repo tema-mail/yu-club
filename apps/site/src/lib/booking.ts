@@ -156,11 +156,17 @@ export const ERROR_STATES: Record<string, { state: UiState; text?: string }> = {
   RATE_LIMITED: { state: 'load_error', text: 'Слишком много запросов. Подождите минуту и попробуйте снова.' },
   TARIFF_NOT_CONFIGURED: { state: 'load_error', text: 'Цена на это время ещё не настроена. Позвоните в клуб – запишем вручную.' },
   NETWORK: { state: 'load_error', text: 'Нет связи с сервером. Проверьте интернет и попробуйте снова.' },
+  // Э2 (K15 §12): баллы
+  LOYALTY_LIMIT_REACHED: { state: 'forbidden', text: '' }, // текст 07 §9.2 – LIMIT_TEXT ниже
+  POINTS_INSUFFICIENT: { state: 'conflict', text: 'Баллов недостаточно для оплаты выбранного времени. Доплатить разницу деньгами нельзя – оплатите сеанс в клубе.' },
+  POINTS_NOT_ALLOWED: { state: 'conflict', text: 'Это время баллами не оплачивается (например, аренда комнаты целиком). Оплата – в клубе.' },
+  RESERVE_HOLD_INVALID: { state: 'expired', text: 'Резерв баллов не создан: время на оформление истекло или запись уже подтверждена.' },
 };
 
 export function describeError(e: unknown): { state: UiState; text: string } {
   const code = e instanceof ClientApiError ? e.code : 'INTERNAL';
   const hit = ERROR_STATES[code];
+  if (code === 'LOYALTY_LIMIT_REACHED') return { state: 'forbidden', text: LIMIT_TEXT };
   if (hit) return { state: hit.state, text: hit.text ?? UI_STATES[hit.state] };
   return { state: 'load_error', text: 'Сервис временно недоступен. Попробуйте ещё раз через минуту.' };
 }
@@ -168,3 +174,43 @@ export function describeError(e: unknown): { state: UiState; text: string } {
 /** Удержание этого филиала переживает перезагрузку страницы (не продлевается: срок – на сервере). */
 export const holdStoreKey = (branchId: string) => `yu_hold:${branchId}`;
 export const SUCCESS_STORE_KEY = 'yu_booking_done';
+
+// ── Баллы (K15 §11) и сертификаты (K16 §8) – ЛК и оформление (Э2: S2-70…S2-72) ──
+/** 07 §9.2 – дословно, как LIMIT_MESSAGE API (loyalty/gate.ts). */
+export const LIMIT_TEXT = 'Предварительная запись временно недоступна: баланс бонусных баллов достиг минимального значения −50. Обратитесь к администратору клуба';
+
+export interface LoyaltyBalanceDto {
+  balanceCenti: number; availableCenti: number; reservedCenti: number;
+  nextExpiry: { at: string; centi: number } | null;
+  preBookingBlocked: boolean; accrualBasis: 'planned';
+}
+export interface LoyaltyHistoryItem { at: string; type: string; deltaCenti: number; balanceAfterCenti: number; branchName: string | null; bookingNumber: number | null; note: string }
+export interface GoodsItem { id: string; name: string; description: string; imageUrl: string | null; priceRubKop: number; pricePointsCenti: number; available: boolean }
+export interface PointsReserveDto { reserveId: string; amountCenti: number; availableCenti: number }
+export type CertificateStatus = 'active' | 'partially_used' | 'used_up' | 'expired' | 'cancelled' | 'needs_review';
+export interface MyCertificateDto { number: string; nominalKop: number; balanceKop: number; soldAt: string; expiresOn: string; status: CertificateStatus; burnedKop: number | null }
+export interface CertificateHistoryItem { at: string; type: 'sale' | 'redeem' | 'return' | 'expire' | 'correction'; amountKop: number; balanceAfterKop: number; branchName: string | null }
+
+export const loyaltyApi = {
+  balance: () => call<LoyaltyBalanceDto>('GET', '/me/loyalty'),
+  history: (cursor?: string) => call<Page<LoyaltyHistoryItem>>('GET', `/me/loyalty/history${cursor ? `?cursor=${enc(cursor)}` : ''}`),
+  goods: (branchId: string) => call<{ items: GoodsItem[] }>('GET', `/goods?branchId=${enc(branchId)}`),
+  /** Резерв на своё удержание; срок = срок удержания (K15 §3). Ключ – один на выбор «оплатить баллами». */
+  reserve: (holdId: string, key: string) => call<PointsReserveDto>('POST', `/holds/${enc(holdId)}/points-reserve`, {}, key),
+  release: (holdId: string) => call<{ released: boolean }>('DELETE', `/holds/${enc(holdId)}/points-reserve`),
+  certificates: () => call<{ items: MyCertificateDto[] }>('GET', '/me/certificates'),
+  certificateHistory: (number: string) => call<{ items: CertificateHistoryItem[] }>('GET', `/me/certificates/${enc(number)}/history`),
+};
+
+/** Баллы из сотых: «320,5», отрицательные – со знаком минус (07 §12.1: минус не скрываем). */
+export function points(centi: number): string {
+  const v = Math.abs(centi) / 100;
+  const s = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(v);
+  return centi < 0 ? `−${s}` : s;
+}
+export function pointsWord(centi: number): string {
+  const n = Math.abs(centi) / 100;
+  if (!Number.isInteger(n)) return 'балла';
+  const d = n % 10, h = n % 100;
+  return d === 1 && h !== 11 ? 'балл' : d >= 2 && d <= 4 && (h < 12 || h > 14) ? 'балла' : 'баллов';
+}
