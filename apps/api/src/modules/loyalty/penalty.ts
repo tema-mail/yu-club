@@ -3,7 +3,8 @@
 // при балансе −50 и ниже (ниже – только корректировкой Владельца) штраф 0: запись K3 не пишется, строка штрафа есть.
 // Только неявки после loyalty.penalties_from (null – штрафы выключены до даты запуска Э2, строка 'skipped').
 // penalty_scope 'visit' (Q-44): брони подряд в одном филиале – один штраф, остальные неявки цепочки – 'merged'.
-// Порядок событий не гарантирован (K4): решение – по состоянию брони из базы под блокировкой счёта:
+// Порядок событий не гарантирован (K4): решение – по состоянию брони из базы под блокировкой счёта (счёт – до строки
+// брони, K17 «Решения 02.11»):
 // штраф стоит, пока бронь в статусе no_show; исправление – когда бронь из no_show вышла.
 // Отмена клубом неявки не создаёт – штрафа нет (TC-11).
 import type { Tx } from '../../core/ledger.ts';
@@ -16,7 +17,7 @@ import type { LoyaltyBookings } from './accrual.ts';
 /** Номинал штрафа −5 баллов (07 §8.1) – константа подтверждённого правила. */
 export const PENALTY_CENTI = 500;
 
-export interface PenaltyBookings extends Pick<LoyaltyBookings, 'payableBooking'> {
+export interface PenaltyBookings extends Pick<LoyaltyBookings, 'payableBooking' | 'bookingClient'> {
   /** Брони того же клиента подряд в том же филиале, включая саму (booking/providers.ts adjacentChain). */
   adjacentChain(tx: Tx, bookingId: string): Promise<string[]>;
 }
@@ -36,9 +37,11 @@ type Outcome = 'active' | 'merged' | 'skipped' | 'none';
 /** no_show.marked: штраф, если бронь всё ещё в no_show и на ней (и на её цепочке) ещё нет штрафа. */
 export async function applyPenalty(tx: Tx, input: { noShowId: string; bookingId: string; markedAt: Date }, deps: PenaltyDeps): Promise<Outcome> {
   const now = deps.clock.now();
+  const clientId = await deps.bookings.bookingClient(tx, input.bookingId);
+  if (!clientId) return 'none';
+  const acc = await openAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь → проверить
   const b = await deps.bookings.payableBooking(tx, input.bookingId);
-  if (!b) return 'none';
-  const acc = await openAccount(tx, b.clientId, now);
+  if (!b || b.clientId !== acc.clientId) return 'none';
   if (b.status !== 'no_show') return 'none'; // неявку уже исправили – её событие устарело
   const seen = await tx.query(
     `SELECT 1 FROM app.loyalty_penalties WHERE no_show_id = $1 OR (booking_id = $2 AND status IN ('active','merged'))`,
@@ -98,9 +101,11 @@ interface PenaltyRow {
 /** no_show.reverted: если бронь вышла из no_show – снять её штраф; штраф группы переходит на живую неявку цепочки. */
 export async function revertPenalty(tx: Tx, input: { bookingId: string }, deps: PenaltyDeps): Promise<'reversed' | 'moved' | 'none'> {
   const now = deps.clock.now();
+  const clientId = await deps.bookings.bookingClient(tx, input.bookingId);
+  if (!clientId) return 'none';
+  const acc = await openAccount(tx, clientId, now);
   const b = await deps.bookings.payableBooking(tx, input.bookingId);
-  if (!b) return 'none';
-  await openAccount(tx, b.clientId, now);
+  if (!b || b.clientId !== acc.clientId) return 'none';
   if (b.status === 'no_show') return 'none'; // неявку отметили заново – штраф стоит
   const rows = (
     await tx.query<PenaltyRow>(
