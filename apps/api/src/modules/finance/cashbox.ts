@@ -272,9 +272,23 @@ export async function insertOperation(
     author: ReturnType<typeof authorOf>;
     postingId: string;
     reversalOf: string | null;
+    /** Смена задана явно (решение расхождения смены, K17 §7 п.4) – проверка открытой смены не делается. */
     shiftId?: string | null;
+    /** Момент записи для настройки смены; по умолчанию occurredAt. */
+    recordedAt?: Date;
   },
 ): Promise<FinanceOperationDto> {
+  // K17 §7 п.2: смена включена – операции, задевающие наличные (место cash, перевод между местами), только в открытой
+  // смене филиала и с её shift_id. Блокировка мест денег уже взята вызывающим – открытие и закрытие смены берут её же.
+  let shiftId = v.shiftId ?? null;
+  if (v.shiftId === undefined && (v.place === 'cash' || v.kind === 'place_transfer')) {
+    const on = (await resolveSetting(tx, 'finance.cash_shift_enabled', { branchId: v.branchId }, v.recordedAt ?? v.occurredAt)).value;
+    if (on) {
+      const open = await tx.query<{ id: string }>(`SELECT id FROM app.cash_shifts WHERE branch_id = $1 AND status = 'open'`, [v.branchId]);
+      if (!open.rows[0]) throw new AppError('CASH_SHIFT_REQUIRED', 409, 'Откройте кассовую смену', { branchId: v.branchId });
+      shiftId = open.rows[0].id;
+    }
+  }
   try {
     await tx.query(
       `INSERT INTO journal.finance_operations (id, branch_id, kind, place, method, direction, amount_kop, source, category_id, subcategory_id,
@@ -282,7 +296,7 @@ export async function insertOperation(
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
       [
         v.id, v.branchId, v.kind, v.place, v.method, v.direction, v.amountKop, v.source, v.categoryId, v.subcategoryId,
-        v.comment, v.ref?.type ?? null, v.ref?.id ?? null, v.receiptIssued, v.occurredAt, v.author.type, v.author.id, v.postingId, v.reversalOf, v.shiftId ?? null,
+        v.comment, v.ref?.type ?? null, v.ref?.id ?? null, v.receiptIssued, v.occurredAt, v.author.type, v.author.id, v.postingId, v.reversalOf, shiftId,
       ],
     );
   } catch (err) {
@@ -412,6 +426,7 @@ export async function postMoneyOperation(
     author,
     postingId: posting.postingId,
     reversalOf: null,
+    recordedAt: clock.now(),
   });
   if (op.kind === 'opening_balance') {
     await tx.query(`INSERT INTO app.finance_opening_balances (branch_id, place, operation_id, balance_date) VALUES ($1, $2, $3, $4)`, [
