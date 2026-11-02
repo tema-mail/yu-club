@@ -1,11 +1,13 @@
 ---
 // Раздел «Финансы» (S2-60, K17 №37–47): /finance – сводка контекста (сеть, город – таблица филиалов; филиал – его касса),
-// /finance/{branchId} – касса филиала: сводка, журнал движения (06 §10), закрытие месяца.
+// /finance/{branchId} – касса филиала: сводка, журнал движения (06 §10), закрытие месяца; /finance/categories – дерево
+// категорий (K17 №46: смотрят все с кассой, меняет Владелец).
 // Доступ – finance.view.day (Владелец, Директор, Администратор). Остатки и период – только с finance.view;
 // Администратор видит сутки своего филиала без остатков. Чужой филиал – 404 (K1). Решает всё равно сервер.
 import Crm from '../../layouts/Crm.astro';
 import CashJournal, { type FinBranch } from '../../islands/CashJournal.tsx';
 import OperationForm, { type CategoryOption } from '../../islands/OperationForm.tsx';
+import CategoryTree, { type CatNode } from '../../islands/CategoryTree.tsx';
 import { ApiError, serverCall, type Branch } from '../../lib/api.ts';
 
 interface CategoryNode { id: string; kind: 'income' | 'expense'; name: string; status: 'active' | 'archived'; children: Array<{ id: string; name: string; status: 'active' | 'archived' }> }
@@ -20,7 +22,11 @@ let notFound = segments.length > 1;
 let branch: Branch | null = null;
 let scope: Branch[] = [];
 let scopeTitle = '';
-if (allowed && !notFound) {
+const isCategories = segments[0] === 'categories';
+let catTree: CatNode[] = [];
+if (allowed && !notFound && isCategories) {
+  catTree = (await serverCall<{ items: CatNode[] }>(cookie, '/finance/categories?includeArchived=true')).items;
+} else if (allowed && !notFound) {
   if (segments[0]) {
     branch = branches.find((b) => b.id === segments[0]) ?? null;
     if (!branch) notFound = true;
@@ -66,7 +72,7 @@ if (branch) {
     if (!(e instanceof ApiError) || e.status !== 403) throw e;
   }
 }
-const title = !allowed ? 'Нет доступа' : notFound ? 'Не найдено' : branch ? `Финансы – ${branch.name}` : 'Финансы';
+const title = !allowed ? 'Нет доступа' : notFound ? 'Не найдено' : isCategories ? 'Категории доходов и расходов' : branch ? `Финансы – ${branch.name}` : 'Финансы';
 ---
 <Crm title={title}>
   {!allowed ? (
@@ -81,12 +87,22 @@ const title = !allowed ? 'Нет доступа' : notFound ? 'Не найден
       <p>Такого филиала нет или он вне вашей зоны доступа.</p>
       <p><a href="/finance">К финансам</a></p>
     </div>
+  ) : isCategories ? (
+    <>
+      <div class="yc-head">
+        <p class="yc-crumbs"><a href="/finance">Финансы</a></p>
+        <h1>Категории доходов и расходов</h1>
+        <p>Два уровня: категория и подкатегория. Использованную категорию не удалить – только убрать в архив.</p>
+      </div>
+      <CategoryTree client:load initial={catTree} canManage={can('finance.category.manage')} />
+    </>
   ) : (
     <>
       <div class="yc-head">
         {branch && full && <p class="yc-crumbs"><a href="/finance">Финансы</a> · {branch.cityName}</p>}
         <h1>{branch ? `Финансы – ${branch.name}` : 'Финансы'}</h1>
         <p data-testid="fin-scope">{branch ? `${branch.cityName} · касса филиала: наличные и безнал` : scopeTitle}</p>
+        <p><a class="yc-link" href="/finance/categories">Категории доходов и расходов</a></p>
       </div>
       {branch && (
         <OperationForm
@@ -128,6 +144,13 @@ const title = !allowed ? 'Нет доступа' : notFound ? 'Не найден
   .yc-fin__at{ width:7rem; }
   .yc-fin__err{ color:var(--yc-danger); }
   .yc-fin__total > *{ font-weight:650; background:var(--yc-surface-2); }
+  .yc-cat{ display:grid; gap:0; margin:0; padding:0; list-style:none; }
+  .yc-cat--sub{ padding-left:var(--yc-sp-m); border-left:2px solid var(--yc-line); margin-left:var(--yc-sp-2xs); }
+  .yc-cat__row{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0 var(--yc-sp-xs); border-bottom:1px solid var(--yc-line); }
+  .yc-cat__row > *{ min-width:0; }
+  .yc-cat__row--archived .yc-cat__name{ color:var(--yc-muted); }
+  .yc-cat__name{ padding:var(--yc-sp-2xs) 0; overflow-wrap:anywhere; }
+  .yc-cat__acts{ display:flex; flex-wrap:wrap; }
   .yc-fin__actions{ display:grid; gap:var(--yc-sp-xs); }
   .yc-fin__actions > *{ min-width:0; }
   .yc-fin__period,.yc-fin__filters{ display:grid; gap:var(--yc-sp-xs); align-items:end; }

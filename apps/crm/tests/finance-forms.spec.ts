@@ -154,3 +154,45 @@ test('390 px: форма расхода без горизонтальной пр
   }
   await page.screenshot({ path: `${SHOTS}/finance-form-390.png` });
 });
+
+test('Категории: Владелец добавляет подкатегорию, переименовывает и убирает в архив окном; третьего уровня нет', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/finance/categories');
+  const coms = page.getByTestId('cat-Коммунальные');
+  await coms.getByRole('button', { name: '+ Подкатегория' }).click();
+  await dlg(page).getByLabel('Название').fill('Газ');
+  await dlg(page).getByRole('button', { name: 'Сохранить' }).click();
+  await expect(page.getByRole('status')).toHaveText('Добавлено: «Газ» в «Коммунальные».');
+  const gas = page.getByTestId('cat-Газ');
+  await expect(gas.getByRole('button', { name: '+ Подкатегория' })).toHaveCount(0); // подкатегория – последний уровень
+  await gas.getByRole('button', { name: 'Переименовать' }).click();
+  await dlg(page).getByLabel('Название').fill('Газоснабжение');
+  await dlg(page).getByRole('button', { name: 'Сохранить' }).click();
+  await expect(page.getByTestId('cat-Газоснабжение')).toBeVisible();
+  // Дубль имени на уровне – отказ сервера в окне.
+  await coms.getByRole('button', { name: '+ Подкатегория' }).click();
+  await dlg(page).getByLabel('Название').fill('Вода');
+  await dlg(page).getByRole('button', { name: 'Сохранить' }).click();
+  await expect(dlg(page).getByRole('alert')).toHaveText('Такое имя уже есть на этом уровне');
+  await dlg(page).getByRole('button', { name: 'Отмена' }).click();
+  await page.getByTestId('cat-Прочее').getByRole('button', { name: 'В архив…' }).click();
+  await expect(dlg(page)).toContainText('уже внесённые сохранят категорию навсегда');
+  await dlg(page).getByRole('button', { name: 'В архив', exact: true }).click();
+  await expect(page.getByTestId('cat-Прочее')).toContainText('В архиве');
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await noHorizontalScroll(page)).toBe(true);
+
+  await open(page, KRASNY);
+  await page.getByRole('button', { name: 'Внести расход' }).click();
+  await dlg(page).getByLabel('Категория').selectOption({ label: 'Коммунальные' });
+  await expect(dlg(page).getByLabel('Подкатегория').locator('option', { hasText: 'Газоснабжение' })).toHaveCount(1);
+  await expect(dlg(page).getByLabel('Категория').locator('option', { hasText: 'Прочее' })).toHaveCount(0);
+});
+
+test('Категории: Администратор только смотрит', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await open(page, '/finance/categories');
+  await expect(page.getByTestId('cat-Коммунальные')).toBeVisible();
+  await expect(page.getByRole('button', { name: '+ Категория' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Переименовать' })).toHaveCount(0);
+});
