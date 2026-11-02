@@ -164,7 +164,7 @@ export async function createCategory(tx: Tx, ctx: AccessContext, raw: unknown, m
     Number(
       (
         await tx.query<{ next: number }>(
-          `SELECT coalesce(max(sort_order), 0) + 10 AS next FROM app.finance_categories WHERE kind = $1 AND parent_id IS NOT DISTINCT FROM $2::uuid`,
+          `SELECT coalesce(max(sort_order), 0) + 10 AS next FROM app.finance_categories WHERE kind = $1 AND parent_id IS NOT DISTINCT FROM $2::uuid AND code IS NULL`, // системные (0210) – в конце, порядок не задают
           [input.kind, input.parentId],
         )
       ).rows[0]!.next,

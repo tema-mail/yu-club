@@ -118,9 +118,10 @@ describe('кассовая смена', () => {
 
     const s2 = await open(admin, b, 700);
     await close(admin, s2.id, 900); // излишек 200
-    const a = await resolve(ctx('owner'), s2.id, 'accept', 'нашли чужую купюру, вернули');
-    expect(a).toMatchObject({ operation: null, shift: { status: 'resolved', resolution: 'accept' } });
-    expect(await cash(b)).toBe(700);
+    const a = await resolve(ctx('owner'), s2.id, 'accept', 'излишек по пересчёту');
+    expect(a).toMatchObject({ shift: { status: 'resolved', resolution: 'accept', resolutionOperationId: a.operation!.id } });
+    expect(a.operation).toMatchObject({ kind: 'income', source: 'other', direction: 'in', amountKop: 200, ref: { type: 'shift', id: s2.id }, shiftId: s2.id });
+    expect(await cash(b)).toBe(900); // принято = пересчёт признан фактом
     const audit = await db.client.query(`SELECT action FROM journal.audit_events WHERE object_type = 'cash_shift' AND object_id = $1 ORDER BY id`, [s2.id]);
     expect(audit.rows.map((x) => x.action)).toEqual(['cash_shift.opened', 'cash_shift.closed', 'cash_shift.resolved']);
   });
@@ -148,7 +149,7 @@ describe('кассовая смена', () => {
     const c2 = await close(admin, s2.id, 700);
     expect(c2).toMatchObject({ status: 'closed', openingExpectedKop: 700, openingDiffKop: 0, closingDiffKop: 0 });
   });
-  it('accept по смене 1 после открытия смены 2 тоже сдвигает openingExpected смены 2; проводки нет, ссылка в аудите', async () => {
+  it('accept: недостача 300 – расход «Недостача кассы», смена 2 (открыта до решения) закрывается без расхождения', async () => {
     const b = await branchWithShifts();
     const admin = ctx('admin', [b]);
     const s1 = await open(admin, b, 0);
@@ -157,11 +158,29 @@ describe('кассовая смена', () => {
     const s2 = await open(admin, b, 700);
     expect(s2.openingDiffKop).toBe(-300);
     const a = await resolve(ctx('director', [b]), s1.id, 'accept', 'приняли пересчёт');
-    expect(a.operation).toBeNull();
-    expect(await cash(b)).toBe(1_000);
-    const s2now = await db.client.query(`SELECT opening_expected_kop::int AS e FROM app.cash_shifts WHERE id = $1`, [s2.id]);
-    expect(s2now.rows[0].e).toBe(700);
+    const cat = await db.client.query(`SELECT code, name FROM app.finance_categories WHERE id = $1`, [a.operation!.categoryId]);
+    expect(cat.rows[0]).toEqual({ code: 'cash_shortage', name: 'Недостача кассы' });
+    expect(a.operation).toMatchObject({ kind: 'expense', direction: 'out', amountKop: 300, comment: 'приняли пересчёт', ref: { type: 'shift', id: s1.id }, shiftId: s1.id });
+    expect(await cash(b)).toBe(700);
     const audit = await db.client.query(`SELECT after FROM journal.audit_events WHERE action = 'cash_shift.resolved' AND object_id = $1`, [s1.id]);
-    expect(audit.rows[0].after).toMatchObject({ resolution: 'accept', openingAdjustedShiftId: s2.id });
+    expect(audit.rows[0].after).toMatchObject({ resolution: 'accept', operationId: a.operation!.id, openingAdjustedShiftId: s2.id });
+    expect(await close(admin, s2.id, 700)).toMatchObject({ status: 'closed', openingDiffKop: 0, closingDiffKop: 0 });
+  });
+
+  it('accept: излишек 200 – доход «Излишек кассы», следующая смена без расхождения; код системной категории неизменен', async () => {
+    const b = await branchWithShifts();
+    const admin = ctx('admin', [b]);
+    const s1 = await open(admin, b, 0);
+    await income(ctx('owner'), b, 1_000);
+    await close(admin, s1.id, 1_200);
+    const s2 = await open(admin, b, 1_200);
+    const a = await resolve(ctx('owner'), s1.id, 'accept', 'излишек по пересчёту');
+    const cat = await db.client.query(`SELECT code FROM app.finance_categories WHERE id = $1`, [a.operation!.categoryId]);
+    expect(cat.rows[0].code).toBe('cash_surplus');
+    expect(a.operation).toMatchObject({ kind: 'income', direction: 'in', amountKop: 200 });
+    expect(await cash(b)).toBe(1_200);
+    expect(await close(admin, s2.id, 1_200)).toMatchObject({ status: 'closed', openingDiffKop: 0, closingDiffKop: 0 });
+    const upd = await pool.query(`UPDATE app.finance_categories SET code = 'x' WHERE code = 'cash_surplus'`).catch((e: { constraint?: string }) => e.constraint);
+    expect(upd).toBe('finance_categories_system');
   });
 });

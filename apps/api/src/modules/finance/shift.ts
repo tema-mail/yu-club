@@ -3,8 +3,9 @@
 // остаток и расхождение он не получает (это делает HTTP-слой по finance.view). Закрытие: expected = остаток места cash,
 // diff = counted − expected; diff = 0 и при открытии сошлось – closed, иначе needs_resolution: само ничего не проводится.
 // Решает Директор или Владелец (finance.shift.resolve): correct – операция correction на diff со ссылкой на смену
-// (в эту смену, без требования открытой), accept – «принято без проводки»; причина обязательна, аудит. Решение (любое)
-// после открытия следующей смены сдвигает её opening_expected на diff – решённое расхождение повторно не всплывает.
+// (в эту смену, без требования открытой), accept – признать пересчёт фактом: недостача – расход «Недостача кассы»,
+// излишек – доход «Излишек кассы»; причина обязательна, аудит. Решение после открытия следующей смены сдвигает её
+// opening_expected на diff – решённое расхождение повторно не всплывает.
 // Порядок: оба места денег (lockPlaces) → смена FOR UPDATE → перечитать → проверить. Внешних вызовов нет.
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -101,6 +102,11 @@ export async function getShift(db: Db, id: string, forUpdate = false): Promise<C
   return r.rows[0] ? toDto(r.rows[0]) : null;
 }
 
+/** Системная категория по неизменному коду (0210). */
+async function systemCategory(tx: Tx, code: 'cash_shortage' | 'cash_surplus'): Promise<string> {
+  return (await tx.query<{ id: string }>(`SELECT id FROM app.finance_categories WHERE code = $1`, [code])).rows[0]!.id;
+}
+
 async function assertEnabled(tx: Tx, branchId: string, at: Date): Promise<void> {
   if (!(await resolveSetting(tx, 'finance.cash_shift_enabled', { branchId }, at)).value) {
     throw new AppError('VALIDATION_FAILED', 400, 'Кассовая смена в филиале выключена', { setting: 'finance.cash_shift_enabled' });
@@ -167,7 +173,7 @@ export async function closeShift(tx: Tx, ctx: AccessContext, raw: unknown, meta:
   return dto;
 }
 
-/** K17 №50: решение по расхождению (Директор, Владелец). correct – операция correction на diff в этой смене. */
+/** K17 №50: решение по расхождению (Директор, Владелец): correct – операция correction на diff, accept – расход/доход системной категории; в этой смене. */
 export async function resolveShift(
   tx: Tx,
   ctx: AccessContext,
@@ -183,34 +189,37 @@ export async function resolveShift(
   if (shift.status !== 'needs_resolution') throw new AppError('VALIDATION_FAILED', 400, 'Расхождения нет или оно уже решено', { status: shift.status });
   let operation: FinanceOperationDto | null = null;
   let adjustedShiftId: string | null = null;
-  if (input.action === 'correct') {
-    const diff = shift.closingDiffKop!;
-    if (diff === 0) throw new AppError('VALIDATION_FAILED', 400, 'При закрытии сошлось – решение «принято без проводки»', { field: 'action' });
+  const diff = shift.closingDiffKop ?? 0;
+  if (input.action === 'correct' && diff === 0) {
+    throw new AppError('VALIDATION_FAILED', 400, 'При закрытии сошлось – решение «принять» (без проводки)', { field: 'action' });
+  }
+  if (diff !== 0) {
+    // correct – операция correction; accept – признать пересчёт фактом: недостача – расход «Недостача кассы»,
+    // излишек – доход «Излишек кассы» (системные категории 0210). Остаток cash выравнивается с пересчётом в обоих случаях.
+    const accept = input.action === 'accept';
+    const kind = accept ? (diff < 0 ? 'expense' : 'income') : 'correction';
+    const categoryId = accept ? await systemCategory(tx, diff < 0 ? 'cash_shortage' : 'cash_surplus') : null;
     await assertPeriodOpen(tx, branch, now);
     await assertNotNegative(tx, branch.id, 'cash', places.cash, diff, now);
     const id = randomUUID();
     const author = authorOf(ctx);
     const posting = await post(tx, {
-      entries: [{ account: { kind: 'cash_branch', ownerType: 'branch', ownerId: branch.id }, amount: diff, type: 'cash.correction', basis: reason, branchId: branch.id, ref: { type: 'shift', id: shift.id }, refs: { financeOperationId: id }, occurredAt: now }],
+      entries: [{ account: { kind: 'cash_branch', ownerType: 'branch', ownerId: branch.id }, amount: diff, type: `cash.${kind}`, basis: reason, branchId: branch.id, ref: { type: 'shift', id: shift.id }, refs: { financeOperationId: id }, occurredAt: now }],
       idempotencyKey: `shift-resolve:${shift.id}`,
       author,
     });
     operation = await insertOperation(tx, {
-      id, branchId: branch.id, kind: 'correction', place: 'cash', method: 'cash', direction: diff > 0 ? 'in' : 'out', amountKop: Math.abs(diff),
-      source: null, categoryId: null, subcategoryId: null, comment: reason, ref: { type: 'shift', id: shift.id }, receiptIssued: null,
+      id, branchId: branch.id, kind, place: 'cash', method: 'cash', direction: diff > 0 ? 'in' : 'out', amountKop: Math.abs(diff),
+      source: kind === 'income' ? 'other' : null, categoryId, subcategoryId: null, comment: reason, ref: { type: 'shift', id: shift.id }, receiptIssued: null,
       occurredAt: now, author, postingId: posting.postingId, reversalOf: null, shiftId: shift.id,
     });
     await writeAudit(tx, meta, { action: 'finance.operation.created', object: { type: 'finance_operation', id }, branchId: branch.id, cityId: branch.cityId, after: operation }, clock);
-  }
-  // correct и accept одинаково признают пересчёт фактом (K17 «Решения 02.11»; отличие – только операция correction).
-  // Открытая сейчас смена открывалась после закрытия этой (одна открытая на филиал, всё под lockPlaces) и взяла ожидаемый
-  // остаток без этого решения: сдвигаем её opening_expected на diff, иначе то же расхождение всплывёт как её openingDiff.
-  const closingDiff = shift.closingDiffKop ?? 0;
-  if (closingDiff !== 0) {
+    // Открытая сейчас смена открывалась после закрытия этой (одна открытая на филиал, всё под lockPlaces) и сняла
+    // opening_expected до этой проводки: сдвигаем его на diff, иначе то же расхождение всплывёт как её openingDiff.
     const next = await tx.query<{ id: string }>(
       `UPDATE app.cash_shifts SET opening_expected_kop = opening_expected_kop + $2, row_version = row_version + 1
        WHERE branch_id = $1 AND status = 'open' AND opened_at >= $3 RETURNING id`,
-      [branch.id, closingDiff, shift.closedAt],
+      [branch.id, diff, shift.closedAt],
     );
     adjustedShiftId = next.rows[0]?.id ?? null;
   }

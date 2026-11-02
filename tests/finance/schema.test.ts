@@ -139,7 +139,7 @@ describe('0202: категории', () => {
   it('стартовый справочник 06 §7.3: 8 категорий расходов, подкатегории по списку', async () => {
     const top = await db.client.query<{ name: string; n: number }>(
       `SELECT c.name, (SELECT count(*)::int FROM app.finance_categories s WHERE s.parent_id = c.id) AS n
-       FROM app.finance_categories c WHERE c.parent_id IS NULL AND c.kind = 'expense' ORDER BY c.sort_order`,
+       FROM app.finance_categories c WHERE c.parent_id IS NULL AND c.kind = 'expense' AND c.code IS NULL ORDER BY c.sort_order`, // системные (0210) – отдельно
     );
     expect(top.rows).toEqual([
       { name: 'Коммунальные', n: 6 },
@@ -197,7 +197,7 @@ describe('0202: вверх/вниз/вверх', () => {
       expect(await code(noncash)).toBe('23514');
       expect(await migrateUp(clean.client)).toEqual([...down].reverse());
       const n = await clean.client.query(`SELECT count(*)::int AS n FROM app.finance_categories`);
-      expect(n.rows[0].n).toBe(34);
+      expect(n.rows[0].n).toBe(36); // 34 стартовых (0202) + 2 системных (0210)
     } finally {
       await clean.drop();
     }
