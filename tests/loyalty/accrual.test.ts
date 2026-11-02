@@ -31,9 +31,14 @@ let slot = 0;
 
 // ---- платёж: состояние в подмене finance, событие – в outbox
 const payments = new Map<string, { paymentId: string; bookingId: string; methods: PaymentMethod[]; status: 'active' | 'partially_refunded' | 'refunded' }>();
+/** Разовый крючок: вызывается после чтения живого платежа, до возврата результата (окно гонки tryAccrue). */
+let afterLivePayment: (() => Promise<void>) | null = null;
 const lookup: PaymentLookup = {
   livePayment: async (_tx, bookingId) => {
     const p = [...payments.values()].find((x) => x.bookingId === bookingId && x.status !== 'refunded');
+    const hook = afterLivePayment;
+    afterLivePayment = null;
+    if (hook) await hook();
     return p ? { paymentId: p.paymentId, methods: p.methods } : null;
   },
   paymentStatus: async (_tx, paymentId) => payments.get(paymentId)?.status ?? null,
@@ -310,5 +315,32 @@ describe('ревизия 02.11: параллельные события начи
       expect((await accruals(b)).map((a) => `${a.status}:${a.amount_centi}`)).toEqual(['active:300']);
       expect(await balance(c)).toBe(300);
     }
+  });
+});
+
+describe('ревизия Э2: сторно под блокировкой счёта', () => {
+  it('payment.refunded параллельно с payment.recorded (начисление ещё не записано) – итог без начисления', async () => {
+    const c = await newClient();
+    const b = await book(c, 30);
+    await arrive(b);
+    const p = await pay(b, c, ['cash']);
+    await inTx((tx) => openAccount(tx, c, now));
+    let refundRun: Promise<void> | null = null;
+    let refundDone = false;
+    // tryAccrue уже держит счёт и прочитал платёж живым; в этот момент проходит полный возврат и его обработчик
+    afterLivePayment = async () => {
+      await refundAll(p);
+      const ev = (await db.client.query(`SELECT id FROM app.outbox_events WHERE event_type = 'payment.refunded' AND aggregate_id = $1`, [p])).rows[0].id;
+      refundRun = deliver(ACCRUAL_HANDLERS.paymentRefunded, ev).then(() => void (refundDone = true));
+      for (let i = 0; i < 300 && !refundDone; i++) {
+        const w = await one<{ n: number }>(`SELECT count(*)::int n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`);
+        if (w.n > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    await deliver(ACCRUAL_HANDLERS.paymentRecorded, (await events('payment.recorded', b))[0]!);
+    await refundRun;
+    expect((await accruals(b)).filter((a) => a.status === 'active')).toEqual([]);
+    expect(await balance(c)).toBe(0);
   });
 });

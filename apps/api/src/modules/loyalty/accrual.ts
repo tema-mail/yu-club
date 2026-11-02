@@ -94,9 +94,13 @@ interface AccrualRow {
 /**
  * Сторно начисления (K15 §4): K3 reverse, партия уменьшается (своя первой, затем FEFO), долг – если потрачено.
  * Если баланс ушёл бы ниже −50 – предел не обходится: loyalty_issues «требует решения», начисление остаётся (решение 16 §19).
+ * Порядок K17 «Решения 02.11»: счёт клиента брони (openAccount) → начисление FOR UPDATE. Начисление без блокировки не читаем:
+ * параллельный tryAccrue держит тот же счёт – сторно ждёт его и видит записанное начисление; если сторно успело первым,
+ * tryAccrue под счётом перечитывает платёж уже refunded и не начисляет.
  */
 export async function reverseAccrual(
   tx: Tx,
+  clientId: string,
   where: { visitId: string } | { paymentId: string },
   reason: 'visit_reverted' | 'payment_refunded',
   issueRef: { type: 'visit' | 'payment_refund'; id: string },
@@ -104,10 +108,11 @@ export async function reverseAccrual(
 ): Promise<'reversed' | 'issue' | 'none'> {
   const now = clock.now();
   const [col, val] = 'visitId' in where ? ['visit_id', where.visitId] : ['payment_id', where.paymentId];
-  const pre = (await tx.query<AccrualRow>(`SELECT id, client_id FROM app.loyalty_accruals WHERE ${col} = $1 AND status = 'active'`, [val])).rows[0];
-  if (!pre) return 'none';
-  const acc = await openAccount(tx, pre.client_id, now);
-  const a = (await tx.query<AccrualRow>(`SELECT id, client_id, ledger_entry_id, amount_centi FROM app.loyalty_accruals WHERE id = $1 AND status = 'active' FOR UPDATE`, [pre.id])).rows[0];
+  const acc = await openAccount(tx, clientId, now);
+  const a = (await tx.query<AccrualRow>(
+    `SELECT id, client_id, ledger_entry_id, amount_centi FROM app.loyalty_accruals WHERE ${col} = $1 AND client_id = $2 AND status = 'active' FOR UPDATE`,
+    [val, acc.clientId],
+  )).rows[0];
   if (!a) return 'none';
   const amount = Number(a.amount_centi);
   if (acc.balance - amount < POINTS_MIN_BALANCE) {
@@ -141,14 +146,18 @@ export const ACCRUAL_HANDLERS = {
 export async function onVisitReverted(tx: Tx, e: EventEnvelope<'visit.reverted'>, deps: AccrualDeps): Promise<void> {
   const { visitId, bookingId } = e.payload;
   if ((await deps.bookings.activeVisit(tx, bookingId))?.visitId === visitId) return; // посещение живо – событие устарело
-  await reverseAccrual(tx, { visitId }, 'visit_reverted', { type: 'visit', id: visitId }, deps.clock);
+  const clientId = await deps.bookings.bookingClient(tx, bookingId);
+  if (!clientId) return;
+  await reverseAccrual(tx, clientId, { visitId }, 'visit_reverted', { type: 'visit', id: visitId }, deps.clock);
 }
 
 export async function onPaymentRefunded(tx: Tx, e: EventEnvelope<'payment.refunded'>, deps: AccrualDeps): Promise<void> {
-  const { paymentId, refundId } = e.payload;
+  const { paymentId, refundId, bookingId } = e.payload;
   // полный возврат (Q-102) – по статусу платежа в базе, не по sessionStatus из payload
   if ((await deps.payments.paymentStatus(tx, paymentId)) !== 'refunded') return;
-  await reverseAccrual(tx, { paymentId }, 'payment_refunded', { type: 'payment_refund', id: refundId }, deps.clock);
+  const clientId = await deps.bookings.bookingClient(tx, bookingId);
+  if (!clientId) return;
+  await reverseAccrual(tx, clientId, { paymentId }, 'payment_refunded', { type: 'payment_refund', id: refundId }, deps.clock);
 }
 
 /** Регистрация подписок (worker.ts, до startOutboxWorker). Повторный вызов ничего не делает. */
