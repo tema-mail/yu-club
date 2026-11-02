@@ -8,7 +8,7 @@ import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
 import { clearSubscriptions, processEvent, publish } from '../../apps/api/src/core/outbox.ts';
 import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import type { Clock } from '../../apps/api/src/core/time.ts';
-import { cancelBooking } from '../../apps/api/src/modules/booking/change.ts';
+import { cancelBooking, rescheduleBooking } from '../../apps/api/src/modules/booking/change.ts';
 import { confirmHold } from '../../apps/api/src/modules/booking/confirm.ts';
 import { addHoldItem, createHold, releaseHold, removeHoldItem, type HoldDto } from '../../apps/api/src/modules/booking/hold.ts';
 import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
@@ -301,5 +301,37 @@ describe('ревизия 02.11: границы ADR 0002', () => {
       .filter((f) => f.endsWith('.ts'))
       .flatMap((f) => [...readFileSync(new URL(f, dir), 'utf8').matchAll(/app\.(holds|hold_items|resources)\b/g)].map((m) => `${f}: ${m[0]}`));
     expect(hits).toEqual([]);
+  });
+});
+
+describe('ревизия 02.11: пересчёт резерва брони при переносе (K15 §3)', () => {
+  const rv = async (id: string) => Number((await one<{ row_version: number }>('SELECT row_version FROM app.bookings WHERE id = $1', [id])).row_version);
+  async function moveTo(bookingId: string, minutes: number): Promise<void> {
+    const to = slot(ids.b1pc2!, minutes);
+    await runOccupancyCommand(pool, async (tx) => rescheduleBooking(tx, bookingId, { ctx: owner, rowVersion: await rv(bookingId), reason: 'перенос', ...to }, staffMeta(), clock));
+    await deliver(RESERVE_HANDLERS.bookingRescheduled, await eventOf('booking.rescheduled', 'bookingId', bookingId));
+  }
+  const bookingReserves = (c: string) => reserves(c).then((rows) => rows.filter((x) => x.status !== 'converted').map((x) => `${x.status}:${x.release_reason ?? ''}:${x.amount_centi}`));
+
+  it('перенос на 90 мин при балансе хватает → resized, резерв 9000; на 30 мин → 3000', async () => {
+    const c = await clientWith(20_000);
+    const h = await hold(c, [slot(ids.b1pc1!, 60)]);
+    await reserve(c, h.id);
+    const b = await confirmed(c, h);
+    await moveTo(b, 90);
+    expect(await bookingReserves(c)).toEqual(['booking::9000']);
+    await moveTo(b, 30);
+    expect(await bookingReserves(c)).toEqual(['booking::3000']);
+    expect(await bal(c)).toMatchObject({ reservedCenti: 3000, availableCenti: 17_000 });
+  });
+
+  it('перенос на 90 мин, баллов на 60 → rescheduled_short, резерв снят', async () => {
+    const c = await clientWith(6000);
+    const h = await hold(c, [slot(ids.b1pc1!, 60)]);
+    await reserve(c, h.id);
+    const b = await confirmed(c, h);
+    await moveTo(b, 90);
+    expect(await bookingReserves(c)).toEqual(['released:rescheduled_short:6000']);
+    expect(await bal(c)).toMatchObject({ reservedCenti: 0, availableCenti: 6000 });
   });
 });

@@ -296,3 +296,18 @@ describe('ревизия 02.11: порядок блокировок – счёт
     expect((await accruals(b)).map((a) => a.status)).toEqual(['active']);
   });
 });
+
+describe('ревизия 02.11: параллельные события начисления', () => {
+  it('visit.confirmed и payment.recorded одновременно (×5) – одно начисление на бронь', async () => {
+    for (let i = 0; i < 5; i++) {
+      const c = await newClient();
+      const b = await book(c, 20);
+      await arrive(b);
+      await pay(b, c, ['cash']);
+      const [visitEv, payEv] = [(await events('visit.confirmed', b))[0]!, (await events('payment.recorded', b))[0]!];
+      await Promise.all([deliver(ACCRUAL_HANDLERS.visitConfirmed, visitEv), deliver(ACCRUAL_HANDLERS.paymentRecorded, payEv)]);
+      expect((await accruals(b)).map((a) => `${a.status}:${a.amount_centi}`)).toEqual(['active:300']);
+      expect(await balance(c)).toBe(300);
+    }
+  });
+});
