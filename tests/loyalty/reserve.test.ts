@@ -252,6 +252,7 @@ describe('ревизия 02.11: резерв, снятый изменением 
     const b = await bal(c);
     expect(b.reservedCenti).toBeLessThanOrEqual(b.balanceCenti);
     expect((await reserves(c)).filter((x) => x.status === 'booking')).toEqual([]);
+    expect((await reserves(c)).map((x) => `${x.status}:${x.release_reason ?? ''}`)).toEqual(['released:insufficient']);
   });
 });
 

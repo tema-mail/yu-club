@@ -16,7 +16,7 @@ import { holdReserveMatchSql, openAccount, POINTS_MIN_BALANCE, reservedCenti } f
 import type { LoyaltyBookings, PaymentLookup } from './accrual.ts';
 import { LIMIT_MESSAGE } from './gate.ts';
 
-export type ReleaseReason = 'hold_expired' | 'hold_released' | 'hold_changed' | 'booking_cancelled' | 'no_show' | 'rescheduled_short' | 'replaced' | 'paid_other';
+export type ReleaseReason = 'hold_expired' | 'hold_released' | 'hold_changed' | 'booking_cancelled' | 'no_show' | 'rescheduled_short' | 'replaced' | 'paid_other' | 'insufficient';
 
 export interface ReserveBookings extends Pick<LoyaltyBookings, 'payableBooking' | 'bookingClient'> {
   /** Брони, созданные подтверждением удержания (booking/providers.ts holdBookings). */
@@ -112,8 +112,8 @@ export async function releaseHoldReserve(tx: Tx, input: { clientId: string; hold
 // ---- обработчики событий
 
 /** booking.confirmed: резервы подтверждённых удержаний клиента с неизменной подписью → converted, на каждую живую
- *  бронь – резерв 'booking', если доступных баллов хватает на все брони удержания; иначе и при смене позиций до
- *  подтверждения – released('hold_changed'). Резервы брони никогда не превышают доступный баланс. */
+ *  бронь – резерв 'booking', если доступных баллов хватает на все брони удержания; иначе – released('insufficient'),
+ *  при смене позиций до подтверждения – released('hold_changed'). Резервы брони никогда не превышают доступный баланс. */
 export async function convertReserves(tx: Tx, clientId: string, deps: { bookings: ReserveBookings; clock: Clock }): Promise<number> {
   const now = deps.clock.now();
   const acc = await openAccount(tx, clientId, now);
@@ -129,7 +129,7 @@ export async function convertReserves(tx: Tx, clientId: string, deps: { bookings
     const need = bookings.reduce((s, b) => s + b.minutes * 100, 0);
     const available = Math.max(0, Math.max(0, acc.balance) - (await reservedCenti(tx, acc.clientId, now, { holdId: res.hold_id })));
     if (available < need) {
-      await release(tx, res.id, 'hold_changed', now);
+      await release(tx, res.id, 'insufficient', now); // позиции не менялись – баллов меньше нужного (миграция 0209)
       continue;
     }
     await tx.query(`UPDATE app.loyalty_reserves SET status = 'converted', closed_at = $2 WHERE id = $1`, [res.id, now]);

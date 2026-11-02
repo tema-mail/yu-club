@@ -836,6 +836,7 @@ CREATE INDEX notifications_booking_idx ON app.notifications (booking_id);
 | 0206 | `0206_cash_shifts.sql` | `cash_shifts` | `→ branches`, `→ staff`, `→ finance_operations` | `finance_operations.shift_id → cash_shifts` | S2-16 |
 | 0207 | `0207_loyalty_goods.sql` | `loyalty_goods`, `loyalty_goods_branches`, `loyalty_goods_orders` | `→ branches`, `→ clients`, `→ ledger_entries` | – | S2-39 |
 | 0208 | `0208_booking_hold_points.sql` | представления booking `booking_hold_points` (удержание + подпись позиций), `booking_hold_point_items` (минуты, тип ресурса) – для резерва баллов K15 §3 (ADR 0002) | – | – | ревизия П8b 02.11 |
+| 0209 | `0209_loyalty_reserve_insufficient.sql` | – (CHECK `loyalty_reserves.release_reason` + `insufficient`) | – | – | ревизия П8b 02.11 |
 
 Общие правила Э2 (решение, продолжают раздел 0):
 - Деньги – `bigint` копейки, баллы – `bigint` сотые (`*_kop`, `*_centi`); суммы операций > 0, знак – в `direction` или в записи K3.
