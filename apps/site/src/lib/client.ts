@@ -5,6 +5,7 @@
 import { API_PREFIX, apiBase } from './api.ts';
 
 export const CLIENT_COOKIE = 'yu_client';
+export const SIGNED_IN_EVENT = 'yu:signed-in';
 
 /** MeDto (K9 §ЛК) – как отдаёт GET /me и POST /auth/otp/verify. */
 export interface Me {
@@ -75,8 +76,12 @@ export async function browserCall<T>(path: string, body?: unknown, idempotencyKe
 
 export const clientAuth = {
   requestCode: (phone: string, key: string) => browserCall<OtpRequested>('/auth/otp/request', { phone, purpose: 'login' }, key),
-  verify: (challengeId: string, code: string) =>
-    browserCall<{ client: Me; isNew: boolean }>('/auth/otp/verify', { challengeId, code, consents: { pdProcessing: true } }),
+  /** Успешный вход – событие SIGNED_IN_EVENT: шапка меняет «Войти» на «Кабинет» без перезагрузки (вход в оформлении). */
+  verify: async (challengeId: string, code: string) => {
+    const r = await browserCall<{ client: Me; isNew: boolean }>('/auth/otp/verify', { challengeId, code, consents: { pdProcessing: true } });
+    window.dispatchEvent(new CustomEvent(SIGNED_IN_EVENT));
+    return r;
+  },
   logout: () => browserCall<void>('/auth/logout', {}),
 };
 
