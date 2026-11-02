@@ -4,10 +4,13 @@
 // Полные контакты (телефон, email, дата рождения) – только из `full`, его API отдаёт лишь при client.view.full;
 // без права блока нет вовсе, и в разметку ничего не попадает. Клиент вне зоны – 404, как несуществующий (K1).
 // Записи, посещения и согласия появятся с бронированием (S1-07…S1-10): API их пока не отдаёт – и экран не показывает.
+// Бонусный счёт (S2-65, K15 №24) – при loyalty.view; корректировка, выдача и возврат – по правам из /me.
 // Экспорта нет: маршрута выгрузки в API нет, Администратору он не положен вовсе (client.export – только Владелец).
 import Crm from '../../layouts/Crm.astro';
 import EntityList from '../../islands/EntityList.tsx';
 import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import LoyaltyBlock from '../../islands/LoyaltyBlock.tsx';
+import type { LoyaltyCard } from '../../lib/loyalty.ts';
 import { ApiError, serverCall } from '../../lib/api.ts';
 
 type ClientStatus = 'guest' | 'active' | 'restricted' | 'blocked' | 'deletion_requested' | 'anonymized';
@@ -41,6 +44,15 @@ if (!notFound && key) {
   }
 }
 if (notFound) Astro.response.status = 404;
+
+let loyalty: LoyaltyCard | null = null;
+if (client && can('loyalty.view')) {
+  try {
+    loyalty = await serverCall<LoyaltyCard>(cookie, `/clients/${encodeURIComponent(client.id)}/loyalty`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 403)) throw e;
+  }
+}
 
 // Время – в зоне выбранного филиала (K8); в контексте сети/города – первого филиала зоны.
 const timezone = (ctx.kind === 'branch' ? ctx.branch.timezone : branches[0]?.timezone) ?? 'Asia/Novosibirsk';
@@ -104,6 +116,11 @@ const seesAll = me.access.network;
             <dt>Последний вход</dt><dd>{at(client.full.lastLoginAt)}</dd>
           </dl>
         </section>
+      )}
+      {loyalty && (
+        <LoyaltyBlock client:load clientId={client.id} initial={loyalty} timezone={timezone}
+          branches={branches.map((b) => ({ id: b.id, name: b.name }))} defaultBranchId={ctx.kind === 'branch' ? ctx.branch.id : null}
+          canAdjust={can('loyalty.adjust')} canBelowLimit={can('loyalty.adjust_below_limit')} canIssue={can('loyalty.goods.issue')} />
       )}
       <EntityCard client:load historyOnly fields={historyFields} values={{}}
         history={{ objectType: 'client', objectId: client.id, timezone, omit: historyOmit }} />
