@@ -1,12 +1,14 @@
 // Мок кассовой смены CRM строго по apps/api/src/modules/finance/shift.ts и routes.crm.ts (K17 §7, №49–50, 55–56):
 // открыть (одна открытая на филиал, пересчёт вслепую, флаг finance.cash_shift_enabled), закрыть (expected = остаток
 // наличных; сошлось и при открытии сошлось – closed, иначе needs_resolution, без проводки), решение Директора или
-// Владельца (correct – операция correction на diff, accept – без проводки; причина обязательна), текущая смена с флагом
-// и список (новые сверху). Без finance.view (Администратор) – ни expected, ни diff, ни сумм; в списке только свои.
-// Флаг – настройкой мока (служебная сессия Владельца), деньги – через mock-finance.ts.
+// Владельца (причина обязательна; при разнице ≠ 0 обе ветки выравнивают кассу операцией в этой смене: correct –
+// correction, когда нашли ошибочную операцию; accept – пересчёт признан фактом: расход «Недостача кассы» или доход
+// «Излишек кассы»; открытая после неё смена сдвигает opening_expected на разницу), текущая смена с флагом и список.
+// Без finance.view (Администратор) – ни expected, ни diff, ни сумм; в списке только свои. Флаг – настройкой мока
+// (служебная сессия Владельца); перед каждой командой флаги перечитываются для ворот CASH_SHIFT_REQUIRED кассы.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { cashBalance, recordShiftCorrection } from './mock-finance.ts';
+import { cashBalance, recordShiftOperation, setShiftGate } from './mock-finance.ts';
 
 type Rec = Record<string, unknown>;
 interface Staffish { id: string; role: string }
@@ -44,10 +46,12 @@ const notFound = () => new Fail(404, 'NOT_FOUND', 'Не найдено');
 const zodFail = (path: string) => new Fail(400, 'VALIDATION_FAILED', 'Неверные данные запроса', { issues: [{ path, message: 'Invalid input' }] });
 
 let shifts: Shift[] = [];
+const flags = new Map<string, boolean>(); // finance.cash_shift_enabled по филиалам – перечитывается перед командами
 const replays = new Map<string, { hash: string; status: number; body: unknown }>();
 
 export function resetShifts(): void {
   shifts = [];
+  flags.clear();
   replays.clear();
 }
 
@@ -76,8 +80,16 @@ export function registerShifts(app: FastifyInstance, P: string, deps: ShiftsMock
     : { shiftId: x.id, branchId: x.branchId, status: x.status, openedAt: x.openedAt, openedBy: x.openedBy, closedAt: x.closedAt, closedBy: x.closedBy };
   const enabled = async (branchId: string) => {
     const r = await app.inject({ method: 'GET', url: `${P}/settings?scope=branch&id=${encodeURIComponent(branchId)}`, headers: { cookie: deps.ownerCookie() } });
-    return (r.json() as { items: Array<{ key: string; value: unknown }> }).items.find((i) => i.key === 'finance.cash_shift_enabled')?.value === true;
+    const on = (r.json() as { items: Array<{ key: string; value: unknown }> }).items.find((i) => i.key === 'finance.cash_shift_enabled')?.value === true;
+    flags.set(branchId, on);
+    return on;
   };
+  // insertOperation читает флаг и открытую смену в своей транзакции; в моке флаг перечитывается перед любой командой
+  setShiftGate((branchId) => (flags.get(branchId) ? (shifts.find((x) => x.branchId === branchId && x.status === 'open')?.id ?? null) : undefined));
+  app.addHook('preHandler', async (req) => {
+    if (req.method === 'GET' || req.url.startsWith(`${P}/settings`) || req.url.startsWith(`${P}/auth`) || req.url.startsWith('/__test')) return;
+    for (const b of deps.branches()) await enabled(b.id);
+  });
   const counted = (v: unknown) => {
     if (!Number.isSafeInteger(v) || (v as number) < 0) throw zodFail('countedKop');
     return v as number;
@@ -158,11 +170,12 @@ export function registerShifts(app: FastifyInstance, P: string, deps: ShiftsMock
     const b = guard(s, x.branchId, 'finance.shift.resolve');
     if (x.status !== 'needs_resolution') throw new Fail(400, 'VALIDATION_FAILED', 'Расхождения нет или оно уже решено', { status: x.status });
     let operation: Rec | null = null;
-    if (body.action === 'correct') {
-      const diff = dto(x).closingDiffKop!;
-      if (diff === 0) throw new Fail(400, 'VALIDATION_FAILED', 'При закрытии сошлось – решение «принято без проводки»', { field: 'action' });
-      const op = recordShiftCorrection({ branchId: b.id, timezone: b.timezone, diffKop: diff, comment: reason, authorId: s.id, shiftId: x.id });
-      operation = op as unknown as Rec;
+    const diff = dto(x).closingDiffKop ?? 0;
+    if (body.action === 'correct' && diff === 0) throw new Fail(400, 'VALIDATION_FAILED', 'При закрытии сошлось – решение «принять» (без проводки)', { field: 'action' });
+    if (diff !== 0) {
+      operation = recordShiftOperation({ branchId: b.id, timezone: b.timezone, action: body.action, diffKop: diff, comment: reason, authorId: s.id, shiftId: x.id }) as unknown as Rec;
+      const next = shifts.find((y) => y.branchId === b.id && y.status === 'open' && x.closedAt !== null && y.openedAt >= x.closedAt);
+      if (next) Object.assign(next, { openingExpectedKop: next.openingExpectedKop + diff, rowVersion: next.rowVersion + 1 });
     }
     Object.assign(x, { status: 'resolved', resolution: body.action, resolutionReason: reason, resolutionOperationId: (operation?.id as string | undefined) ?? null, rowVersion: x.rowVersion + 1 });
     return { shift: shapeCmd(s, x), operation };

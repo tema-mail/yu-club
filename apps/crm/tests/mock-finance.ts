@@ -5,6 +5,9 @@
 // Idempotency-Key обязателен у команд: повтор с тем же телом – тот же ответ, с другим – IDEMPOTENCY_KEY_REUSED.
 // Отрицательная касса запрещена (K7 по умолчанию). CASH_INSUFFICIENT без finance.view – без чисел (решение 02.11 K17).
 // Подключается из mock-api.ts (registerFinance), resetFinance() – POST /__test/reset.
+// K17 §7: смена включена – операции наличных (место cash, перевод между местами) только в открытой смене и с её
+// shift_id, иначе CASH_SHIFT_REQUIRED (ворота ставит mock-shifts.ts через setShiftGate). Системные категории 0210
+// «Недостача кассы» / «Излишек кассы» – для решения «принять» по смене (код наружу не отдаётся, как COLUMNS в categories.ts).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 
@@ -71,6 +74,13 @@ let categories: Category[] = [];
 let balances = new Map<string, number>(); // `${branchId}:${place}` → копейки
 let periods = new Map<string, { closedAt: string }>(); // `${branchId}:${YYYY-MM-01}`
 let seq = 1000;
+let seeding = false;
+let systemCategories: Record<'cash_shortage' | 'cash_surplus', string> = { cash_shortage: '', cash_surplus: '' };
+/** Ворота смены: undefined – смена выключена; null – включена, открытой нет; строка – id открытой смены. */
+let shiftGate: (branchId: string) => string | null | undefined = () => undefined;
+export function setShiftGate(gate: (branchId: string) => string | null | undefined): void {
+  shiftGate = gate;
+}
 const replays = new Map<string, { hash: string; status: number; body: unknown }>();
 
 const SEED_CATEGORIES: Array<[string, string[]]> = [
@@ -87,11 +97,17 @@ const SEED_CATEGORIES: Array<[string, string[]]> = [
 const bal = (branchId: string, place: Place) => balances.get(`${branchId}:${place}`) ?? 0;
 const catByName = (name: string, parentId: string | null = null) => categories.find((c) => c.name === name && c.parentId === parentId)!;
 
-function insert(v: Omit<Op, 'id' | 'number' | 'recordedAt' | 'balanceAfterKop' | 'reversedBy' | 'shiftId' | 'postingId'>, transferTo?: Place): Op {
+function insert(v: Omit<Op, 'id' | 'number' | 'recordedAt' | 'balanceAfterKop' | 'reversedBy' | 'shiftId' | 'postingId'>, transferTo?: Place, shiftId?: string): Op {
+  let shift: string | null = shiftId ?? null;
+  if (shiftId === undefined && !seeding && (v.place === 'cash' || v.kind === 'place_transfer')) {
+    const g = shiftGate(v.branchId);
+    if (g === null) throw new Fail(409, 'CASH_SHIFT_REQUIRED', 'Откройте кассовую смену', { branchId: v.branchId });
+    shift = g ?? null;
+  }
   const k = `${v.branchId}:${v.place}`;
   balances.set(k, bal(v.branchId, v.place) + (v.direction === 'in' ? v.amountKop : -v.amountKop));
   if (transferTo) balances.set(`${v.branchId}:${transferTo}`, bal(v.branchId, transferTo) + (v.direction === 'in' ? -v.amountKop : v.amountKop));
-  const op: Op = { ...v, id: randomUUID(), number: ++seq, recordedAt: new Date().toISOString(), balanceAfterKop: bal(v.branchId, v.place), reversedBy: null, shiftId: null, postingId: randomUUID() };
+  const op: Op = { ...v, id: randomUUID(), number: ++seq, recordedAt: new Date().toISOString(), balanceAfterKop: bal(v.branchId, v.place), reversedBy: null, shiftId: shift, postingId: randomUUID() };
   ops.push(op);
   return op;
 }
@@ -119,23 +135,25 @@ export function recordMoney(v: {
 /** Для мока смены (shift.ts): остаток места «наличные» – expected при открытии и закрытии. */
 export const cashBalance = (branchId: string) => bal(branchId, 'cash');
 
-/** resolveShift correct: операция correction на diff в этой смене (закрытый месяц и минус кассы – те же отказы).
- *  Без finance.view остаток после операции срезается вызывающим (как shape журнала). */
-export function recordShiftCorrection(v: { branchId: string; timezone: string; diffKop: number; comment: string; authorId: string; shiftId: string }): Op {
+/** resolveShift: correct – correction на diff; accept – расход «Недостача кассы» / доход «Излишек кассы» (источник
+ *  other). Операция в этой смене; закрытый месяц и минус кассы – те же отказы. */
+export function recordShiftOperation(v: { branchId: string; timezone: string; action: 'correct' | 'accept'; diffKop: number; comment: string; authorId: string; shiftId: string }): Op {
   const month = monthOf(Date.now(), v.timezone);
   if (periods.has(`${v.branchId}:${month}`)) throw new Fail(409, 'PERIOD_CLOSED', 'Месяц закрыт: исправление – операцией текущей датой', { month });
   if (bal(v.branchId, 'cash') + v.diffKop < 0) {
     throw new Fail(409, 'CASH_INSUFFICIENT', 'Недостаточно денег в кассе: внесите поступление или проверьте начальный остаток', { place: 'cash', currentKop: bal(v.branchId, 'cash'), afterKop: bal(v.branchId, 'cash') + v.diffKop });
   }
-  const op = insert({
-    branchId: v.branchId, kind: 'correction', place: 'cash', method: 'cash', direction: v.diffKop > 0 ? 'in' : 'out', amountKop: Math.abs(v.diffKop), source: null,
-    categoryId: null, subcategoryId: null, comment: v.comment, ref: { type: 'shift', id: v.shiftId }, receiptIssued: null, occurredAt: new Date().toISOString(), authorId: v.authorId, reversalOf: null,
-  });
-  op.shiftId = v.shiftId;
-  return op;
+  const accept = v.action === 'accept';
+  const kind: Kind = accept ? (v.diffKop < 0 ? 'expense' : 'income') : 'correction';
+  return insert({
+    branchId: v.branchId, kind, place: 'cash', method: 'cash', direction: v.diffKop > 0 ? 'in' : 'out', amountKop: Math.abs(v.diffKop), source: kind === 'income' ? 'other' : null,
+    categoryId: accept ? systemCategories[v.diffKop < 0 ? 'cash_shortage' : 'cash_surplus'] : null, subcategoryId: null, comment: v.comment, ref: { type: 'shift', id: v.shiftId },
+    receiptIssued: null, occurredAt: new Date().toISOString(), authorId: v.authorId, reversalOf: null,
+  }, undefined, v.shiftId);
 }
 
 export function resetFinance(branches: BranchLite[]): void {
+  seeding = true;
   ops = [];
   balances = new Map();
   periods = new Map();
@@ -146,6 +164,11 @@ export function resetFinance(branches: BranchLite[]): void {
     const top: Category = { id: randomUUID(), kind: 'expense', parentId: null, name, sortOrder: (i + 1) * 10, status: 'active', rowVersion: 1 };
     categories.push(top, ...subs.map((s, j) => ({ id: randomUUID(), kind: 'expense' as const, parentId: top.id, name: s, sortOrder: (j + 1) * 10, status: 'active' as const, rowVersion: 1 })));
   });
+  // 0210: системные, в конце уровня
+  const shortage: Category = { id: randomUUID(), kind: 'expense', parentId: null, name: 'Недостача кассы', sortOrder: 1000, status: 'active', rowVersion: 1 };
+  const surplus: Category = { id: randomUUID(), kind: 'income', parentId: null, name: 'Излишек кассы', sortOrder: 1000, status: 'active', rowVersion: 1 };
+  categories.push(shortage, surplus);
+  systemCategories = { cash_shortage: shortage.id, cash_surplus: surplus.id };
   const base = { method: null, source: null, categoryId: null, subcategoryId: null, ref: null, receiptIssued: null, reversalOf: null };
   for (const b of branches) {
     const today = todayIn(b.timezone, Date.now());
@@ -168,6 +191,7 @@ export function resetFinance(branches: BranchLite[]): void {
       insert({ ...base, branchId: b.id, kind: 'income', place: 'cash', method: 'cash', direction: 'in', amountKop: 90_000, source: 'extra_service', comment: 'Аренда джойстиков', occurredAt: at(today, 1), authorId: 's-admin-tsk' });
     }
   }
+  seeding = false;
 }
 
 // ---- маршруты
@@ -465,7 +489,7 @@ export function registerFinance(app: FastifyInstance, P: string, deps: FinanceMo
     }
     dup(body.kind, parentId, name);
     const level = categories.filter((c) => c.kind === body.kind && c.parentId === parentId);
-    const c: Category = { id: randomUUID(), kind: body.kind, parentId, name, sortOrder: (body.sortOrder as number | undefined) ?? Math.max(0, ...level.map((x) => x.sortOrder)) + 10, status: 'active', rowVersion: 1 };
+    const c: Category = { id: randomUUID(), kind: body.kind, parentId, name, sortOrder: (body.sortOrder as number | undefined) ?? Math.max(0, ...level.filter((x) => !Object.values(systemCategories).includes(x.id)).map((x) => x.sortOrder)) + 10, status: 'active', rowVersion: 1 };
     categories.push(c);
     return c;
   }));

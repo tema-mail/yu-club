@@ -1,8 +1,9 @@
 // Кассовая смена филиала (S2-62, K17 §7, №49–50, 55–56). Экран есть только при включённом finance.cash_shift_enabled
 // (страница рисует его по №55). Открытие и закрытие – пересчёт наличных; Администратор вводит его вслепую: ожидаемого
 // остатка и расхождения он не видит ни до, ни после (сервер их не отдаёт). Расхождение (при открытии или закрытии)
-// ничего не проводит само: смена ждёт решения Владельца или Директора – корректировка на разницу или «принято без
-// проводки», причина обязательна. Список смен: с finance.view – все с суммами, Администратору – свои без сумм.
+// ничего не проводит само: смена ждёт решения Владельца или Директора, причина обязательна. При разнице ≠ 0 оба
+// решения выравнивают кассу операцией (K17 §7 п.4): «принять» – пересчёт признан фактом, недостача уходит расходом
+// «Недостача кассы», излишек – доходом «Излишек кассы»; «исправить ошибку» – нашли ошибочную операцию, корректировка. Список смен: с finance.view – все с суммами, Администратору – свои без сумм.
 import { useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { errorText, rub } from './CashJournal.tsx';
@@ -34,11 +35,14 @@ const STATUS: Record<ShiftStatus, { text: string; cls: string }> = {
 const FRIENDLY: Record<string, string> = {
   CASH_SHIFT_ALREADY_OPEN: 'Смена уже открыта – экран обновлён.',
   COMMENT_REQUIRED: 'Укажите причину решения.',
-  CASH_INSUFFICIENT: 'Корректировка уведёт кассу в минус: проверьте пересчёт.',
-  PERIOD_CLOSED: 'Месяц закрыт – корректировку не провести.',
+  CASH_INSUFFICIENT: 'Операция уведёт кассу в минус: проверьте пересчёт.',
+  PERIOD_CLOSED: 'Месяц закрыт – операцию по расхождению не провести.',
 };
 const errText = (e: unknown) => (e instanceof ApiError && FRIENDLY[e.code]) || errorText(e);
 const signed = (kop: number) => rub(kop, true);
+/** Что проводит «принять» при разнице diff (системные категории 0210). */
+const acceptText = (diff: number) =>
+  diff < 0 ? `недостача ${rub(-diff)} – расходом «Недостача кассы»` : diff > 0 ? `излишек ${rub(diff)} – доходом «Излишек кассы»` : 'без проводки: при закрытии сошлось';
 
 export default function CashShift({ branch, initialOpen, initialList, canResolve, meId, staffNames }: CashShiftProps) {
   const [open, setOpen] = useState(initialOpen);
@@ -48,7 +52,7 @@ export default function CashShift({ branch, initialOpen, initialList, canResolve
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [error, setError] = useState('');
   const [target, setTarget] = useState<ShiftRead | null>(null);
-  const [action, setAction] = useState<'correct' | 'accept'>('correct');
+  const [action, setAction] = useState<'correct' | 'accept'>('accept');
   const [reason, setReason] = useState('');
   const [dlgError, setDlgError] = useState('');
 
@@ -99,7 +103,7 @@ export default function CashShift({ branch, initialOpen, initialList, canResolve
 
   const openResolve = (s: ShiftRead) => {
     setTarget(s);
-    setAction(s.closingDiffKop ? 'correct' : 'accept');
+    setAction('accept');
     setReason('');
     setDlgError('');
     (document.getElementById('shift-resolve') as HTMLDialogElement | null)?.showModal();
@@ -114,7 +118,8 @@ export default function CashShift({ branch, initialOpen, initialList, canResolve
     try {
       await browserCall(`/cash-shifts/${enc(target.shiftId)}/resolve`, { method: 'POST', body: { action, reason: reason.trim() } });
       closeResolve();
-      setNotice({ ok: true, text: action === 'correct' ? `Проведена корректировка кассы на ${signed(target.closingDiffKop ?? 0)}.` : 'Расхождение принято без проводки.' });
+      const diff = target.closingDiffKop ?? 0;
+      setNotice({ ok: true, text: action === 'correct' ? `Ошибка исправлена: корректировка кассы на ${signed(diff)}.` : `Пересчёт принят: ${acceptText(diff)}.` });
       await reload();
     } catch (err) {
       setDlgError(errText(err));
@@ -179,7 +184,7 @@ export default function CashShift({ branch, initialOpen, initialList, canResolve
                 <span>
                   <span class={`yc-badge ${STATUS[s.status].cls}`}>{STATUS[s.status].text}</span>
                   {sums(s) && s.closingDiffKop !== null && s.closingDiffKop !== undefined && ` разница ${signed(s.closingDiffKop)}`}
-                  {s.resolution && ` · ${s.resolution === 'correct' ? 'корректировка' : 'без проводки'}: ${s.resolutionReason ?? ''}`}
+                  {s.resolution && ` · ${s.resolution === 'correct' ? 'исправлена ошибка (корректировка)' : 'пересчёт принят'}: ${s.resolutionReason ?? ''}`}
                 </span>
               </li>
             ))}
@@ -198,9 +203,11 @@ export default function CashShift({ branch, initialOpen, initialList, canResolve
             </dl>
             <fieldset class="yc-week">
               <legend class="yc-field__label">Что сделать</legend>
+              <label class="yc-check"><input type="radio" name="shift-action" checked={action === 'accept'} onChange={() => setAction('accept')} />
+                Принять пересчёт: {acceptText(target.closingDiffKop ?? 0)}</label>
               <label class="yc-check"><input type="radio" name="shift-action" checked={action === 'correct'} disabled={!target.closingDiffKop} onChange={() => setAction('correct')} />
-                Провести корректировку кассы на {signed(target.closingDiffKop ?? 0)}</label>
-              <label class="yc-check"><input type="radio" name="shift-action" checked={action === 'accept'} onChange={() => setAction('accept')} />Принять без проводки</label>
+                Исправить ошибку: нашли ошибочную операцию – корректировка кассы на {signed(target.closingDiffKop ?? 0)}</label>
+              <span class="yc-field__hint">В обоих случаях остаток наличных станет равен пересчёту; операция попадёт в журнал со ссылкой на смену.</span>
             </fieldset>
             <div class="yc-field">
               <label class="yc-field__label" for="shift-reason">Причина *</label>
