@@ -252,6 +252,7 @@ describe('ревизия 02.11: резерв, снятый изменением 
     const b = await bal(c);
     expect(b.reservedCenti).toBeLessThanOrEqual(b.balanceCenti);
     expect((await reserves(c)).filter((x) => x.status === 'booking')).toEqual([]);
+    expect((await reserves(c)).map((x) => `${x.status}:${x.release_reason ?? ''}`)).toEqual(['released:insufficient']);
   });
 });
 
@@ -295,11 +296,11 @@ describe('ревизия 02.11: порядок блокировок – счёт
 });
 
 describe('ревизия 02.11: границы ADR 0002', () => {
-  it('loyalty не читает таблицы удержаний и ресурсов booking – только его представления (0208)', () => {
+  it('loyalty не читает таблицы booking и network – только представления 0208 и провайдеры', () => {
     const dir = new URL('../../apps/api/src/modules/loyalty/', import.meta.url);
     const hits = readdirSync(dir)
       .filter((f) => f.endsWith('.ts'))
-      .flatMap((f) => [...readFileSync(new URL(f, dir), 'utf8').matchAll(/app\.(holds|hold_items|resources)\b/g)].map((m) => `${f}: ${m[0]}`));
+      .flatMap((f) => [...readFileSync(new URL(f, dir), 'utf8').matchAll(/app\.(holds|hold_items|resources|bookings|branches|visits)\b/g)].map((m) => `${f}: ${m[0]}`));
     expect(hits).toEqual([]);
   });
 });
