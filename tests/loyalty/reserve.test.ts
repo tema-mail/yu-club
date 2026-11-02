@@ -1,6 +1,7 @@
 // S2-36: резерв баллов на удержание и бронь (K15 §3, TC-05/06). Настоящие команды удержания и брони, outbox.
 // Резерв без своего срока: живёт по статусу, сроку и подписи удержания; изменение позиций снимает его без события.
 import { randomUUID } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
@@ -290,5 +291,15 @@ describe('ревизия 02.11: порядок блокировок – счёт
     const ev = await eventOf('booking.cancelled', 'bookingId', b);
     await underAccountThenBooking(c, b, () => deliver(RESERVE_HANDLERS.bookingCancelled, ev));
     expect((await reserves(c)).filter((x) => x.status === 'released').map((x) => x.release_reason)).toEqual(['booking_cancelled']);
+  });
+});
+
+describe('ревизия 02.11: границы ADR 0002', () => {
+  it('loyalty не читает таблицы удержаний и ресурсов booking – только его представления (0208)', () => {
+    const dir = new URL('../../apps/api/src/modules/loyalty/', import.meta.url);
+    const hits = readdirSync(dir)
+      .filter((f) => f.endsWith('.ts'))
+      .flatMap((f) => [...readFileSync(new URL(f, dir), 'utf8').matchAll(/app\.(holds|hold_items|resources)\b/g)].map((m) => `${f}: ${m[0]}`));
+    expect(hits).toEqual([]);
   });
 });

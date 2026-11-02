@@ -1,6 +1,6 @@
 // K15 §3 (07 §6.2–6.3, TC-05/06): резерв баллов на время удержания и брони.
 // Резерв 'hold' своего срока не хранит: занят, пока удержание active, не истекло и подпись его активных позиций
-// (holdSignature) совпадает с записанной – перезапуск таймера удержания продлевает резерв сам, изменение позиций
+// (items_signature представления booking app.booking_hold_points, миграция 0208) совпадает с записанной – перезапуск таймера удержания продлевает резерв сам, изменение позиций
 // (добавление, удаление, отказ) снимает лениво: статус released(...) проставляется при следующем обращении к счёту
 // под блокировкой или обработчиком события. Подтверждение брони: резерв удержания с неизменной подписью (по позициям
 // 'converted') → converted, на каждую бронь – резерв 'booking' в пределах доступного; подпись разошлась – hold_changed. Снятие: отмена брони, неявка (без списания, Q-46), перенос (не хватает – rescheduled_short),
@@ -12,7 +12,7 @@ import type { Tx } from '../../core/ledger.ts';
 import { listSubscriptions, subscribe } from '../../core/outbox.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { holdReserveMatchSql, holdSignatureSql, openAccount, POINTS_MIN_BALANCE, reservedCenti } from './account.ts';
+import { holdReserveMatchSql, openAccount, POINTS_MIN_BALANCE, reservedCenti } from './account.ts';
 import type { LoyaltyBookings, PaymentLookup } from './accrual.ts';
 import { LIMIT_MESSAGE } from './gate.ts';
 
@@ -36,7 +36,7 @@ export async function settleStaleReserves(tx: Tx, clientId: string, now: Date): 
             CASE WHEN h.status = 'released' THEN 'hold_released'
                  WHEN h.status = 'expired' OR h.expires_at <= $2 THEN 'hold_expired'
                  ELSE 'hold_changed' END AS reason
-     FROM app.loyalty_reserves r JOIN app.holds h ON h.id = r.hold_id
+     FROM app.loyalty_reserves r JOIN app.booking_hold_points h ON h.hold_id = r.hold_id
      WHERE r.client_id = $1 AND r.status = 'hold' AND NOT ${holdReserveMatchSql('r', 'h', '$2')}
      FOR UPDATE OF r`,
     [clientId, now],
@@ -45,11 +45,11 @@ export async function settleStaleReserves(tx: Tx, clientId: string, now: Date): 
   return stale.rows.length;
 }
 
-/** Активные позиции удержания: минуты и типы ресурсов (резерв = Σ минут × 100, 1 балл = 1 минута, 07 §6.1). */
+/** Активные позиции удержания: минуты и типы ресурсов (резерв = Σ минут × 100, 1 балл = 1 минута, 07 §6.1).
+ *  Представление booking (миграция 0208), не таблицы удержаний (ADR 0002). */
 async function holdItems(tx: Tx, holdId: string): Promise<Array<{ minutes: number; resourceType: string }>> {
   const r = await tx.query<{ minutes: number; resource_type: string }>(
-    `SELECT (extract(epoch FROM upper(hi.period) - lower(hi.period)) / 60)::int AS minutes, res.resource_type
-     FROM app.hold_items hi JOIN app.resources res ON res.id = hi.resource_id WHERE hi.hold_id = $1 AND hi.status = 'active' ORDER BY hi.id`,
+    `SELECT minutes, resource_type FROM app.booking_hold_point_items WHERE hold_id = $1 ORDER BY item_id`,
     [holdId],
   );
   return r.rows.map((x) => ({ minutes: x.minutes, resourceType: x.resource_type }));
@@ -65,8 +65,10 @@ export async function reserveForHold(
   const now = clock.now();
   const acc = await openAccount(tx, input.clientId, now);
   const h = (
+    // без блокировки строки удержания (ADR 0002 – только представление booking): изменение удержания после проверки
+    // меняет подпись, и резерв снимается лениво; подтверждение сохраняет подпись (позиции 'converted') – резерв переходит
     await tx.query<{ id: string; branch_id: string; client_id: string | null; status: string; expires_at: Date }>(
-      'SELECT id, branch_id, client_id, status, expires_at FROM app.holds WHERE id = $1 FOR SHARE',
+      'SELECT hold_id AS id, branch_id, client_id, status, expires_at FROM app.booking_hold_points WHERE hold_id = $1',
       [input.holdId],
     )
   ).rows[0];
@@ -87,7 +89,7 @@ export async function reserveForHold(
   for (const p of prev.rows) await release(tx, p.id, 'replaced', now);
   const r = await tx.query<{ id: string }>(
     `INSERT INTO app.loyalty_reserves (client_id, amount_centi, hold_id, hold_signature, status, created_at)
-     VALUES ($1, $2, $3, ${holdSignatureSql('$3::uuid')}, 'hold', $4) RETURNING id`,
+     VALUES ($1, $2, $3, (SELECT items_signature FROM app.booking_hold_points WHERE hold_id = $3::uuid), 'hold', $4) RETURNING id`,
     [acc.clientId, required, h.id, now],
   );
   const reserveId = r.rows[0]!.id;
@@ -116,7 +118,7 @@ export async function convertReserves(tx: Tx, clientId: string, deps: { bookings
   const now = deps.clock.now();
   const acc = await openAccount(tx, clientId, now);
   const holds = await tx.query<{ id: string; hold_id: string }>(
-    `SELECT r.id, r.hold_id FROM app.loyalty_reserves r JOIN app.holds h ON h.id = r.hold_id
+    `SELECT r.id, r.hold_id FROM app.loyalty_reserves r JOIN app.booking_hold_points h ON h.hold_id = r.hold_id
      WHERE r.client_id = $1 AND r.status = 'hold' AND h.status = 'converted' AND ${holdReserveMatchSql('r', 'h', '$2')}
      ORDER BY r.created_at, r.id FOR UPDATE OF r`,
     [acc.clientId, now],

@@ -64,9 +64,11 @@ afterAll(async () => {
 it('миграция 0207: вниз и снова вверх', async () => {
   const t = await createTestDatabase({ migrate: true });
   try {
-    expect(await migrateDown(t.client)).toEqual(['0207']);
+    // откат до 0207 включительно – вместе с более поздними миграциями (раннер откатывает с конца)
+    const later = (await t.client.query<{ version: string }>(`SELECT version FROM public.schema_migrations WHERE version >= '0207' ORDER BY version`)).rows.map((r) => r.version);
+    expect((await migrateDown(t.client, later.length)).at(-1)).toBe('0207');
     expect((await t.client.query(`SELECT to_regclass('app.loyalty_goods') AS r`)).rows[0].r).toBeNull();
-    expect(await migrateUp(t.client)).toEqual(['0207']);
+    expect(await migrateUp(t.client)).toEqual(later);
   } finally {
     await t.drop();
   }
