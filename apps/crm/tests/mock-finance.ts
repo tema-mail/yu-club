@@ -96,6 +96,26 @@ function insert(v: Omit<Op, 'id' | 'number' | 'recordedAt' | 'balanceAfterKop' |
   return op;
 }
 
+/** postMoneyOperation для чужих модулей (K16: продажа сертификата – доход certificate_sale, отмена с возвратом –
+ *  refund): закрытый месяц и отрицательная касса – те же отказы, что у команд кассы. */
+export function recordMoney(v: {
+  branchId: string; timezone: string; kind: 'income' | 'refund'; method: Method; amountKop: number; source: string | null;
+  ref: { type: string; id: string }; comment: string | null; authorId: string;
+}): { id: string } {
+  const place: Place = v.method === 'cash' ? 'cash' : 'noncash';
+  const now = Date.now();
+  const month = monthOf(now, v.timezone);
+  if (periods.has(`${v.branchId}:${month}`)) throw new Fail(409, 'PERIOD_CLOSED', 'Месяц закрыт: исправление – операцией текущей датой', { month });
+  if (v.kind === 'refund' && bal(v.branchId, place) - v.amountKop < 0) {
+    throw new Fail(409, 'CASH_INSUFFICIENT', 'Недостаточно денег в кассе: внесите поступление или проверьте начальный остаток', { place, currentKop: bal(v.branchId, place), afterKop: bal(v.branchId, place) - v.amountKop });
+  }
+  const op = insert({
+    branchId: v.branchId, kind: v.kind, place, method: v.method, direction: v.kind === 'income' ? 'in' : 'out', amountKop: v.amountKop, source: v.source,
+    categoryId: null, subcategoryId: null, comment: v.comment, ref: v.ref, receiptIssued: null, occurredAt: new Date(now).toISOString(), authorId: v.authorId, reversalOf: null,
+  });
+  return { id: op.id };
+}
+
 export function resetFinance(branches: BranchLite[]): void {
   ops = [];
   balances = new Map();

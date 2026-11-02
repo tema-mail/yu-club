@@ -1,0 +1,235 @@
+---
+// Сертификаты (S2-67, K16 №29–30): /certificates – список зоны (по филиалу продажи) с фильтрами статуса, поиска и
+// «истекающих» 7/30/60 дней (08 §11.1, §13.4); /certificates/{id} – карточка с 8 разделами 08 §11.2.
+// Доступ – certificate.view (все роли). Отмена – certificate.cancel, корректировка – certificate.correct; решает сервер.
+// Чужой сертификат – 404 (K1). Список – серверный: фильтры обычной формой GET, «Показать ещё» – курсором.
+// Продажа (S2-68, K16 №31) – certificate.sell (Владелец, Директор); пределы номинала, способы и флаг доплаты (R-03) –
+// из настроек филиала контекста (K7), отказ чтения настроек – системные значения.
+import Crm from '../../layouts/Crm.astro';
+import CertificateCard, { CERT_BADGE, CERT_STATUS, day, type CertCardDto, type CertDto, type CertStatus } from '../../islands/CertificateCard.tsx';
+import { rub } from '../../islands/CashJournal.tsx';
+import SellCertificateForm from '../../islands/SellCertificateForm.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const [key = '', extra] = (Astro.params.path ?? '').split('/');
+const q = Astro.url.searchParams;
+
+let notFound = extra !== undefined || !can('certificate.view');
+let card: CertCardDto | null = null;
+let list: { items: CertDto[]; nextCursor: string | null } | null = null;
+let listError = '';
+const filters = { q: q.get('q')?.trim() ?? '', status: q.get('status') ?? '', expiring: q.get('expiring') ?? '', branchId: q.get('branchId') ?? '' };
+if (!notFound && key) {
+  try {
+    card = await serverCall<CertCardDto>(cookie, `/certificates/${encodeURIComponent(key)}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFound = true;
+  }
+} else if (!notFound) {
+  const p = new URLSearchParams({ limit: '50' });
+  for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+  const cursor = q.get('cursor');
+  if (cursor) p.set('cursor', cursor);
+  try {
+    list = await serverCall(cookie, `/certificates?${p}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 400) throw e;
+    listError = 'Фильтр не подошёл – проверьте поиск (от 1 до 100 символов).';
+    list = { items: [], nextCursor: null };
+  }
+}
+if (notFound) Astro.response.status = 404;
+
+const branchNames = Object.fromEntries(branches.map((b) => [b.id, b.name]));
+const tzOf = (branchId: string) => branches.find((b) => b.id === branchId)?.timezone ?? (ctx.kind === 'branch' ? ctx.branch.timezone : branches[0]?.timezone) ?? 'Asia/Novosibirsk';
+
+// Имена для карточки: сотрудники (staff.view), клиенты покупателя/получателя/истории (client.view.basic).
+const staffNames: Record<string, string> = {};
+const clientNames: Record<string, string> = {};
+if (card) {
+  if (can('staff.view')) {
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const c: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+      const r: { items: Array<{ id: string; firstName: string; lastName: string }>; nextCursor: string | null } = await serverCall(cookie, `/staff?limit=100${c}`);
+      for (const s of r.items) staffNames[s.id] = `${s.firstName} ${s.lastName}`;
+      if (!r.nextCursor) break;
+      cursor = r.nextCursor;
+    }
+  }
+  const ids = new Set([card.buyerClientId, card.recipientClientId, ...card.history.flatMap((h) => [h.oldClientId, h.newClientId])].filter((x): x is string => Boolean(x)));
+  for (const id of ids) {
+    try {
+      const cl = await serverCall<{ firstName: string | null; lastName: string | null }>(cookie, `/clients/${encodeURIComponent(id)}`);
+      clientNames[id] = [cl.lastName, cl.firstName].filter(Boolean).join(' ') || 'Без имени';
+    } catch (e) {
+      if (!(e instanceof ApiError) || ![403, 404].includes(e.status)) throw e;
+    }
+  }
+}
+
+// Продажа: филиал по умолчанию – из контекста; настройки – на уровне этого филиала (наследование сеть → филиал).
+const canSell = !card && !notFound && can('certificate.sell') && branches.length > 0;
+const sellBranch = ctx.kind === 'branch' ? ctx.branch : branches[0];
+const sale = { methods: ['cash', 'card', 'transfer'] as Array<'cash' | 'card' | 'transfer'>, minKop: null as number | null, maxKop: null as number | null, topup: false };
+if (canSell && sellBranch) {
+  try {
+    const st = await serverCall<{ items: Array<{ key: string; value: unknown }> }>(cookie, `/settings?scope=branch&id=${encodeURIComponent(sellBranch.id)}`);
+    const v = (k: string) => st.items.find((i) => i.key === k)?.value;
+    if (Array.isArray(v('certificate.sale_methods'))) sale.methods = v('certificate.sale_methods') as typeof sale.methods;
+    if (typeof v('certificate.nominal_min_kop') === 'number') sale.minKop = v('certificate.nominal_min_kop') as number;
+    if (typeof v('certificate.nominal_max_kop') === 'number') sale.maxKop = v('certificate.nominal_max_kop') as number;
+    sale.topup = v('payment.certificate_topup_enabled') === true;
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![403, 404].includes(e.status)) throw e;
+  }
+}
+
+const EXPIRING = [['', 'Все'], ['7', 'Истекают за 7 дней'], ['30', 'За 30 дней'], ['60', 'За 60 дней']] as const;
+const linkWith = (patch: Record<string, string>) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries({ ...filters, ...patch })) if (v) p.set(k, v);
+  const s = p.toString();
+  return `/certificates${s ? `?${s}` : ''}`;
+};
+const soldAt = (iso: string, branchId: string) => new Intl.DateTimeFormat('ru-RU', { timeZone: tzOf(branchId), dateStyle: 'short' }).format(new Date(iso));
+const title = notFound ? 'Не найдено' : card ? `Сертификат ${card.number}` : 'Сертификаты';
+---
+<Crm title={title}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такого сертификата нет или он продан вне вашей зоны доступа.</p>
+      <p><a href="/certificates">К сертификатам</a></p>
+    </div>
+  ) : card ? (
+    <>
+      <div class="yc-head">
+        <p class="yc-crumbs"><a href="/certificates">Сертификаты</a> / {card.number}</p>
+        <h1>Сертификат</h1>
+      </div>
+      <CertificateCard
+        client:load
+        initial={card}
+        timezone={tzOf(card.saleBranchId)}
+        branchNames={branchNames}
+        staffNames={staffNames}
+        clientNames={clientNames}
+        meId={me.staff.id}
+        canCancel={can('certificate.cancel')}
+        canCorrect={can('certificate.correct')}
+      />
+    </>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>Сертификаты</h1>
+        <p>Подарочные сертификаты на предъявителя: номер и 4-значный код, срок – 6 месяцев с продажи.</p>
+      </div>
+      {canSell && sellBranch && (
+        <div class="yc-tabs">
+          <SellCertificateForm
+            client:load
+            branches={branches.map((b) => ({ id: b.id, name: b.name }))}
+            defaultBranchId={sellBranch.id}
+            methods={sale.methods}
+            minKop={sale.minKop}
+            maxKop={sale.maxKop}
+            topupEnabled={sale.topup}
+          />
+        </div>
+      )}
+      <section class="yc-panel" aria-labelledby="cert-filter">
+        <h2 id="cert-filter" class="yc-cert__sr">Фильтры</h2>
+        <nav class="yc-tabs" aria-label="Истекающие">
+          {EXPIRING.map(([v, l]) => (
+            <a class="yc-tabs__link" href={linkWith({ expiring: v })} aria-current={filters.expiring === v ? 'page' : undefined}>{l}</a>
+          ))}
+        </nav>
+        <form class="yc-cert__filters" method="get" action="/certificates">
+          {filters.expiring && <input type="hidden" name="expiring" value={filters.expiring} />}
+          <label class="yc-field">
+            <span class="yc-field__label">Номер или телефон клиента</span>
+            <input class="yc-input" type="search" name="q" value={filters.q} maxlength={100} />
+          </label>
+          <label class="yc-field">
+            <span class="yc-field__label">Статус</span>
+            <select class="yc-input" name="status">
+              <option value="">Любой</option>
+              {(Object.keys(CERT_STATUS) as CertStatus[]).map((s) => <option value={s} selected={filters.status === s}>{CERT_STATUS[s]}</option>)}
+            </select>
+          </label>
+          {branches.length > 1 && (
+            <label class="yc-field">
+              <span class="yc-field__label">Филиал продажи</span>
+              <select class="yc-input" name="branchId">
+                <option value="">Все филиалы зоны</option>
+                {branches.map((b) => <option value={b.id} selected={filters.branchId === b.id}>{b.name}</option>)}
+              </select>
+            </label>
+          )}
+          <button class="yc-btn yc-btn--ghost" type="submit">Найти</button>
+        </form>
+      </section>
+      {listError && <p class="yc-alert yc-alert--error" role="alert">{listError}</p>}
+      <section class="yc-panel" aria-label="Список сертификатов">
+        {list && list.items.length === 0 ? (
+          <p class="yc-empty" data-testid="cert-empty">{filters.expiring ? `Сертификатов, истекающих в ближайшие ${filters.expiring} дней, нет.` : 'Сертификатов не найдено.'}</p>
+        ) : (
+          <div class="yc-cert__scroll" tabindex="0" aria-label="Сертификаты, прокрутка внутри блока">
+            <table class="yc-cert__table" data-testid="cert-list">
+              <thead><tr><th>Номер</th><th>Статус</th><th>Номинал</th><th>Остаток</th><th>Действует до</th><th>Филиал продажи</th><th>Продан</th></tr></thead>
+              <tbody>
+                {list?.items.map((c) => (
+                  <tr data-testid={`cert-${c.number}`}>
+                    <td><a class="yc-cert__link" href={`/certificates/${c.id}`}>{c.number}</a></td>
+                    <td><span class={`yc-badge yc-badge--${CERT_BADGE[c.status]}`}>{CERT_STATUS[c.status]}</span></td>
+                    <td class="yc-cert__num">{rub(c.nominalKop)}</td>
+                    <td class="yc-cert__num">{rub(c.balanceKop)}</td>
+                    <td>{day(c.expiresOn)}</td>
+                    <td>{branchNames[c.saleBranchId] ?? '–'}</td>
+                    <td>{soldAt(c.soldAt, c.saleBranchId)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {list?.nextCursor && <p><a class="yc-btn yc-btn--ghost" href={`${linkWith({})}${linkWith({}).includes('?') ? '&' : '?'}cursor=${encodeURIComponent(list.nextCursor)}`}>Показать ещё</a></p>}
+      </section>
+    </>
+  )}
+</Crm>
+
+<style is:global>
+  .yc-cert__sr{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+  .yc-cert__filters{ display:grid; gap:var(--yc-sp-xs); align-items:end; }
+  .yc-cert__filters > *{ min-width:0; }
+  .yc-cert__scroll{ max-width:100%; overflow-x:auto; border:1px solid var(--yc-line); border-radius:var(--yc-r-s); }
+  .yc-cert__table{ width:100%; min-width:46rem; border-collapse:collapse; font-size:var(--yc-fs-s); }
+  .yc-cert__table th,.yc-cert__table td{ padding:var(--yc-sp-2xs) var(--yc-sp-xs); border-bottom:1px solid var(--yc-line); text-align:left; vertical-align:middle; }
+  .yc-cert__table thead th{ font-size:var(--yc-fs-xs); font-weight:600; color:var(--yc-muted); background:var(--yc-surface-2); }
+  .yc-cert__table tbody tr:last-child > *{ border-bottom:0; }
+  .yc-cert__link{ display:inline-flex; align-items:center; min-height:var(--yc-tap); font-weight:600; font-variant-numeric:tabular-nums; }
+  .yc-cert__num{ text-align:right !important; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .yc-cert__number{ margin:0; font-size:clamp(1.75rem, 6vw, 2.5rem); font-weight:750; letter-spacing:.04em; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .yc-cert__big{ display:grid; grid-template-columns:repeat(auto-fit, minmax(9rem, 1fr)); gap:var(--yc-sp-xs); margin:0; }
+  .yc-cert__big > div{ min-width:0; padding:var(--yc-sp-xs); background:var(--yc-surface-2); border-radius:var(--yc-r-s); }
+  .yc-cert__big dt{ font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .yc-cert__big dd{ margin:0; font-size:var(--yc-fs-xl); font-weight:700; font-variant-numeric:tabular-nums; }
+  .yc-alert--warn{ background:var(--yc-warn-bg); color:var(--yc-warn); }
+  .yc-sell__ticket{ display:grid; gap:var(--yc-sp-3xs); padding:var(--yc-sp-s); border:2px dashed var(--yc-line); border-radius:var(--yc-r-m); }
+  .yc-sell__label{ font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .yc-sell__big{ margin:0; font-size:clamp(1.75rem, 7vw, 2.5rem); font-weight:750; letter-spacing:.06em; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  @media print{
+    .yc-printing body *{ visibility:hidden; }
+    .yc-printing .yc-sell__ticket,.yc-printing .yc-sell__ticket *{ visibility:visible; }
+    .yc-printing .yc-sell__ticket{ position:fixed; inset:0 auto auto 0; border-color:#000; }
+  }
+  @media (min-width:600px){
+    .yc-cert__filters{ grid-template-columns:minmax(0,18rem) minmax(0,14rem) minmax(0,14rem) auto; justify-content:start; }
+  }
+</style>

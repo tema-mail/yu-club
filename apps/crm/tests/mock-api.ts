@@ -4,12 +4,14 @@
 // S0-15: города и филиалы (создание, правка с rowVersion, архив), хронология аудита (K2), справочники –
 // точно по apps/api/src/modules/dictionaries/routes.ts. S1-25: поиск и карточка клиента – по clients/routes.crm.ts.
 // S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts). S1-24: ресурсы, график, блокировки, тарифы – mock-ops.ts.
-// S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts). S2-60/61: касса – mock-finance.ts (по finance/routes.crm.ts). S2-65/66: баллы – mock-loyalty.ts (по loyalty/routes.crm.ts).
+// S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts). S2-60/61: касса – mock-finance.ts (по finance/routes.crm.ts).
+// S2-67/68: сертификаты – mock-certificates.ts (по certificates/routes.crm.ts). S2-65/66: баллы – mock-loyalty.ts (по loyalty/routes.crm.ts).
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { registerBooking, resetBooking } from './mock-booking.ts';
+import { registerCertificates, resetCertificates } from './mock-certificates.ts';
 import { registerFinance, resetFinance } from './mock-finance.ts';
 import { registerLoyalty, resetLoyalty } from './mock-loyalty.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
@@ -64,6 +66,7 @@ const ACTIONS: Record<Role, string[]> = {
     'audit.export', 'notifications.view',
     'finance.view', 'finance.view.day', 'finance.expense.create', 'finance.income.create', 'finance.opening_balance', 'finance.withdrawal',
     'finance.place_transfer', 'finance.correct', 'finance.category.manage', 'finance.period.close',
+    'certificate.view', 'certificate.sell', 'certificate.cancel', 'certificate.correct', 'certificate.review', 'certificate.link',
     'loyalty.view', 'loyalty.adjust', 'loyalty.adjust_below_limit', 'loyalty.book_below_limit', 'loyalty.goods.manage', 'loyalty.goods.issue',
   ],
   director: [
@@ -72,12 +75,13 @@ const ACTIONS: Record<Role, string[]> = {
     'booking.visit.mark', 'booking.visit.correct', 'block.manage', 'client.view.basic', 'client.view.full',
     'client.update.limited', 'client.update', 'settings.branch.manage', 'audit.view', 'audit.view.own', 'notifications.view',
     'finance.view', 'finance.view.day', 'finance.expense.create', 'finance.income.create', 'finance.withdrawal', 'finance.place_transfer',
+    'certificate.view', 'certificate.sell', 'certificate.cancel', 'certificate.review', 'certificate.link',
     'loyalty.view', 'loyalty.adjust', 'loyalty.book_below_limit', 'loyalty.goods.manage', 'loyalty.goods.issue',
   ],
   admin: [
     'network.view', 'resources.view', 'schedule.view', 'booking.create', 'booking.cancel', 'booking.reschedule',
     'booking.visit.mark', 'block.manage', 'client.view.basic', 'client.update.limited', 'audit.view.own', 'notifications.view',
-    'finance.view.day', 'finance.expense.create', 'loyalty.view', 'loyalty.goods.issue',
+    'finance.view.day', 'finance.expense.create', 'certificate.view', 'certificate.link', 'loyalty.view', 'loyalty.goods.issue',
   ],
 };
 
@@ -689,6 +693,7 @@ export function buildMock() {
     resetBooking();
     resetSettings();
     resetFinance(branches);
+    resetCertificates(branches);
     resetLoyalty();
     return { ok: true };
   });
@@ -714,6 +719,8 @@ export function buildMock() {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
     fail, audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),
   });
+  resetCertificates(branches);
+  registerCertificates(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients });
   resetFinance(branches);
   registerFinance(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches });
   resetLoyalty();
