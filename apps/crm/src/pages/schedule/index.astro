@@ -2,8 +2,10 @@
 // Расписание филиала (S1-22): рабочий стол Администратора – требуют решения (R-08: сеанс прошёл без отметки),
 // записи дня, блокировки и оформления на сайте – и календарь по ресурсам (день/неделя). Филиал – из контекста
 // или ?branch=; вне зоны – 404 как у несуществующего (K1). Всё время – в зоне филиала, не браузера.
+// S2-64: «К оплате» (K10 №22) – пришедшие за день без оплаты; панель видна с правом finance.payment.view.
 import Crm from '../../layouts/Crm.astro';
 import ScheduleBoard from '../../islands/BookingForm.tsx';
+import UnpaidList, { type UnpaidPage } from '../../islands/UnpaidList.tsx';
 import type { CalendarView } from '../../islands/BranchCalendar.tsx';
 import { ApiError, serverCall } from '../../lib/api.ts';
 import {
@@ -22,13 +24,16 @@ const to = view === 'week' ? addDays(date, MAX_DAYS - 1) : date;
 let calendar: CalendarDto | null = null;
 let dayList: BookingPage | null = null;
 let decide: BookingPage | null = null;
+let unpaid: UnpaidPage | null = null;
+const canPayView = me.actions.includes('finance.payment.view');
 if (branch) {
   const id = encodeURIComponent(branch.id);
   try {
-    [calendar, dayList, decide] = await Promise.all([
+    [calendar, dayList, decide, unpaid] = await Promise.all([
       serverCall<CalendarDto>(cookie, `/branches/${id}/calendar?from=${date}&to=${to}`),
       serverCall<BookingPage>(cookie, `/branches/${id}/bookings?date=${date}&limit=100`),
       serverCall<BookingPage>(cookie, `/branches/${id}/bookings?needsDecision=true&limit=100`),
+      canPayView ? serverCall<UnpaidPage>(cookie, `/branches/${id}/unpaid?date=${date}&limit=50`) : Promise.resolve(null),
     ]);
   } catch (e) {
     if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 403)) throw e;
@@ -84,6 +89,8 @@ const isToday = date === today(tz);
             </>
           )}
         </section>
+
+        {unpaid && <UnpaidList client:load branchId={branch!.id} timezone={tz} date={date} isToday={isToday} initial={unpaid} />}
 
         <section class="yc-panel yc-desk__panel" aria-labelledby="desk-day" data-testid="desk-day">
           <h2 id="desk-day">Записи на {isToday ? 'сегодня' : fmtDay(date)} <span class="yc-desk__count">{dayList!.items.length}{dayList!.nextCursor ? '+' : ''}</span></h2>
