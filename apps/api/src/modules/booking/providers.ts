@@ -136,6 +136,15 @@ export const paymentBookingProvider = {
     return r.rows[0]?.client_id ?? null;
   },
 
+  /** K15 §11 (история ЛК): номера броней по id; неизвестные id пропускаются. */
+  async bookingNumbers(db: Db | Tx, bookingIds: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (bookingIds.length === 0) return out;
+    const r = await db.query<{ id: string; number: string }>('SELECT id, number FROM app.bookings WHERE id = ANY($1::uuid[])', [bookingIds]);
+    for (const x of r.rows) out.set(x.id, Number(x.number));
+    return out;
+  },
+
   /** K15 §4: активное посещение брони (начисление – только при нём). */
   async activeVisit(tx: Db | Tx, bookingId: string): Promise<{ visitId: string; branchId: string; clientId: string; arrivedAt: Date } | null> {
     const r = await tx.query<{ visitId: string; branchId: string; clientId: string; arrivedAt: Date }>(

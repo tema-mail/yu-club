@@ -13,7 +13,7 @@ import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from '.
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
-import { bookingsProvider, clientBranchLinks } from './modules/booking/providers.ts';
+import { bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
@@ -222,7 +222,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     // ЛК «Мои сертификаты» (K16 §8): только чтение, CERT_PEPPER не нужен
     void app.register(async (scope) => certificatePublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     // K15 §11: баллы в ЛК – баланс, история, резерв на своё удержание, каталог
-    void app.register(async (scope) => loyaltyPublicRoutes(scope, { clients }), { prefix: '/api/public/v1' });
+    void app.register(async (scope) => loyaltyPublicRoutes(scope, { clients, bookings: paymentBookingProvider }), { prefix: '/api/public/v1' });
     void app.register(
       async (scope) =>
         bookingPublicRoutes(scope, {

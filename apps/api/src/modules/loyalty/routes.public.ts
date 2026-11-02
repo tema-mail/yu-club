@@ -11,6 +11,7 @@ import { AppError } from '../../core/errors.ts';
 import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../core/idempotency.ts';
 import { systemClock } from '../../core/time.ts';
 import { authenticateClient, type ClientPublicDeps } from '../clients/routes.public.ts';
+import { getBranches } from '../network/index.ts';
 import { getBalance } from './account.ts';
 import { listBranchGoods } from './goods.ts';
 import { releaseHoldReserve, reserveForHold } from './reserve.ts';
@@ -44,24 +45,36 @@ function decodeCursor(c: string | undefined): { at: Date; id: number } | null {
   return { at: d, id: Number(id) };
 }
 
-/** История счёта клиента для ЛК: новые сверху, курсор (occurred_at, id). */
-export async function publicHistory(db: pg.Pool | pg.PoolClient, clientId: string, cursor: string | undefined, limit = 50) {
+/** Номера броней для истории (booking/providers.ts paymentBookingProvider; loyalty booking не импортирует, ADR 0002). */
+export interface HistoryBookings {
+  bookingNumbers(db: pg.Pool | pg.PoolClient, bookingIds: string[]): Promise<Map<string, number>>;
+}
+
+/** История счёта клиента для ЛК: новые сверху, курсор (occurred_at, id). Филиал – network/index.ts, номер брони – провайдер booking. */
+export async function publicHistory(db: pg.Pool | pg.PoolClient, bookings: HistoryBookings, clientId: string, cursor: string | undefined, limit = 50) {
   const after = decodeCursor(cursor);
-  const r = await db.query<{ id: string; occurred_at: Date; entry_type: string; amount: string; balance_after: string; branch_name: string | null; booking_number: string | null; not_returned: string | null }>(
-    `SELECT e.id, e.occurred_at, e.entry_type, e.amount, e.balance_after, br.name AS branch_name, bk.number AS booking_number, e.refs ->> 'notReturnedCenti' AS not_returned
+  const r = await db.query<{ id: string; occurred_at: Date; entry_type: string; amount: string; balance_after: string; branch_id: string | null; booking_id: string | null; not_returned: string | null }>(
+    `SELECT e.id, e.occurred_at, e.entry_type, e.amount, e.balance_after, e.branch_id,
+            COALESCE(CASE WHEN e.ref_type = 'booking' THEN e.ref_id END, (e.refs ->> 'bookingId')::uuid) AS booking_id,
+            e.refs ->> 'notReturnedCenti' AS not_returned
      FROM journal.ledger_entries e
      JOIN app.ledger_accounts a ON a.id = e.account_id
-     LEFT JOIN app.branches br ON br.id = e.branch_id
-     LEFT JOIN app.bookings bk ON bk.id = COALESCE(CASE WHEN e.ref_type = 'booking' THEN e.ref_id END, (e.refs ->> 'bookingId')::uuid)
      WHERE a.kind = 'loyalty_client' AND a.owner_type = 'client' AND a.owner_id = $1
        AND ($2::timestamptz IS NULL OR (e.occurred_at, e.id) < ($2::timestamptz, $3::bigint))
      ORDER BY e.occurred_at DESC, e.id DESC LIMIT $4`,
     [clientId, after?.at ?? null, after?.id ?? null, limit + 1],
   );
   const rows = r.rows.slice(0, limit);
+  const uniq = (v: Array<string | null>) => [...new Set(v.filter((x): x is string => x !== null))];
+  const branches = await getBranches(db, uniq(rows.map((x) => x.branch_id)));
+  const numbers = await bookings.bookingNumbers(db, uniq(rows.map((x) => x.booking_id)));
   const items = [];
   for (const x of rows) {
-    const base = { at: x.occurred_at.toISOString(), branchName: x.branch_name, bookingNumber: x.booking_number === null ? null : Number(x.booking_number) };
+    const base = {
+      at: x.occurred_at.toISOString(),
+      branchName: x.branch_id === null ? null : (branches.get(x.branch_id)?.name ?? null),
+      bookingNumber: x.booking_id === null ? null : (numbers.get(x.booking_id) ?? null),
+    };
     const notReturned = Number(x.not_returned ?? 0);
     if (notReturned > 0) items.push({ ...base, type: 'not_returned', deltaCenti: 0, balanceAfterCenti: Number(x.balance_after), note: `Не возвращено ${notReturned / 100} балла: срок партии истёк` });
     items.push({ ...base, type: x.entry_type.replace(/^loyalty\./, ''), deltaCenti: Number(x.amount), balanceAfterCenti: Number(x.balance_after), note: NOTES[x.entry_type] ?? 'Операция' });
@@ -71,7 +84,7 @@ export async function publicHistory(db: pg.Pool | pg.PoolClient, clientId: strin
   return { items, nextCursor };
 }
 
-export async function loyaltyPublicRoutes(app: FastifyInstance, deps: { clients: ClientPublicDeps }): Promise<void> {
+export async function loyaltyPublicRoutes(app: FastifyInstance, deps: { clients: ClientPublicDeps; bookings: HistoryBookings }): Promise<void> {
   const clock = deps.clients.clock ?? systemClock;
   const pool = deps.clients.pool as unknown as pg.Pool; // рантайм – pg.Pool (server.ts)
   const me = async (request: FastifyRequest, reply: Parameters<typeof authenticateClient>[2]) => authenticateClient(deps.clients, request, reply);
@@ -101,7 +114,7 @@ export async function loyaltyPublicRoutes(app: FastifyInstance, deps: { clients:
   app.get('/me/loyalty/history', async (request, reply) => {
     const s = await me(request, reply);
     const q = parse(HistoryQuery, request.query);
-    return publicHistory(pool, s.clientId, q.cursor, q.limit ?? 50);
+    return publicHistory(pool, deps.bookings, s.clientId, q.cursor, q.limit ?? 50);
   });
 
   app.post('/holds/:holdId/points-reserve', async (request, reply) => {
