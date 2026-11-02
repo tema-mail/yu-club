@@ -70,6 +70,18 @@ const year = new Date().getFullYear();
         >{hasSession ? 'Кабинет' : 'Войти'}</a>
       </div>
     </header>
+    {!hasSession && (
+      <script>
+        // Вход без перезагрузки (в оформлении записи): после события входа – ссылка в кабинет.
+        import { SIGNED_IN_EVENT } from '../lib/client.ts';
+        window.addEventListener(SIGNED_IN_EVENT, () => {
+          const a = document.querySelector<HTMLAnchorElement>('[data-testid="header-account"]');
+          if (!a) return;
+          a.href = '/account/';
+          a.textContent = 'Кабинет';
+        });
+      </script>
+    )}
 
     <main class="yu-main" id="main" tabindex="-1">
       <div class="yu-page">

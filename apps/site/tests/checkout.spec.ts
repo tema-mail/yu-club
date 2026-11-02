@@ -48,9 +48,13 @@ test('вход в потоке: удержание переходит к кли�
   await pick(page, 'ПК 4, 10:00–10:30');
   await pick(page, 'ПК 4, 10:30–11:00');
   await pick(page, 'VR 1, 12:00–12:15');
+  await expect(page.getByTestId('header-account')).toHaveText('Войти');
   await loginInFlow(page);
 
   await expect(page.getByTestId('checkout-items').locator('li')).toHaveCount(3);
+  // Шапка узнала о входе без перезагрузки.
+  await expect(page.getByTestId('header-account')).toHaveText('Кабинет');
+  await expect(page.getByTestId('header-account')).toHaveAttribute('href', '/account/');
   await expect(page.getByTestId('checkout-total')).toHaveText('500 ₽'); // 150 + 150 + 200 – из ответа API
   await expect(page.getByTestId('hold-timer')).toBeVisible();
 
