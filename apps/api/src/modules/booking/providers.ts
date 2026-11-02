@@ -129,6 +129,13 @@ export const paymentBookingProvider = {
     return { ...row, priceKop: Number(row.priceKop), payable: PAYABLE.has(row.status) };
   },
 
+  /** Клиент брони без блокировки строки (K17 «Решения 02.11»: счёт журнала берут до брони – по клиенту открывают счёт,
+   *  затем перечитывают бронь payableBooking под FOR SHARE). Клиент брони не меняется. Нет брони – null. */
+  async bookingClient(tx: Db | Tx, bookingId: string): Promise<string | null> {
+    const r = await tx.query<{ client_id: string }>('SELECT client_id FROM app.bookings WHERE id = $1', [bookingId]);
+    return r.rows[0]?.client_id ?? null;
+  },
+
   /** K15 §4: активное посещение брони (начисление – только при нём). */
   async activeVisit(tx: Db | Tx, bookingId: string): Promise<{ visitId: string; branchId: string; clientId: string; arrivedAt: Date } | null> {
     const r = await tx.query<{ visitId: string; branchId: string; clientId: string; arrivedAt: Date }>(

@@ -16,6 +16,7 @@ import { markArrived, revertVisit } from '../../apps/api/src/modules/booking/vis
 import type { PaymentMethod } from '../../apps/api/src/modules/finance/methods.ts';
 import { debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { ACCRUAL_HANDLERS, registerAccrualHandlers, type PaymentLookup } from '../../apps/api/src/modules/loyalty/accrual.ts';
+import { lockAccounts } from '../../apps/api/src/core/ledger.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const SYS = '00000000-0000-0000-0000-000000000001';
@@ -103,6 +104,32 @@ async function redeliver(handler: string, eventId: string): Promise<void> {
 const accruals = (bookingId: string) => db.client.query('SELECT status, amount_centi, payment_id FROM app.loyalty_accruals WHERE booking_id = $1 ORDER BY created_at', [bookingId]).then((r) => r.rows);
 const balance = async (clientId: string) => (await getBalance(pool, clientId, now)).balanceCenti;
 const newClient = async () => (await one(`INSERT INTO app.clients (phone_e164, first_name, status, created_by_type, registered_at) VALUES ($1, 'К', 'active', 'system', now()) RETURNING id`, [`+7913${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`])).id;
+
+/** Единый порядок K17 «Решения 02.11»: команда под счётом баллов (lockAccounts) берёт строку брони. Пока счёт держим,
+ *  запускаем обработчик и ждём, пока он встанет в очередь блокировки; затем бронь FOR UPDATE (FOR SHARE с FOR SHARE
+ *  не конфликтует – дедлок даёт любая команда, меняющая бронь под счётом). Обработчик в старом порядке «бронь → счёт» – 40P01. */
+async function underAccountThenBooking(clientId: string, bookingId: string, handler: () => Promise<unknown>): Promise<void> {
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const acc = await one(`SELECT id FROM app.ledger_accounts WHERE kind = 'loyalty_client' AND owner_id = $1`, [clientId]);
+    await lockAccounts(c, [acc.id]);
+    const run = handler();
+    for (let i = 0; i < 200; i++) {
+      const w = await one<{ n: number }>(`SELECT count(*)::int n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`);
+      if (w.n > 0) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await c.query('SELECT 1 FROM app.bookings WHERE id = $1 FOR UPDATE', [bookingId]);
+    await c.query('COMMIT');
+    await run;
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
+}
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
@@ -254,5 +281,18 @@ describe('сторно начисления', () => {
     await deliver(ACCRUAL_HANDLERS.visitConfirmed, (await events('visit.confirmed', b))[0]!);
     expect(await accruals(b)).toEqual([]);
     expect(await balance(c)).toBe(0);
+  });
+});
+
+describe('ревизия 02.11: порядок блокировок – счёт до брони', () => {
+  it('обработчик начисления параллельно с командой «счёт → бронь» – без дедлока, одно начисление', async () => {
+    const c = await newClient();
+    const b = await book(c, 20);
+    await arrive(b);
+    await pay(b, c, ['cash']);
+    await inTx((tx) => openAccount(tx, c, now));
+    const ev = (await events('visit.confirmed', b))[0]!;
+    await underAccountThenBooking(c, b, () => deliver(ACCRUAL_HANDLERS.visitConfirmed, ev));
+    expect((await accruals(b)).map((a) => a.status)).toEqual(['active']);
   });
 });

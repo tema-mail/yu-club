@@ -15,6 +15,8 @@ import { createBatch, openAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBa
 
 /** Чтение брони и посещения (реализация – booking/providers.ts paymentBookingProvider, S2-05). */
 export interface LoyaltyBookings {
+  /** Клиент брони без блокировки – чтобы открыть счёт до строки брони (K17 «Решения 02.11»). */
+  bookingClient(tx: Tx, bookingId: string): Promise<string | null>;
   payableBooking(tx: Tx, bookingId: string): Promise<{
     bookingId: string; branchId: string; branchTimezone: string; clientId: string; status: string; minutes: number; resourceType: string;
   } | null>;
@@ -46,9 +48,11 @@ export function batchExpiry(accruedAt: Date, ttlDays: number | null, tz: TimeZon
 /** Начислить за бронь, если выполнены все условия K15 §4. Идемпотентно: второе начисление невозможно. */
 export async function tryAccrue(tx: Tx, bookingId: string, deps: AccrualDeps): Promise<{ accrualId: string; amountCenti: number } | null> {
   const now = deps.clock.now();
+  const clientId = await deps.bookings.bookingClient(tx, bookingId);
+  if (!clientId) return null;
+  await openAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь под FOR SHARE → проверить
   const b = await deps.bookings.payableBooking(tx, bookingId);
-  if (!b) return null;
-  await openAccount(tx, b.clientId, now); // блокировка → перечитать → проверить
+  if (!b || b.clientId !== clientId.toLowerCase()) return null;
   const visit = await deps.bookings.activeVisit(tx, bookingId);
   const payment = await deps.payments.livePayment(tx, bookingId);
   if (!visit || !payment) return null;
