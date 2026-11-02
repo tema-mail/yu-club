@@ -2,7 +2,8 @@
 // «+» – новая партия source='manual' (срок – по loyalty.batch_ttl_days); «−» – расход FEFO, остаток – долг.
 // Ниже −50 – только Владелец (loyalty.adjust_below_limit) явным режимом K3 allowBelowLimit; иначе LIMIT_OVERRIDE_NOT_ALLOWED.
 // Исходная операция не меняется – корректировка всегда новая запись (16 §2.7). Закрытие loyalty_issues – этой же командой
-// со ссылкой на issue. Зону клиента (K1 assertCanClient) проверяет маршрут CRM; здесь – право роли.
+// со ссылкой на issue (нет, чужое – NOT_FOUND, закрыто – LOYALTY_ISSUE_RESOLVED). Повтор по ключу распознаётся до
+// проверки предела: прежний ответ без аудита. Зону клиента (K1 assertCanClient) проверяет маршрут CRM; здесь – право роли.
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { writeAudit, type AuditRequestMeta } from '../../core/audit.ts';
@@ -41,6 +42,24 @@ export async function adjust(tx: Tx, ctx: AccessContext, input: AdjustInput, met
   const acc = await openAccount(tx, input.clientId, now);
   const author = { type: 'staff' as const, id: ctx.actor.staffId };
   const key = `loyalty-adjust:${input.idempotencyKey ?? randomUUID()}`;
+  // повтор по ключу – до проверки предела и issue: прежний ответ, без аудита; тот же ключ с другой суммой – отказ
+  const prior = (
+    await tx.query<{ id: string; account_id: string; amount: string; entry_type: string }>(
+      'SELECT id, account_id, amount, entry_type FROM journal.ledger_entries WHERE idempotency_key = $1',
+      [`${key}#0`],
+    )
+  ).rows[0];
+  if (prior) {
+    if (prior.account_id !== acc.accountId || Number(prior.amount) !== input.deltaCenti || prior.entry_type !== 'loyalty.manual') {
+      throw new AppError('IDEMPOTENCY_KEY_REUSED', 409, 'Ключ уже использован для другой операции');
+    }
+    return { entryId: Number(prior.id) };
+  }
+  if (input.issueId) {
+    const issue = (await tx.query<{ status: string }>('SELECT status FROM app.loyalty_issues WHERE id = $1 AND client_id = $2 FOR UPDATE', [input.issueId, acc.clientId])).rows[0];
+    if (!issue) throw new AppError('NOT_FOUND', 404, 'Задача «требует решения» не найдена', { issueId: input.issueId });
+    if (issue.status !== 'open') throw new AppError('LOYALTY_ISSUE_RESOLVED', 409, 'Задача «требует решения» уже закрыта', { issueId: input.issueId });
+  }
   const ref = input.issueId ? { issueId: input.issueId } : undefined;
   let entryId: number;
   if (input.deltaCenti > 0) {
@@ -67,11 +86,11 @@ export async function adjust(tx: Tx, ctx: AccessContext, input: AdjustInput, met
   }
   await writeAudit(tx, meta, { action: 'loyalty.adjusted', object: { type: 'client', id: acc.clientId }, branchId: input.branch?.id ?? null, before: { balanceCenti: acc.balance }, after: { deltaCenti: input.deltaCenti, entryId, belowLimit: input.belowLimit === true }, reason }, clock);
   if (input.issueId) {
-    const r = await tx.query(
+    await tx.query(
       `UPDATE app.loyalty_issues SET status = 'resolved', resolved_entry_id = $3, resolved_by = $4, resolved_at = $5 WHERE id = $1 AND client_id = $2 AND status = 'open'`,
       [input.issueId, acc.clientId, entryId, ctx.actor.staffId, now],
     );
-    if (r.rowCount) await writeAudit(tx, meta, { action: 'loyalty.issue.resolved', object: { type: 'client', id: acc.clientId }, after: { issueId: input.issueId, entryId }, reason }, clock);
+    await writeAudit(tx, meta, { action: 'loyalty.issue.resolved', object: { type: 'client', id: acc.clientId }, after: { issueId: input.issueId, entryId }, reason }, clock);
   }
   return { entryId };
 }

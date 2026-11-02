@@ -8,6 +8,7 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import type { Clock } from '../../apps/api/src/core/time.ts';
 import { createBatch, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { createGoods, issueGoods, listBranchGoods, returnGoods, updateGoods, type GoodsInput } from '../../apps/api/src/modules/loyalty/goods.ts';
+import { lockAccounts } from '../../apps/api/src/core/ledger.ts';
 import { migrateDown, migrateUp } from '../../db/migrate.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -63,9 +64,11 @@ afterAll(async () => {
 it('миграция 0207: вниз и снова вверх', async () => {
   const t = await createTestDatabase({ migrate: true });
   try {
-    expect(await migrateDown(t.client)).toEqual(['0207']);
+    // откат до 0207 включительно – вместе с более поздними миграциями (раннер откатывает с конца)
+    const later = (await t.client.query<{ version: string }>(`SELECT version FROM public.schema_migrations WHERE version >= '0207' ORDER BY version`)).rows.map((r) => r.version);
+    expect((await migrateDown(t.client, later.length)).at(-1)).toBe('0207');
     expect((await t.client.query(`SELECT to_regclass('app.loyalty_goods') AS r`)).rows[0].r).toBeNull();
-    expect(await migrateUp(t.client)).toEqual(['0207']);
+    expect(await migrateUp(t.client)).toEqual(later);
   } finally {
     await t.drop();
   }
@@ -135,5 +138,34 @@ describe('возврат невыданного (07 §7.2)', () => {
     expect(await inTx((tx) => returnGoods(tx, admin, { orderId, reason: 'отмена' }, metaOf(admin), clock))).toEqual({ returnedCenti: 0, notReturnedCenti: 3000 });
     expect(await bal(c)).toBe(0);
     now = new Date('2026-11-14T05:00:00Z');
+  });
+});
+
+describe('ревизия 02.11: порядок блокировок – счёт до заказа', () => {
+  it('возврат товара параллельно с командой «счёт → заказ FOR UPDATE» – без дедлока', async () => {
+    const c = await clientWith(10_000);
+    const g = await goods();
+    const { orderId } = await issue(c, g.id);
+    const admin = ctxOf('admin');
+    const x = await pool.connect();
+    try {
+      await x.query('BEGIN');
+      const acc = (await db.client.query<{ id: string }>(`SELECT id FROM app.ledger_accounts WHERE kind = 'loyalty_client' AND owner_id = $1`, [c])).rows[0]!;
+      await lockAccounts(x, [acc.id]);
+      const run = inTx((tx) => returnGoods(tx, admin, { orderId, reason: 'не выдали' }, metaOf(admin), clock));
+      for (let i = 0; i < 200; i++) {
+        if ((await db.client.query<{ n: number }>(`SELECT count(*)::int n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`)).rows[0]!.n > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await x.query('SELECT 1 FROM app.loyalty_goods_orders WHERE id = $1 FOR UPDATE', [orderId]);
+      await x.query('COMMIT');
+      expect(await run).toEqual({ returnedCenti: 3000, notReturnedCenti: 0 });
+    } catch (err) {
+      await x.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      x.release();
+    }
+    expect(await bal(c)).toBe(10_000);
   });
 });

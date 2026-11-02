@@ -352,17 +352,16 @@ export async function returnSpend(
 
 // ---- резервы и доступный баланс (K15 §3)
 
-/** Подпись удержания: sha256 отсортированных id активных позиций (hex). Одна формула для записи резерва и проверки. */
-export const holdSignatureSql = (holdIdExpr: string): string =>
-  `(SELECT encode(sha256(convert_to(coalesce(string_agg(hi.id::text, ',' ORDER BY hi.id), ''), 'UTF8')), 'hex')
-    FROM app.hold_items hi WHERE hi.hold_id = ${holdIdExpr} AND hi.status = 'active')`;
+/** Резерв удержания совпадает с удержанием hp (представление booking app.booking_hold_points, миграция 0208 – таблицы
+ *  удержаний loyalty не читает, ADR 0002): подпись позиций та же и удержание живо или уже подтверждено («converted до
+ *  обработки» booking.confirmed; подпись подтверждённого – по позициям 'converted'). Иначе резерв снят (hold_changed …). */
+export const holdReserveMatchSql = (r: string, hp: string, atParam: string): string =>
+  `(${r}.hold_signature = ${hp}.items_signature AND ((${hp}.status = 'active' AND ${hp}.expires_at > ${atParam}) OR ${hp}.status = 'converted'))`;
 
-/** Резерв «занят»: резерв брони; резерв удержания при живом удержании с той же подписью (ленивое снятие, K15 §3)
- *  или при уже подтверждённом удержании, пока booking.confirmed не перевёл резерв на брони («converted до обработки»). */
+/** Резерв «занят»: резерв брони; резерв удержания, пока он совпадает с удержанием (ленивое снятие, K15 §3). */
 export const reserveLiveSql = (r: string, atParam: string): string =>
   `(${r}.status = 'booking' OR (${r}.status = 'hold' AND EXISTS (
-     SELECT 1 FROM app.holds h WHERE h.id = ${r}.hold_id AND (h.status = 'converted' OR (h.status = 'active' AND h.expires_at > ${atParam}
-       AND ${r}.hold_signature = ${holdSignatureSql(`${r}.hold_id`)})))))`;
+     SELECT 1 FROM app.booking_hold_points hp WHERE hp.hold_id = ${r}.hold_id AND ${holdReserveMatchSql(r, 'hp', atParam)})))`;
 
 /** Σ занятых резервов клиента; exclude – не считать резерв этой брони или этого удержания (оплата той же брони). */
 export async function reservedCenti(db: Db, clientId: string, at: Date, exclude: { bookingId?: string; holdId?: string } = {}): Promise<number> {

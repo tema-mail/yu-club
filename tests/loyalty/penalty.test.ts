@@ -15,6 +15,7 @@ import { paymentBookingProvider } from '../../apps/api/src/modules/booking/provi
 import { markNoShow, revertVisit } from '../../apps/api/src/modules/booking/visit.ts';
 import { debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { applyPenalty, clipPenalty, PENALTY_HANDLERS, registerPenaltyHandlers } from '../../apps/api/src/modules/loyalty/penalty.ts';
+import { lockAccounts } from '../../apps/api/src/core/ledger.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const SYS = '00000000-0000-0000-0000-000000000001';
@@ -222,6 +223,45 @@ describe('штрафы включены с даты запуска', () => {
     await runOccupancyCommand(pool, async (tx) => cancelBooking(tx, b!, { kind: 'staff', ctx: owner, rowVersion: await rowVersion(b!), initiator: 'club', reasonId, comment: 'сломался ПК' }, meta(), clock));
     expect(await eventsOf('no_show.marked', b!)).toEqual([]);
     expect(await penalties(b!)).toEqual([]);
+    expect(await balance(c)).toBe(0);
+  });
+});
+
+/** Единый порядок K17 «Решения 02.11»: команда под счётом баллов берёт бронь FOR UPDATE, пока обработчик ждёт блокировку.
+ *  Обработчик в порядке «бронь FOR SHARE → счёт» даёт 40P01. */
+async function underAccountThenBooking(clientId: string, bookingId: string, handler: () => Promise<unknown>): Promise<void> {
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const acc = await one(`SELECT id FROM app.ledger_accounts WHERE kind = 'loyalty_client' AND owner_id = $1`, [clientId]);
+    await lockAccounts(c, [acc.id]);
+    const run = handler();
+    for (let i = 0; i < 200; i++) {
+      if ((await one<{ n: number }>(`SELECT count(*)::int n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`)).n > 0) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await c.query('SELECT 1 FROM app.bookings WHERE id = $1 FOR UPDATE', [bookingId]);
+    await c.query('COMMIT');
+    await run;
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
+}
+
+describe('ревизия 02.11: порядок блокировок – счёт до брони (penalties_from уже стоит – блок выше)', () => {
+  it('штраф и его исправление параллельно с командой «счёт → бронь» – без дедлока', async () => {
+    const c = await newClient();
+    await setBalance(c, 0); // счёт есть, баланс 0
+    const [b] = await book(c);
+    await noShow(b!);
+    await underAccountThenBooking(c, b!, () => marked(b!));
+    expect(await penalties(b!)).toEqual([{ status: 'active', applied_centi: '-500' }]);
+    await revert(b!);
+    await underAccountThenBooking(c, b!, () => unmarked(b!));
+    expect((await penalties(b!)).map((x) => x.status)).toEqual(['reversed']);
     expect(await balance(c)).toBe(0);
   });
 });

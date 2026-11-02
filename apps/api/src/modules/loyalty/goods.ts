@@ -184,12 +184,15 @@ export async function returnGoods(
   clock: Clock = systemClock,
 ): Promise<{ returnedCenti: number; notReturnedCenti: number }> {
   const reason = input.reason?.trim() ?? '';
-  const o = (await tx.query<{ id: string; goods_id: string; branch_id: string; client_id: string; spend_entry_id: string; status: string }>(
-    'SELECT id, goods_id, branch_id, client_id, spend_entry_id, status FROM app.loyalty_goods_orders WHERE id = $1 FOR UPDATE',
-    [input.orderId],
-  )).rows[0];
+  const orderSql = 'SELECT id, goods_id, branch_id, client_id, spend_entry_id, status FROM app.loyalty_goods_orders WHERE id = $1';
+  type OrderRow = { id: string; goods_id: string; branch_id: string; client_id: string; spend_entry_id: string; status: string };
+  // счёт журнала – до строки заказа (K17 «Решения 02.11»): клиент без блокировки → openAccount → заказ FOR UPDATE → проверить
+  const pre = (await tx.query<OrderRow>(orderSql, [input.orderId])).rows[0];
+  if (!pre) throw notFound();
+  assertCan(ctx, 'loyalty.goods.issue', { branchId: pre.branch_id }); // филиал заказа не меняется
+  await openAccount(tx, pre.client_id, clock.now());
+  const o = (await tx.query<OrderRow>(`${orderSql} FOR UPDATE`, [input.orderId])).rows[0];
   if (!o) throw notFound();
-  assertCan(ctx, 'loyalty.goods.issue', { branchId: o.branch_id });
   if (reason === '') throw new AppError('COMMENT_REQUIRED', 422, 'Укажите причину возврата', { field: 'reason' });
   if (o.status !== 'issued') throw new AppError('ALREADY_REVERSED', 409, 'Товар уже возвращён');
   const now = clock.now();
