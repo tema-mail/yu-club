@@ -14,7 +14,7 @@ import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupanc
 import { paymentBookingProvider } from '../../apps/api/src/modules/booking/providers.ts';
 import { markNoShow } from '../../apps/api/src/modules/booking/visit.ts';
 import type { PaymentMethod } from '../../apps/api/src/modules/finance/methods.ts';
-import { createBatch, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
+import { createBatch, debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import type { PaymentLookup } from '../../apps/api/src/modules/loyalty/accrual.ts';
 import { registerReserveHandlers, reserveForHold, RESERVE_HANDLERS, settleStaleReserves } from '../../apps/api/src/modules/loyalty/reserve.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -221,5 +221,34 @@ describe('резерв брони', () => {
     expect(reasons).toEqual(['booking_cancelled', 'no_show', 'paid_other']);
     expect(await bal(c)).toMatchObject({ balanceCenti: 30_000, reservedCenti: 0, availableCenti: 30_000 });
     now = new Date('2026-11-14T05:00:00Z');
+  });
+});
+
+describe('ревизия 02.11: резерв, снятый изменением удержания, не оживает при подтверждении', () => {
+  it('зарезервировал 60 мин → добавил слот → подтвердил: резерва нет, баллы доступны', async () => {
+    const c = await clientWith(20_000);
+    const h = await hold(c, [slot(ids.b1pc1!, 60)]);
+    await reserve(c, h.id);
+    await runOccupancyCommand(pool, (tx) => addHoldItem(tx, { clientId: c, visitorId: null }, h.id, slot(ids.b1pc2!, 30), clock));
+    const r = await runOccupancyCommand(pool, (tx) => confirmHold(tx, c, h.id, clock));
+    expect(await bal(c)).toMatchObject({ reservedCenti: 0, availableCenti: 20_000 }); // событие ещё не обработано
+    for (const b of r.bookings) await deliver(RESERVE_HANDLERS.bookingConfirmed, await eventOf('booking.confirmed', 'bookingId', b.id));
+    expect((await reserves(c)).map((x) => `${x.status}:${x.release_reason ?? ''}`)).toEqual(['released:hold_changed']);
+    expect(await bal(c)).toMatchObject({ balanceCenti: 20_000, reservedCenti: 0, availableCenti: 20_000 });
+  });
+
+  it('подтверждение при балансе меньше резерва: резервы брони не превышают баланс', async () => {
+    const c = await clientWith(6000);
+    const h = await hold(c, [slot(ids.b1pc1!, 60)]);
+    await reserve(c, h.id);
+    await inTx(async (tx) => {
+      await openAccount(tx, c, now);
+      const p = await postPoints(tx, c, { amount: -3000, type: 'loyalty.manual', basis: 'тест', branchId: null, occurredAt: now }, randomUUID(), SYSTEM_AUTHOR);
+      await debitBatches(tx, { clientId: c, entryId: p.entryId, amount: 3000, balanceBefore: p.balanceBefore, kind: 'manual' });
+    });
+    await confirmed(c, h);
+    const b = await bal(c);
+    expect(b.reservedCenti).toBeLessThanOrEqual(b.balanceCenti);
+    expect((await reserves(c)).filter((x) => x.status === 'booking')).toEqual([]);
   });
 });

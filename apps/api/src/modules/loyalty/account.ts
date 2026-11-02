@@ -352,17 +352,22 @@ export async function returnSpend(
 
 // ---- резервы и доступный баланс (K15 §3)
 
-/** Подпись удержания: sha256 отсортированных id активных позиций (hex). Одна формула для записи резерва и проверки. */
-export const holdSignatureSql = (holdIdExpr: string): string =>
+/** Подпись удержания: sha256 отсортированных id его позиций со статусом itemStatus (hex). Одна формула для записи
+ *  резерва и проверки; для подтверждённого удержания – по позициям 'converted' (те же id, что были активны). */
+export const holdSignatureSql = (holdIdExpr: string, itemStatusExpr = `'active'`): string =>
   `(SELECT encode(sha256(convert_to(coalesce(string_agg(hi.id::text, ',' ORDER BY hi.id), ''), 'UTF8')), 'hex')
-    FROM app.hold_items hi WHERE hi.hold_id = ${holdIdExpr} AND hi.status = 'active')`;
+    FROM app.hold_items hi WHERE hi.hold_id = ${holdIdExpr} AND hi.status = ${itemStatusExpr})`;
 
-/** Резерв «занят»: резерв брони; резерв удержания при живом удержании с той же подписью (ленивое снятие, K15 §3)
- *  или при уже подтверждённом удержании, пока booking.confirmed не перевёл резерв на брони («converted до обработки»). */
+/** Резерв удержания совпадает с удержанием h: живое удержание с той же подписью активных позиций или подтверждённое
+ *  с той же подписью подтверждённых позиций («converted до обработки» booking.confirmed). Иначе – снят (hold_changed …). */
+export const holdReserveMatchSql = (r: string, h: string, atParam: string): string =>
+  `((${h}.status = 'active' AND ${h}.expires_at > ${atParam} AND ${r}.hold_signature = ${holdSignatureSql(`${r}.hold_id`)})
+    OR (${h}.status = 'converted' AND ${r}.hold_signature = ${holdSignatureSql(`${r}.hold_id`, `'converted'`)}))`;
+
+/** Резерв «занят»: резерв брони; резерв удержания, пока он совпадает с удержанием (ленивое снятие, K15 §3). */
 export const reserveLiveSql = (r: string, atParam: string): string =>
   `(${r}.status = 'booking' OR (${r}.status = 'hold' AND EXISTS (
-     SELECT 1 FROM app.holds h WHERE h.id = ${r}.hold_id AND (h.status = 'converted' OR (h.status = 'active' AND h.expires_at > ${atParam}
-       AND ${r}.hold_signature = ${holdSignatureSql(`${r}.hold_id`)})))))`;
+     SELECT 1 FROM app.holds h WHERE h.id = ${r}.hold_id AND ${holdReserveMatchSql(r, 'h', atParam)})))`;
 
 /** Σ занятых резервов клиента; exclude – не считать резерв этой брони или этого удержания (оплата той же брони). */
 export async function reservedCenti(db: Db, clientId: string, at: Date, exclude: { bookingId?: string; holdId?: string } = {}): Promise<number> {

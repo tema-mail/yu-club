@@ -2,8 +2,8 @@
 // Резерв 'hold' своего срока не хранит: занят, пока удержание active, не истекло и подпись его активных позиций
 // (holdSignature) совпадает с записанной – перезапуск таймера удержания продлевает резерв сам, изменение позиций
 // (добавление, удаление, отказ) снимает лениво: статус released(...) проставляется при следующем обращении к счёту
-// под блокировкой или обработчиком события. Подтверждение брони: резерв удержания → converted, на каждую бронь –
-// резерв 'booking'. Снятие: отмена брони, неявка (без списания, Q-46), перенос (не хватает – rescheduled_short),
+// под блокировкой или обработчиком события. Подтверждение брони: резерв удержания с неизменной подписью (по позициям
+// 'converted') → converted, на каждую бронь – резерв 'booking' в пределах доступного; подпись разошлась – hold_changed. Снятие: отмена брони, неявка (без списания, Q-46), перенос (не хватает – rescheduled_short),
 // оплата не баллами (paid_other). Списание (spent) – способ оплаты points (S2-37).
 // Порядок везде: openAccount (блокировка счёта) → перечитать из базы → проверить.
 import { writeAudit, type AuditRequestMeta } from '../../core/audit.ts';
@@ -12,7 +12,7 @@ import type { Tx } from '../../core/ledger.ts';
 import { listSubscriptions, subscribe } from '../../core/outbox.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { holdSignatureSql, openAccount, POINTS_MIN_BALANCE, reservedCenti } from './account.ts';
+import { holdReserveMatchSql, holdSignatureSql, openAccount, POINTS_MIN_BALANCE, reservedCenti } from './account.ts';
 import type { LoyaltyBookings, PaymentLookup } from './accrual.ts';
 import { LIMIT_MESSAGE } from './gate.ts';
 
@@ -37,8 +37,7 @@ export async function settleStaleReserves(tx: Tx, clientId: string, now: Date): 
                  WHEN h.status = 'expired' OR h.expires_at <= $2 THEN 'hold_expired'
                  ELSE 'hold_changed' END AS reason
      FROM app.loyalty_reserves r JOIN app.holds h ON h.id = r.hold_id
-     WHERE r.client_id = $1 AND r.status = 'hold' AND h.status <> 'converted'
-       AND NOT (h.status = 'active' AND h.expires_at > $2 AND r.hold_signature = ${holdSignatureSql('r.hold_id')})
+     WHERE r.client_id = $1 AND r.status = 'hold' AND NOT ${holdReserveMatchSql('r', 'h', '$2')}
      FOR UPDATE OF r`,
     [clientId, now],
   );
@@ -110,20 +109,29 @@ export async function releaseHoldReserve(tx: Tx, input: { clientId: string; hold
 
 // ---- обработчики событий
 
-/** booking.confirmed: резервы подтверждённых удержаний клиента → converted, на каждую живую бронь – резерв 'booking'. */
+/** booking.confirmed: резервы подтверждённых удержаний клиента с неизменной подписью → converted, на каждую живую
+ *  бронь – резерв 'booking', если доступных баллов хватает на все брони удержания; иначе и при смене позиций до
+ *  подтверждения – released('hold_changed'). Резервы брони никогда не превышают доступный баланс. */
 export async function convertReserves(tx: Tx, clientId: string, deps: { bookings: ReserveBookings; clock: Clock }): Promise<number> {
   const now = deps.clock.now();
   const acc = await openAccount(tx, clientId, now);
   const holds = await tx.query<{ id: string; hold_id: string }>(
     `SELECT r.id, r.hold_id FROM app.loyalty_reserves r JOIN app.holds h ON h.id = r.hold_id
-     WHERE r.client_id = $1 AND r.status = 'hold' AND h.status = 'converted' FOR UPDATE OF r`,
-    [acc.clientId],
+     WHERE r.client_id = $1 AND r.status = 'hold' AND h.status = 'converted' AND ${holdReserveMatchSql('r', 'h', '$2')}
+     ORDER BY r.created_at, r.id FOR UPDATE OF r`,
+    [acc.clientId, now],
   );
   let made = 0;
   for (const res of holds.rows) {
+    const bookings = (await deps.bookings.holdBookings(tx, res.hold_id)).filter((b) => b.status === 'confirmed' && b.minutes > 0);
+    const need = bookings.reduce((s, b) => s + b.minutes * 100, 0);
+    const available = Math.max(0, Math.max(0, acc.balance) - (await reservedCenti(tx, acc.clientId, now, { holdId: res.hold_id })));
+    if (available < need) {
+      await release(tx, res.id, 'hold_changed', now);
+      continue;
+    }
     await tx.query(`UPDATE app.loyalty_reserves SET status = 'converted', closed_at = $2 WHERE id = $1`, [res.id, now]);
-    for (const b of await deps.bookings.holdBookings(tx, res.hold_id)) {
-      if (b.status !== 'confirmed' || b.minutes <= 0) continue;
+    for (const b of bookings) {
       const ins = await tx.query(
         `INSERT INTO app.loyalty_reserves (client_id, amount_centi, hold_id, booking_id, status, created_at) VALUES ($1, $2, $3, $4, 'booking', $5)
          ON CONFLICT (booking_id) WHERE status = 'booking' DO NOTHING`,
