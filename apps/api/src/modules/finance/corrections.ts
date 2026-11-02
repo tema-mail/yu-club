@@ -2,7 +2,8 @@
 // Сторно – обратная проводка K3 (reversePosting: у перевода между местами записей две) и операция kind='reversal'
 // со ссылкой на исходную; исходная не меняется. Второе сторно – ALREADY_REVERSED (ловит UNIQUE reversal_of).
 // Приход по сеансу – только возвратом платежа K10 (USE_PAYMENT_REFUND), от продажи сертификата – отменой продажи K16
-// (USE_CERTIFICATE_CANCEL): иначе платёж или сертификат остались бы «живыми» без денег. Сторно датируется «сейчас»:
+// (USE_CERTIFICATE_CANCEL): иначе платёж или сертификат остались бы «живыми» без денег. Возврат (refund) не
+// сторнируется – USE_PAYMENT_REFUND. Сторно датируется «сейчас»:
 // исправление прошлого – операцией текущей датой (16 §14); уменьшение места денег – по правилу отрицательной кассы.
 // Исправление = сторно + новая операция в одной транзакции. Закрытый месяц открыть нельзя (у yu_app нет UPDATE/DELETE).
 import { randomUUID } from 'node:crypto';
@@ -87,6 +88,10 @@ async function reverseCore(
   const branch = await guardFinance(tx, ctx, found.branchId, 'finance.correct', { action: opts.auditAction, operationId: found.id });
   const reason = requireComment(input.reason, 'reason');
   if (found.kind === 'reversal') throw new AppError('CANNOT_REVERSE_REVERSAL', 409, 'Сторно нельзя сторнировать');
+  if (found.kind === 'refund') {
+    // возврат привязан к платежу K10 – исправление корректировкой, не сторно (решение 02.11 внизу K17)
+    throw new AppError('USE_PAYMENT_REFUND', 409, 'Возврат не сторнируется: исправление – корректировкой', { operationId: found.id });
+  }
   if (found.kind === 'income' && found.source === 'session') {
     throw new AppError('USE_PAYMENT_REFUND', 409, 'Приход по сеансу исправляется возвратом платежа', { operationId: found.id });
   }

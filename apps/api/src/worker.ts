@@ -1,7 +1,9 @@
 // Фоновый процесс (ADR 0002: процесс worker – тот же образ API, другая команда).
 // Запускает: подписки уведомлений на события брони (K14, до startOutboxWorker – подписки замораживаются),
-// доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение удержаний раз в 15 с
-// (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts).
+// подписки баллов (K15: штраф за неявку, резерв; начисление и paid_other – когда передан PaymentLookup finance),
+// доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение партий баллов раз в 10 мин, истечение удержаний раз в 15 с
+// (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер
+// запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts).
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
 //
 // Окружение: DATABASE_URL – рантайм yu_app (данные модулей); PGBOSS_DATABASE_URL – роль yu_boss, владелец
@@ -16,7 +18,11 @@ import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/
 import { systemClock, type Clock } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
 import { startCertificateExpiry } from './modules/certificates/lifecycle.ts';
-import { bookingLookup } from './modules/booking/providers.ts';
+import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
+import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/accrual.ts';
+import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
+import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
+import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { vapidKeys, type VapidKeys } from './modules/notifications/webpush.ts';
@@ -43,14 +49,20 @@ export async function startWorkerTasks(opts: {
   outboxIntervalMs?: number;
   pollingIntervalSeconds?: number;
   holdIntervalMs?: number;
+  loyaltyExpiryIntervalMs?: number;
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
   logger?: WorkerLogger;
+  /** Чтение оплаты для начисления баллов (K15 §4) – реализация finance (K10, S2-20). Нет – начисление не подключается. */
+  payments?: PaymentLookup;
 }): Promise<WorkerTasks> {
   const clock = opts.clock ?? systemClock;
   const logger = opts.logger ?? { error: (obj: Record<string, unknown>, msg: string) => log('error', msg, obj) };
   // подписки – до startOutboxWorker: он замораживает их и создаёт очереди по снимку
   registerNotificationHandlers({ bookings: bookingLookup, clock });
+  registerPenaltyHandlers({ bookings: paymentBookingProvider, clock });
+  registerReserveHandlers({ bookings: paymentBookingProvider, clock, ...(opts.payments ? { payments: opts.payments } : {}) });
+  if (opts.payments) registerAccrualHandlers({ bookings: paymentBookingProvider, payments: opts.payments, clock });
   const outbox = await startOutboxWorker({
     pool: opts.pool,
     boss: opts.boss,
@@ -72,6 +84,13 @@ export async function startWorkerTasks(opts: {
     intervalMs: opts.certificateIntervalMs ?? 5 * 60_000,
     onError: (err) => logger.error({ err: errText(err) }, 'certificates:expire: проход упал'),
   });
+  // K15 §2: истечение партий баллов (при loyalty.batch_ttl_days = null проход ничего не делает)
+  const loyaltyExpiry = startLoyaltyExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.loyaltyExpiryIntervalMs ?? 600_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'loyalty-expiry: проход упал'),
+  });
   // проверки 1–4 перед отправкой – по таблице броней (как в API, server.ts)
   const stopDispatcher = startDispatcher(
     { pool: opts.pool, vapid: opts.vapid, clock, bookings: bookingLookup },
@@ -82,6 +101,7 @@ export async function startWorkerTasks(opts: {
     stop: async () => {
       holds.stop();
       certificates.stop();
+      loyaltyExpiry.stop();
       stopDispatcher();
       await outbox.stop();
     },
@@ -106,7 +126,7 @@ async function main(): Promise<void> {
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   const tasks = await startWorkerTasks({ pool, boss, vapid });
-  log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, сгорание сертификатов 5 мин, отправка 30 с', {
+  log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, партий баллов 10 мин, сгорание сертификатов 5 мин, отправка 30 с', {
     version: config.GIT_SHA,
     webPush: Boolean(vapid),
   });

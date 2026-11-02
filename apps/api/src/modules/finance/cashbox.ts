@@ -600,7 +600,8 @@ export async function transferBetweenPlaces(tx: Tx, ctx: AccessContext, raw: unk
 
 const previewSchema = z.object({ branchId: UUID, place: PLACE, deltaKop: z.number().int().safe() });
 
-/** «Остаток после» до сохранения. Ничего не пишет и не блокирует – окончательная проверка в команде. */
+/** «Остаток после» до сохранения (право finance.view и finance.expense.create). Ничего не пишет и не блокирует –
+ *  окончательная проверка в команде. */
 export async function previewBalance(
   db: Db,
   ctx: AccessContext,
@@ -608,7 +609,9 @@ export async function previewBalance(
   clock: Clock = systemClock,
 ): Promise<{ currentKop: number; afterKop: number; allowed: boolean; reason: 'negative_forbidden' | null }> {
   const input = parse(previewSchema, raw);
-  const branch = await guardFinance(db, ctx, input.branchId, 'finance.expense.create', { action: 'finance.operation.created' });
+  // Только ролям, которые видят остаток (решение 02.11 внизу K17): иначе подбором суммы остаток восстанавливается.
+  const branch = await guardFinance(db, ctx, input.branchId, 'finance.view', { action: 'finance.operation.created' });
+  await guardFinance(db, ctx, branch.id, 'finance.expense.create', { action: 'finance.operation.created' });
   const r = await db.query<{ balance: string }>(`SELECT balance FROM app.ledger_accounts WHERE kind = $1 AND owner_type = 'branch' AND owner_id = $2`, [
     PLACE_ACCOUNT[input.place],
     branch.id,

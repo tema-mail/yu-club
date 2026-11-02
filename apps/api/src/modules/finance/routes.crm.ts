@@ -172,12 +172,17 @@ export async function financeCrmRoutes(app: FastifyInstance, deps: FinanceCrmDep
     return listOperations(deps.pool, access, (request.params as { branchId: string }).branchId, request.query, clock);
   });
 
-  // №38 предпросмотр: без finance.view – только allowed и причина
+  // №38 предпросмотр: только с finance.view (Администратору – 403 и отказ в аудит, решение 02.11 внизу K17)
   app.post('/branches/:branchId/finance/preview', async (request, reply) => {
-    const { access } = await deps.authenticate(request, reply);
+    const { access, meta } = await deps.authenticate(request, reply);
     const branchId = (request.params as { branchId: string }).branchId;
-    const r = await previewBalance(deps.pool, access, { ...objectBody(request.body), branchId }, clock);
-    return can(access, 'finance.view', { branchId }) ? r : { allowed: r.allowed, reason: r.reason };
+    try {
+      return await previewBalance(deps.pool, access, { ...objectBody(request.body), branchId }, clock);
+    } catch (err) {
+      const d = financeDenialOf(err);
+      if (d) await writeDenied(deps.pool, meta, { ...d, result: 'denied' }, clock);
+      throw err;
+    }
   });
 
   // №39–43 команды филиала
@@ -194,7 +199,10 @@ export async function financeCrmRoutes(app: FastifyInstance, deps: FinanceCrmDep
   );
   app.post(
     '/finance/operations/:id/correct',
-    command('correct', async (tx, ctx, p, body, meta, key, c) => correctOperation(tx, ctx, { ...body, operationId: p.id }, meta, { idempotencyKey: key, clock: c })),
+    command('correct', async (tx, ctx, p, body, meta, key, c) => {
+      const r = await correctOperation(tx, ctx, { ...body, operationId: p.id }, meta, { idempotencyKey: key, clock: c });
+      return { reversal: shape(ctx, r.reversal), replacement: shape(ctx, r.replacement) };
+    }),
   );
 
   // №46 справочник категорий
