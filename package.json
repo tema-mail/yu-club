@@ -33,6 +33,7 @@
     "build:site": "npm run build -w @yu/site",
     "test:site": "npm run test:e2e -w @yu/site",
     "load:race": "node tests/load/booking-race.ts",
+    "load:money": "node tests/load/money-race.ts",
     "test:e2e:stand": "playwright test -c tests/e2e/playwright.config.ts"
   }
 }
