@@ -105,23 +105,29 @@ test('Администратор чужого филиала – 404, Томск
 });
 
 test('лента дня на 1440 открывается с начала работы филиала (или с часа до «сейчас» в часы работы)', async ({ browser }) => {
+  // «Сейчас» браузера зафиксировано (часы засева 10:00–22:00 по зоне филиала): правило проверяется в обоих случаях,
+  // а не только в том, в который попал прогон. Данные календаря – с сервера мока, от выбранного времени не зависят.
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: TZ, locale: 'ru-RU' });
   const page = await ctx.newPage();
   await login(page, 'admin@yu.test');
-  for (const date of [day(0), day(1)]) {
-    await page.goto(`/schedule?date=${date}`);
+  const cases: Array<{ date: string; now: string; expected: string; why: string }> = [
+    { date: day(0), now: '15:20', expected: '14:00', why: 'сегодня, филиал открыт – час до текущего' },
+    { date: day(0), now: '10:20', expected: '10:00', why: 'сегодня, первый час работы – не раньше открытия' },
+    { date: day(0), now: '23:30', expected: '10:00', why: 'сегодня, филиал закрыт – с открытия' },
+    { date: day(0), now: '07:00', expected: '10:00', why: 'сегодня до открытия – с открытия' },
+    { date: day(1), now: '15:20', expected: '10:00', why: 'завтра – с открытия' },
+  ];
+  for (const c of cases) {
+    await page.clock.setFixedTime(new Date(`${day(0)}T${c.now}:00+07:00`));
+    await page.goto(`/schedule?date=${c.date}`);
     const scroll = page.getByTestId('calendar-scroll');
     await expect(scroll).toBeVisible();
-    // часы засева 10:00–22:00; сегодня в часы работы – час до текущего, не раньше открытия
-    const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: 'numeric', hourCycle: 'h23' }).format(new Date()));
-    const expected = date === day(0) && hour >= 10 && hour < 22 ? `${String(Math.max(10, hour - 1)).padStart(2, '0')}:00` : '10:00';
-    // первый час, чья подпись не спрятана под колонкой ресурсов
-    const first = await scroll.evaluate((el) => {
+    // первый час, чья подпись не спрятана под колонкой ресурсов; прокрутка ставится после гидратации – ждём её
+    await expect.poll(() => scroll.evaluate((el) => {
       const edge = el.querySelector('.yc-cal__corner')!.getBoundingClientRect().right;
       const spans = [...el.querySelectorAll('.yc-cal__hours span')] as HTMLElement[];
       return spans.find((x) => x.getBoundingClientRect().left >= edge - 1)?.textContent ?? null;
-    });
-    expect(first, `дата ${date}`).toBe(expected);
+    }), { message: `${c.why} (${c.date}, ${c.now})` }).toBe(c.expected);
   }
   await ctx.close();
 });
