@@ -3,7 +3,7 @@
 // что видит запись на сайте (availability), поэтому занятость в CRM и на сайте одна. Время – в зоне филиала.
 // Широкая лента прокручивается внутри блока, страница на 390 px не едет. Режим pick – выбор слота для переноса.
 // В режиме browse смена даты и вида – переход по адресу (?date=&view=): рабочий стол страницы считается на ту же дату.
-// S2-64: у пришедших и завершённых – отметка оплаты (K10 №23 POST /bookings/payment-status): «к оплате» или «оплачено».
+// S2-64: у пришедших и завершённых – отметка оплаты первой строкой (короткая бронь обрезает хвост) (K10 №23 POST /bookings/payment-status): «к оплате» или «оплачено».
 // Нет права на статусы оплаты или ошибка – календарь работает без отметки.
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { browserCall } from '../lib/api.ts';
@@ -264,7 +264,7 @@ function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight, pay }: Day
                   const mark = payMark(i, pay);
                   const body = (
                     <>
-                      <span class="yc-cal__item-time">{fmtRange(i.start, i.end, tz, false)}{mark && <> · <strong data-testid="cal-pay">{mark}</strong></>}</span>
+                      <span class="yc-cal__item-time">{mark && <><strong data-testid="cal-pay">{mark}</strong> · </>}{fmtRange(i.start, i.end, tz, false)}</span>
                       <span class="yc-cal__item-text">{itemText(i)}</span>
                     </>
                   );
@@ -322,7 +322,7 @@ function WeekGrid({ data, from, to, tz, onDay, highlight, pay }: { data: Calenda
                           <li>
                             {i.kind === 'booking'
                               ? <a class={itemClass(i, highlight)} href={`/bookings/${encodeURIComponent(i.id)}`} aria-label={itemLabel(i, tz, pay)} data-testid="cal-item">
-                                  <span class="yc-cal__item-time">{fmtRange(i.start, i.end, tz, false)}{payMark(i, pay) && <> · <strong data-testid="cal-pay">{payMark(i, pay)}</strong></>}</span> <span class="yc-cal__item-text">{itemText(i)}</span>
+                                  <span class="yc-cal__item-time">{payMark(i, pay) && <><strong data-testid="cal-pay">{payMark(i, pay)}</strong> · </>}{fmtRange(i.start, i.end, tz, false)}</span> <span class="yc-cal__item-text">{itemText(i)}</span>
                                 </a>
                               : <span class={itemClass(i, highlight)} role="img" aria-label={itemLabel(i, tz, pay)} data-testid="cal-item">
                                   <span class="yc-cal__item-time">{fmtRange(i.start, i.end, tz, false)}</span> <span class="yc-cal__item-text">{itemText(i)}</span>
