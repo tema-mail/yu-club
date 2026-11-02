@@ -1,6 +1,6 @@
 // Фоновый процесс (ADR 0002: процесс worker – тот же образ API, другая команда).
 // Запускает: подписки уведомлений на события брони (K14, до startOutboxWorker – подписки замораживаются),
-// подписки баллов (K15: штраф за неявку, резерв; начисление и paid_other – когда передан PaymentLookup finance),
+// подписки баллов (K15: штраф за неявку, резерв, начисление и paid_other по PaymentLookup finance),
 // доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение партий баллов раз в 10 мин, истечение удержаний раз в 15 с
 // (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер
 // запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts).
@@ -19,6 +19,7 @@ import { systemClock, type Clock } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
 import { startCertificateExpiry } from './modules/certificates/lifecycle.ts';
 import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
+import { paymentLookup } from './modules/finance/payment.ts';
 import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/accrual.ts';
 import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
@@ -53,7 +54,7 @@ export async function startWorkerTasks(opts: {
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
   logger?: WorkerLogger;
-  /** Чтение оплаты для начисления баллов (K15 §4) – реализация finance (K10, S2-20). Нет – начисление не подключается. */
+  /** Чтение оплаты для начисления баллов и снятия резерва paid_other (K15 §3–4); по умолчанию – finance paymentLookup (K10, S2-20). */
   payments?: PaymentLookup;
 }): Promise<WorkerTasks> {
   const clock = opts.clock ?? systemClock;
@@ -61,8 +62,9 @@ export async function startWorkerTasks(opts: {
   // подписки – до startOutboxWorker: он замораживает их и создаёт очереди по снимку
   registerNotificationHandlers({ bookings: bookingLookup, clock });
   registerPenaltyHandlers({ bookings: paymentBookingProvider, clock });
-  registerReserveHandlers({ bookings: paymentBookingProvider, clock, ...(opts.payments ? { payments: opts.payments } : {}) });
-  if (opts.payments) registerAccrualHandlers({ bookings: paymentBookingProvider, payments: opts.payments, clock });
+  const payments = opts.payments ?? paymentLookup;
+  registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
+  registerAccrualHandlers({ bookings: paymentBookingProvider, payments, clock });
   const outbox = await startOutboxWorker({
     pool: opts.pool,
     boss: opts.boss,

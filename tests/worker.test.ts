@@ -85,3 +85,8 @@ it('подписки уведомлений на события брони за�
     expect.arrayContaining(['notifications.onBookingConfirmed', 'notifications.onBookingRescheduled', 'notifications.onBookingCancelled']),
   );
 });
+
+it('баллы подключены к оплате finance: начисление и снятие резерва paid_other по payment.recorded (K15 §3–4)', () => {
+  const byType = listSubscriptions().filter((s) => s.type === 'payment.recorded').map((s) => s.name);
+  expect(byType).toEqual(expect.arrayContaining(['loyalty.accrual.onPaymentRecorded', 'loyalty.reserve.onPaymentRecorded']));
+});
