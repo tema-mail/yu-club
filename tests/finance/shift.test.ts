@@ -135,4 +135,17 @@ describe('кассовая смена', () => {
     await fails(resolve(ctx('director', [b]), s.id, 'correct'), 'VALIDATION_FAILED'); // при закрытии сошлось
     expect((await resolve(ctx('director', [b]), s.id, 'accept')).shift.status).toBe('resolved');
   });
+  it('расхождение смены 1, решённое correct после открытия смены 2, не всплывает как openingDiff смены 2', async () => {
+    const b = await branchWithShifts();
+    const admin = ctx('admin', [b]);
+    const s1 = await open(admin, b, 0);
+    await income(ctx('owner'), b, 1_000);
+    await close(admin, s1.id, 700); // недостача 300, ждёт решения
+    const s2 = await open(admin, b, 700); // в ящике те же 700, остаток счёта ещё 1000
+    expect(s2.openingDiffKop).toBe(-300);
+    await resolve(ctx('director', [b]), s1.id, 'correct', 'недостача по пересчёту');
+    expect(await cash(b)).toBe(700);
+    const c2 = await close(admin, s2.id, 700);
+    expect(c2).toMatchObject({ status: 'closed', openingExpectedKop: 700, openingDiffKop: 0, closingDiffKop: 0 });
+  });
 });

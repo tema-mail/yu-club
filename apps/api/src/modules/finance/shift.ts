@@ -3,7 +3,8 @@
 // остаток и расхождение он не получает (это делает HTTP-слой по finance.view). Закрытие: expected = остаток места cash,
 // diff = counted − expected; diff = 0 и при открытии сошлось – closed, иначе needs_resolution: само ничего не проводится.
 // Решает Директор или Владелец (finance.shift.resolve): correct – операция correction на diff со ссылкой на смену
-// (в эту смену, без требования открытой), accept – «принято без проводки»; причина обязательна, аудит.
+// (в эту смену, без требования открытой), accept – «принято без проводки»; причина обязательна, аудит. correct после
+// открытия следующей смены сдвигает её opening_expected на diff – решённое расхождение повторно не всплывает.
 // Порядок: оба места денег (lockPlaces) → смена FOR UPDATE → перечитать → проверить. Внешних вызовов нет.
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -181,6 +182,7 @@ export async function resolveShift(
   const { branch, places, shift } = await lockShift(tx, ctx, input.shiftId, 'finance.shift.resolve', 'cash_shift.resolved');
   if (shift.status !== 'needs_resolution') throw new AppError('VALIDATION_FAILED', 400, 'Расхождения нет или оно уже решено', { status: shift.status });
   let operation: FinanceOperationDto | null = null;
+  let adjustedShiftId: string | null = null;
   if (input.action === 'correct') {
     const diff = shift.closingDiffKop!;
     if (diff === 0) throw new AppError('VALIDATION_FAILED', 400, 'При закрытии сошлось – решение «принято без проводки»', { field: 'action' });
@@ -199,6 +201,14 @@ export async function resolveShift(
       occurredAt: now, author, postingId: posting.postingId, reversalOf: null, shiftId: shift.id,
     });
     await writeAudit(tx, meta, { action: 'finance.operation.created', object: { type: 'finance_operation', id }, branchId: branch.id, cityId: branch.cityId, after: operation }, clock);
+    // Открытая сейчас смена открывалась после закрытия этой (одна открытая на филиал, всё под lockPlaces) и взяла ожидаемый
+    // остаток без этой корректировки: учитываем её, иначе то же расхождение всплывёт как openingDiff следующей смены.
+    const next = await tx.query<{ id: string }>(
+      `UPDATE app.cash_shifts SET opening_expected_kop = opening_expected_kop + $2, row_version = row_version + 1
+       WHERE branch_id = $1 AND status = 'open' AND opened_at >= $3 RETURNING id`,
+      [branch.id, diff, shift.closedAt],
+    );
+    adjustedShiftId = next.rows[0]?.id ?? null;
   }
   await tx.query(
     `UPDATE app.cash_shifts SET status = 'resolved', resolution = $2, resolution_reason = $3, resolution_operation_id = $4, resolved_by = $5, resolved_at = $6, row_version = row_version + 1 WHERE id = $1`,
@@ -208,7 +218,7 @@ export async function resolveShift(
   await writeAudit(
     tx,
     meta,
-    { action: 'cash_shift.resolved', object: { type: 'cash_shift', id: shift.id }, branchId: branch.id, cityId: branch.cityId, after: { resolution: input.action, operationId: operation?.id ?? null }, reason },
+    { action: 'cash_shift.resolved', object: { type: 'cash_shift', id: shift.id }, branchId: branch.id, cityId: branch.cityId, after: { resolution: input.action, operationId: operation?.id ?? null, openingAdjustedShiftId: adjustedShiftId }, reason },
     clock,
   );
   return { shift: dto, operation };
