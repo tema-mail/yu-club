@@ -9,9 +9,9 @@ import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
 import { AppError } from '../../apps/api/src/core/errors.ts';
 import type { AccessContext, StaffRole } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock, type Clock } from '../../apps/api/src/core/time.ts';
-import { cancelSale, correctBalance, expireDueCertificates, linkRecipient, linkRecipientByCode, setReview } from '../../apps/api/src/modules/certificates/lifecycle.ts';
-import { createCertificatePaymentMethod } from '../../apps/api/src/modules/certificates/payment-method.ts';
-import { getCertificate, sellCertificate, type CertificateDto } from '../../apps/api/src/modules/certificates/sale.ts';
+import { cancelSale, correctBalance, expireDueCertificates, linkRecipient, linkRecipientByCode, reissuePin, setReview } from '../../apps/api/src/modules/certificates/lifecycle.ts';
+import { createCertificatePaymentMethod, verifyCertificatePin } from '../../apps/api/src/modules/certificates/payment-method.ts';
+import { getCertificate, pinHashOf, sellCertificate, type CertificateDto } from '../../apps/api/src/modules/certificates/sale.ts';
 import type { ChargeResult } from '../../apps/api/src/modules/finance/methods.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -291,5 +291,35 @@ describe('ревью: сгорание переживает ошибку стр�
     expect((await correct(2, -5_000, at(cert.certificate))).balanceKop).toBe(65_000);
     expect(await expireDueCertificates(pool, at(cert.certificate))).toBe(1);
     await fails(correct(3, 1_000, at(cert.certificate, 60_000)), 'CERTIFICATE_EXPIRED');
+  });
+});
+
+describe('перевыпуск кода (K16 §3, ревью 03.11)', () => {
+  it('Владелец: новый код работает, старый – нет, блок попыток снят; Директор – FORBIDDEN; в аудите кода нет', async () => {
+    const cert = await sell(100_000);
+    const wrong = String((Number(cert.pin) + 1) % 10_000).padStart(4, '0');
+    for (let i = 0; i < 5; i++) await verifyCertificatePin(pool, { number: cert.certificate.number, pin: wrong }, { pepper: PEPPER, clock }).catch(() => undefined);
+    await fails(verifyCertificatePin(pool, { number: cert.certificate.number, pin: cert.pin }, { pepper: PEPPER, clock }), 'CERTIFICATE_PIN_LOCKED');
+    const reissue = (who: AccessContext, rowVersion: number, reason = 'клиент потерял код') =>
+      tx((t) => reissuePin(t, who, { certificateId: cert.certificate.id, rowVersion, reason }, meta(who), { pepper: PEPPER, clock }));
+    await fails(reissue(ctx('director', await staff('director'), [saleBranch]), 1), 'FORBIDDEN');
+    await fails(reissue(owner(), 1, ' '), 'COMMENT_REQUIRED');
+    const r = await reissue(owner(), 1);
+    expect(r.pin).toMatch(/^\d{4}$/);
+    expect(r.certificate).toMatchObject({ id: cert.certificate.id, rowVersion: 2, balanceKop: 100_000 });
+    const stored = await db.client.query(`SELECT pin_hash, pin_failed_count, pin_locked_until FROM app.certificates WHERE id = $1`, [cert.certificate.id]);
+    expect(stored.rows[0]).toEqual({ pin_hash: pinHashOf(PEPPER, cert.certificate.id, r.pin), pin_failed_count: 0, pin_locked_until: null });
+    expect(await verifyCertificatePin(pool, { number: cert.certificate.number, pin: r.pin }, { pepper: PEPPER, clock })).toEqual({ certificateId: cert.certificate.id });
+    if (r.pin !== cert.pin) {
+      await fails(verifyCertificatePin(pool, { number: cert.certificate.number, pin: cert.pin }, { pepper: PEPPER, clock }), 'CERTIFICATE_NOT_FOUND');
+    }
+    const audit = await db.client.query<{ t: string; reason: string }>(
+      `SELECT row_to_json(a)::text AS t, reason FROM journal.audit_events a WHERE action = 'certificate.pin_reissued' AND object_id = $1`,
+      [cert.certificate.id],
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.reason).toBe('клиент потерял код');
+    expect(audit.rows[0]!.t).not.toContain(stored.rows[0].pin_hash);
+    expect(audit.rows[0]!.t).not.toMatch(new RegExp(`"pin"\\s*:\\s*"${r.pin}"`));
   });
 });

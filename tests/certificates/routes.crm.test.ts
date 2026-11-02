@@ -187,3 +187,23 @@ describe('проверка по коду №36', () => {
     expect(errBody(unknown.json())).toEqual({ code: 'CERTIFICATE_NOT_FOUND', message: 'Сертификат не найден или код неверен', requestId: undefined });
   });
 });
+
+describe('перевыпуск кода (K16 §3)', () => {
+  it('Владелец – новый код один раз, повтор ключа – без кода; Директор и Администратор – 403; новый код проходит проверку', async () => {
+    const { certificate } = (await sell('owner', ids.marksa, { nominalKop: 50_000, method: 'cash' })).json();
+    expect((await req('director2', 'POST', `/certificates/${certificate.id}/pin`, { rowVersion: 1, reason: 'потерян' })).statusCode).toBe(403);
+    expect((await req('admin2', 'POST', `/certificates/${certificate.id}/pin`, { rowVersion: 1, reason: 'потерян' })).statusCode).toBe(403);
+    const key = randomUUID();
+    const first = await req('owner', 'POST', `/certificates/${certificate.id}/pin`, { rowVersion: 1, reason: 'потерян' }, key);
+    expect(first.statusCode).toBe(200);
+    const pin = first.json().pin as string;
+    expect(pin).toMatch(/^\d{4}$/);
+    const again = await req('owner', 'POST', `/certificates/${certificate.id}/pin`, { rowVersion: 1, reason: 'потерян' }, key);
+    expect(again.headers['idempotent-replay']).toBe('true');
+    expect(again.json()).toEqual({ certificate: first.json().certificate, pin: null, pinShownOnce: true });
+    const k = await db.client.query<{ t: string }>(`SELECT row_to_json(k)::text AS t FROM app.idempotency_keys k WHERE key = $1`, [key]);
+    expect(k.rows[0]!.t).not.toMatch(new RegExp(`"pin"\\s*:\\s*"${pin}"`));
+    const check = await req('admin2', 'POST', '/certificates/check', { branchId: ids.marksa, number: certificate.number, pin });
+    expect([check.statusCode, check.json().balanceKop]).toEqual([200, 50_000]);
+  });
+});

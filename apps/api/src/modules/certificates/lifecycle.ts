@@ -11,7 +11,7 @@ import { systemClock, type Clock } from '../../core/time.ts';
 import { lockPlaces, postMoneyOperation } from '../finance/cashbox.ts';
 import { getBranch } from '../network/index.ts';
 import { verifyCertificatePin } from './payment-method.ts';
-import { CERT_SELECT, getCertificateRow, toCertificateDto, type CertificateDto, type CertificateRow } from './sale.ts';
+import { CERT_SELECT, generatePin, getCertificateRow, pinHashOf, toCertificateDto, type CertificateDto, type CertificateRow } from './sale.ts';
 
 const notFound = () => new AppError('NOT_FOUND', 404, 'Не найдено');
 const systemMeta = (): AuditRequestMeta => ({ actor: { kind: 'system', process: 'certificates:expire' }, source: 'system', requestId: randomUUID() });
@@ -234,6 +234,37 @@ export async function correctBalance(
     reason,
   }, clock);
   return res;
+}
+
+// ---- перевыпуск кода (K16 §3)
+
+/** Право certificate.correct (Владелец). Новый код – только в этом ответе (HTTP сохраняет ответ без кода), старый
+ *  перестаёт работать сразу, счётчик и блок попыток сбрасываются. Аудит certificate.pin_reissued – без кода и хэша. */
+export async function reissuePin(
+  tx: Tx,
+  ctx: AccessContext,
+  input: { certificateId: string; rowVersion: number; reason: string },
+  meta: AuditRequestMeta,
+  opts: { pepper: string; clock?: Clock },
+): Promise<{ certificate: CertificateDto; pin: string }> {
+  const clock = opts.clock ?? systemClock;
+  const now = clock.now();
+  const reason = requireText(input.reason, 'reason');
+  const first = await guarded(tx, ctx, input.certificateId, 'certificate.correct');
+  await lockAccounts(tx, [first.ledger_account_id]);
+  const row = await relock(tx, first.id, input.rowVersion);
+  if (row.cancelled_at) throw new AppError('CERTIFICATE_NOT_ACTIVE', 409, 'Продажа отменена', { status: 'cancelled' });
+  const pin = generatePin();
+  await bump(tx, row.id, 'pin_hash = $2, pin_failed_count = 0, pin_locked_until = NULL', [pinHashOf(opts.pepper, row.id, pin)]);
+  const certificate = await dto(tx, row.id, now);
+  await writeAudit(tx, meta, {
+    action: 'certificate.pin_reissued',
+    object: { type: 'certificate', id: row.id },
+    branchId: row.sale_branch_id,
+    after: { rowVersion: certificate.rowVersion },
+    reason,
+  }, clock);
+  return { certificate, pin };
 }
 
 // ---- «требует проверки» (K16 §6, 08 §8)

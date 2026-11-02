@@ -13,7 +13,7 @@ import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../co
 import type { Tx } from '../../core/ledger.ts';
 import { assertCan, branchScopeSql, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { cancelSale, correctBalance, linkRecipient, linkRecipientByCode, setReview } from './lifecycle.ts';
+import { cancelSale, correctBalance, linkRecipient, linkRecipientByCode, reissuePin, setReview } from './lifecycle.ts';
 import { verifyCertificatePin } from './payment-method.ts';
 import { CERT_SELECT, getCertificateRow, pinDigest, redactSaleResponse, sellCertificate, toCertificateDto, type CertificateRow } from './sale.ts';
 
@@ -47,6 +47,7 @@ const saleSchema = z.object({
 });
 const cancelSchema = z.object({ rowVersion: z.number().int(), reason: z.string().max(2000), refundMoney: z.boolean() });
 const correctSchema = z.object({ rowVersion: z.number().int(), deltaKop: z.number(), reason: z.string().max(2000), ref: z.string().max(200).nullish() });
+const reissueSchema = z.object({ rowVersion: z.number().int(), reason: z.string().max(2000) });
 const reviewSchema = z.object({ rowVersion: z.number().int(), on: z.boolean(), reason: z.string().max(2000) });
 const recipientSchema = z.object({ rowVersion: z.number().int(), clientId: UUID.nullable() });
 const recipientByCodeSchema = z.object({ branchId: UUID, number: z.string().min(1).max(40), pin: z.string().max(10), clientId: UUID.nullable() });
@@ -246,6 +247,18 @@ export async function certificateCrmRoutes(app: FastifyInstance, deps: Certifica
   app.post(
     '/certificates/:id/recipient',
     command('recipient', 'certificate.recipient_changed', async (tx, ctx, p, body, meta, c) => linkRecipient(tx, ctx, { ...parse(recipientSchema, body), certificateId: byId(p) }, meta, c), 200),
+  );
+
+  // перевыпуск кода (K16 §3): новый код – только в первом ответе, повтор ключа – без кода
+  app.post(
+    '/certificates/:id/pin',
+    command(
+      'pin_reissue',
+      'certificate.pin_reissued',
+      async (tx, ctx, p, body, meta, c) => reissuePin(tx, ctx, { ...parse(reissueSchema, body), certificateId: byId(p) }, meta, { pepper: deps.pepper, clock: c }),
+      200,
+      { redact: redactSaleResponse },
+    ),
   );
 
   // №35б: сертификат предъявлен в филиале сотрудника – номер и код вместо id (K16 §7, ревью 03.11)
