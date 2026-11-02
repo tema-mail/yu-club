@@ -99,6 +99,7 @@ export const certificatePaymentMethod: PaymentMethodHandler;   // K10 §5
 ## 7. Получатель (08 §7)
 
 - `linkRecipient(tx, ctx, { certificateId, clientId, rowVersion })`, право `certificate.link` (все роли, сертификат продан в их зоне или предъявлен в их филиале): привязка или смена получателя, строка в `certificate_holder_history` (старый, новый, дата, автор). Именным сертификат это не делает (Q-26).
+- Предъявлен в филиале сотрудника (правка по ревью 03.11): id сертификата чужого филиала сотрудник не знает – `linkRecipientByCode(tx, pool, ctx, { branchId, number, pin, clientId })`, `POST /certificates/recipient-by-code`; право `certificate.link` в филиале предъявления, код – `verifyCertificatePin` отдельной транзакцией (счётчик и блок §3). По id (№35) – только в зоне филиала продажи.
 - Одна сумма не гасится двумя клиентами одновременно – блокировка счёта (§5 п.7).
 
 ## 8. ЛК «Мои сертификаты» (08 §10)

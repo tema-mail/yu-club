@@ -9,7 +9,7 @@ import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
 import { AppError } from '../../apps/api/src/core/errors.ts';
 import type { AccessContext, StaffRole } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock, type Clock } from '../../apps/api/src/core/time.ts';
-import { cancelSale, correctBalance, expireDueCertificates, linkRecipient, setReview } from '../../apps/api/src/modules/certificates/lifecycle.ts';
+import { cancelSale, correctBalance, expireDueCertificates, linkRecipient, linkRecipientByCode, setReview } from '../../apps/api/src/modules/certificates/lifecycle.ts';
 import { createCertificatePaymentMethod } from '../../apps/api/src/modules/certificates/payment-method.ts';
 import { getCertificate, sellCertificate, type CertificateDto } from '../../apps/api/src/modules/certificates/sale.ts';
 import type { ChargeResult } from '../../apps/api/src/modules/finance/methods.ts';
@@ -237,15 +237,22 @@ describe('корректировка и «требует проверки» (K16
 });
 
 describe('получатель (K16 §7)', () => {
-  it('привязка и смена – строка истории; Администратор филиала предъявления может, чужой – NOT_FOUND', async () => {
+  it('привязка и смена – строка истории; Администратор филиала предъявления – по номеру и коду, по id – NOT_FOUND', async () => {
     const cert = await sell(100_000);
     const second = (await db.client.query(`INSERT INTO app.clients (phone_e164, status, created_by_type) VALUES ('+79130000556', 'active', 'system') RETURNING id`)).rows[0].id as string;
-    const link = (who: AccessContext, client: string | null, rowVersion: number, presentedBranchId?: string) =>
-      tx((t) => linkRecipient(t, who, { certificateId: cert.certificate.id, clientId: client, rowVersion, presentedBranchId: presentedBranchId ?? null }, meta(who), clock));
+    const link = (who: AccessContext, client: string | null, rowVersion: number) =>
+      tx((t) => linkRecipient(t, who, { certificateId: cert.certificate.id, clientId: client, rowVersion }, meta(who), clock));
+    const byCode = (who: AccessContext, client: string | null, pin: string, branchId = otherBranch) =>
+      tx((t) => linkRecipientByCode(t, pool, who, { branchId, number: cert.certificate.number, pin, clientId: client }, meta(who), { pepper: PEPPER, clock }));
     expect((await link(owner(), clientId, 1)).recipientClientId).toBe(clientId);
     const admin = ctx('admin', await staff('admin'), [otherBranch]);
-    await fails(link(admin, second, 2), 'NOT_FOUND');
-    expect((await link(admin, second, 2, otherBranch)).recipientClientId).toBe(second);
+    await fails(link(admin, second, 2), 'NOT_FOUND'); // id сертификата чужого филиала – как несуществующий
+    const wrong = String((Number(cert.pin) + 1) % 10_000).padStart(4, '0');
+    await fails(byCode(admin, second, wrong), 'CERTIFICATE_NOT_FOUND');
+    const fc = await db.client.query(`SELECT pin_failed_count FROM app.certificates WHERE id = $1`, [cert.certificate.id]);
+    expect(fc.rows[0].pin_failed_count).toBe(1); // попытка не откатилась вместе с отказом
+    await fails(byCode(admin, second, cert.pin, saleBranch), 'NOT_FOUND'); // филиал предъявления – только свой
+    expect((await byCode(admin, second, cert.pin)).recipientClientId).toBe(second);
     await fails(link(owner(), 'не-uuid', 3), 'VALIDATION_FAILED');
     const h = await db.client.query(`SELECT old_client_id, new_client_id FROM journal.certificate_holder_history WHERE certificate_id = $1 ORDER BY id`, [cert.certificate.id]);
     expect(h.rows).toEqual([

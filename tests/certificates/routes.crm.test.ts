@@ -132,7 +132,9 @@ describe('список №29 и карточка №30', () => {
 describe('команды карточки №32–35', () => {
   it('отмена Директором; Администратор не отменяет и не корректирует; чужая зона – 404', async () => {
     const a = (await sell()).json().certificate;
-    const b = (await sell()).json().certificate;
+    const sold = (await sell()).json();
+    const b = sold.certificate;
+    const bPin = sold.pin as string;
     expect((await req('admin', 'POST', `/certificates/${a.id}/cancel`, { rowVersion: 1, reason: 'x', refundMoney: false })).statusCode).toBe(403);
     expect((await req('admin', 'POST', `/certificates/${a.id}/correct`, { rowVersion: 1, deltaKop: -100, reason: 'x' })).statusCode).toBe(403);
     expect((await req('director', 'POST', `/certificates/${a.id}/correct`, { rowVersion: 1, deltaKop: -100, reason: 'x' })).statusCode).toBe(403);
@@ -155,7 +157,11 @@ describe('команды карточки №32–35', () => {
     const stale = await req('owner', 'POST', `/certificates/${b.id}/review`, { rowVersion: 1, on: false, reason: 'ок' });
     expect([stale.statusCode, stale.json().error.code]).toEqual([409, 'VERSION_CONFLICT']);
     const client = (await db.client.query(`INSERT INTO app.clients (phone_e164, status, created_by_type) VALUES ('+79131112233', 'active', 'system') RETURNING id`)).rows[0].id;
-    const linked = await req('admin2', 'POST', `/certificates/${b.id}/recipient`, { rowVersion: 2, clientId: client, presentedBranchId: ids.marksa });
+    expect((await req('admin2', 'POST', `/certificates/${b.id}/recipient`, { rowVersion: 2, clientId: client })).statusCode).toBe(404);
+    const byCode = (pin: string) => req('admin2', 'POST', '/certificates/recipient-by-code', { branchId: ids.marksa, number: b.number, pin, clientId: client });
+    const wrong = await byCode(String((Number(bPin) + 1) % 10_000).padStart(4, '0'));
+    expect([wrong.statusCode, wrong.json().error.code]).toEqual([404, 'CERTIFICATE_NOT_FOUND']);
+    const linked = await byCode(bPin);
     expect([linked.statusCode, linked.json().recipientClientId]).toEqual([200, client]);
   });
 });
