@@ -2,11 +2,13 @@
 // allowedActions сервера (статус, время, права на филиал брони). Отмена, неявка и исправление – через окно внутри
 // записи с «было → станет»; комментарий отмены и причина исправления обязательны. Устаревшая карточка (409 по
 // rowVersion) – понятное сообщение и перечитывание карточки. Двойной клик – одна операция (кнопки заняты до ответа).
+// S2-63: блок «Оплата» (PaymentPanel) под данными записи; перечитывается при смене статуса (пришёл – можно платить).
 import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   STATUS_LABEL, bookingApi, bookingError, fmtRange, fmtRub, inZone, isConflict, type BookingCard as Card, type CrmBooking, type TimelineEvent,
 } from '../lib/booking.ts';
+import PaymentPanel from './PaymentPanel.tsx';
 import RescheduleDialog from './RescheduleDialog.tsx';
 
 export interface Reason { id: string; name: string; domain: string }
@@ -210,6 +212,8 @@ export default function BookingCard({ initial, reasons, canComment }: BookingCar
           </form>
         ) : b.internalComment && <p>Комментарий: {b.internalComment}</p>}
       </section>
+
+      <PaymentPanel bookingId={b.id} branchId={b.branchId} timezone={tz} status={b.status} />
 
       {b.versions.length > 1 && (
         <section class="yc-panel" aria-labelledby="bk-versions">
