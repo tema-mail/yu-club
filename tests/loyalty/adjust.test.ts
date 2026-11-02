@@ -64,7 +64,7 @@ describe('adjust (07 §10.3)', () => {
     await run(d, { clientId: c, deltaCenti: -2000, reason: 'ошибочное начисление' });
     expect(await bal(c)).toBe(-1000);
     const audit = await db.client.query(`SELECT reason FROM journal.audit_events WHERE action = 'loyalty.adjusted' AND object_id = $1 ORDER BY id`, [c]);
-    expect(audit.rows.map((r) => r.reason)).toEqual(['компенсация за сбой', 'компенсация за сбой', 'ошибочное начисление']);
+    expect(audit.rows.map((r) => r.reason)).toEqual(['компенсация за сбой', 'ошибочное начисление']); // повтор аудит не пишет
   });
 
   it('ниже −50: Директор – LIMIT_OVERRIDE_NOT_ALLOWED, Владелец без режима – тоже, с режимом – проходит', async () => {
@@ -81,6 +81,33 @@ describe('adjust (07 §10.3)', () => {
     const issue = (await db.client.query<{ id: string }>(`INSERT INTO app.loyalty_issues (client_id, kind, ref_type, ref_id, amount_centi) VALUES ($1, 'accrual_reversal_below_limit', 'visit', $2, 1000) RETURNING id`, [c, randomUUID()])).rows[0]!.id;
     const { entryId } = await run(ctxOf('director'), { clientId: c, deltaCenti: -500, reason: 'сторно ниже предела частично', issueId: issue });
     expect((await db.client.query(`SELECT status, resolved_entry_id FROM app.loyalty_issues WHERE id = $1`, [issue])).rows[0]).toEqual({ status: 'resolved', resolved_entry_id: String(entryId) });
+  });
+});
+
+describe('ревизия 02.11: повтор и ссылка на issue', () => {
+  it('повтор «−» с тем же ключом у предела −50 – прежний ответ, а не LIMIT_OVERRIDE_NOT_ALLOWED; аудит один', async () => {
+    const c = await newClient();
+    const d = ctxOf('director');
+    const r1 = await run(d, { clientId: c, deltaCenti: -5000, reason: 'долг', idempotencyKey: 'lim-1' });
+    expect(await run(d, { clientId: c, deltaCenti: -5000, reason: 'долг', idempotencyKey: 'lim-1' })).toEqual(r1);
+    expect(await bal(c)).toBe(-5000);
+    expect(await codeOf(run(d, { clientId: c, deltaCenti: -100, reason: 'долг', idempotencyKey: 'lim-1' }))).toBe('IDEMPOTENCY_KEY_REUSED');
+    const audit = await db.client.query(`SELECT 1 FROM journal.audit_events WHERE action = 'loyalty.adjusted' AND object_id = $1`, [c]);
+    expect(audit.rowCount).toBe(1);
+  });
+
+  it('неверный issueId – NOT_FOUND, чужой – NOT_FOUND, закрытый – LOYALTY_ISSUE_RESOLVED; баланс не меняется', async () => {
+    const c = await newClient();
+    const other = await newClient();
+    const d = ctxOf('director');
+    const mk = async (clientId: string) =>
+      (await db.client.query<{ id: string }>(`INSERT INTO app.loyalty_issues (client_id, kind, ref_type, ref_id, amount_centi) VALUES ($1, 'accrual_reversal_below_limit', 'visit', $2, 1000) RETURNING id`, [clientId, randomUUID()])).rows[0]!.id;
+    expect(await codeOf(run(d, { clientId: c, deltaCenti: -100, reason: 'x', issueId: randomUUID() }))).toBe('NOT_FOUND');
+    expect(await codeOf(run(d, { clientId: c, deltaCenti: -100, reason: 'x', issueId: await mk(other) }))).toBe('NOT_FOUND');
+    const own = await mk(c);
+    await run(d, { clientId: c, deltaCenti: -100, reason: 'закрываю', issueId: own });
+    expect(await codeOf(run(d, { clientId: c, deltaCenti: -100, reason: 'ещё раз', issueId: own }))).toBe('LOYALTY_ISSUE_RESOLVED');
+    expect(await bal(c)).toBe(-100);
   });
 });
 
