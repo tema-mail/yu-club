@@ -100,7 +100,7 @@ function insert(v: Omit<Op, 'id' | 'number' | 'recordedAt' | 'balanceAfterKop' |
  *  refund): закрытый месяц и отрицательная касса – те же отказы, что у команд кассы. */
 export function recordMoney(v: {
   branchId: string; timezone: string; kind: 'income' | 'refund'; method: Method; amountKop: number; source: string | null;
-  ref: { type: string; id: string }; comment: string | null; authorId: string;
+  ref: { type: string; id: string }; comment: string | null; authorId: string; receiptIssued?: boolean | null;
 }): { id: string } {
   const place: Place = v.method === 'cash' ? 'cash' : 'noncash';
   const now = Date.now();
@@ -111,7 +111,7 @@ export function recordMoney(v: {
   }
   const op = insert({
     branchId: v.branchId, kind: v.kind, place, method: v.method, direction: v.kind === 'income' ? 'in' : 'out', amountKop: v.amountKop, source: v.source,
-    categoryId: null, subcategoryId: null, comment: v.comment, ref: v.ref, receiptIssued: null, occurredAt: new Date(now).toISOString(), authorId: v.authorId, reversalOf: null,
+    categoryId: null, subcategoryId: null, comment: v.comment, ref: v.ref, receiptIssued: v.receiptIssued ?? null, occurredAt: new Date(now).toISOString(), authorId: v.authorId, reversalOf: null,
   });
   return { id: op.id };
 }

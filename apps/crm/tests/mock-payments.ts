@@ -279,7 +279,7 @@ export function registerPayments(app: FastifyInstance, P: string, deps: Payments
         const method = l.method as Line['method'];
         if (isMoney(method)) {
           const amount = drain ? rest : (l.amountKop as number);
-          const op = recordMoney({ branchId: b.branchId, timezone: branch.timezone, kind: 'income', method, amountKop: amount, source: 'session', ref: { type: 'payment', id: paymentId }, comment: typeof body.comment === 'string' ? body.comment.trim() || null : null, authorId: s.id });
+          const op = recordMoney({ branchId: b.branchId, timezone: branch.timezone, kind: 'income', method, amountKop: amount, source: 'session', ref: { type: 'payment', id: paymentId }, comment: typeof body.comment === 'string' ? body.comment.trim() || null : null, authorId: s.id, receiptIssued: (body.receiptIssued as boolean | undefined) ?? null });
           out.push({ lineNo, method, amountKop: amount, ledgerPostingId: randomUUID(), financeOperationId: op.id });
         } else if (method === 'points') {
           const centi = minutesOf(b) * 100;
