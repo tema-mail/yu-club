@@ -132,7 +132,9 @@ describe('список №29 и карточка №30', () => {
 describe('команды карточки №32–35', () => {
   it('отмена Директором; Администратор не отменяет и не корректирует; чужая зона – 404', async () => {
     const a = (await sell()).json().certificate;
-    const b = (await sell()).json().certificate;
+    const sold = (await sell()).json();
+    const b = sold.certificate;
+    const bPin = sold.pin as string;
     expect((await req('admin', 'POST', `/certificates/${a.id}/cancel`, { rowVersion: 1, reason: 'x', refundMoney: false })).statusCode).toBe(403);
     expect((await req('admin', 'POST', `/certificates/${a.id}/correct`, { rowVersion: 1, deltaKop: -100, reason: 'x' })).statusCode).toBe(403);
     expect((await req('director', 'POST', `/certificates/${a.id}/correct`, { rowVersion: 1, deltaKop: -100, reason: 'x' })).statusCode).toBe(403);
@@ -155,7 +157,11 @@ describe('команды карточки №32–35', () => {
     const stale = await req('owner', 'POST', `/certificates/${b.id}/review`, { rowVersion: 1, on: false, reason: 'ок' });
     expect([stale.statusCode, stale.json().error.code]).toEqual([409, 'VERSION_CONFLICT']);
     const client = (await db.client.query(`INSERT INTO app.clients (phone_e164, status, created_by_type) VALUES ('+79131112233', 'active', 'system') RETURNING id`)).rows[0].id;
-    const linked = await req('admin2', 'POST', `/certificates/${b.id}/recipient`, { rowVersion: 2, clientId: client, presentedBranchId: ids.marksa });
+    expect((await req('admin2', 'POST', `/certificates/${b.id}/recipient`, { rowVersion: 2, clientId: client })).statusCode).toBe(404);
+    const byCode = (pin: string) => req('admin2', 'POST', '/certificates/recipient-by-code', { branchId: ids.marksa, number: b.number, pin, clientId: client });
+    const wrong = await byCode(String((Number(bPin) + 1) % 10_000).padStart(4, '0'));
+    expect([wrong.statusCode, wrong.json().error.code]).toEqual([404, 'CERTIFICATE_NOT_FOUND']);
+    const linked = await byCode(bPin);
     expect([linked.statusCode, linked.json().recipientClientId]).toEqual([200, client]);
   });
 });
@@ -179,5 +185,25 @@ describe('проверка по коду №36', () => {
     expect((await check(pin)).statusCode).toBe(429);
     const unknown = await req('admin2', 'POST', '/certificates/check', { branchId: ids.marksa, number: 'YC-ZZZZ-ZZZZ', pin });
     expect(errBody(unknown.json())).toEqual({ code: 'CERTIFICATE_NOT_FOUND', message: 'Сертификат не найден или код неверен', requestId: undefined });
+  });
+});
+
+describe('перевыпуск кода (K16 §3)', () => {
+  it('Владелец – новый код один раз, повтор ключа – без кода; Директор и Администратор – 403; новый код проходит проверку', async () => {
+    const { certificate } = (await sell('owner', ids.marksa, { nominalKop: 50_000, method: 'cash' })).json();
+    expect((await req('director2', 'POST', `/certificates/${certificate.id}/pin`, { rowVersion: 1, reason: 'потерян' })).statusCode).toBe(403);
+    expect((await req('admin2', 'POST', `/certificates/${certificate.id}/pin`, { rowVersion: 1, reason: 'потерян' })).statusCode).toBe(403);
+    const key = randomUUID();
+    const first = await req('owner', 'POST', `/certificates/${certificate.id}/pin`, { rowVersion: 1, reason: 'потерян' }, key);
+    expect(first.statusCode).toBe(200);
+    const pin = first.json().pin as string;
+    expect(pin).toMatch(/^\d{4}$/);
+    const again = await req('owner', 'POST', `/certificates/${certificate.id}/pin`, { rowVersion: 1, reason: 'потерян' }, key);
+    expect(again.headers['idempotent-replay']).toBe('true');
+    expect(again.json()).toEqual({ certificate: first.json().certificate, pin: null, pinShownOnce: true });
+    const k = await db.client.query<{ t: string }>(`SELECT row_to_json(k)::text AS t FROM app.idempotency_keys k WHERE key = $1`, [key]);
+    expect(k.rows[0]!.t).not.toMatch(new RegExp(`"pin"\\s*:\\s*"${pin}"`));
+    const check = await req('admin2', 'POST', '/certificates/check', { branchId: ids.marksa, number: certificate.number, pin });
+    expect([check.statusCode, check.json().balanceKop]).toEqual([200, 50_000]);
   });
 });

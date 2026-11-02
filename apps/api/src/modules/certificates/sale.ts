@@ -148,8 +148,12 @@ export function generatePin(): string {
   return String(randomInt(0, 10_000)).padStart(4, '0');
 }
 
-/** Хэш кода для базы и request_hash: HMAC-SHA256(pin, CERT_PEPPER) (K16 §3). */
+/** Замена кода в request_hash идемпотентности (S2-08): HMAC-SHA256(pin, CERT_PEPPER) – сертификат в запросе ещё не известен. */
 export const pinDigest = (pepper: string, pin: string): string => secretDigest(pepper, pin);
+
+/** Хэш кода в базе (pin_hash), привязан к сертификату: HMAC-SHA256(id ‖ ':' ‖ pin, CERT_PEPPER) (K16 §3).
+ *  Одинаковые коды разных сертификатов дают разные хэши: по совпадению хэшей нельзя узнать код другого. */
+export const pinHashOf = (pepper: string, certificateId: string, pin: string): string => secretDigest(pepper, `${certificateId.toLowerCase()}:${pin}`);
 
 /** Нормализация ввода номера: регистр, пробелы, похожие символы Crockford (O→0, I/L→1). */
 export function normalizeNumber(raw: string): string {
@@ -263,7 +267,7 @@ export async function sellCertificate(
         `INSERT INTO app.certificates (id, number, pin_hash, nominal_kop, sale_branch_id, sale_method, sale_operation_id, ledger_account_id,
            sold_at, sold_by, expires_on, expires_at, buyer_client_id, recipient_client_id, comment)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-        [id, generateNumber(), pinDigest(opts.pepper, pin), nominal, branch.id, input.method, operation.id, account.id, now, ctx.actor.staffId, expiresOn, expiresAt, buyer, recipient, comment],
+        [id, generateNumber(), pinHashOf(opts.pepper, id, pin), nominal, branch.id, input.method, operation.id, account.id, now, ctx.actor.staffId, expiresOn, expiresAt, buyer, recipient, comment],
       );
       await tx.query('RELEASE SAVEPOINT certificate_number');
       break;

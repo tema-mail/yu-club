@@ -16,6 +16,7 @@ import {
   getCertificate,
   normalizeNumber,
   pinDigest,
+  pinHashOf,
   redactSaleResponse,
   sellCertificate,
   type CertificateDto,
@@ -150,7 +151,9 @@ describe('продажа (K16 §2, TC-08)', () => {
     expect(acc.rows[0]).toMatchObject({ min_balance: '0', branch_id: b.id });
     expect((await verifyBalance(db.client, acc.rows[0]!.id)).ok).toBe(true);
     const stored = await db.client.query(`SELECT pin_hash FROM app.certificates WHERE id = $1`, [certificate.id]);
-    expect(stored.rows[0].pin_hash).toBe(pinDigest(PEPPER, pin));
+    expect(stored.rows[0].pin_hash).toBe(pinHashOf(PEPPER, certificate.id, pin));
+    expect(stored.rows[0].pin_hash).not.toBe(pinDigest(PEPPER, pin)); // хэш привязан к сертификату
+    expect(pinHashOf(PEPPER, randomUUID(), pin)).not.toBe(stored.rows[0].pin_hash);
   });
 
   it('наличные – место cash; Директор своей зоны продаёт; покупатель и получатель', async () => {
@@ -210,17 +213,20 @@ describe('продажа (K16 §2, TC-08)', () => {
     const count = await db.client.query(`SELECT count(*)::int AS n FROM app.certificates WHERE sale_branch_id = $1`, [b.id]);
     expect(count.rows[0].n).toBe(1);
 
-    const hash = pinDigest(PEPPER, firstBody.pin);
-    const pinRe = new RegExp(`"pin(_?hash)?"\\s*:\\s*"(${firstBody.pin}|${hash})"`, 'i');
+    const hash = pinHashOf(PEPPER, firstBody.certificate.id, firstBody.pin); // как в базе
+    const reqHash = pinDigest(PEPPER, firstBody.pin); // как в request_hash
+    const pinRe = new RegExp(`"pin(_?hash)?"\\s*:\\s*"(${firstBody.pin}|${hash}|${reqHash})"`, 'i');
     const audit = await db.client.query<{ action: string; t: string }>(`SELECT action, row_to_json(a)::text AS t FROM journal.audit_events a WHERE branch_id = $1`, [b.id]);
     expect(audit.rows.map((r) => r.action).sort()).toEqual(['certificate.sold', 'finance.operation.created']);
     for (const r of audit.rows) {
       expect(r.t).not.toContain(hash);
+      expect(r.t).not.toContain(reqHash);
       expect(r.t).not.toMatch(pinRe);
     }
     const keys = await db.client.query<{ t: string }>(`SELECT row_to_json(k)::text AS t FROM app.idempotency_keys k WHERE key = $1`, [key]);
     expect(keys.rows).toHaveLength(1);
     expect(keys.rows[0]!.t).not.toContain(hash);
+    expect(keys.rows[0]!.t).not.toContain(reqHash);
     expect(keys.rows[0]!.t).not.toMatch(pinRe);
     const ops = await db.client.query<{ t: string }>(`SELECT row_to_json(o)::text AS t FROM journal.finance_operations o WHERE branch_id = $1`, [b.id]);
     expect(ops.rows[0]!.t).not.toContain(hash);

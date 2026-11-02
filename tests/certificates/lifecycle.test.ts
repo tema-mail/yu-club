@@ -9,9 +9,9 @@ import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
 import { AppError } from '../../apps/api/src/core/errors.ts';
 import type { AccessContext, StaffRole } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock, type Clock } from '../../apps/api/src/core/time.ts';
-import { cancelSale, correctBalance, expireDueCertificates, linkRecipient, setReview } from '../../apps/api/src/modules/certificates/lifecycle.ts';
-import { createCertificatePaymentMethod } from '../../apps/api/src/modules/certificates/payment-method.ts';
-import { getCertificate, sellCertificate, type CertificateDto } from '../../apps/api/src/modules/certificates/sale.ts';
+import { cancelSale, correctBalance, expireDueCertificates, linkRecipient, linkRecipientByCode, reissuePin, setReview } from '../../apps/api/src/modules/certificates/lifecycle.ts';
+import { createCertificatePaymentMethod, verifyCertificatePin } from '../../apps/api/src/modules/certificates/payment-method.ts';
+import { getCertificate, pinHashOf, sellCertificate, type CertificateDto } from '../../apps/api/src/modules/certificates/sale.ts';
 import type { ChargeResult } from '../../apps/api/src/modules/finance/methods.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -237,20 +237,89 @@ describe('корректировка и «требует проверки» (K16
 });
 
 describe('получатель (K16 §7)', () => {
-  it('привязка и смена – строка истории; Администратор филиала предъявления может, чужой – NOT_FOUND', async () => {
+  it('привязка и смена – строка истории; Администратор филиала предъявления – по номеру и коду, по id – NOT_FOUND', async () => {
     const cert = await sell(100_000);
     const second = (await db.client.query(`INSERT INTO app.clients (phone_e164, status, created_by_type) VALUES ('+79130000556', 'active', 'system') RETURNING id`)).rows[0].id as string;
-    const link = (who: AccessContext, client: string | null, rowVersion: number, presentedBranchId?: string) =>
-      tx((t) => linkRecipient(t, who, { certificateId: cert.certificate.id, clientId: client, rowVersion, presentedBranchId: presentedBranchId ?? null }, meta(who), clock));
+    const link = (who: AccessContext, client: string | null, rowVersion: number) =>
+      tx((t) => linkRecipient(t, who, { certificateId: cert.certificate.id, clientId: client, rowVersion }, meta(who), clock));
+    const byCode = (who: AccessContext, client: string | null, pin: string, branchId = otherBranch) =>
+      tx((t) => linkRecipientByCode(t, pool, who, { branchId, number: cert.certificate.number, pin, clientId: client }, meta(who), { pepper: PEPPER, clock }));
     expect((await link(owner(), clientId, 1)).recipientClientId).toBe(clientId);
     const admin = ctx('admin', await staff('admin'), [otherBranch]);
-    await fails(link(admin, second, 2), 'NOT_FOUND');
-    expect((await link(admin, second, 2, otherBranch)).recipientClientId).toBe(second);
+    await fails(link(admin, second, 2), 'NOT_FOUND'); // id сертификата чужого филиала – как несуществующий
+    const wrong = String((Number(cert.pin) + 1) % 10_000).padStart(4, '0');
+    await fails(byCode(admin, second, wrong), 'CERTIFICATE_NOT_FOUND');
+    const fc = await db.client.query(`SELECT pin_failed_count FROM app.certificates WHERE id = $1`, [cert.certificate.id]);
+    expect(fc.rows[0].pin_failed_count).toBe(1); // попытка не откатилась вместе с отказом
+    await fails(byCode(admin, second, cert.pin, saleBranch), 'NOT_FOUND'); // филиал предъявления – только свой
+    expect((await byCode(admin, second, cert.pin)).recipientClientId).toBe(second);
     await fails(link(owner(), 'не-uuid', 3), 'VALIDATION_FAILED');
     const h = await db.client.query(`SELECT old_client_id, new_client_id FROM journal.certificate_holder_history WHERE certificate_id = $1 ORDER BY id`, [cert.certificate.id]);
     expect(h.rows).toEqual([
       { old_client_id: null, new_client_id: clientId },
       { old_client_id: clientId, new_client_id: second },
     ]);
+  });
+});
+
+// Ревью 03.11. Сертификаты продаются за 50 дней до T0: их граница раньше всех остальных в файле.
+describe('ревью: сгорание переживает ошибку строки, корректировка после срока', () => {
+  it('ошибка одной строки не обрывает проход: остальные сгорают, ошибка уходит в лог', async () => {
+    const broken = await sell(100_000, 'cash', 50);
+    const ok = await sell(100_000, 'cash', 50);
+    await db.client.query(`UPDATE app.ledger_accounts SET status = 'closed' WHERE id = (SELECT ledger_account_id FROM app.certificates WHERE id = $1)`, [broken.certificate.id]);
+    const errors: Array<[string, string]> = [];
+    try {
+      const n = await expireDueCertificates(pool, at(ok.certificate), 200, (err, id) => errors.push([id, (err as AppError).code]));
+      expect(n).toBe(1);
+      expect(errors).toEqual([[broken.certificate.id, 'ACCOUNT_CLOSED']]);
+      expect(await balanceOf(ok.certificate.id)).toBe(0);
+      expect(await balanceOf(broken.certificate.id)).toBe(100_000);
+    } finally {
+      await db.client.query(`UPDATE app.ledger_accounts SET status = 'active' WHERE id = (SELECT ledger_account_id FROM app.certificates WHERE id = $1)`, [broken.certificate.id]);
+    }
+    expect(await expireDueCertificates(pool, at(ok.certificate))).toBe(1); // следующим проходом сгорает и он
+  });
+
+  it('плюс после срока (до прохода задачи) и после сгорания – CERTIFICATE_EXPIRED; минус до сгорания – можно', async () => {
+    const cert = await sell(100_000, 'cash', 50);
+    await redeem(cert, 40_000, T0);
+    const correct = (rowVersion: number, deltaKop: number, c: Clock) =>
+      tx((t) => correctBalance(t, owner(), { certificateId: cert.certificate.id, rowVersion, deltaKop, reason: 'ошибка' }, meta(owner()), c));
+    await correct(1, 10_000, fixedClock(new Date(new Date(cert.certificate.expiresAt).getTime() - 1))); // в последнюю миллисекунду – можно
+    await fails(correct(2, 1_000, at(cert.certificate)), 'CERTIFICATE_EXPIRED');
+    expect((await correct(2, -5_000, at(cert.certificate))).balanceKop).toBe(65_000);
+    expect(await expireDueCertificates(pool, at(cert.certificate))).toBe(1);
+    await fails(correct(3, 1_000, at(cert.certificate, 60_000)), 'CERTIFICATE_EXPIRED');
+  });
+});
+
+describe('перевыпуск кода (K16 §3, ревью 03.11)', () => {
+  it('Владелец: новый код работает, старый – нет, блок попыток снят; Директор – FORBIDDEN; в аудите кода нет', async () => {
+    const cert = await sell(100_000);
+    const wrong = String((Number(cert.pin) + 1) % 10_000).padStart(4, '0');
+    for (let i = 0; i < 5; i++) await verifyCertificatePin(pool, { number: cert.certificate.number, pin: wrong }, { pepper: PEPPER, clock }).catch(() => undefined);
+    await fails(verifyCertificatePin(pool, { number: cert.certificate.number, pin: cert.pin }, { pepper: PEPPER, clock }), 'CERTIFICATE_PIN_LOCKED');
+    const reissue = (who: AccessContext, rowVersion: number, reason = 'клиент потерял код') =>
+      tx((t) => reissuePin(t, who, { certificateId: cert.certificate.id, rowVersion, reason }, meta(who), { pepper: PEPPER, clock }));
+    await fails(reissue(ctx('director', await staff('director'), [saleBranch]), 1), 'FORBIDDEN');
+    await fails(reissue(owner(), 1, ' '), 'COMMENT_REQUIRED');
+    const r = await reissue(owner(), 1);
+    expect(r.pin).toMatch(/^\d{4}$/);
+    expect(r.certificate).toMatchObject({ id: cert.certificate.id, rowVersion: 2, balanceKop: 100_000 });
+    const stored = await db.client.query(`SELECT pin_hash, pin_failed_count, pin_locked_until FROM app.certificates WHERE id = $1`, [cert.certificate.id]);
+    expect(stored.rows[0]).toEqual({ pin_hash: pinHashOf(PEPPER, cert.certificate.id, r.pin), pin_failed_count: 0, pin_locked_until: null });
+    expect(await verifyCertificatePin(pool, { number: cert.certificate.number, pin: r.pin }, { pepper: PEPPER, clock })).toEqual({ certificateId: cert.certificate.id });
+    if (r.pin !== cert.pin) {
+      await fails(verifyCertificatePin(pool, { number: cert.certificate.number, pin: cert.pin }, { pepper: PEPPER, clock }), 'CERTIFICATE_NOT_FOUND');
+    }
+    const audit = await db.client.query<{ t: string; reason: string }>(
+      `SELECT row_to_json(a)::text AS t, reason FROM journal.audit_events a WHERE action = 'certificate.pin_reissued' AND object_id = $1`,
+      [cert.certificate.id],
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.reason).toBe('клиент потерял код');
+    expect(audit.rows[0]!.t).not.toContain(stored.rows[0].pin_hash);
+    expect(audit.rows[0]!.t).not.toMatch(new RegExp(`"pin"\\s*:\\s*"${r.pin}"`));
   });
 });

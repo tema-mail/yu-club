@@ -1037,7 +1037,7 @@ CREATE TABLE app.loyalty_issues (                 -- «требует решен
 CREATE TABLE app.certificates (                   -- K16 §10
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   number text NOT NULL UNIQUE CHECK (number ~ '^YC-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$'),   -- 8 символов Crockford Base32 (K16 §3), вид 'YC-7K2M-9QXD' (K16 §1)
-  pin_hash text NOT NULL,                            -- HMAC-SHA256(pin, CERT_PEPPER), hex
+  pin_hash text NOT NULL,                            -- HMAC-SHA256(id || ':' || pin, CERT_PEPPER), hex (K16 §3, правка 03.11)
   pin_failed_count smallint NOT NULL DEFAULT 0,
   pin_locked_until timestamptz,
   nominal_kop bigint NOT NULL CHECK (nominal_kop > 0),

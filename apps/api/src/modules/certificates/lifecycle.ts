@@ -10,7 +10,8 @@ import { assertCan, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { lockPlaces, postMoneyOperation } from '../finance/cashbox.ts';
 import { getBranch } from '../network/index.ts';
-import { CERT_SELECT, getCertificateRow, toCertificateDto, type CertificateDto, type CertificateRow } from './sale.ts';
+import { verifyCertificatePin } from './payment-method.ts';
+import { CERT_SELECT, generatePin, getCertificateRow, pinHashOf, toCertificateDto, type CertificateDto, type CertificateRow } from './sale.ts';
 
 const notFound = () => new AppError('NOT_FOUND', 404, 'Не найдено');
 const systemMeta = (): AuditRequestMeta => ({ actor: { kind: 'system', process: 'certificates:expire' }, source: 'system', requestId: randomUUID() });
@@ -50,11 +51,13 @@ async function dto(tx: Tx, id: string, now: Date): Promise<CertificateDto> {
 
 /** Один проход задачи certificates:expire: у каждого сертификата с expires_at ≤ now и остатком > 0 – своя транзакция:
  *  lockAccounts(счёт) → перечитать → certificate.expire −остаток (автор system, ключ certificate-expire:<id>).
- *  Касса не меняется: это не денежное поступление и не доход. Возвращает число сгоревших. */
+ *  Касса не меняется: это не денежное поступление и не доход. Ошибка одной строки откатывает только её: она уходит
+ *  в onRowError (лог), проход идёт дальше, строка повторится следующим проходом. Возвращает число сгоревших. */
 export async function expireDueCertificates(
   pool: { connect(): Promise<{ query: Tx['query']; release(): void }> },
   clock: Clock = systemClock,
   limit = 200,
+  onRowError: (err: unknown, certificateId: string) => void = (err, id) => console.error('certificates:expire', id, err),
 ): Promise<number> {
   const now = clock.now();
   const c = await pool.connect();
@@ -94,7 +97,7 @@ export async function expireDueCertificates(
         burned++;
       } catch (err) {
         await c.query('ROLLBACK');
-        throw err;
+        onRowError(err, d.id);
       }
     }
   } finally {
@@ -111,7 +114,8 @@ export function startCertificateExpiry(opts: {
   onError?: (err: unknown) => void;
 }): { stop(): void } {
   const timer = setInterval(() => {
-    expireDueCertificates(opts.pool, opts.clock).catch((err: unknown) => (opts.onError ?? ((e) => console.error('certificates:expire', e)))(err));
+    const log = opts.onError ?? ((e: unknown) => console.error('certificates:expire', e));
+    expireDueCertificates(opts.pool, opts.clock, 200, (err, id) => log(Object.assign(err instanceof Error ? err : new Error(String(err)), { certificateId: id }))).catch((err: unknown) => (opts.onError ?? ((e) => console.error('certificates:expire', e)))(err));
   }, opts.intervalMs ?? 5 * 60_000);
   timer.unref();
   return { stop: () => clearInterval(timer) };
@@ -201,6 +205,10 @@ export async function correctBalance(
   await lockAccounts(tx, [first.ledger_account_id]);
   const row = await relock(tx, first.id, input.rowVersion);
   if (row.cancelled_at) throw new AppError('CERTIFICATE_NOT_ACTIVE', 409, 'Продажа отменена', { status: 'cancelled' });
+  // плюс после срока или сгорания не создаёт новый остаток: продления нет (08 §5.3, ревью 03.11)
+  if (input.deltaKop > 0 && (row.expired_entry_id !== null || now.getTime() >= row.expires_at.getTime())) {
+    throw new AppError('CERTIFICATE_EXPIRED', 409, 'Срок действия сертификата истёк: пополнение невозможно', { expiresOn: row.expires_on });
+  }
   const balance = Number(row.balance);
   const after = balance + input.deltaKop;
   if (after > Number(row.nominal_kop)) {
@@ -226,6 +234,37 @@ export async function correctBalance(
     reason,
   }, clock);
   return res;
+}
+
+// ---- перевыпуск кода (K16 §3)
+
+/** Право certificate.correct (Владелец). Новый код – только в этом ответе (HTTP сохраняет ответ без кода), старый
+ *  перестаёт работать сразу, счётчик и блок попыток сбрасываются. Аудит certificate.pin_reissued – без кода и хэша. */
+export async function reissuePin(
+  tx: Tx,
+  ctx: AccessContext,
+  input: { certificateId: string; rowVersion: number; reason: string },
+  meta: AuditRequestMeta,
+  opts: { pepper: string; clock?: Clock },
+): Promise<{ certificate: CertificateDto; pin: string }> {
+  const clock = opts.clock ?? systemClock;
+  const now = clock.now();
+  const reason = requireText(input.reason, 'reason');
+  const first = await guarded(tx, ctx, input.certificateId, 'certificate.correct');
+  await lockAccounts(tx, [first.ledger_account_id]);
+  const row = await relock(tx, first.id, input.rowVersion);
+  if (row.cancelled_at) throw new AppError('CERTIFICATE_NOT_ACTIVE', 409, 'Продажа отменена', { status: 'cancelled' });
+  const pin = generatePin();
+  await bump(tx, row.id, 'pin_hash = $2, pin_failed_count = 0, pin_locked_until = NULL', [pinHashOf(opts.pepper, row.id, pin)]);
+  const certificate = await dto(tx, row.id, now);
+  await writeAudit(tx, meta, {
+    action: 'certificate.pin_reissued',
+    object: { type: 'certificate', id: row.id },
+    branchId: row.sale_branch_id,
+    after: { rowVersion: certificate.rowVersion },
+    reason,
+  }, clock);
+  return { certificate, pin };
 }
 
 // ---- «требует проверки» (K16 §6, 08 §8)
@@ -258,26 +297,23 @@ export async function setReview(
 
 // ---- получатель (K16 §7, 08 §7)
 
-/** Право certificate.link: сертификат продан в зоне сотрудника или предъявлен в его филиале (presentedBranchId).
- *  Строка в journal.certificate_holder_history; именным сертификат не становится (Q-26). */
-export async function linkRecipient(
+/** Привязка или смена получателя: строка в journal.certificate_holder_history; именным сертификат не становится (Q-26).
+ *  where – филиал, по которому проверено право (продажи или предъявления). rowVersion – только из карточки CRM. */
+async function applyRecipient(
   tx: Tx,
   ctx: AccessContext,
-  input: { certificateId: string; clientId: string | null; rowVersion: number; presentedBranchId?: string | null },
+  first: CertificateRow,
+  input: { clientId: string | null; rowVersion: number | null; where: string },
   meta: AuditRequestMeta,
-  clock: Clock = systemClock,
+  now: Date,
+  clock: Clock,
 ): Promise<CertificateDto> {
-  const now = clock.now();
-  const first = await getCertificateRow(tx, input.certificateId);
-  if (!first) throw notFound();
-  const where = input.presentedBranchId && ctx.branchIds.has(input.presentedBranchId) ? input.presentedBranchId : first.sale_branch_id;
-  assertCan(ctx, 'certificate.link', { branchId: where });
   if (input.clientId !== null) {
     const c = UUID_RE.test(input.clientId) ? await tx.query(`SELECT 1 FROM app.clients WHERE id = $1 AND status <> 'anonymized'`, [input.clientId]) : { rows: [] };
     if (c.rows.length === 0) throw new AppError('VALIDATION_FAILED', 400, 'Клиент не найден', { field: 'clientId' });
   }
   await lockAccounts(tx, [first.ledger_account_id]);
-  const row = await relock(tx, first.id, input.rowVersion);
+  const row = await relock(tx, first.id, input.rowVersion ?? first.row_version);
   if (row.recipient_client_id === input.clientId) return toCertificateDto(row, now);
   await bump(tx, row.id, 'recipient_client_id = $2', [input.clientId]);
   await tx.query(
@@ -288,9 +324,42 @@ export async function linkRecipient(
   await writeAudit(tx, meta, {
     action: 'certificate.recipient_changed',
     object: { type: 'certificate', id: row.id },
-    branchId: where,
+    branchId: input.where,
     before: { recipientClientId: row.recipient_client_id },
     after: { recipientClientId: input.clientId },
   }, clock);
   return res;
+}
+
+/** №35, карточка CRM: право certificate.link в зоне филиала продажи (вне зоны – 404), сверка rowVersion. */
+export async function linkRecipient(
+  tx: Tx,
+  ctx: AccessContext,
+  input: { certificateId: string; clientId: string | null; rowVersion: number },
+  meta: AuditRequestMeta,
+  clock: Clock = systemClock,
+): Promise<CertificateDto> {
+  const first = await getCertificateRow(tx, input.certificateId);
+  if (!first) throw notFound();
+  assertCan(ctx, 'certificate.link', { branchId: first.sale_branch_id });
+  return applyRecipient(tx, ctx, first, { clientId: input.clientId, rowVersion: input.rowVersion, where: first.sale_branch_id }, meta, clock.now(), clock);
+}
+
+/** Сертификат предъявлен в филиале сотрудника (K16 §7, ревью 03.11): id чужого филиала сотрудник не знает –
+ *  номер и код. Право certificate.link в филиале предъявления; код проверяется verifyCertificatePin отдельной
+ *  транзакцией (неверный код увеличивает счётчик и не откатывается, блок 15 минут – как у оплаты). */
+export async function linkRecipientByCode(
+  tx: Tx,
+  pool: Parameters<typeof verifyCertificatePin>[0],
+  ctx: AccessContext,
+  input: { branchId: string; number: string; pin: string; clientId: string | null },
+  meta: AuditRequestMeta,
+  opts: { pepper: string; clock?: Clock },
+): Promise<CertificateDto> {
+  const clock = opts.clock ?? systemClock;
+  if (!UUID_RE.test(input.branchId)) throw notFound();
+  assertCan(ctx, 'certificate.link', { branchId: input.branchId });
+  const { certificateId } = await verifyCertificatePin(pool, { number: input.number, pin: input.pin }, { pepper: opts.pepper, clock, meta });
+  const first = (await getCertificateRow(tx, certificateId))!;
+  return applyRecipient(tx, ctx, first, { clientId: input.clientId, rowVersion: null, where: input.branchId }, meta, clock.now(), clock);
 }

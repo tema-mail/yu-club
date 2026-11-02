@@ -11,7 +11,7 @@ import { AppError } from '../../core/errors.ts';
 import { lockAccounts, post, reverse, type Tx } from '../../core/ledger.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import type { ChargeInput, ChargeResult, PaymentMethodHandler, RefundInput, RefundResult } from '../finance/methods.ts';
-import { CERT_SELECT, normalizeNumber, pinDigest, type CertificateRow } from './sale.ts';
+import { CERT_SELECT, normalizeNumber, pinHashOf, type CertificateRow } from './sale.ts';
 
 // Уточнение K10 §5 (предложение к контракту): строке погашения нужен платёж – certificate_redemptions.payment_id NOT NULL
 // (model-dannyh 0204). finance передаёт paymentId созданного платежа и, по желанию, meta запроса для аудита.
@@ -66,7 +66,7 @@ export async function verifyCertificatePin(
     const row = r.rows[0];
     if (!row) failure = notFound();
     else if (row.pin_locked_until && row.pin_locked_until > now) failure = locked(row.pin_locked_until, now);
-    else if (!/^\d{4}$/.test(input.pin) || !sameHash(row.pin_hash, pinDigest(opts.pepper, input.pin))) {
+    else if (!/^\d{4}$/.test(input.pin) || !sameHash(row.pin_hash, pinHashOf(opts.pepper, row.id, input.pin))) {
       const count = row.pin_failed_count + 1;
       if (count >= PIN_MAX_FAILURES) {
         const until = new Date(now.getTime() + PIN_LOCK_MS);
@@ -136,7 +136,7 @@ export function createCertificatePaymentMethod(cfg: { pepper: string }): Payment
       // 0) блокировка → перечитать; экран и /check – только подсказка
       const row = await lockCertificate(tx, { number: input.certificate.number });
       // 1) номер + код
-      if (!row || !sameHash(row.pin_hash, pinDigest(cfg.pepper, input.certificate.pin))) throw notFound();
+      if (!row || !sameHash(row.pin_hash, pinHashOf(cfg.pepper, row.id, input.certificate.pin))) throw notFound();
       if (row.pin_locked_until && row.pin_locked_until > now) throw locked(row.pin_locked_until, now);
       // 2) отменён или «требует проверки»
       if (row.cancelled_at || row.review_reason !== null) throw new AppError('CERTIFICATE_NOT_ACTIVE', 409, 'Сертификат недействителен', { status: row.cancelled_at ? 'cancelled' : 'needs_review' });

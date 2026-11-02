@@ -13,7 +13,7 @@ import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../co
 import type { Tx } from '../../core/ledger.ts';
 import { assertCan, branchScopeSql, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { cancelSale, correctBalance, linkRecipient, setReview } from './lifecycle.ts';
+import { cancelSale, correctBalance, linkRecipient, linkRecipientByCode, reissuePin, setReview } from './lifecycle.ts';
 import { verifyCertificatePin } from './payment-method.ts';
 import { CERT_SELECT, getCertificateRow, pinDigest, redactSaleResponse, sellCertificate, toCertificateDto, type CertificateRow } from './sale.ts';
 
@@ -47,8 +47,10 @@ const saleSchema = z.object({
 });
 const cancelSchema = z.object({ rowVersion: z.number().int(), reason: z.string().max(2000), refundMoney: z.boolean() });
 const correctSchema = z.object({ rowVersion: z.number().int(), deltaKop: z.number(), reason: z.string().max(2000), ref: z.string().max(200).nullish() });
+const reissueSchema = z.object({ rowVersion: z.number().int(), reason: z.string().max(2000) });
 const reviewSchema = z.object({ rowVersion: z.number().int(), on: z.boolean(), reason: z.string().max(2000) });
-const recipientSchema = z.object({ rowVersion: z.number().int(), clientId: UUID.nullable(), presentedBranchId: UUID.nullish() });
+const recipientSchema = z.object({ rowVersion: z.number().int(), clientId: UUID.nullable() });
+const recipientByCodeSchema = z.object({ branchId: UUID, number: z.string().min(1).max(40), pin: z.string().max(10), clientId: UUID.nullable() });
 const checkSchema = z.object({ branchId: UUID, number: z.string().min(1).max(40), pin: z.string().max(10) });
 const listSchema = z.object({
   q: z.string().trim().min(1).max(100).optional(),
@@ -159,6 +161,8 @@ type Command = (tx: Tx, ctx: AccessContext, params: Record<string, string>, body
 
 export async function certificateCrmRoutes(app: FastifyInstance, deps: CertificateCrmDeps): Promise<void> {
   const clock = deps.clock ?? systemClock;
+  /** request_hash без кода: HMAC с CERT_PEPPER (K16 §3, S2-08). */
+  const hashPin = (b: unknown) => ({ ...(b as Record<string, unknown>), pin: pinDigest(deps.pepper, String((b as { pin?: unknown }).pin ?? '')) });
 
   function command(operation: string, action: AuditAction | null, run: Command, status: number, extra: { redact?: (b: unknown) => unknown; hashBody?: (b: unknown) => unknown } = {}) {
     return async (request: FastifyRequest, reply: FastifyReply) => {
@@ -245,6 +249,30 @@ export async function certificateCrmRoutes(app: FastifyInstance, deps: Certifica
     command('recipient', 'certificate.recipient_changed', async (tx, ctx, p, body, meta, c) => linkRecipient(tx, ctx, { ...parse(recipientSchema, body), certificateId: byId(p) }, meta, c), 200),
   );
 
+  // перевыпуск кода (K16 §3): новый код – только в первом ответе, повтор ключа – без кода
+  app.post(
+    '/certificates/:id/pin',
+    command(
+      'pin_reissue',
+      'certificate.pin_reissued',
+      async (tx, ctx, p, body, meta, c) => reissuePin(tx, ctx, { ...parse(reissueSchema, body), certificateId: byId(p) }, meta, { pepper: deps.pepper, clock: c }),
+      200,
+      { redact: redactSaleResponse },
+    ),
+  );
+
+  // №35б: сертификат предъявлен в филиале сотрудника – номер и код вместо id (K16 §7, ревью 03.11)
+  app.post(
+    '/certificates/recipient-by-code',
+    command(
+      'recipient_by_code',
+      'certificate.recipient_changed',
+      async (tx, ctx, _p, body, meta, c) => linkRecipientByCode(tx, deps.pool, ctx, parse(recipientByCodeSchema, body), meta, { pepper: deps.pepper, clock: c }),
+      200,
+      { hashBody: hashPin },
+    ),
+  );
+
   // №36 проверка по номеру и коду перед оплатой: тот же лимит попыток (K16 §3)
   app.post(
     '/certificates/check',
@@ -261,7 +289,7 @@ export async function certificateCrmRoutes(app: FastifyInstance, deps: Certifica
         return { number: dto.number, status: dto.status, balanceKop: dto.balanceKop, expiresOn: dto.expiresOn };
       },
       200,
-      { hashBody: (b) => ({ ...(b as Record<string, unknown>), pin: pinDigest(deps.pepper, String((b as { pin?: unknown }).pin ?? '')) }) },
+      { hashBody: hashPin },
     ),
   );
 }
