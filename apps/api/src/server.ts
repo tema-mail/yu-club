@@ -13,7 +13,7 @@ import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from '.
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
-import { bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
+import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
@@ -29,7 +29,9 @@ import { resourcesRoutes } from './modules/resources/routes.ts';
 import { pricingRoutes } from './modules/pricing/routes.ts';
 import { settingsRoutes } from './modules/settings/routes.crm.ts';
 import { financeCrmRoutes } from './modules/finance/routes.crm.ts';
-import { createCertificatePaymentMethod } from './modules/certificates/payment-method.ts';
+import { paymentRoutes } from './modules/finance/routes.payments.ts';
+import { getBalance as loyaltyBalance } from './modules/loyalty/account.ts';
+import { createCertificatePaymentMethod, verifyCertificatePin } from './modules/certificates/payment-method.ts';
 import { certificateCrmRoutes } from './modules/certificates/routes.crm.ts';
 import { certificatePublicRoutes } from './modules/certificates/routes.public.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
@@ -142,6 +144,33 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
           pool: staff.pool,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    // K10 №19–23: оплата сеанса. Код сертификата – verifyCertificatePin до транзакции оплаты (K10 §5, решение 02.11).
+    const certPepper = deps.certificates?.pepper;
+    void app.register(
+      async (scope) =>
+        paymentRoutes(scope, {
+          pool: staff.pool,
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+          bookings: {
+            facts: (db, id) => bookingLookup.facts(db, id),
+            payableBooking: (db, id) => paymentBookingProvider.payableBooking(db, id),
+            payableInPeriod: (db, input) => paymentBookingProvider.payableInPeriod(db, input),
+          },
+          pointsAvailable: async (_db, clientId, at) => {
+            const c = await staff.pool.connect();
+            try {
+              return (await loyaltyBalance(c, clientId, at)).availableCenti;
+            } finally {
+              c.release();
+            }
+          },
+          ...(certPepper
+            ? { certificates: { pepper: certPepper, verify: (input, meta) => verifyCertificatePin(staff.pool, input, { pepper: certPepper, meta, ...(staff.clock ? { clock: staff.clock } : {}) }) } }
+            : {}),
+          ...(staff.clock ? { clock: staff.clock } : {}),
         }),
       { prefix: '/api/crm/v1' },
     );

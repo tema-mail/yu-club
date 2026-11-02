@@ -29,6 +29,8 @@ import {
 } from './cashbox.ts';
 import { categoryDenialOf, createCategory, listCategories, updateCategory } from './categories.ts';
 import { closeMonth, correctOperation, reverseOperation } from './corrections.ts';
+import { branchSummary, networkSummary } from './summary.ts';
+import { closeShift, openShift, resolveShift, type CashShiftDto } from './shift.ts';
 
 export interface FinanceCrmDeps {
   pool: Db & { connect(): Promise<pg.PoolClient> };
@@ -57,6 +59,11 @@ function shape(ctx: AccessContext, dto: FinanceOperationDto): FinanceOperationDt
   const { balanceAfterKop: _b, ...rest } = dto;
   void _b;
   return rest;
+}
+
+/** Смена без finance.view (Администратор): только id и статус – ожидаемый остаток и расхождение не отдаются (K17 §7 п.1, №49). */
+function shapeShift(ctx: AccessContext, s: CashShiftDto): (CashShiftDto & { shiftId: string }) | { shiftId: string; status: CashShiftDto['status'] } {
+  return can(ctx, 'finance.view', { branchId: s.branchId }) ? { shiftId: s.id, ...s } : { shiftId: s.id, status: s.status };
 }
 
 /** CASH_INSUFFICIENT несёт остаток места (K17 §6); без finance.view на филиал числа срезаются (06 §14, K17 §8). */
@@ -212,6 +219,35 @@ export async function financeCrmRoutes(app: FastifyInstance, deps: FinanceCrmDep
   });
   app.post('/finance/categories', command('category.create', async (tx, ctx, _p, body, meta, _k, c) => createCategory(tx, ctx, body, meta, c)));
   app.patch('/finance/categories/:id', command('category.update', async (tx, ctx, p, body, meta, _k, c) => updateCategory(tx, ctx, p.id!, body, meta, c), 200));
+
+  // №48 сводка кассы филиала и сети (только finance.view)
+  app.get('/branches/:branchId/finance/summary', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    const q = objectBody(request.query);
+    return branchSummary(deps.pool, access, { branchId: (request.params as { branchId: string }).branchId, from: q.from, to: q.to });
+  });
+  app.get('/finance/summary', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    const q = objectBody(request.query);
+    return networkSummary(deps.pool, access, { from: q.from, to: q.to });
+  });
+
+  // №49–50 кассовая смена (K17 §7)
+  app.post(
+    '/branches/:branchId/cash-shifts/open',
+    command('shift.open', async (tx, ctx, p, body, meta, _k, c) => shapeShift(ctx, await openShift(tx, ctx, { ...body, branchId: p.branchId }, meta, c))),
+  );
+  app.post(
+    '/cash-shifts/:id/close',
+    command('shift.close', async (tx, ctx, p, body, meta, _k, c) => shapeShift(ctx, await closeShift(tx, ctx, { ...body, shiftId: p.id }, meta, c)), 200),
+  );
+  app.post(
+    '/cash-shifts/:id/resolve',
+    command('shift.resolve', async (tx, ctx, p, body, meta, _k, c) => {
+      const r = await resolveShift(tx, ctx, { ...body, shiftId: p.id }, meta, { clock: c });
+      return { shift: shapeShift(ctx, r.shift), operation: r.operation ? shape(ctx, r.operation) : null };
+    }, 200),
+  );
 
   // №47 закрытие месяца
   app.post(

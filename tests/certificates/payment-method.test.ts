@@ -19,6 +19,7 @@ import { sellCertificate, type CertificateDto } from '../../apps/api/src/modules
 import type { ChargeInput, PaymentLine, PaymentSession } from '../../apps/api/src/modules/finance/methods.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
+import { createTestPayment } from '../helpers/payment.ts';
 
 const PEPPER = 'cert-pepper-'.padEnd(40, 'y');
 const T0 = new Date('2026-11-14T05:00:00Z');
@@ -70,6 +71,7 @@ async function sell(nominalKop: number, c: Clock = clock): Promise<{ certificate
   const o = owner();
   return tx((t) => sellCertificate(t, o, { branchId: saleBranch, nominalKop, method: 'cash' }, meta(o), { pepper: PEPPER, clock: c }));
 }
+const paymentOf = new Map<string, string>();
 async function booking(): Promise<PaymentSession> {
   const r = await db.client.query<{ id: string }>(
     `INSERT INTO app.bookings (checkout_id, branch_id, client_id, resource_id, period, price_kop, source, created_by_type, status)
@@ -77,6 +79,7 @@ async function booking(): Promise<PaymentSession> {
     [sessionBranch, clientId, resourceId],
   );
   const id = r.rows[0]!.id;
+  paymentOf.set(id, await createTestPayment(db.client, id));
   return { id, bookingId: id, branchId: sessionBranch, clientId, amountDueKop: 300_000, bookingVersion: 1, status: 'unpaid', activePaymentId: null, rowVersion: 1 };
 }
 function chargeInput(session: PaymentSession, cert: { number: string; pin: string }, amountKop: number, extra: Partial<ChargeInput> = {}): ChargeInput {
@@ -91,7 +94,7 @@ function chargeInput(session: PaymentSession, cert: { number: string; pin: strin
     author: { type: 'staff', id: ownerId },
     occurredAt: T0,
     mode: 'exact',
-    paymentId: randomUUID(),
+    paymentId: paymentOf.get(session.id) ?? randomUUID(),
     ...extra,
   };
 }

@@ -114,9 +114,10 @@ export interface PaymentMethodHandler {
   /** Проверить и провести строку в tx команды. Возвращает posting K3. Ошибки – коды ниже. */
   charge(tx: Tx, input: { session: PaymentSession; lineNo: 1 | 2; amountKop: number; minutes: number;
     resourceType: string; certificate?: { number: string; pin: string }; idempotencyKey: string;
-    author: { type: 'staff'; id: string }; occurredAt: Date; mode: 'exact' | 'drain' }):
+    author: { type: 'staff'; id: string }; occurredAt: Date; mode: 'exact' | 'drain';
+    paymentId?: string; meta?: AuditRequestMeta }):   // paymentId – платёж уже вставлен (certificate_redemptions.payment_id NOT NULL, FK 0205); meta – для аудита обработчика
     Promise<{ postingId: string; amountKop: number; pointsCenti?: number; certificateId?: string; financeOperationId?: string }>;
-  refund(tx: Tx, input: { line: PaymentLine; amountKop: number; idempotencyKey: string; author: { type: 'staff'; id: string }; occurredAt: Date; reason: string }):
+  refund(tx: Tx, input: { line: PaymentLine; amountKop: number; idempotencyKey: string; author: { type: 'staff'; id: string }; occurredAt: Date; reason: string; meta?: AuditRequestMeta }):
     Promise<{ postingId: string | null; outcome: 'returned' | 'not_restored' }>;
 }
 export function registerPaymentMethod(h: PaymentMethodHandler): void;
@@ -130,6 +131,8 @@ export function registerPaymentMethod(h: PaymentMethodHandler): void;
 | `certificate` | `certificates` (K16 §5) | `certificate.redeem` −сумма на счёт сертификата; денежного поступления нет | 08 §6.4, §12.2; TC-08 |
 
 `mode: 'drain'` – только строка сертификата при флаге R-03: списать весь остаток, вернуть фактическую сумму; finance добавляет денежную строку на разницу. После обработчика finance сверяет: `0 < списано сертификатом < amountDue` и `списано + денежная строка = amountDue`; иначе исключение и откат всей транзакции (правка по ревью 02.11: остаток мог измениться между проверкой на экране и проводкой).
+
+**Порядок для сертификата (решение 02.11):** код проверяет `verifyCertificatePin` (K16 §3) своей короткой транзакцией на отдельном соединении **до** `BEGIN` транзакции оплаты – только он считает неудачи и ставит блок 15 минут; `charge` неудач не считает. В `recordPayment` передаётся `certificateId`, который вернул verify: по нему finance берёт счёт сертификата в общий `lockAccounts`, и строка, погашенная обработчиком, обязана быть этим сертификатом. Вызывать verify изнутри транзакции оплаты нельзя: она уже держит строку сертификата, а второе соединение ждёт её – взаимное ожидание, которого Postgres не видит.
 
 Обработчики соблюдают порядок **блокировка → перечитать → проверить** (решение): `lockAccounts` своего счёта, затем срок, статус и остаток читаются из базы под блокировкой; проверки экрана и `POST /certificates/check` – только подсказка.
 
