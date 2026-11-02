@@ -72,6 +72,32 @@ async function crmHistory(db: Db, clientId: string, limit = 100) {
   }));
 }
 
+/** Партии клиента (K15 §2): источник, сумма, остаток, срок; entryId – запись K3 начисления (связь с историей). */
+async function crmBatches(db: Db, clientId: string) {
+  const r = await db.query<{ id: string; source: string; accrual_entry_id: string; branch_id: string | null; amount_centi: string; remaining_centi: string; expires_at: Date | null; status: string; accrued_at: Date }>(
+    `SELECT id, source, accrual_entry_id, branch_id, amount_centi, remaining_centi, expires_at, status, accrued_at
+     FROM app.loyalty_batches WHERE client_id = $1 ORDER BY accrued_at DESC, id DESC LIMIT 200`,
+    [clientId],
+  );
+  return r.rows.map((b) => ({
+    id: b.id, source: b.source, entryId: Number(b.accrual_entry_id), branchId: b.branch_id, amountCenti: Number(b.amount_centi),
+    remainingCenti: Number(b.remaining_centi), expiresAt: b.expires_at?.toISOString() ?? null, status: b.status, accruedAt: b.accrued_at.toISOString(),
+  }));
+}
+
+/** Выданные товары клиента (K15 №27–28): возврат – по id заказа из этого списка. */
+async function crmGoodsOrders(db: Db, clientId: string) {
+  const r = await db.query<{ id: string; goods_id: string; name: string; branch_id: string; price_points_centi: string; status: string; issued_at: Date; return_reason: string | null }>(
+    `SELECT o.id, o.goods_id, g.name, o.branch_id, o.price_points_centi, o.status, o.issued_at, o.return_reason
+     FROM app.loyalty_goods_orders o JOIN app.loyalty_goods g ON g.id = o.goods_id WHERE o.client_id = $1 ORDER BY o.issued_at DESC, o.id DESC LIMIT 100`,
+    [clientId],
+  );
+  return r.rows.map((o) => ({
+    id: o.id, goodsId: o.goods_id, goodsName: o.name, branchId: o.branch_id, priceCenti: Number(o.price_points_centi), status: o.status,
+    issuedAt: o.issued_at.toISOString(), returnReason: o.return_reason,
+  }));
+}
+
 export async function loyaltyCrmRoutes(app: FastifyInstance, deps: LoyaltyCrmDeps): Promise<void> {
   const clock = deps.clock ?? systemClock;
   /** Клиент в зоне сотрудника (K1 assertCanClient через брони) и право роли; иначе 404 / 403. */
@@ -94,7 +120,7 @@ export async function loyaltyCrmRoutes(app: FastifyInstance, deps: LoyaltyCrmDep
   };
   const p = (request: FastifyRequest) => request.params as Record<string, string>;
 
-  // №24 бонусный счёт: баланс, доступно, резерв, история, «требует решения», причина блокировки
+  // №24 бонусный счёт: баланс, доступно, резерв, история, партии, выданные товары, «требует решения», причина блокировки
   app.get('/clients/:clientId/loyalty', async (request, reply) => {
     const { access } = await deps.authenticate(request, reply);
     const clientId = await clientInZone(access, p(request).clientId ?? '', 'loyalty.view');
@@ -106,6 +132,8 @@ export async function loyaltyCrmRoutes(app: FastifyInstance, deps: LoyaltyCrmDep
     return {
       ...balance,
       history: await crmHistory(deps.pool, clientId),
+      batches: await crmBatches(deps.pool, clientId),
+      goodsOrders: await crmGoodsOrders(deps.pool, clientId),
       issues: issues.rows.map((i) => ({ id: i.id, kind: i.kind, ref: { type: i.ref_type, id: i.ref_id }, amountCenti: Number(i.amount_centi), createdAt: i.created_at.toISOString() })),
       blockedReason: balance.preBookingBlocked ? LIMIT_MESSAGE : null,
     };

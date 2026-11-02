@@ -123,6 +123,9 @@ describe('№26–28 товары', () => {
     expect((await req('admin', 'POST', `/goods-orders/${orderId}/return`, { reason: '' })).json().error.code).toBe('COMMENT_REQUIRED');
     const ret = await req('admin', 'POST', `/goods-orders/${orderId}/return`, { reason: 'товар не выдан' });
     expect([ret.statusCode, ret.json()]).toEqual([201, { returnedCenti: 1000, notReturnedCenti: 0 }]);
+    const card = (await req('admin', 'GET', `/clients/${ids.a}/loyalty`)).json();
+    expect(card.goodsOrders[0]).toMatchObject({ id: orderId, goodsName: 'Кружка клуба', priceCenti: 1000, status: 'returned', returnReason: 'товар не выдан' });
+    expect(card.batches.find((b: { source: string }) => b.source === 'manual')).toMatchObject({ amountCenti: 1500, remainingCenti: 1500, expiresAt: null, status: 'active' });
     const archived = await req('director', 'PATCH', `/goods/${g.id}`, { rowVersion: g.rowVersion, status: 'archived' });
     expect(archived.json()).toMatchObject({ status: 'archived' });
   });

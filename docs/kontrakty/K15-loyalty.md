@@ -166,7 +166,7 @@ export function adjust(tx: Tx, ctx: AccessContext, input: { clientId: string; de
 
 | # | Метод и путь | Право | Успех |
 |---|---|---|---|
-| 24 | `GET /clients/{clientId}/loyalty` | `loyalty.view` | `200 LoyaltyBalanceDto + { history[], issues[], blockedReason \| null }` (07 §13) |
+| 24 | `GET /clients/{clientId}/loyalty` | `loyalty.view` | `200 LoyaltyBalanceDto + { history[], batches[], goodsOrders[], issues[], blockedReason \| null }` (07 §13); `batches` – `{ id, source, entryId, branchId, amountCenti, remainingCenti, expiresAt, status, accruedAt }` (до 200), `goodsOrders` – `{ id, goodsId, goodsName, branchId, priceCenti, status: 'issued' \| 'returned', issuedAt, returnReason }` (до 100, по ним возврат №28) |
 | 25 | `POST /clients/{clientId}/loyalty/adjust` | `loyalty.adjust` | `201 { entryId }`; `{ deltaCenti, reason, belowLimit?: true }` |
 | 26 | `GET /branches/{branchId}/goods`, `POST /goods`, `PATCH /goods/{id}` | `loyalty.view` / `loyalty.goods.manage` | карточки товаров, архив вместо удаления |
 | 27 | `POST /clients/{clientId}/goods-orders` | `loyalty.goods.issue` | `201 { orderId, entryId }` – `{ goodsId, branchId }` + `Idempotency-Key` |

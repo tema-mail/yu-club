@@ -1,0 +1,62 @@
+---
+// Товары за баллы (S2-66, K15 №26): /goods – каталог филиала из контекста (в контексте сети или города – первого
+// филиала зоны, выбор ниже), /goods/{branchId} – каталог этого филиала. Смотреть – loyalty.view, менять –
+// loyalty.goods.manage. Чужой филиал – 404 (K1). Выдача и возврат – в карточке клиента (бонусный счёт).
+import Crm from '../../layouts/Crm.astro';
+import GoodsCatalog from '../../islands/GoodsCatalog.tsx';
+import { ApiError, serverCall, type Branch } from '../../lib/api.ts';
+import type { BranchGoods } from '../../lib/loyalty.ts';
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const segments = (Astro.params.path ?? '').split('/').filter(Boolean);
+const allowed = can('loyalty.view');
+let notFound = segments.length > 1;
+let branch: Branch | null = null;
+let items: BranchGoods[] = [];
+if (allowed && !notFound) {
+  branch = segments[0] ? (branches.find((b) => b.id === segments[0]) ?? null) : ctx.kind === 'branch' ? ctx.branch : (branches[0] ?? null);
+  if (!branch) notFound = true;
+  else {
+    try {
+      items = (await serverCall<{ items: BranchGoods[] }>(cookie, `/branches/${encodeURIComponent(branch.id)}/goods`)).items;
+    } catch (e) {
+      if (!(e instanceof ApiError) || (e.status !== 404 && e.status !== 403)) throw e;
+      notFound = true;
+    }
+  }
+}
+if (!allowed) Astro.response.status = 403;
+else if (notFound) Astro.response.status = 404;
+const title = !allowed ? 'Нет доступа' : notFound || !branch ? 'Не найдено' : `Товары за баллы – ${branch.name}`;
+---
+<Crm title={title}>
+  {!allowed ? (
+    <div class="yc-panel" role="alert" data-testid="no-access">
+      <h1>Раздел недоступен</h1>
+      <p>Товары за баллы видят Владелец, Директор и Администратор филиала.</p>
+      <p><a href="/">На главную</a></p>
+    </div>
+  ) : notFound || !branch ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Не найдено</h1>
+      <p>Такого филиала нет или он вне вашей зоны доступа.</p>
+      <p><a href="/goods">К товарам за баллы</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>Товары за баллы</h1>
+        <p>{branch.cityName} · {branch.name}</p>
+        {branches.length > 1 && (
+          <nav aria-label="Филиал каталога" class="yc-tabs" data-testid="goods-branches">
+            {branches.map((b) => (
+              <a class="yc-tabs__link" href={`/goods/${encodeURIComponent(b.id)}`} aria-current={b.id === branch!.id ? 'page' : undefined}>{b.name}</a>
+            ))}
+          </nav>
+        )}
+      </div>
+      <GoodsCatalog client:load branch={{ id: branch.id, name: branch.name }} initial={items} canManage={can('loyalty.goods.manage')} />
+    </>
+  )}
+</Crm>
