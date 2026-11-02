@@ -29,6 +29,7 @@ import {
 } from './cashbox.ts';
 import { categoryDenialOf, createCategory, listCategories, updateCategory } from './categories.ts';
 import { closeMonth, correctOperation, reverseOperation } from './corrections.ts';
+import { branchSummary, networkSummary } from './summary.ts';
 
 export interface FinanceCrmDeps {
   pool: Db & { connect(): Promise<pg.PoolClient> };
@@ -212,6 +213,18 @@ export async function financeCrmRoutes(app: FastifyInstance, deps: FinanceCrmDep
   });
   app.post('/finance/categories', command('category.create', async (tx, ctx, _p, body, meta, _k, c) => createCategory(tx, ctx, body, meta, c)));
   app.patch('/finance/categories/:id', command('category.update', async (tx, ctx, p, body, meta, _k, c) => updateCategory(tx, ctx, p.id!, body, meta, c), 200));
+
+  // №48 сводка кассы филиала и сети (только finance.view)
+  app.get('/branches/:branchId/finance/summary', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    const q = objectBody(request.query);
+    return branchSummary(deps.pool, access, { branchId: (request.params as { branchId: string }).branchId, from: q.from, to: q.to });
+  });
+  app.get('/finance/summary', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    const q = objectBody(request.query);
+    return networkSummary(deps.pool, access, { from: q.from, to: q.to });
+  });
 
   // №47 закрытие месяца
   app.post(
