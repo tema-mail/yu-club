@@ -172,4 +172,28 @@ export const paymentBookingProvider = {
     );
     return r.rows;
   },
+
+  /** K10 §4 listUnpaid: брони филиала к оплате (arrived | completed), начало которых в [from, to) – по текущей версии. */
+  async payableInPeriod(db: Db | Tx, input: { branchId: string; from: Date; to: Date }): Promise<PayableInPeriodRow[]> {
+    const r = await db.query<Omit<PayableInPeriodRow, 'number' | 'priceKop'> & { number: string; priceKop: string }>(
+      `SELECT b.id AS "bookingId", b.number, b.status, b.client_id AS "clientId", v.resource_snapshot ->> 'name' AS "resourceName",
+              lower(v.period) AS start, upper(v.period) AS "end", v.price_kop AS "priceKop"
+       FROM app.bookings b JOIN journal.booking_versions v ON v.booking_id = b.id AND v.version = b.current_version
+       WHERE b.branch_id = $1 AND b.status IN ('arrived','completed') AND lower(v.period) >= $2 AND lower(v.period) < $3
+       ORDER BY lower(v.period), b.number`,
+      [input.branchId, input.from, input.to],
+    );
+    return r.rows.map((x) => ({ ...x, number: Number(x.number), priceKop: Number(x.priceKop) }));
+  },
 };
+
+export interface PayableInPeriodRow {
+  bookingId: string;
+  number: number;
+  status: BookingStatus;
+  clientId: string;
+  resourceName: string | null;
+  start: Date;
+  end: Date;
+  priceKop: number;
+}

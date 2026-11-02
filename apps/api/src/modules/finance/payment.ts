@@ -15,7 +15,7 @@ import type { Tx } from '../../core/ledger.ts';
 import { publish } from '../../core/outbox.ts';
 import type { AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
-import { systemClock, type Clock } from '../../core/time.ts';
+import { branchDay, parseLocalDate, systemClock, type Clock } from '../../core/time.ts';
 import { guardFinance, lockPlaces, postMoneyOperation, type MoneyPlace } from './cashbox.ts';
 import {
   MONEY_METHODS,
@@ -167,6 +167,64 @@ export async function getPaymentStatus(db: Db, bookingIds: string[]): Promise<Ma
   const r = await db.query<{ booking_id: string; status: PaymentSessionStatus }>(`SELECT booking_id, status FROM app.payment_sessions WHERE booking_id = ANY($1::uuid[])`, [ids]);
   for (const row of r.rows) out.set(row.booking_id, row.status);
   return out;
+}
+
+export interface UnpaidRow {
+  bookingId: string;
+  number: number;
+  status: string;
+  clientId: string;
+  resourceName: string | null;
+  start: string;
+  end: string;
+  amountDueKop: number;
+  /** unpaid – оплаты не было; refunded – после полного возврата. */
+  paymentStatus: 'unpaid' | 'refunded';
+}
+
+/** Брони филиала к оплате за период (провайдер booking.payableInPeriod). */
+export interface UnpaidBookings {
+  payableInPeriod(db: Db, input: { branchId: string; from: Date; to: Date }): Promise<Array<{
+    bookingId: string; number: number; status: string; clientId: string; resourceName: string | null; start: Date; end: Date; priceKop: number;
+  }>>;
+}
+
+/** K10 §4 listUnpaid (№22): брони arrived | completed без живого платежа за сутки филиала (K8). Курсор (start, number).
+ *  Права – finance.payment.view на филиал (вне зоны – 404). */
+export async function listUnpaid(
+  db: Db,
+  ctx: AccessContext,
+  input: { branchId: string; date: string; cursor?: string; limit?: number },
+  deps: { bookings: UnpaidBookings },
+): Promise<{ items: UnpaidRow[]; nextCursor: string | null }> {
+  const branch = await guardFinance(db, ctx, input.branchId, 'finance.payment.view', { action: 'payment.recorded' });
+  const day = branchDay(parseLocalDate(input.date), branch.timezone);
+  const limit = input.limit ?? 50;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new AppError('VALIDATION_FAILED', 400, 'limit – от 1 до 200', { field: 'limit' });
+  if (input.cursor !== undefined && !/^\d{1,16}:\d{1,18}$/.test(input.cursor)) throw new AppError('VALIDATION_FAILED', 400, 'Неверный курсор', { field: 'cursor' });
+  const rows = await deps.bookings.payableInPeriod(db, { branchId: branch.id, from: day.start, to: day.end });
+  const sessions = await db.query<{ booking_id: string; status: PaymentSessionStatus; amount_due_kop: string }>(
+    `SELECT booking_id, status, amount_due_kop FROM app.payment_sessions WHERE booking_id = ANY($1::uuid[])`,
+    [rows.map((r) => r.bookingId)],
+  );
+  const byId = new Map(sessions.rows.map((s) => [s.booking_id, s]));
+  const [cMs, cNum] = input.cursor ? input.cursor.split(':').map(Number) : [null, null];
+  const unpaid = rows
+    .filter((r) => {
+      const s = byId.get(r.bookingId);
+      return !s || s.status === 'unpaid' || s.status === 'refunded';
+    })
+    .filter((r) => cMs === null || r.start.getTime() > cMs || (r.start.getTime() === cMs && r.number > cNum!));
+  const page = unpaid.slice(0, limit);
+  const last = page.at(-1);
+  return {
+    items: page.map((r) => ({
+      bookingId: r.bookingId, number: r.number, status: r.status, clientId: r.clientId, resourceName: r.resourceName,
+      start: r.start.toISOString(), end: r.end.toISOString(), amountDueKop: r.priceKop,
+      paymentStatus: byId.get(r.bookingId)?.status === 'refunded' ? 'refunded' : 'unpaid',
+    })),
+    nextCursor: unpaid.length > limit && last ? `${last.start.getTime()}:${last.number}` : null,
+  };
 }
 
 /** loyalty PaymentLookup (K15 §4): состояние оплаты из базы, не из payload события. */
