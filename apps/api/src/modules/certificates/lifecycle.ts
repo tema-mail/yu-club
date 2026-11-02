@@ -50,11 +50,13 @@ async function dto(tx: Tx, id: string, now: Date): Promise<CertificateDto> {
 
 /** Один проход задачи certificates:expire: у каждого сертификата с expires_at ≤ now и остатком > 0 – своя транзакция:
  *  lockAccounts(счёт) → перечитать → certificate.expire −остаток (автор system, ключ certificate-expire:<id>).
- *  Касса не меняется: это не денежное поступление и не доход. Возвращает число сгоревших. */
+ *  Касса не меняется: это не денежное поступление и не доход. Ошибка одной строки откатывает только её: она уходит
+ *  в onRowError (лог), проход идёт дальше, строка повторится следующим проходом. Возвращает число сгоревших. */
 export async function expireDueCertificates(
   pool: { connect(): Promise<{ query: Tx['query']; release(): void }> },
   clock: Clock = systemClock,
   limit = 200,
+  onRowError: (err: unknown, certificateId: string) => void = (err, id) => console.error('certificates:expire', id, err),
 ): Promise<number> {
   const now = clock.now();
   const c = await pool.connect();
@@ -94,7 +96,7 @@ export async function expireDueCertificates(
         burned++;
       } catch (err) {
         await c.query('ROLLBACK');
-        throw err;
+        onRowError(err, d.id);
       }
     }
   } finally {
@@ -111,7 +113,8 @@ export function startCertificateExpiry(opts: {
   onError?: (err: unknown) => void;
 }): { stop(): void } {
   const timer = setInterval(() => {
-    expireDueCertificates(opts.pool, opts.clock).catch((err: unknown) => (opts.onError ?? ((e) => console.error('certificates:expire', e)))(err));
+    const log = opts.onError ?? ((e: unknown) => console.error('certificates:expire', e));
+    expireDueCertificates(opts.pool, opts.clock, 200, (err, id) => log(Object.assign(err instanceof Error ? err : new Error(String(err)), { certificateId: id }))).catch((err: unknown) => (opts.onError ?? ((e) => console.error('certificates:expire', e)))(err));
   }, opts.intervalMs ?? 5 * 60_000);
   timer.unref();
   return { stop: () => clearInterval(timer) };
@@ -201,6 +204,10 @@ export async function correctBalance(
   await lockAccounts(tx, [first.ledger_account_id]);
   const row = await relock(tx, first.id, input.rowVersion);
   if (row.cancelled_at) throw new AppError('CERTIFICATE_NOT_ACTIVE', 409, 'Продажа отменена', { status: 'cancelled' });
+  // плюс после срока или сгорания не создаёт новый остаток: продления нет (08 §5.3, ревью 03.11)
+  if (input.deltaKop > 0 && (row.expired_entry_id !== null || now.getTime() >= row.expires_at.getTime())) {
+    throw new AppError('CERTIFICATE_EXPIRED', 409, 'Срок действия сертификата истёк: пополнение невозможно', { expiresOn: row.expires_on });
+  }
   const balance = Number(row.balance);
   const after = balance + input.deltaKop;
   if (after > Number(row.nominal_kop)) {

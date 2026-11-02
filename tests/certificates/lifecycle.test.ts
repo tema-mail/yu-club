@@ -254,3 +254,35 @@ describe('получатель (K16 §7)', () => {
     ]);
   });
 });
+
+// Ревью 03.11. Сертификаты продаются за 50 дней до T0: их граница раньше всех остальных в файле.
+describe('ревью: сгорание переживает ошибку строки, корректировка после срока', () => {
+  it('ошибка одной строки не обрывает проход: остальные сгорают, ошибка уходит в лог', async () => {
+    const broken = await sell(100_000, 'cash', 50);
+    const ok = await sell(100_000, 'cash', 50);
+    await db.client.query(`UPDATE app.ledger_accounts SET status = 'closed' WHERE id = (SELECT ledger_account_id FROM app.certificates WHERE id = $1)`, [broken.certificate.id]);
+    const errors: Array<[string, string]> = [];
+    try {
+      const n = await expireDueCertificates(pool, at(ok.certificate), 200, (err, id) => errors.push([id, (err as AppError).code]));
+      expect(n).toBe(1);
+      expect(errors).toEqual([[broken.certificate.id, 'ACCOUNT_CLOSED']]);
+      expect(await balanceOf(ok.certificate.id)).toBe(0);
+      expect(await balanceOf(broken.certificate.id)).toBe(100_000);
+    } finally {
+      await db.client.query(`UPDATE app.ledger_accounts SET status = 'active' WHERE id = (SELECT ledger_account_id FROM app.certificates WHERE id = $1)`, [broken.certificate.id]);
+    }
+    expect(await expireDueCertificates(pool, at(ok.certificate))).toBe(1); // следующим проходом сгорает и он
+  });
+
+  it('плюс после срока (до прохода задачи) и после сгорания – CERTIFICATE_EXPIRED; минус до сгорания – можно', async () => {
+    const cert = await sell(100_000, 'cash', 50);
+    await redeem(cert, 40_000, T0);
+    const correct = (rowVersion: number, deltaKop: number, c: Clock) =>
+      tx((t) => correctBalance(t, owner(), { certificateId: cert.certificate.id, rowVersion, deltaKop, reason: 'ошибка' }, meta(owner()), c));
+    await correct(1, 10_000, fixedClock(new Date(new Date(cert.certificate.expiresAt).getTime() - 1))); // в последнюю миллисекунду – можно
+    await fails(correct(2, 1_000, at(cert.certificate)), 'CERTIFICATE_EXPIRED');
+    expect((await correct(2, -5_000, at(cert.certificate))).balanceKop).toBe(65_000);
+    expect(await expireDueCertificates(pool, at(cert.certificate))).toBe(1);
+    await fails(correct(3, 1_000, at(cert.certificate, 60_000)), 'CERTIFICATE_EXPIRED');
+  });
+});
