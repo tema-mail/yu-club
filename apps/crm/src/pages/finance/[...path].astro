@@ -4,10 +4,12 @@
 // категорий (K17 №46: смотрят все с кассой, меняет Владелец).
 // Доступ – finance.view.day (Владелец, Директор, Администратор). Остатки и период – только с finance.view;
 // Администратор видит сутки своего филиала без остатков. Чужой филиал – 404 (K1). Решает всё равно сервер.
+// S2-62: кассовая смена филиала (K17 №55–56) – блок есть, только если finance.cash_shift_enabled включён.
 import Crm from '../../layouts/Crm.astro';
 import CashJournal, { type FinBranch } from '../../islands/CashJournal.tsx';
 import OperationForm, { type CategoryOption } from '../../islands/OperationForm.tsx';
 import CategoryTree, { type CatNode } from '../../islands/CategoryTree.tsx';
+import CashShift, { type ShiftRead } from '../../islands/CashShift.tsx';
 import { ApiError, serverCall, type Branch } from '../../lib/api.ts';
 
 interface CategoryNode { id: string; kind: 'income' | 'expense'; name: string; status: 'active' | 'archived'; children: Array<{ id: string; name: string; status: 'active' | 'archived' }> }
@@ -72,6 +74,13 @@ if (branch) {
     if (!(e instanceof ApiError) || e.status !== 403) throw e;
   }
 }
+// Смена: флаг и открытая смена (№55), последние смены (№56). Флаг выключен – блока нет.
+let shift: { open: ShiftRead | null; list: ShiftRead[] } | null = null;
+if (branch && can('finance.shift.operate')) {
+  const id = encodeURIComponent(branch.id);
+  const cur = await serverCall<{ enabled: boolean; openShift: ShiftRead | null }>(cookie, `/branches/${id}/cash-shifts/current`);
+  if (cur.enabled) shift = { open: cur.openShift, list: (await serverCall<{ items: ShiftRead[] }>(cookie, `/branches/${id}/cash-shifts?limit=20`)).items };
+}
 const title = !allowed ? 'Нет доступа' : notFound ? 'Не найдено' : isCategories ? 'Категории доходов и расходов' : branch ? `Финансы – ${branch.name}` : 'Финансы';
 ---
 <Crm title={title}>
@@ -104,6 +113,10 @@ const title = !allowed ? 'Нет доступа' : notFound ? 'Не найден
         <p data-testid="fin-scope">{branch ? `${branch.cityName} · касса филиала: наличные и безнал` : scopeTitle}</p>
         <p><a class="yc-link" href="/finance/categories">Категории доходов и расходов</a></p>
       </div>
+      {branch && shift && (
+        <CashShift client:load branch={{ id: branch.id, name: branch.name, timezone: branch.timezone }} initialOpen={shift.open} initialList={shift.list}
+          canResolve={can('finance.shift.resolve')} meId={me.staff.id} staffNames={staffNames} />
+      )}
       {branch && (
         <OperationForm
           client:load
