@@ -4,6 +4,9 @@
 // pin: null, pinShownOnce), №32 отмена продажи (без погашений и до срока, возврат денег – refund кассы),
 // №33 корректировка остатка (Владелец). Деньги продажи и возврата – через recordMoney мока кассы (K17).
 // Настройки номинала и способов – системные значения (null / все способы). Подключается из mock-api.ts.
+// S2-63: №36 проверка номера и кода (payment-method.ts verifyCertificatePin: 5-й неверный код – блок 15 минут,
+// CERTIFICATE_PIN_LOCKED с retryAfterSec; нет номера и неверный код – один CERTIFICATE_NOT_FOUND) и обработчик способа
+// certificate для mock-payments.ts (certificatePayments: verify, charge exact/drain, refund целиком).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomInt, randomUUID } from 'node:crypto';
 import { recordMoney } from './mock-finance.ts';
@@ -92,10 +95,14 @@ const dto = (c: Cert, now = Date.now()) => ({
 // ---- состояние
 
 let certs: Cert[] = [];
+let pins = new Map<string, { failed: number; lockedUntil: number | null }>(); // pin_failed_count, pin_locked_until
+const PIN_MAX_FAILURES = 5; // Q-105
+const PIN_LOCK_MS = 15 * 60_000;
 const replays = new Map<string, { hash: string; status: number; body: unknown }>();
 
 export function resetCertificates(branches: BranchLite[]): void {
   certs = [];
+  pins = new Map();
   replays.clear();
   const DAY = 86_400_000;
   const mk = (branchId: string, number: string, nominalKop: number, soldAt: number, soldBy: string, method: Method, extra: Partial<Cert> = {}): Cert => {
@@ -131,6 +138,69 @@ export function resetCertificates(branches: BranchLite[]): void {
   exp.timeline.push({ type: 'expire', amountKop: -100_000, balanceAfterKop: 0, at: new Date(exp.expiresAt).toISOString(), branchId: 'b-nsk-krasny', basis: null });
   mk('b-tsk-lenina', 'YC-5T7V-1XYZ', 100_000, now - 10 * DAY, 's-admin-tsk', 'cash');
 }
+
+// ---- код и погашение (payment-method.ts): для №36 и для оплаты сеанса (mock-payments.ts)
+
+const certNotFound = () => new Fail(404, 'CERTIFICATE_NOT_FOUND', 'Сертификат не найден или код неверен');
+const pinLocked = (until: number, now: number) =>
+  new Fail(429, 'CERTIFICATE_PIN_LOCKED', 'Слишком много неверных кодов: попробуйте позже', { retryAfterSec: Math.max(1, Math.ceil((until - now) / 1000)) });
+
+export const certificatePayments = {
+  /** Остаток под «блокировкой» (lockCertificate → перечитать): drain знает, сколько спишется. */
+  balanceOf: (certificateId: string) => certs.find((x) => x.id === certificateId)?.balanceKop ?? 0,
+  /** verifyCertificatePin: неудача считается и остаётся, даже если команда дальше откатится. */
+  verify(number: string, pin: string, now = Date.now()): string {
+    const c = certs.find((x) => x.number === number.trim().toUpperCase());
+    if (!c) throw certNotFound();
+    const st = pins.get(c.id) ?? { failed: 0, lockedUntil: null };
+    if (st.lockedUntil !== null && st.lockedUntil > now) throw pinLocked(st.lockedUntil, now);
+    if (!/^\d{4}$/.test(pin) || pin !== c.pin) {
+      const failed = st.failed + 1;
+      if (failed >= PIN_MAX_FAILURES) {
+        pins.set(c.id, { failed: 0, lockedUntil: now + PIN_LOCK_MS });
+        throw pinLocked(now + PIN_LOCK_MS, now);
+      }
+      pins.set(c.id, { failed, lockedUntil: st.lockedUntil });
+      throw certNotFound();
+    }
+    pins.delete(c.id);
+    return c.id;
+  },
+  /** charge: отменён/проверка – NOT_ACTIVE, срок – EXPIRED, 0 – used_up, не хватает – INSUFFICIENT (drain – весь остаток). */
+  charge(certificateId: string, amountKop: number, mode: 'exact' | 'drain', at: { bookingId: string; paymentId: string; branchId: string; branchName: string; clientId: string }) {
+    const c = certs.find((x) => x.id === certificateId);
+    if (!c) throw certNotFound();
+    const now = Date.now();
+    if (c.cancelledAt !== null || c.reviewReason !== null) throw new Fail(409, 'CERTIFICATE_NOT_ACTIVE', 'Сертификат недействителен', { status: c.cancelledAt !== null ? 'cancelled' : 'needs_review' });
+    if (now >= c.expiresAt) throw new Fail(409, 'CERTIFICATE_EXPIRED', 'Срок действия сертификата истёк', { expiresOn: c.expiresOn });
+    if (c.balanceKop <= 0) throw new Fail(409, 'CERTIFICATE_NOT_ACTIVE', 'Остаток сертификата исчерпан', { status: 'used_up' });
+    let amount = amountKop;
+    if (amount > c.balanceKop) {
+      if (mode !== 'drain') throw new Fail(409, 'CERTIFICATE_INSUFFICIENT', 'Остатка сертификата не хватает', { balanceKop: c.balanceKop });
+      amount = c.balanceKop;
+    }
+    const redemptionId = randomUUID();
+    c.balanceKop -= amount;
+    c.redemptions.push({ id: redemptionId, bookingId: at.bookingId, paymentId: at.paymentId, branchId: at.branchId, branchName: at.branchName, clientId: at.clientId, amountKop: amount, status: 'active', at: new Date(now).toISOString() });
+    c.timeline.push({ type: 'redeem', amountKop: -amount, balanceAfterKop: c.balanceKop, at: new Date(now).toISOString(), branchId: at.branchId, basis: null });
+    return { amountKop: amount, certificateId: c.id, redemptionId };
+  },
+  /** refund: только целиком; после срока или отмены – not_restored, остаток не меняется. */
+  refund(redemptionId: string): 'returned' | 'not_restored' {
+    const c = certs.find((x) => x.redemptions.some((r) => r.id === redemptionId))!;
+    const r = c.redemptions.find((x) => x.id === redemptionId)!;
+    if (r.status !== 'active') return r.status === 'returned' ? 'returned' : 'not_restored';
+    const now = Date.now();
+    if (c.cancelledAt !== null || now >= c.expiresAt) {
+      r.status = 'not_restored';
+      return 'not_restored';
+    }
+    r.status = 'returned';
+    c.balanceKop += r.amountKop;
+    c.timeline.push({ type: 'return', amountKop: r.amountKop, balanceAfterKop: c.balanceKop, at: new Date(now).toISOString(), branchId: r.branchId, basis: null });
+    return 'returned';
+  },
+};
 
 // ---- маршруты
 
@@ -295,6 +365,28 @@ export function registerCertificates(app: FastifyInstance, P: string, deps: Cert
     Object.assign(c, { balanceKop: 0, cancelledAt: now, cancelReason: reason, rowVersion: c.rowVersion + 1 });
     return dto(c, now);
   }, 200));
+
+  // №36 проверка по номеру и коду перед оплатой (право finance.payment.record на филиал); тот же лимит попыток.
+  // Неудача кода фиксируется до ответа (не откатывается снимком command). Ответ повтора – без кода в хэше (hashPin).
+  app.post(`${P}/certificates/check`, async (req, reply) => {
+    const s = deps.current(req);
+    try {
+      const raw = req.headers['idempotency-key'];
+      const key = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+      if (!key) throw new Fail(400, 'IDEMPOTENCY_KEY_REQUIRED', 'Нужен заголовок Idempotency-Key');
+      const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? (req.body as Rec) : {};
+      if (typeof body.branchId !== 'string') throw zodFail('branchId');
+      if (typeof body.number !== 'string' || body.number.length < 1 || body.number.length > 40) throw zodFail('number');
+      if (typeof body.pin !== 'string' || body.pin.length > 10) throw zodFail('pin');
+      if (!deps.branches().some((b) => b.id === body.branchId) || !inZone(s, body.branchId)) throw notFound();
+      if (!deps.can(s, 'finance.payment.record')) throw new Fail(403, 'FORBIDDEN', 'Недостаточно прав', { action: 'finance.payment.record' });
+      const id = certificatePayments.verify(body.number, body.pin);
+      const c = dto(certs.find((x) => x.id === id)!);
+      return reply.code(200).send({ number: c.number, status: c.status, balanceKop: c.balanceKop, expiresOn: c.expiresOn });
+    } catch (e) {
+      return send(reply, e);
+    }
+  });
 
   // №33 корректировка остатка (Владелец)
   app.post(`${P}/certificates/:id/correct`, command('correct', (s, p, body) => {

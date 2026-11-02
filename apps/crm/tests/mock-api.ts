@@ -6,6 +6,7 @@
 // S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts). S1-24: ресурсы, график, блокировки, тарифы – mock-ops.ts.
 // S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts). S2-60/61: касса – mock-finance.ts (по finance/routes.crm.ts).
 // S2-67/68: сертификаты – mock-certificates.ts (по certificates/routes.crm.ts). S2-65/66: баллы – mock-loyalty.ts (по loyalty/routes.crm.ts).
+// S2-63/64: оплата сеанса – mock-payments.ts (по finance/routes.payments.ts).
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
@@ -15,6 +16,7 @@ import { registerCertificates, resetCertificates } from './mock-certificates.ts'
 import { registerFinance, resetFinance } from './mock-finance.ts';
 import { registerLoyalty, resetLoyalty } from './mock-loyalty.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
+import { registerPayments, resetPayments } from './mock-payments.ts';
 import { registerSettings, resetSettings } from './mock-settings.ts';
 import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
 
@@ -66,6 +68,7 @@ const ACTIONS: Record<Role, string[]> = {
     'audit.export', 'notifications.view',
     'finance.view', 'finance.view.day', 'finance.expense.create', 'finance.income.create', 'finance.opening_balance', 'finance.withdrawal',
     'finance.place_transfer', 'finance.correct', 'finance.category.manage', 'finance.period.close',
+    'finance.payment.record', 'finance.payment.view', 'finance.refund', 'finance.shift.operate', 'finance.shift.resolve',
     'certificate.view', 'certificate.sell', 'certificate.cancel', 'certificate.correct', 'certificate.review', 'certificate.link',
     'loyalty.view', 'loyalty.adjust', 'loyalty.adjust_below_limit', 'loyalty.book_below_limit', 'loyalty.goods.manage', 'loyalty.goods.issue',
   ],
@@ -75,13 +78,15 @@ const ACTIONS: Record<Role, string[]> = {
     'booking.visit.mark', 'booking.visit.correct', 'block.manage', 'client.view.basic', 'client.view.full',
     'client.update.limited', 'client.update', 'settings.branch.manage', 'audit.view', 'audit.view.own', 'notifications.view',
     'finance.view', 'finance.view.day', 'finance.expense.create', 'finance.income.create', 'finance.withdrawal', 'finance.place_transfer',
+    'finance.payment.record', 'finance.payment.view', 'finance.refund', 'finance.shift.operate', 'finance.shift.resolve',
     'certificate.view', 'certificate.sell', 'certificate.cancel', 'certificate.review', 'certificate.link',
     'loyalty.view', 'loyalty.adjust', 'loyalty.book_below_limit', 'loyalty.goods.manage', 'loyalty.goods.issue',
   ],
   admin: [
     'network.view', 'resources.view', 'schedule.view', 'booking.create', 'booking.cancel', 'booking.reschedule',
     'booking.visit.mark', 'block.manage', 'client.view.basic', 'client.update.limited', 'audit.view.own', 'notifications.view',
-    'finance.view.day', 'finance.expense.create', 'certificate.view', 'certificate.link', 'loyalty.view', 'loyalty.goods.issue',
+    'finance.view.day', 'finance.expense.create', 'finance.payment.record', 'finance.payment.view', 'finance.shift.operate',
+    'certificate.view', 'certificate.link', 'loyalty.view', 'loyalty.goods.issue',
   ],
 };
 
@@ -695,6 +700,7 @@ export function buildMock() {
     resetFinance(branches);
     resetCertificates(branches);
     resetLoyalty();
+    resetPayments();
     return { ok: true };
   });
 
@@ -727,6 +733,14 @@ export function buildMock() {
   registerLoyalty(app, P, {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a),
     clientVisible: (x, id) => clients.some((c) => c.id === id && clientInZone(x as MockStaff, c)), branchExists: (id) => branches.some((b) => b.id === id),
+  });
+  // Служебная сессия Владельца: провайдеры оплаты читают настройки и баллы без прав сотрудника (как server.ts).
+  const serviceToken = randomBytes(24).toString('hex');
+  sessions.set(serviceToken, 's-owner');
+  resetPayments();
+  registerPayments(app, P, {
+    current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
+    ownerCookie: () => `yu_staff=${serviceToken}`,
   });
   registerStaff(app, P, {
     staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
