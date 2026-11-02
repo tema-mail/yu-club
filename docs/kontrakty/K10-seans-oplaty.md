@@ -114,9 +114,10 @@ export interface PaymentMethodHandler {
   /** Проверить и провести строку в tx команды. Возвращает posting K3. Ошибки – коды ниже. */
   charge(tx: Tx, input: { session: PaymentSession; lineNo: 1 | 2; amountKop: number; minutes: number;
     resourceType: string; certificate?: { number: string; pin: string }; idempotencyKey: string;
-    author: { type: 'staff'; id: string }; occurredAt: Date; mode: 'exact' | 'drain' }):
+    author: { type: 'staff'; id: string }; occurredAt: Date; mode: 'exact' | 'drain';
+    paymentId?: string; meta?: AuditRequestMeta }):   // paymentId – платёж уже вставлен (certificate_redemptions.payment_id NOT NULL, FK 0205); meta – для аудита обработчика
     Promise<{ postingId: string; amountKop: number; pointsCenti?: number; certificateId?: string; financeOperationId?: string }>;
-  refund(tx: Tx, input: { line: PaymentLine; amountKop: number; idempotencyKey: string; author: { type: 'staff'; id: string }; occurredAt: Date; reason: string }):
+  refund(tx: Tx, input: { line: PaymentLine; amountKop: number; idempotencyKey: string; author: { type: 'staff'; id: string }; occurredAt: Date; reason: string; meta?: AuditRequestMeta }):
     Promise<{ postingId: string | null; outcome: 'returned' | 'not_restored' }>;
 }
 export function registerPaymentMethod(h: PaymentMethodHandler): void;
