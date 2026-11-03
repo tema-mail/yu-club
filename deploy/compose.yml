@@ -149,5 +149,5 @@ networks:
     name: yu-club-internal
     internal: true
   caddy:
-    name: ${CADDY_NETWORK:-dzenbot_default}
+    name: ${CADDY_NETWORK:-caddy}
     external: true

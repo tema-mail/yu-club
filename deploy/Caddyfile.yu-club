@@ -1,10 +1,8 @@
 # >>> yu-club: CRM/ЛК сети компьютерных клубов, тест-стенд; блок ставит deploy/deploy.sh репозитория yu-club
 # Проверочный адрес: свой сертификат Caddy (curl -k), закрыт от поисковиков.
-# http → https явным 301 (redir permanent): автоматический редирект Caddy отдаёт 308.
-http://yu-club.45.12.72.227.nip.io {
-	redir https://yu-club.45.12.72.227.nip.io{uri} permanent
-}
-yu-club.45.12.72.227.nip.io {
+# Caddy сервера слушает только 443; http → https кодом 301 отдаёт nginx сервера (deploy/nginx-yu-club.conf),
+# не автоматический редирект Caddy (тот 308). Адреса заменяет deploy/deploy.sh по YU_DOMAIN / YU_CRM_DOMAIN.
+yu-club.168.113.179.49.nip.io {
 	tls internal
 	encode gzip zstd
 	header {
@@ -30,10 +28,7 @@ yu-club.45.12.72.227.nip.io {
 	}
 }
 # CRM – целиком за входом (кука yu_staff на этом домене), API ей доступен по внутренней сети.
-http://yu-crm.45.12.72.227.nip.io {
-	redir https://yu-crm.45.12.72.227.nip.io{uri} permanent
-}
-yu-crm.45.12.72.227.nip.io {
+yu-crm.168.113.179.49.nip.io {
 	tls internal
 	encode gzip zstd
 	header {

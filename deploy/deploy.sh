@@ -1,27 +1,36 @@
 #!/usr/bin/env bash
 # Выкладка тест-стенда yu-club с мака (S0-19): код из git HEAD → $ROOT/src на сервере, сборка образов API, CRM и сайта,
 # Postgres (роли – deploy/initdb), миграции под yu_owner, запуск API, свой блок в общем Caddy
-# (копия → замена своего блока → validate → reload; соседи проверяются до и после),
-# бэкап по расписанию 04:40 UTC (backup.sh, затем restore-check.sh), проверка снаружи.
-# Сервер, ключ, адрес и сеть Caddy – окружением; переезд к заказчику = другие значения + свой .env.
+# (копия → замена своего блока → validate → reload; соседи проверяются до и после), http → https кодом 301
+# через nginx сервера (свой файл в conf.d), бэкап по расписанию 04:40 UTC (backup.sh, затем restore-check.sh), проверка снаружи.
+# С 04.11.2026 стенд на FirstVDS Москва 168.113.179.49 (ssh-алиас firstvds-msk, ключ – в ~/.ssh/config); Beget 45.12.72.227 мёртв с 02.11.
+# Там общий Caddy в /opt/caddy (контейнер caddy, сеть docker caddy, наружу только 443), порт 80 держит nginx ispmanager.
+# Сервер, ключ, адреса, Caddy и nginx – окружением; переезд к заказчику = другие значения + свой .env.
 #   deploy/deploy.sh
-#   YU_HOST=root@1.2.3.4 YU_DOMAIN=crm.example.ru YU_CADDY=/etc/caddy/Caddyfile YU_CADDY_CT=caddy deploy/deploy.sh
+#   YU_HOST=root@1.2.3.4 YU_KEY=~/.ssh/key YU_DOMAIN=site.example.ru YU_CRM_DOMAIN=crm.example.ru \
+#     YU_CADDY=/etc/caddy/Caddyfile YU_CADDY_CT=caddy YU_CADDY_NETWORK=caddy YU_NGINX_CONF=none deploy/deploy.sh
+# YU_NGINX_CONF=none – свой nginx на :80 не ставить (если :80 у самого Caddy – тогда http-блоки с redir permanent в Caddyfile.yu-club).
+# Адреса в deploy/Caddyfile.yu-club и deploy/nginx-yu-club.conf записаны для стенда и при выкладке заменяются на YU_DOMAIN/YU_CRM_DOMAIN.
 # Пароли БД, SESSION_PEPPER, CERT_PEPPER и пара VAPID генерируются на сервере один раз в $ROOT/.env (600) и никуда не выводятся.
 #
 # Следующий шаг (не сделан, решение владельца позже): .github/workflows/deploy-test.yml – выкладка по тегу
 # test-*: тот же сценарий из Actions; нужен деплой-ключ сервера в секретах репозитория.
 set -euo pipefail
-HOST=${YU_HOST:-root@45.12.72.227}
-KEY=${YU_KEY:-$HOME/.ssh/omni_assistant_firstvds_ed25519}
-DOMAIN=${YU_DOMAIN:-yu-club.45.12.72.227.nip.io}
+HOST=${YU_HOST:-firstvds-msk}
+KEY=${YU_KEY:-}                      # пусто – ключ из ~/.ssh/config для HOST
+STAND_DOMAIN=yu-club.168.113.179.49.nip.io
+STAND_CRM_DOMAIN=yu-crm.168.113.179.49.nip.io
+DOMAIN=${YU_DOMAIN:-$STAND_DOMAIN}
+CRM_DOMAIN=${YU_CRM_DOMAIN:-$STAND_CRM_DOMAIN}
 ROOT=${YU_ROOT:-/opt/yu-club}
-CADDY=${YU_CADDY:-/opt/dzenbot/Caddyfile}
-CADDY_CT=${YU_CADDY_CT:-dzenbot-caddy-1}
-CRM_DOMAIN=${YU_CRM_DOMAIN:-yu-crm.45.12.72.227.nip.io}
-NEIGHBOURS=${YU_NEIGHBOURS:-"https://gaz-mag.ru/ https://lupa.45.12.72.227.nip.io/login https://teyes.45.12.72.227.nip.io/"}
+CADDY=${YU_CADDY:-/opt/caddy/Caddyfile}
+CADDY_CT=${YU_CADDY_CT:-caddy}
+CADDY_NETWORK=${YU_CADDY_NETWORK:-caddy}
+NGINX_CONF=${YU_NGINX_CONF:-/etc/nginx/conf.d/yu-club.conf}
+NEIGHBOURS=${YU_NEIGHBOURS:-"https://avtoball.ru/ http://avtoball.ru/ https://evolutioncarservice.ru/ http://evolutioncarservice.ru/ https://ev-sibir.168.113.179.49.nip.io/ https://avtoball.168.113.179.49.nip.io/"}
 cd "$(dirname "$0")/.."
 # ServerAliveInterval: тихая сборка образа (build -q) идёт минутами – без пингов сеть рвёт сессию
-SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$HOST")
+SSH=(ssh ${KEY:+-i "$KEY" -o IdentitiesOnly=yes} -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$HOST")
 
 RESET=0
 case "${1:-}" in
@@ -50,7 +59,7 @@ done
 echo "→ CRM и сайт собраны на маке и отправлены"
 
 # 2. окружение – один раз, пароли генерируются на сервере
-"${SSH[@]}" "set -e; test -f $ROOT/.env || { umask 077; printf 'APP_ENV=stage\nPUBLIC_SITE_URL=https://%s\nPOSTGRES_PASSWORD=%s\nYU_OWNER_PASSWORD=%s\nYU_APP_PASSWORD=%s\nDATA_DIR=%s/data\nBACKUP_DIR=%s/backups\nBACKUP_RETENTION_DAYS=14\nCADDY_NETWORK=dzenbot_default\n' $DOMAIN \$(openssl rand -hex 24) \$(openssl rand -hex 24) \$(openssl rand -hex 24) $ROOT $ROOT > $ROOT/.env; echo '→ создан $ROOT/.env (600)'; }; chmod 600 $ROOT/.env"
+"${SSH[@]}" "set -e; test -f $ROOT/.env || { umask 077; printf 'APP_ENV=stage\nPUBLIC_SITE_URL=https://%s\nPOSTGRES_PASSWORD=%s\nYU_OWNER_PASSWORD=%s\nYU_APP_PASSWORD=%s\nDATA_DIR=%s/data\nBACKUP_DIR=%s/backups\nBACKUP_RETENTION_DAYS=14\nCADDY_NETWORK=%s\n' $DOMAIN \$(openssl rand -hex 24) \$(openssl rand -hex 24) \$(openssl rand -hex 24) $ROOT $ROOT $CADDY_NETWORK > $ROOT/.env; echo '→ создан $ROOT/.env (600)'; }; chmod 600 $ROOT/.env"
 # SESSION_PEPPER (K12) – тоже один раз; на стенде, где .env создан раньше, дописывается. Смена значения = выход всех сотрудников.
 "${SSH[@]}" "set -e; grep -q '^SESSION_PEPPER=' $ROOT/.env || { umask 077; printf 'SESSION_PEPPER=%s\n' \$(openssl rand -hex 32) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен SESSION_PEPPER'; }; chmod 600 $ROOT/.env"
 # CERT_PEPPER (K16 §3, S2-08) – HMAC кода сертификата, тоже один раз; дописывается на стенде со старым .env.
@@ -117,7 +126,7 @@ NEW=\$(mktemp)
 # старый блок yu-club (если есть) вырезаем, новый дописываем в конец
 awk '/^# >>> yu-club/{skip=1} !skip{print} /^# <<< yu-club/{skip=0}' $CADDY > "\$NEW"
 [ -z "\$(tail -n1 "\$NEW")" ] || echo >> "\$NEW"
-cat $ROOT/src/deploy/Caddyfile.yu-club >> "\$NEW"
+sed -e "s/$STAND_DOMAIN/$DOMAIN/g" -e "s/$STAND_CRM_DOMAIN/$CRM_DOMAIN/g" $ROOT/src/deploy/Caddyfile.yu-club >> "\$NEW"
 if cmp -s "\$NEW" $CADDY; then echo "→ блок yu-club без изменений"; rm -f "\$NEW"; exit 0; fi
 BAK=$CADDY.bak-yu-club-\$(date +%Y%m%d%H%M%S)
 cp -p $CADDY "\$BAK"
@@ -128,6 +137,19 @@ fi
 docker exec $CADDY_CT caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 echo "→ блок yu-club поставлен, Caddy перечитал конфиг (копия: \$BAK)"
 REMOTE
+# http → https кодом 301: порт 80 у nginx сервера – свой файл в conf.d (копия → nginx -t → reload, при ошибке – откат)
+if [ "$NGINX_CONF" != none ]; then
+  sed -e "s/$STAND_DOMAIN/$DOMAIN/g" -e "s/$STAND_CRM_DOMAIN/$CRM_DOMAIN/g" deploy/nginx-yu-club.conf | "${SSH[@]}" "bash -c $(printf '%q' "set -euo pipefail
+NEW=\$(mktemp); cat > \$NEW
+if [ -f $NGINX_CONF ] && cmp -s \$NEW $NGINX_CONF; then echo '→ nginx: файл yu-club без изменений'; rm -f \$NEW; exit 0; fi
+OLD=\$(mktemp); if [ -f $NGINX_CONF ]; then cp -p $NGINX_CONF \$OLD; else rm -f \$OLD; fi
+install -m 644 \$NEW $NGINX_CONF; rm -f \$NEW
+if ! nginx -t >/tmp/yu-club-nginx.log 2>&1; then
+  if [ -f \$OLD ]; then cat \$OLD > $NGINX_CONF; rm -f \$OLD; else rm -f $NGINX_CONF; fi
+  tail -5 /tmp/yu-club-nginx.log; echo 'nginx не принял конфиг – вернул как было'; exit 1
+fi
+rm -f \$OLD; systemctl reload nginx; echo '→ nginx: 301 на https для yu-club поставлен'")"
+fi
 sleep 3
 AFTER=$(codes); echo "→ соседи после: $AFTER"
 [ "$BEFORE" = "$AFTER" ] || echo "!!! коды соседей изменились: было [$BEFORE], стало [$AFTER] – проверить"
