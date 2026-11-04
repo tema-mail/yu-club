@@ -240,18 +240,19 @@ export type LinkRole = 'income' | 'refund' | 'expense' | 'payout_expense';
  *  Проверки: роль совместима с kind операции (income ↔ income, refund ↔ refund, expense/payout_expense ↔ expense);
  *  операция не сторнирована; филиал операции в зоне ctx. Иначе OPERATION_LINK_INVALID / OPERATION_ALREADY_LINKED. */
 export function linkOperation(tx, ctx, input: { operationId; ref: LinkRef; role: LinkRole; inCost?: boolean; lineId?: string }, meta): Promise<void>;
-/** Создать операцию и связь в одной транзакции (обёртка над recordIncome / recordExpense). */
-export function createLinkedOperation(tx, ctx, input: NewOperation & { link: Omit<LinkInput, 'operationId'> }, meta): Promise<FinanceOperationDto>;
+/** Создать операцию и связь в одной транзакции: ручные формы recordIncome / recordExpense с их правами и ключом. */
+export function createLinkedOperation(tx, ctx, input: { kind: 'income' | 'expense'; operation: <тело формы K17 №40/№41>; link: Omit<LinkInput, 'operationId'> }, meta, opts: { idempotencyKey }): Promise<FinanceOperationDto>;
 /** Живые связи объекта; сторнированные операции исключены (reversedBy != null). */
 export function linksOf(db, ref: LinkRef): Promise<Array<{ operation: FinanceOperationDto; role; inCost; lineId }>>;
 /** Отвязать ошибочную связь: unlinked_at + причина, право finance.correct. Операция не меняется. */
 export function unlink(tx, ctx, input: { operationId; reason }, meta): Promise<void>;
 /** Возврат по ссылке на поступление (не K10 и не K16): kind 'refund', ref { type: 'operation', id: incomeId }.
  *  Только для income с source 'event' | 'extra_service' | 'other'; Σ живых refund по поступлению ≤ его суммы. */
-export function refundIncome(tx, ctx, input: { incomeOperationId; amountKop; place; method; reason; link?: { ref: LinkRef } }, meta): Promise<FinanceOperationDto>;
+export function refundIncome(tx, ctx, input: { incomeOperationId; amountKop; method; reason }, meta, opts: { idempotencyKey }): Promise<FinanceOperationDto>;   // место – по способу; право finance.refund
 ```
 
 - Сторно операции в K17 связь само не гасит – потребители читают `linksOf` (живая операция = без `reversed_by`). Связь сторнированной операции перестаёт считаться в «оплачено» объекта, а сама операция может быть привязана заново только новой операцией.
+- `linkOperation` проверяет только зону (`finance.view.day` в филиале операции); право на сам объект (`event.money.record`, `repair.expense.create`, `payroll.payout.expense`) проверяет вызывающий модуль. Повтор той же связи (объект и роль те же) – без изменений, без второй строки (двойной клик).
 - Гарантия «одна операция – один объект» – частичный уникальный индекс базы, не код: 20 параллельных `linkOperation` одной операции к разным объектам → ровно одна связь, остальные `OPERATION_ALREADY_LINKED` (`23505` → код).
 - `refundIncome`: под `lockPlaces` перечитывает поступление и сумму его живых возвратов; поступление `source='session'` → `USE_PAYMENT_REFUND`, `certificate_sale` → `USE_CERTIFICATE_CANCEL`, сторнированное → `OPERATION_REVERSED`, сумма больше остатка → `EVENT_REFUND_EXCEEDS_INCOME`. Возврат – новая операция `refund` своим способом и местом; если у поступления есть живая связь, возврат по умолчанию связывается с тем же объектом (`role='refund'`).
 - Сторно поступления, у которого есть живые возвраты, → `INCOME_HAS_REFUNDS` (сначала сторно возвратов) – проверка в `reverseOperation` (S3-54).
