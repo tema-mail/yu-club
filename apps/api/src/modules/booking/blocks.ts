@@ -53,21 +53,42 @@ export async function assertNotBlocked(tx: Tx, unitIds: string[], period: Interv
   if (r.rowCount === 1) throw new AppError('RESOURCE_BLOCKED', 409, 'Место временно недоступно');
 }
 
-/** Активные строки занятости на единицах за период: брони (id брони) и живые удержания (id удержания через позицию;
- *  истёкшие на $now – не держат слот). */
-async function affected(tx: Tx, unitIds: string[], period: Interval, now: Date): Promise<{ bookingIds: string[]; holdIds: string[] }> {
+/** Мероприятие по строке занятости (K6: источник – event_resources.id). Таблицу мероприятий ведёт модуль events
+ *  (0305, S3-50): он регистрирует преобразование «строки ресурса → мероприятия» при старте; booking его не импортирует
+ *  (ADR 0002). До регистрации (нет модуля events) – id источников как есть. */
+export interface EventSourceResolver {
+  eventIdsOf(tx: Tx, eventResourceIds: string[]): Promise<string[]>;
+}
+const identityEvents: EventSourceResolver = { eventIdsOf: async (_tx, ids) => ids };
+let eventSources: EventSourceResolver = identityEvents;
+export function registerEventSourceResolver(r: EventSourceResolver): void {
+  eventSources = r;
+}
+
+export interface AffectedOnUnits {
+  bookingIds: string[];
+  holdIds: string[];
+  /** Мероприятия на тех же единицах – отдельным списком, не в bookingIds (K19 §8 affectedEvents, S3-09). */
+  eventIds: string[];
+}
+
+/** Активные строки занятости на единицах за период: брони (id брони), живые удержания (id удержания через позицию;
+ *  истёкшие на $now – не держат слот) и мероприятия (через строку event_resources). Один источник для createBlock и
+ *  предпросмотра previewBlock: списки на одних данных совпадают. */
+export async function affectedOnUnits(tx: Tx, unitIds: string[], period: Interval, now: Date): Promise<AffectedOnUnits> {
+  if (unitIds.length === 0) return { bookingIds: [], holdIds: [], eventIds: [] };
   const r = await tx.query<{ source_type: string; source_id: string }>(
     `SELECT DISTINCT o.source_type, CASE WHEN o.source_type = 'hold_item' THEN hi.hold_id ELSE o.source_id END AS source_id
      FROM app.occupancy o LEFT JOIN app.hold_items hi ON o.source_type = 'hold_item' AND hi.id = o.source_id
      WHERE o.active AND o.unit_id = ANY($1::uuid[]) AND o.period && $2::tstzrange
-       AND (o.source_type = 'booking' OR (o.source_type = 'hold_item' AND o.hold_expires_at > $3))
+       AND (o.source_type IN ('booking', 'event') OR (o.source_type = 'hold_item' AND o.hold_expires_at > $3))
      ORDER BY 1, 2`,
     [unitIds, toPgRange(period), now],
   );
-  return {
-    bookingIds: r.rows.filter((x) => x.source_type === 'booking').map((x) => x.source_id),
-    holdIds: r.rows.filter((x) => x.source_type === 'hold_item').map((x) => x.source_id),
-  };
+  const of = (t: string) => r.rows.filter((x) => x.source_type === t).map((x) => x.source_id);
+  const eventSourceIds = of('event');
+  const eventIds = eventSourceIds.length > 0 ? [...new Set(await eventSources.eventIdsOf(tx, eventSourceIds))].sort() : [];
+  return { bookingIds: of('booking'), holdIds: of('hold_item'), eventIds };
 }
 
 const createInput = z.strictObject({
@@ -102,7 +123,7 @@ export async function createBlock(
   input: { branchId: string; target: BlockTarget; period: Interval; reasonId: string; comment?: string },
   meta: AuditRequestMeta,
   clock: Clock = systemClock,
-): Promise<{ blockId: string; affectedBookingIds: string[]; affectedHoldIds: string[] }> {
+): Promise<{ blockId: string; affectedBookingIds: string[]; affectedHoldIds: string[]; affectedEventIds: string[] }> {
   if (!UUID_RE.test(input.branchId)) throw notFound();
   guard(ctx, input.branchId, 'block.created', null);
   const reason = await tx.query<{ requires_comment: boolean }>(
@@ -122,7 +143,7 @@ export async function createBlock(
   );
   const blockId = b.rows[0]!.id;
   await tx.query(`INSERT INTO app.resource_block_units (block_id, unit_id, period) SELECT $1, u, $2 FROM unnest($3::uuid[]) u ORDER BY u`, [blockId, range, unitIds]);
-  const hit = await affected(tx, unitIds, input.period, clock.now());
+  const hit = await affectedOnUnits(tx, unitIds, input.period, clock.now());
   await writeAudit(
     tx,
     meta,
@@ -130,11 +151,11 @@ export async function createBlock(
       action: 'block.created',
       object: { type: 'resource_block', id: blockId },
       branchId: input.branchId,
-      after: { target: input.target, start: input.period.start, end: input.period.end, reasonId: input.reasonId, unitIds, affectedBookingIds: hit.bookingIds, affectedHoldIds: hit.holdIds },
+      after: { target: input.target, start: input.period.start, end: input.period.end, reasonId: input.reasonId, unitIds, affectedBookingIds: hit.bookingIds, affectedHoldIds: hit.holdIds, affectedEventIds: hit.eventIds },
     },
     clock,
   );
-  return { blockId, affectedBookingIds: hit.bookingIds, affectedHoldIds: hit.holdIds };
+  return { blockId, affectedBookingIds: hit.bookingIds, affectedHoldIds: hit.holdIds, affectedEventIds: hit.eventIds };
 }
 
 export async function getBlock(db: Db | Tx, blockId: string): Promise<BlockInfo | null> {
@@ -221,7 +242,7 @@ export async function blockRoutes(app: FastifyInstance, deps: BlockDeps): Promis
         clock,
       );
       // K11: affectedBookings – строки CrmBookingRow; таблицы броней нет до S1-07 – пока только id.
-      return { block: await getBlock(tx, res.blockId), affectedBookingIds: res.affectedBookingIds, affectedHoldIds: res.affectedHoldIds };
+      return { block: await getBlock(tx, res.blockId), affectedBookingIds: res.affectedBookingIds, affectedHoldIds: res.affectedHoldIds, affectedEventIds: res.affectedEventIds };
     }),
   );
   app.post('/blocks/:blockId/lift', command('block.lift', 200, (tx, ctx, id, body, meta) => liftBlock(tx, ctx, id, body, meta, clock)));

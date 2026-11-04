@@ -153,7 +153,7 @@ export function moveEventOccupancy(tx, input: { branchId; resourceId; eventResou
 export function createBlockFor(tx, ctx, input: Parameters<typeof createBlock>[2], meta): ReturnType<typeof createBlock> & { affectedEventIds: string[] };
 ```
 
-- `createBlock` и `previewBlock` возвращают затронутые мероприятия отдельным списком `eventIds` (строки `occupancy.source_type='event'` → `event_resources.event_id`), не в `bookingIds` (K19 §8 `affectedEvents`).
+- `createBlock` (`affectedEventIds`) и `previewBlock` (`eventIds`) возвращают затронутые мероприятия отдельным списком, не в `bookingIds` (K19 §8 `affectedEvents`); общий источник – `affectedOnUnits` в `blocks.ts`. Преобразование «строки `event_resources` → мероприятие» регистрирует модуль events (`registerEventSourceResolver`, S3-52): booking его не импортирует, а таблицы `event_resources` до 0305 нет; без регистрации в списке – id строк источника (решение S3-09). `eventOccupancy(db, eventResourceId)` – активные строки источника для проверок.
 - **Грант бронирования** (K5 «Дополнения Э3», S3-58): необязательный `serviceGrant { kind, id }` у `createHold`, `addHoldItem`, CRM-брони и переноса; ресурс `self_bookable=false` без гранта – `RESOURCE_UNAVAILABLE`, как в Э1; с грантом – валидатор `registerServiceGrant(resourceType, validator)` в той же транзакции до `occupy`, его ошибки проходят как есть (`GIFT_*`).
 
 ## Ошибки

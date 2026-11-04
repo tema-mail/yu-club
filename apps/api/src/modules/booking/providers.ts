@@ -3,8 +3,14 @@
 // при смене состава (futureUsage); clients (K9) – связь клиента с филиалами для
 // поиска в CRM; notifications (K14) – состояние брони для проверок перед отправкой и обработчиков событий.
 // Модули network, clients и notifications booking не импортируют – получают эти объекты извне (ADR 0002).
-import type { Db, Tx } from '../../core/audit.ts';
-import type { TimeZone } from '../../core/time.ts';
+// Э3 (S3-09, K6 «Дополнения Э3»): equipment и events занимают и блокируют единицы только через функции ниже
+// (bookingsOnUnits, previewBlock, occupyForEvent, releaseEvent, moveEventOccupancy, createBlockFor), а не импортом occupancy.ts.
+import type { AuditRequestMeta, Db, Tx } from '../../core/audit.ts';
+import type { AccessContext } from '../../core/permissions.ts';
+import { interval, systemClock, type Clock, type Interval, type TimeZone } from '../../core/time.ts';
+import { expandToUnits, unitsOfTarget } from '../resources/index.ts';
+import { affectedOnUnits, createBlock, type AffectedOnUnits, type BlockTarget } from './blocks.ts';
+import { lockUnitsForWrite, occupyMany, releaseSources } from './occupancy.ts';
 
 /** Действующие брони (confirmed / arrived) – они и считаются «затронутыми» при сокращении часов и блокировках. */
 export const LIVE_BOOKING = `status IN ('confirmed','arrived')`;
@@ -213,3 +219,92 @@ export interface PayableInPeriodRow {
   end: Date;
   priceKop: number;
 }
+
+// ---- Э3: оборудование и мероприятия (S3-09; K6 «Дополнения Э3», K19 §4, §8, K20 §4)
+
+const FAR_FUTURE = new Date('9999-12-31T00:00:00Z');
+
+/** Будущие брони, живые удержания и мероприятия на единицах с момента from (перемещение оборудования, K19 §4):
+ *  строки занятости, которые ещё не закончились. Удержание живо, если не истекло к from. */
+export async function bookingsOnUnits(db: Db | Tx, unitIds: string[], from: Date): Promise<AffectedOnUnits> {
+  return affectedOnUnits(db, unitIds, interval(from, FAR_FUTURE), from);
+}
+
+/** Предпросмотр блокировки (K19 §8 BlockProposal): единицы цели и затронутые – те же, что дал бы createBlock на этих
+ *  данных, без записи и без захвата строк. */
+export async function previewBlock(
+  db: Db | Tx,
+  input: { branchId: string; target: BlockTarget; period: Interval },
+  clock: Clock = systemClock,
+): Promise<AffectedOnUnits & { unitIds: string[] }> {
+  const unitIds = await unitsOfTarget(db, input.branchId, input.target, input.period.start);
+  return { unitIds, ...(await affectedOnUnits(db, unitIds, input.period, clock.now())) };
+}
+
+/** Блокировка по команде модуля equipment (ремонт, K19 §8): createBlock с проверкой block.manage и всеми затронутыми. */
+export function createBlockFor(
+  tx: Tx,
+  ctx: AccessContext,
+  input: { branchId: string; target: BlockTarget; period: Interval; reasonId: string; comment?: string },
+  meta: AuditRequestMeta,
+  clock: Clock = systemClock,
+): ReturnType<typeof createBlock> {
+  return createBlock(tx, ctx, input, meta, clock);
+}
+
+/** Мероприятие занимает ресурс (K6, K20 §4): строки occupancy с source 'event' = event_resources.id, без client_time.
+ *  Конфликт с бронью или удержанием – база (occupancy_no_overlap) → SLOT_TAKEN / SLOT_HELD; блокировка – RESOURCE_BLOCKED. */
+export async function occupyForEvent(
+  tx: Tx,
+  input: { branchId: string; resourceId: string; eventResourceId: string; period: Interval },
+): Promise<{ unitIds: string[] }> {
+  const units = await expandToUnits(tx, input.resourceId, input.period.start);
+  await occupyMany(tx, input.branchId, [{ units, period: input.period, source: { type: 'event', id: input.eventResourceId }, clientId: null }]);
+  return { unitIds: units.unitIds };
+}
+
+/** Освободить строки одной event_resources – соседние ресурсы того же мероприятия и чужие брони не задеваются. */
+export async function releaseEvent(
+  tx: Tx,
+  eventResourceId: string,
+  reason: 'released' | 'cancelled' | 'rescheduled',
+  clock: Clock = systemClock,
+): Promise<void> {
+  const rows = await tx.query<{ unit_id: string; branch_id: string }>(
+    `SELECT unit_id, branch_id FROM app.occupancy WHERE active AND source_type = 'event' AND source_id = $1`,
+    [eventResourceId],
+  );
+  if (rows.rows.length === 0) return;
+  await lockUnitsForWrite(tx, rows.rows[0]!.branch_id, rows.rows.map((r) => r.unit_id), { forRelease: true });
+  await releaseSources(tx, { type: 'event', ids: [eventResourceId] }, reason, clock.now());
+}
+
+/** Перенос мероприятия (K20 §4): старые строки источника гасятся и новые вставляются в одной точке сохранения –
+ *  новое время занято → ошибка занятия, прежнее время остаётся занятым (16 §9). */
+export async function moveEventOccupancy(
+  tx: Tx,
+  input: { branchId: string; resourceId: string; eventResourceId: string; period: Interval },
+  clock: Clock = systemClock,
+): Promise<{ unitIds: string[] }> {
+  await tx.query('SAVEPOINT move_event');
+  try {
+    await releaseEvent(tx, input.eventResourceId, 'rescheduled', clock);
+    const r = await occupyForEvent(tx, input);
+    await tx.query('RELEASE SAVEPOINT move_event');
+    return r;
+  } catch (err) {
+    await tx.query('ROLLBACK TO SAVEPOINT move_event');
+    throw err;
+  }
+}
+
+/** Активные строки занятости источника мероприятия (для проверок и карточки). */
+export async function eventOccupancy(db: Db | Tx, eventResourceId: string): Promise<Array<{ unitId: string; start: Date; end: Date }>> {
+  const r = await db.query<{ unit_id: string; start: Date; end: Date }>(
+    `SELECT unit_id, lower(period) AS start, upper(period) AS "end" FROM app.occupancy
+      WHERE active AND source_type = 'event' AND source_id = $1 ORDER BY unit_id`,
+    [eventResourceId],
+  );
+  return r.rows.map((x) => ({ unitId: x.unit_id, start: x.start, end: x.end }));
+}
+export { registerEventSourceResolver, type EventSourceResolver } from './blocks.ts';
