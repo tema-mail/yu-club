@@ -34,6 +34,12 @@ export function openIntervals(db: Db | Tx, input: { branchId: string; date: Loca
 /** Для сетки сразу по многим ресурсам одного дня – один запрос. */
 export function openIntervalsBulk(db: Db | Tx, input: { branchId: string; date: LocalDate; resources: Array<{ resourceId: string; roomId: string | null }> }): Promise<Map<string, Interval[]>>;
 
+/** Э4 (K24 §1, шаг S4-59; внесено S4-00 04.11.2026): пакетный расчёт для отчётов – диапазон дат [from, to] включительно,
+ *  та же resolveDay, что у openIntervalsBulk; одна транзакция, одна загрузка недельного графика и исключений на диапазон
+ *  (число запросов к базе не зависит от числа дней). Результат дня = openIntervalsBulk того же дня (property-based тест).
+ *  Ключ внешней Map – LocalDate, внутренней – resourceId. Отчёты зовут через network/index.ts, SQL расписания не дублируют. */
+export function openIntervalsRange(db: Db | Tx, input: { branchId: string; from: LocalDate; to: LocalDate; resources: Array<{ resourceId: string; roomId: string | null }> }): Promise<Map<LocalDate, Map<string, Interval[]>>>;
+
 /** Изменение графика/исключения: до сохранения – список затронутых будущих броней (15 §6.5, 01 §4.1 п.5).
  *  Брони не отменяются и не переносятся автоматически. Вызов booking.findBookingsOutside – через index booking. */
 export function previewHoursChange(db: Db, ctx: AccessContext, input: HoursChange): Promise<{ affectedBookingIds: string[] }>;

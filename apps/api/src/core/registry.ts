@@ -8,6 +8,8 @@ import { auditActions as bookingAudit } from '../modules/booking/audit.ts';
 import { errors as bookingErrors } from '../modules/booking/errors.ts';
 import { auditActions as clientsAudit } from '../modules/clients/audit.ts';
 import { errors as clientsErrors } from '../modules/clients/errors.ts';
+import { auditActions as contentAudit } from '../modules/content/audit.ts';
+import { errors as contentErrors } from '../modules/content/errors.ts';
 import { auditActions as financeAudit } from '../modules/finance/audit.ts';
 import { errors as financeErrors } from '../modules/finance/errors.ts';
 import { auditActions as loyaltyAudit } from '../modules/loyalty/audit.ts';
@@ -22,6 +24,8 @@ import { auditActions as notificationsAudit } from '../modules/notifications/aud
 import { errors as notificationsErrors } from '../modules/notifications/errors.ts';
 import { auditActions as pricingAudit } from '../modules/pricing/audit.ts';
 import { errors as pricingErrors } from '../modules/pricing/errors.ts';
+import { auditActions as reportsAudit } from '../modules/reports/audit.ts';
+import { errors as reportsErrors } from '../modules/reports/errors.ts';
 import { auditActions as resourcesAudit } from '../modules/resources/audit.ts';
 import { errors as resourcesErrors } from '../modules/resources/errors.ts';
 import { auditActions as staffAudit } from '../modules/staff/audit.ts';
@@ -41,6 +45,8 @@ const moduleErrors = {
   finance: financeErrors,
   loyalty: loyaltyErrors,
   certificates: certificatesErrors,
+  content: contentErrors,
+  reports: reportsErrors,
 } as const;
 const moduleAudit = {
   settings: settingsAudit,
@@ -57,6 +63,8 @@ const moduleAudit = {
   finance: financeAudit,
   loyalty: loyaltyAudit,
   certificates: certificatesAudit,
+  content: contentAudit,
+  reports: reportsAudit,
 } as const;
 
 type ModuleErrors = typeof moduleErrors;
