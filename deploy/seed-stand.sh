@@ -9,12 +9,12 @@
 #   YU_OWNER_READY=1 deploy/seed-stand.sh – после deploy.sh --reset-stage: пароль Владельца уже сменён раньше,
 #     обязательную смену не включаем (только stage).
 set -euo pipefail
-HOST=${YU_HOST:-root@45.12.72.227}
-KEY=${YU_KEY:-$HOME/.ssh/omni_assistant_firstvds_ed25519}
+HOST=${YU_HOST:-firstvds-msk}
+KEY=${YU_KEY:-}                      # пусто – ключ из ~/.ssh/config для HOST
 ROOT=${YU_ROOT:-/opt/yu-club}
 CFG=${YU_CFG:-$HOME/.config/yu-club}
 EMAIL=${YU_OWNER_EMAIL:-owner@yu-club.test}
-SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=20 "$HOST")
+SSH=(ssh ${KEY:+-i "$KEY" -o IdentitiesOnly=yes} -o ConnectTimeout=20 "$HOST")
 
 mkdir -p "$CFG"; chmod 700 "$CFG"
 ( umask 077

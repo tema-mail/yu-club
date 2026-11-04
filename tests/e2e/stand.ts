@@ -8,10 +8,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { expect, request as pwRequest, type APIRequestContext, type APIResponse, type Page } from '@playwright/test';
 
-export const SITE_URL = process.env.SITE_URL ?? 'https://yu-club.45.12.72.227.nip.io';
-export const CRM_URL = process.env.CRM_URL ?? 'https://yu-crm.45.12.72.227.nip.io';
-const HOST = process.env.YU_HOST ?? 'root@45.12.72.227';
-const KEY = process.env.YU_KEY ?? join(homedir(), '.ssh/omni_assistant_firstvds_ed25519');
+export const SITE_URL = process.env.SITE_URL ?? 'https://yu-club.168.113.179.49.nip.io';
+export const CRM_URL = process.env.CRM_URL ?? 'https://yu-crm.168.113.179.49.nip.io';
+const HOST = process.env.YU_HOST ?? 'firstvds-msk';
+/** Пусто – ключ из ~/.ssh/config для HOST (алиас firstvds-msk, FirstVDS Москва 168.113.179.49 с 04.11.2026). */
+const KEY = process.env.YU_KEY ?? '';
 const CFG = process.env.YU_CFG ?? join(homedir(), '.config/yu-club');
 const API_CT = process.env.YU_API_CT ?? 'yu-club-api';
 const PG_CT = process.env.YU_PG_CT ?? 'yu-club-postgres';
@@ -23,7 +24,7 @@ export const OWNER = { email: () => secret('admin-login'), password: () => secre
 
 // ── ssh ─────────────────────────────────────────────────────
 function ssh(command: string, input?: string): string {
-  return execFileSync('ssh', ['-i', KEY, '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=20', '-o', 'BatchMode=yes', HOST, command], {
+  return execFileSync('ssh', [...(KEY ? ['-i', KEY, '-o', 'IdentitiesOnly=yes'] : []), '-o', 'ConnectTimeout=20', '-o', 'BatchMode=yes', HOST, command], {
     encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'], timeout: 60_000,
   });
 }

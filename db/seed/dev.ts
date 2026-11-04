@@ -164,7 +164,7 @@ async function cli(): Promise<void> {
   const password = process.env.SEED_PASSWORD;
   if (!url) throw new Error('Нужен DATABASE_URL (рантайм-учётка yu_app)');
   if (!password) throw new Error('Нужен SEED_PASSWORD в окружении (пароль демо-сотрудников, не аргументом)');
-  const pool = new pg.Pool({ connectionString: url, options: '-c search_path=app,journal', max: 1 });
+  const pool = new pg.Pool({ connectionString: url, options: '-c search_path=app,journal', max: 2 }); // 2: seedCommerce держит одно соединение под advisory-lock, запросы идут по второму (при 1 – вечное ожидание)
   try {
     const r = await seedDev(pool, { env: process.env, password });
     console.log(`Засев Э0: создано ${JSON.stringify(r.created)}; вход: director@${DEMO_EMAIL_DOMAIN}, admin@${DEMO_EMAIL_DOMAIN}`);
