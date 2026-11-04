@@ -91,7 +91,7 @@ export function moveEvent(tx, ctx, eventId, input: { rowVersion; plannedStart; p
 ```
 
 - `reserveResource`: `expandToUnits` → K6 `occupy({ source: { type: 'event', id: eventResourceId }, clientId: null })` в одной транзакции со вставкой `event_resources`; ошибки K6 (`SLOT_TAKEN`, `SLOT_HELD`, `RESOURCE_BLOCKED`, `OUTSIDE_SCHEDULE`) – как есть. `client_time` мероприятие не пишет (K6: у мероприятия его нет) – заказчик может параллельно иметь обычную бронь (решение: он не играет сам; ограничение 01 §9 – про клиента-игрока).
-- Резервировать можно в любом незавершённом статусе (решение: сотрудник сам решает, держать ли комнату на время согласования); в `new_request` CRM предупреждает «комната занята под необработанную заявку».
+- Резервировать можно в любом незавершённом статусе (решение: сотрудник сам решает, держать ли комнату на время согласования); в `new_request` CRM предупреждает «комната занята под необработанную заявку». Удержание комнаты под `new_request` живёт не дольше `event.request_hold_hours` (48 ч от `reserveResource`): за `event.request_hold_remind_hours` (24) до конца – напоминание ответственному (лента CRM Э4, до неё – отметка в списке мероприятий), по истечении задача `events:request-hold-expire` освобождает ресурс (`releaseResource`, причина `request_hold_expired`), мероприятие остаётся `new_request` (ревью 04.11).
 - **Платный праздник** (`event_types.code = 'birthday_party'`) – по 20 §4.10 (R-22):
 
 | Правило | Проверка | Ошибка |
@@ -134,7 +134,7 @@ export interface EventMoneySummary {          // 11 §11.3 – отдельны�
 
 - **Поступление** – K17 `recordIncome` с `source='event'`, `ref { type: 'event', id }` + связь `(ref_type 'event', role 'income')` в той же транзакции. Филиал кассы = филиал мероприятия (решение: 11 §7.2 «филиал/касса»; межфилиальных операций в K17 нет). Право – `event.money.record` **и** K17 `finance.income.create` (Администратору – нет по умолчанию Q-29; «при наличии финансового права», 11 §13).
 - **Предоплата** – обычное поступление до проведения (11 §7.3), отдельного типа нет; обязательность, размер и срок – `event.prepayment_required = false`, ждёт заказчика (Q-74). При `true` переход в `confirmed` требует `receivedKop ≥ event.prepayment_min_percent × agreed` – параметры добавятся вместе с ответом, флаг лишь зарезервирован (решение: не придумывать 11 §17 последний абзац).
-- **Возврат** – K17 `refund` со ссылкой на исходное поступление (`ref operation`), сумма ≤ `поступление − уже возвращено по нему` → иначе `EVENT_REFUND_EXCEEDS_INCOME`; под `FOR UPDATE` строки мероприятия. Причина обязательна; штрафов и удержаний при отмене система не считает (11 §10, §17) – сумму возврата вводит сотрудник с правом `finance.refund`. Сторно поступления (ошибка ввода) – обычное K17 `reverseOperation` по `finance.correct`.
+- **Возврат** – K17 `refund` со ссылкой на исходное поступление (`ref operation`), сумма ≤ `поступление − уже возвращено по нему` → иначе `EVENT_REFUND_EXCEEDS_INCOME`; под `FOR UPDATE` строки мероприятия; после `lockPlaces` поступление перечитывается – сторнировано за это время → `OPERATION_REVERSED`. Сторно поступления, у которого есть живые возвраты, запрещено (`INCOME_HAS_REFUNDS`: сначала сторно возвратов) – иначе возврат повисает без основания. Причина обязательна; штрафов и удержаний при отмене система не считает (11 §10, §17) – сумму возврата вводит сотрудник с правом `finance.refund`. Сторно поступления (ошибка ввода) – обычное K17 `reverseOperation` по `finance.correct`.
 - **Расход** – K17 `recordExpense` (категории «Подрядчики и услуги» → «Аниматор», «Кейтеринг», «Доставка»; «Закупки и материалы» → «Продукты», «Напитки»…, посев 0202) с `ref event` и связью `(role 'expense', in_cost, line_id)`. Одна операция видна и в карточке мероприятия, и в журнале филиала (11 §8.4, §11.4, приёмка 8) – это одна строка `finance_operations`.
 - **Уже внесённый расход** (кейтеринг в общих расходах) – `linkEventExpense`: связь без новой операции; уже связанная → `OPERATION_ALREADY_LINKED` (11 §8.4 «нельзя повторно учитывать»).
 - Накладные филиала в себестоимость не идут (11 §8.5): `inCost = false` по умолчанию только у привязанных, у созданных из карточки – `true`.
@@ -189,8 +189,9 @@ export function bookGiftByStaff(tx, ctx, giftId, input: { branchId; start; comme
 | 5 | без PS4 и PS VR | состав ресурса без `PS4` – данные K6; любые другие позиции в удержании подарка → отказ | `GIFT_COMPOSITION_INVALID` |
 | 6 | резерв | одна живая запись на подарок: `gift_uses UNIQUE (gift_id) WHERE status IN ('held','booked','used')` | `GIFT_ALREADY_RESERVED` |
 | 7 | «использован» после посещения | обработчик `visit.confirmed` (ниже) | – |
+| 8 | подарок – клиенту-имениннику (ревью 04.11) | клиент брони = `gift.clientId` в `holdGift` (владелец удержания), `bookGiftByStaff`, переносе и `attachHold` (привязка удержания к профилю) | `GIFT_CLIENT_MISMATCH` |
 
-- Подарочный ресурс – в каждом филиале, где есть VR-комната: `resources (type 'gift_vr', self_bookable = false, step_minutes = 5)`, состав `VR1 + VR2`; создаёт его посев S3-96 и экран ресурсов. Тариф `gift_vr` – 0 ₽ (бронь проходит K6 `quote`, оплата – K10 `none`). Использовать подарок можно в любом филиале сети с таким ресурсом – по умолчанию, ждёт заказчика (Q-114).
+- Подарочный ресурс – в каждом филиале, где есть VR-комната: `resources (type 'gift_vr', self_bookable = false, step_minutes = 5)`, состав `VR1 + VR2`; создаёт его `ensureGiftResource(branchId)` (S3-62) – при создании VR-комнаты и боевой идемпотентной процедурой для существующих комнат; демо-посев S3-96 вызывает её же. Только демо-посевом нельзя: в бою подарок иначе не записывается. PS4 подарок не занимает – её можно бронировать отдельно во время подарка (по умолчанию, Q-155). Тариф `gift_vr` – 0 ₽ (бронь проходит K6 `quote`, оплата – K10 `none`). Использовать подарок можно в любом филиале сети с таким ресурсом – по умолчанию, ждёт заказчика (Q-114).
 - Начало – на сетке `gift.start_align_minutes` (15, как VR, 20 §4.3), длительность – `gift.room_minutes` (40): шаг ресурса 5 мин нужен только чтобы 40 прошло проверку K6 `assertSlotAligned`; выравнивание начала проверяет `events` (решение по Q-72; «хвост» 5 мин до следующего VR-слота – вопрос Q-118).
 - **Хук бронирования** (правка booking, S3-58, §11): `createHold` (`hold.ts`) / `createStaffBooking` и `rescheduleBooking` (`change.ts`) принимают необязательный `serviceGrant: { kind: 'gift'; id }`; ресурс с `self_bookable = false` разрешён только при зарегистрированном валидаторе гранта для его типа (`registerServiceGrant('gift_vr', check)` из `events`), валидатор вызывается в той же транзакции до `occupy`. Без гранта – прежний `RESOURCE_UNAVAILABLE` (поведение Э1–Э2 не меняется).
 - Жизненный цикл `gift_uses` – обработчики событий K4 (идемпотентны, состояние из базы):
@@ -258,7 +259,7 @@ export function refundIncome(tx, ctx, input: { incomeOperationId; amountKop; pla
 
 **K1, K2, K4, K7, K11** – строки §12–§16 этого файла и K18, K19.
 
-**Для Э4 (K24 отчёты, K21 уведомления) – представления и провайдеры Э3** (миграция `0311_rpt_e3.sql`, шаг S3-95; владельцы – модули Э3, как 0211; K24 0410 тогда только дополняет недостающее):
+**Для Э4 (K24 отчёты, K21 уведомления) – представления и провайдеры Э3** (миграция `0311_rpt_e3.sql`, шаг S3-95; владельцы – модули Э3, как 0211; 0410 Э4 эти представления не создаёт и не меняет – только то, чего по факту 0311 нет, решение техлида 04.11):
 
 | Представление | Владелец | Поля |
 |---|---|---|
@@ -388,7 +389,8 @@ CREATE UNIQUE INDEX gift_uses_one_live ON app.gift_uses (gift_id) WHERE status I
 | `PARTY_RESOURCE_INVALID`, `PARTY_TOO_SHORT`, `PARTY_GUESTS_LIMIT`, `PARTY_FORMAT_MISMATCH` | 422 | правила праздника §4 (TC-13) |
 | `EVENT_REFUND_EXCEEDS_INCOME` | 409 | возврат больше поступления |
 | `OPERATION_ALREADY_LINKED`, `OPERATION_LINK_INVALID` | 409 / 422 | связь операции (§11) |
-| `GIFT_NOT_ACTIVE`, `GIFT_EXPIRED`, `GIFT_WEEKDAY_ONLY`, `GIFT_HOLIDAY`, `GIFT_COMPOSITION_INVALID`, `GIFT_ALREADY_RESERVED` | 409 / 422 | проверки §8.2 (TC-14) |
+| `GIFT_NOT_ACTIVE`, `GIFT_EXPIRED`, `GIFT_WEEKDAY_ONLY`, `GIFT_HOLIDAY`, `GIFT_COMPOSITION_INVALID`, `GIFT_ALREADY_RESERVED`, `GIFT_CLIENT_MISMATCH` | 409 / 422 | проверки §8.2 (TC-14) |
+| `OPERATION_REVERSED`, `INCOME_HAS_REFUNDS` | 409 | возврат по сторнированному поступлению; сторно поступления с живыми возвратами (§6) |
 | `GIFT_ALREADY_ISSUED` | 409 | второй подарок клиенту в 365 дней |
 | `GIFT_BASIS_INVALID` | 422 | основание – не день рождения этого клиента или не в нужном статусе |
 | `CONSENT_REQUIRED` | 422 | заявка с сайта без согласия |
@@ -405,6 +407,8 @@ CREATE UNIQUE INDEX gift_uses_one_live ON app.gift_uses (gift_id) WHERE status I
 | `event.party.price_confirmed` | boolean | false | R-11 / Q-70 |
 | `event.prepayment_required` | boolean | false | 11 §7.3, Q-74 (зарезервирован) |
 | `event.requests_enabled` | boolean | true | 11 §12 |
+| `event.request_hold_hours` | int 1..336 | 48 | решение (ревью 04.11) |
+| `event.request_hold_remind_hours` | int 0..168 | 24 | решение |
 | `gift.valid_days` | int 1..365 | 60 | 11 §9.1 |
 | `gift.room_minutes` | int 30..120 | 40 | 11 §9.1 |
 | `gift.start_align_minutes` | int 5..60 | 15 | Q-118 |

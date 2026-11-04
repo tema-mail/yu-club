@@ -63,11 +63,11 @@ export function decideSend(tx: Tx, n: { clientId: string; category: Category; pu
 
 | Правило | Как | Основание |
 |---|---|---|
-| Реклама только при предварительном согласии | §2 п.2; согласие даётся галочкой (пустая по умолчанию) у входа (K9 №2 `consents.marketing`) или переключателем в настройках; хранится текст – версия документа `/advertising-consent/` (K22 §7: `document_version` юридической страницы) | 38-ФЗ ст. 18 ч. 1; 09 §5.1; Q-35 |
+| Реклама только при предварительном согласии | §2 п.2; согласие даётся галочкой (пустая по умолчанию) у входа (K9 №2 `consents.marketing`) или переключателем в настройках; хранится текст – версия документа `/advertising-consent/` (K22 §7: `document_version` юридической страницы). База держит это сама: 0401 добавляет CHECK `journal.client_consents`: `kind = 'marketing' AND granted` → `document_version IS NOT NULL` (`NOT VALID`, затем `VALIDATE` после проверки старых строк Э1). Старые согласия при новой редакции текста – действуют до ответа Q-149 | 38-ФЗ ст. 18 ч. 1; 09 §5.1; Q-35 |
 | Отказ – немедленно | выключение в ЛК, кнопка «Отписаться от акций» в самом push (`actions` service worker), ссылка отписки в один шаг; после отказа новые строки не создаются, запланированные гасятся `skipped_by_prefs` повторной проверкой в `send` (не ждём события) | 38-ФЗ ст. 18 ч. 1 «немедленно прекратить»; 09 §5.4 |
 | Отписка по ссылке без входа | в payload рекламного push, кроме `url` (страница акции), – `unsubscribeUrl = /unsubscribe/?t=<token>` (кнопка в push и ссылка внизу страницы акции в ЛК); `token` = base64url(`clientId`, `campaignId`, `exp`) + HMAC-SHA256 на `UNSUBSCRIBE_SECRET`, срок 90 дней. Страница показывает кнопку «Отписаться» (POST): GET ничего не меняет – предзагрузка ссылок почтовиками и браузерами не отписывает | решение |
-| Пометка | у `marketing` заголовок начинается с «Реклама.» – по умолчанию; поле `advertiser_note` (наименование рекламодателя) и `erid` (идентификатор ОРД) в кампании – nullable до ответа юриста (Q-130) | 38-ФЗ ст. 18.1 (маркировка интернет-рекламы) – вывод плана, в ТЗ нет |
-| Частота | не чаще одного рекламного сообщения клиенту за `notifications.marketing_min_interval_hours` (168 ч) по всем кампаниям сети; проверяется при постановке в очередь и в `send` | по умолчанию, ждёт заказчика (Q-39) |
+| Пометка | у `marketing` заголовок начинается с «Реклама.» – по умолчанию; поле `advertiser_note` (наименование рекламодателя) и `erid` (идентификатор ОРД) в кампании – nullable в схеме; настройка `notifications.marketing_require_erid = true` по умолчанию: без `erid` рекламная кампания не подтверждается (`MARKETING_ERID_REQUIRED`) до ответа Q-130/Q-148 (нужна ли маркировка push своим клиентам); при «не нужна» Владелец выключает | 38-ФЗ ст. 18.1 (маркировка интернет-рекламы) – вывод плана, в ТЗ нет |
+| Частота | не чаще одного рекламного сообщения клиенту за `notifications.marketing_min_interval_hours` (168 ч) по всем кампаниям сети; проверяется при постановке в очередь и в `send` под `pg_advisory_xact_lock` на ключ клиента (`hashtext` от `'marketing:'` и `client_id`) – две кампании одному клиенту параллельно иначе обе проходят проверку; в счёт идут строки `sent_to_provider` **и** `sending` (уже взятые отправителем) | по умолчанию, ждёт заказчика (Q-39) |
 | Тихие часы | рекламное не отправляется вне окна `[10:00, 21:00)` по зоне **филиала клиента** (§5 «домашний филиал»); если `planned_at` вне окна – строка переносится на начало следующего окна, а не пропускается | по умолчанию, ждёт заказчика (Q-39); вывод разбора 09–12, дыра 5 |
 | Сервисное не используется как реклама | личное сообщение требует `purpose`; `service` разрешён только с привязкой к брони клиента (`booking_id` своей зоны) или мероприятию (Э3); без привязки – только `marketing` | 09 §3.5, §4 |
 
@@ -146,14 +146,14 @@ draft → cancelled ; confirmed|expanding|sending → cancelled (остаток 
 
 ## 7. Отправка – правки `sender.ts` (дополняют K14)
 
-1. Шаг 1 `send`: вместо отдельных проверок K14 п.1 для не-брони вызывается `decideSend` (§2); для `marketing` дополнительно – тихие часы (вне окна → обратно `planned` с `planned_at` = начало окна) и частота (`skipped_by_frequency`, если другое рекламное этому клиенту ушло позже `$now − 168 ч`).
+1. Шаг 1 `send`: вместо отдельных проверок K14 п.1 для не-брони вызывается `decideSend` (§2); для `marketing` дополнительно – тихие часы (вне окна → обратно `planned` с `planned_at` = начало окна) и частота: в транзакции `pg_advisory_xact_lock` на клиента (§4), затем `skipped_by_frequency`, если другое рекламное этому клиенту в статусе `sent_to_provider` или `sending` ушло (взято) позже `$now − 168 ч`.
 2. `personal`/`service` с `booking_id` – те же проверки брони, что у K14 (бронь не отменена, клиент тот же); бронь отменена → `skipped_booking_changed`.
 3. Payload push: `{ title, body, url, tag: dedupe_key, id, actions? }`; у `marketing` – `actions: [{ action: 'unsubscribe', title: 'Отписаться от акций' }]` и `unsubscribeUrl` (обработчик service worker шлёт `POST /unsubscribe` с токеном). TTL: `marketing` – 12 ч, `personal` – 24 ч (решение).
 4. Новый статус строки `skipped_by_frequency` и `inbox_only` (0401, CHECK). `delivered` по-прежнему не ставится (09 §9, приёмка 17).
 
 ## 8. Шаблоны (09 §15 эт.3 п.4; Q-133)
 
-`notification_templates`: `id`, `name`, `category` (`service`/`marketing`), `title`, `body` (плейсхолдеры только из белого списка: `{client.firstName}`, `{branch.name}`, `{branch.address}`, `{city.name}` – подставляются при разворачивании; неизвестный плейсхолдер – ошибка при сохранении), `status` `active`/`archived`, `row_version`. Шаблон копируется в кампанию при создании: правка шаблона не меняет созданные кампании. Управляет Владелец (`notifications.templates.manage`); пользуются все, у кого есть право отправки своей категории.
+`notification_templates`: `id`, `name`, `category` (`service`/`marketing`), `title`, `body` (плейсхолдеры только из белого списка: `{client.firstName}`, `{branch.name}`, `{branch.address}`, `{city.name}` – подставляются при разворачивании; неизвестный плейсхолдер – ошибка при сохранении; подставленное имя попадает в `notifications.title/body` – поэтому модуль регистрирует свои строки в процедуре обезличивания клиента K9, §15), `status` `active`/`archived`, `row_version`. Шаблон копируется в кампанию при создании: правка шаблона не меняет созданные кампании. Управляет Владелец (`notifications.templates.manage`); пользуются все, у кого есть право отправки своей категории.
 
 ## 9. Журнал отправок CRM и ручной повтор (09 §10, §12.2, §16 п.15–16; 16 §15.3)
 
@@ -226,6 +226,7 @@ draft → cancelled ; confirmed|expanding|sending → cancelled (остаток 
 | `RETRY_NOT_ALLOWED` | 409 | повтор не-`service` или статуса не `error`/`no_channel` |
 | `UNSUBSCRIBE_TOKEN_INVALID` / `UNSUBSCRIBE_TOKEN_EXPIRED` | 400 / 410 | §11 |
 | `VERSION_CONFLICT` | 409 | устаревший `row_version` (16 §15.4) |
+| `MARKETING_ERID_REQUIRED` | 422 | подтверждение рекламы без `erid` при `notifications.marketing_require_erid = true` (§4) |
 
 ## 13. Настройки (K7, шаг S4-01; меняет только Владелец, D2-02)
 
@@ -237,6 +238,7 @@ draft → cancelled ; confirmed|expanding|sending → cancelled (остаток 
 | `notifications.inbox_retention_days` | int 30..1095 | 365 | network | Q-132 |
 | `notifications.campaign_max_plan_days` | int 0..90 | 30 | network | Q-133 |
 | `notifications.marketing_title_prefix` | text ≤ 20 | `"Реклама."` | network | Q-130 |
+| `notifications.marketing_require_erid` | boolean | true | network | Q-130, Q-148 |
 
 Окружение (не настройки): `UNSUBSCRIBE_SECRET` (≥ 32 байта, как `CERT_PEPPER`; без него рекламные кампании не подтверждаются – `503 MARKETING_NOT_CONFIGURED`).
 
@@ -246,6 +248,8 @@ draft → cancelled ; confirmed|expanding|sending → cancelled (остаток 
 - K2 (типы объектов `notification_campaign`, `notification_template` – добавить в `AUDIT_OBJECT_TYPES`): `notification.campaign_created`, `.campaign_updated`, `.campaign_confirmed` (`after`: категория, текст, описание аудитории, `total`), `.campaign_cancelled` (причина), `notification.retried`, `notification.template_created/updated/archived`, `notification.unsubscribed` (актор `client`, источник `unsubscribe`). Текст кампании пишется в аудит один раз – при подтверждении (09 §14).
 
 ## 15. Данные (для `model-dannyh.md`, S4-00)
+
+**ПДн в журналах (ревью 04.11).** Подставленные имена клиента живут в `notifications.title/body` и в аудите (`campaign_confirmed` пишет текст шаблона, не подстановку – там имени нет; `notification.retried` и строки клиента – с подстановкой). Обезличивание клиента (K9, статус `anonymized`) вызывает обработчик модуля `notifications`: в строках этого клиента `title/body` заменяются на текст шаблона без подстановки, в аудите – маска имени. Сроки хранения строк `notifications`, `journal.notification_campaign_recipients` и аудита рассылок – вопрос Q-150 (сейчас – как аудит, Q-91); удаление по сроку – задача очистки после ответа.
 
 **0401 `notifications_center`** (владелец `notifications`): `ALTER TABLE app.notifications` – `read_at timestamptz`, `push boolean NOT NULL DEFAULT true`, `campaign_id uuid` (FK – в 0402), `retry_of uuid REFERENCES app.notifications(id)`, `purpose text`; CHECK `category IN ('service','reminder','marketing')`; CHECK `kind` – список §2; CHECK `status` + `skipped_by_frequency`, `inbox_only`; `CHECK (push OR status IN ('inbox_only','cancelled'))`; отложенный FK `booking_id → app.bookings(id)` (обещан шапкой 0111, ни одна миграция его не добавила); индекс `notifications_inbox_idx (client_id, coalesce(sent_at, planned_at) DESC) WHERE status IN ('sent_to_provider','no_channel','error','inbox_only')`; индекс `notifications_marketing_recent_idx (client_id, sent_at DESC) WHERE category = 'marketing' AND status = 'sent_to_provider'`. Вниз – обратные изменения; вниз падает, если есть строки новых видов (решение: откат только на пустом Э4).
 

@@ -75,7 +75,7 @@ export function moveEquipment(tx, ctx, id, input: {
 
 - Размещение – строка `equipment_placements (item, branch, room?, unit?, placed_at, removed_at)`; текущее – `removed_at IS NULL`, одно на единицу оборудования (`UNIQUE (item_id) WHERE removed_at IS NULL`). Перемещение закрывает текущую строку и вставляет новую в одной транзакции; карточку нельзя «перепрописать» правкой (10 §4.2).
 - `unitId` и `roomId` должны принадлежать `branchId` (составной FK, как `occupancy`). `written_off`, `lost`, `reserve` в единицу/комнату не ставятся → `EQUIPMENT_NOT_PLACEABLE`.
-- **Будущие брони** (02 §10): если оборудование уходит из единицы (или комнаты), на которой есть живые брони и удержания с `end > at`, команда без `acknowledgeBookings` отвечает `EQUIPMENT_MOVE_HAS_BOOKINGS` со списком (K6 провайдер booking `bookingsOnUnits`, S3-09). С `acknowledgeBookings: true` перемещение проводится, **брони не трогаются**, список и автор пишутся в аудит, ответ содержит `blockProposal` на освободившуюся единицу (решение: 02 §10 «не лишать автоматически… решение и его автор фиксируются»).
+- **Будущие брони** (02 §10): если оборудование уходит из единицы (или комнаты), на которой есть живые брони, удержания **или мероприятия** с `end > at`, команда без `acknowledgeBookings` отвечает `EQUIPMENT_MOVE_HAS_BOOKINGS` со списками `bookingIds` и `eventIds` (K6 провайдер booking `bookingsOnUnits`, S3-09). Мероприятия приходят из занятости `occupancy.source_type = 'event'` → `event_resources` → событие; сейчас `affected()` в `booking/blocks.ts:58–71` их не выбирает (только `booking` и `hold_item`) – S3-09 добавляет ветку (ревью 04.11). С `acknowledgeBookings: true` перемещение проводится, **брони не трогаются**, список и автор пишутся в аудит, ответ содержит `blockProposal` на освободившуюся единицу (решение: 02 §10 «не лишать автоматически… решение и его автор фиксируются»).
 - Перемещение между филиалами – право `equipment.move` в зоне **обоих** филиалов (иначе `404`).
 
 ## 5. Учётные записи PS/VR (10 §5)
@@ -172,6 +172,7 @@ export interface BlockProposal {
   period: Interval;                                       // [detectedAt|now, plan.end + 1 день | now + equipment.critical_block_hours)
   reasonCode: 'repair';                                   // dict_reasons resource_block/repair (0010)
   affectedBookings: CrmBookingRow[];                      // предпросмотр, ничего не пишет (booking previewBlock, S3-09)
+  affectedEvents: Array<{ eventId: string; number: string; status: string; start: string; end: string }>;   // мероприятия на тех же единицах – отдельным списком
   otherOpenRepairs: string[];
 }
 export function proposeBlock(db, ctx, repairId, input?: { period?: Interval; target?: BlockProposal['target'] }): Promise<BlockProposal>;
@@ -179,6 +180,7 @@ export function confirmBlock(tx, ctx, repairId, input: { target; period; comment
 ```
 
 - `confirmBlock` вызывает K6 `createBlock` (право `block.manage` – у Администратора есть, Q-56) и пишет `repair_blocks (repair_id, block_id UNIQUE)`. Блокировок у ремонта может быть несколько (продление, другой период).
+- Затронутые мероприятия (`affectedEvents`) тоже не трогаются: CRM показывает их отдельным списком со ссылкой на карточку мероприятия (перенос – `moveEvent` K20 §4, отмена – K20 §7).
 - Затронутые брони **не отменяются и не переносятся** (01 §13, 18 §7.4): CRM показывает их списком «требуют решения» с действиями существующих команд K11 №6 (отмена клубом с причиной – сервисный push клиенту по Э1, K4 `booking.cancelled`), №7 (перенос), смена ресурса – переносом на другой ресурс. Это и есть TC-12: выявить, не удалять молча, запустить процесс уведомления/переноса.
 - Блокировка без ремонта (ручная, Э1) работает как раньше; связать её с ремонтом – `confirmBlock` с `blockId` уже существующей (`linkExisting`).
 - **Простой** (10 §15): только по связанным блокировкам `[lower(period), min(upper(period), lifted_at))`; ремонт без блокировки в отчёте Э4 показывает сроки ремонта с пометкой «не простой».
@@ -314,7 +316,7 @@ CREATE TABLE app.equipment_warranties (id uuid PK, kind text NOT NULL CHECK (kin
 | Код | HTTP | Когда |
 |---|---|---|
 | `EQUIPMENT_NOT_PLACEABLE` | 409 | списанное, утерянное или резервное ставится в единицу/комнату |
-| `EQUIPMENT_MOVE_HAS_BOOKINGS` | 409 | уход из единицы с будущими бронями без подтверждения (`details.bookingIds`) |
+| `EQUIPMENT_MOVE_HAS_BOOKINGS` | 409 | уход из единицы с будущими бронями или мероприятиями без подтверждения (`details.bookingIds`, `details.eventIds`) |
 | `EQUIPMENT_WRITTEN_OFF` | 409 | любое изменение списанного, кроме документов |
 | `REPAIR_TRANSITION_INVALID` | 409 | переход не по таблице §6 |
 | `REPAIR_APPROVAL_REQUIRED` | 409 | план выше порога без согласования |
