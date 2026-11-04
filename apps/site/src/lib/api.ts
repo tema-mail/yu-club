@@ -101,7 +101,8 @@ export function findBranch(net: CityWithBranches[], citySlug: string, branchSlug
   return city && branch ? { city, branch } : null;
 }
 
-export const branchPath = (citySlug: string, branchSlug: string) => `/${citySlug}/${branchSlug}/`;
+// Адреса – из реестра K23 §1 (packages/contracts/src/paths.ts, S4-08): одно место шаблонов для сайта и API.
+export { branchPath, roomPath } from '../../../../packages/contracts/src/paths.ts';
 
 /** Значение куки → пара слагов. Мусор – null (выбор просто не показывается). */
 export function parseBranchCookie(raw: string | undefined | null): { city: string; branch: string } | null {
@@ -142,7 +143,6 @@ export function branchRooms(resources: ResourceDto[]): RoomView[] {
   return [...byRoom.values()].sort((a, b) => ZONE_ORDER.indexOf(a.zones[0]!) - ZONE_ORDER.indexOf(b.zones[0]!) || a.id.localeCompare(b.id));
 }
 
-export const roomPath = (citySlug: string, branchSlug: string, slug: string) => `/${citySlug}/${branchSlug}/rooms/${slug}/`;
 
 /** Запись с предвыбором: клуб, зона и комната – фильтры /schedule/ (карта п.2.10, canonical без них). */
 export const scheduleHref = (citySlug: string, branchSlug: string, opts: { zone?: ZoneCode; room?: string } = {}) =>
