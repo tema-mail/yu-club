@@ -1,4 +1,4 @@
-// K1. Права: роль × зона × действие (ADR 0005). Набор до Э3 фиксирован кодом (N-06, R-14).
+// K1. Права: роль × зона × действие (ADR 0005). Набор фиксирован кодом (N-06, R-14); права с датами – Э3.4 (S3-88).
 // Неуказанное – запрещено: действие вне реестра даёт false для всех, включая Владельца.
 // Чужой объект – NOT_FOUND (как несуществующий), FORBIDDEN – только объект в зоне без права.
 import { writeDenied, type AuditAction, type AuditObjectType, type AuditRequestMeta, type Db } from './audit.ts';
@@ -8,7 +8,7 @@ import type { Actor, StaffRole } from './audit.ts';
 
 export type { Actor, StaffRole } from './audit.ts';
 
-// ---- реестр действий Э0–Э2 (K1 §Реестр, «Действия Э2»). О – owner, Д – director, А – admin.
+// ---- реестр действий Э0–Э3 (K1 §Реестр, «Действия Э2», «Действия Э3»). О – owner, Д – director, А – admin.
 
 const O: readonly StaffRole[] = ['owner'];
 const OD: readonly StaffRole[] = ['owner', 'director'];
@@ -78,8 +78,54 @@ const MATRIX = {
   'certificate.correct': O,
   'certificate.review': OD,
   'certificate.link': ODA,
+  // ---- Э3 (K1 «Действия Э3»; K18 §12, K19 §12, K20 §13; решение D3-01). Умолчания Q-52, Q-54, Q-60, Q-62 / R-14,
+  // Q-64 / R-15, Q-107, Q-108, Q-115, Q-151 – меняются правкой этих строк. payroll.view.own и payroll.export не вводятся.
+  'shift.view.own': ODA,
+  'shift.plan.own': ODA,
+  'shift.attendance.self': ODA,
+  'shift.view': ODA,
+  'shift.manage': OD,
+  'shift.outside_hours': OD,
+  'shift.attendance.correct': OD,
+  'staff.planning_status': OD,
+  'payroll.view': OD,
+  'payroll.rate.manage': O,
+  'payroll.penalty.manage': OD,
+  'payroll.bonus.manage': O,
+  'payroll.statement.review': OD,
+  'payroll.period.manage': O,
+  'payroll.statement.ready': O,
+  'payroll.payout.mark': O,
+  'payroll.correct': O,
+  'payroll.payout.expense': O,
+  'equipment.view': ODA,
+  'equipment.view.accounts': OD,
+  'equipment.manage': OD,
+  'equipment.move': OD,
+  'equipment.financial.edit': O,
+  'equipment.write_off': O,
+  'equipment.category.manage': O,
+  'repair.register': ODA,
+  'repair.attach': ODA,
+  'repair.manage': OD,
+  'repair.approve': O,
+  'repair.accept': ODA,
+  'repair.close': OD,
+  'repair.expense.create': OD,
+  'repair.executor.manage': OD, // справочник сети: Директору – roleAllows, не assertCan({ network }) (K1 «Действия Э3»)
+  'event.view': ODA,
+  'event.manage': ODA,
+  'event.price.manage': OD,
+  'event.money.view': OD,
+  'event.money.record': ODA,
+  'event.package.manage': O,
+  'event.type.manage': O,
+  'gift.issue': ODA,
+  'gift.issue.manual': O,
+  'gift.cancel': O,
+  'gift.book': ODA,
+  'holiday.manage': O,
 } as const satisfies Record<string, readonly StaffRole[]>;
-// payroll.*, shift.* (смены сотрудников) – Э3: их нет здесь, значит запрещены.
 
 export type Action = keyof typeof MATRIX;
 export const ACTIONS = Object.keys(MATRIX) as Action[];

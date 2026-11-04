@@ -40,7 +40,7 @@ function def<T>(schema: z.ZodType<T>, systemDefault: T, levels: readonly StoredL
   return { schema, systemDefault, levels, editAction, affectsExisting: false };
 }
 
-/** Реестр ключей Э0–Э2 (K7 §Реестр, «Реестр ключей Э2»). Новый ключ = строка K7 + запись здесь. */
+/** Реестр ключей Э0–Э3 (K7 §Реестр, «Реестр ключей Э2», «Реестр ключей Э3»). Новый ключ = строка K7 + запись здесь. */
 export const SETTINGS = {
   'booking.window_default_days': def(int(1, 30), 7, NB, BRANCH),
   'booking.window_max_days': def(int(1, 90), 30, NB, BRANCH),
@@ -92,6 +92,38 @@ export const SETTINGS = {
   ), // Q-42: комната целиком баллами не оплачивается
   'loyalty.accrue_for_points': def(z.boolean(), false, N, NET), // Q-40 / R-06
   'loyalty.accrue_for_certificate': def(z.boolean(), true, N, NET),
+  // ---- Э3 (K7 «Реестр ключей Э3»; K18 §16, K19 §16, K20 §17). Только сеть, менять – только Владелец (D3-01).
+  'shift.min_minutes': def(int(15, 720).nullable(), null as number | null, N, NET), // 05 §5.5: без минимума
+  'shift.self_edit_deadline_hours': def(int(0, 168), 24, N, NET), // Q-65
+  'shift.checkin_early_minutes': def(int(0, 240), 30, N, NET), // Q-110
+  'shift.review_grace_minutes': def(int(0, 720), 60, N, NET),
+  'payroll.attendance_fee_min_minutes': def(int(0, 720), 120, N, NET), // Q-61
+  'payroll.bonus_enabled': def(z.boolean(), false, N, NET), // Q-107
+  'payroll.penalties_enabled': def(z.boolean(), false, N, NET), // Q-121, Q-153
+  'payroll.negative_carry': def(z.enum(['carry', 'write_off']), 'carry' as 'carry' | 'write_off', N, NET), // Q-154
+  'payroll.period_kind': def(z.enum(['month', 'half_month', 'week']), 'month' as 'month' | 'half_month' | 'week', N, NET), // Q-62
+  'equipment.critical_auto_block': def(z.boolean(), false, N, NET), // Q-111
+  'equipment.critical_block_hours': def(int(1, 720), 24, N, NET),
+  'repair.approval_threshold_kop': def(int(0, 100_000_000).nullable(), 1_000_000 as number | null, N, NET), // Q-52: null – без согласования
+  'attachments.max_bytes': def(int(1, 52_428_800), 10_485_760, N, NET), // Q-96
+  'attachments.mime_types': def(
+    z.array(z.enum(['image/jpeg', 'image/png', 'application/pdf'])).min(1).refine((a) => new Set(a).size === a.length, 'без повторов'),
+    ['image/jpeg', 'image/png', 'application/pdf'] as ('image/jpeg' | 'image/png' | 'application/pdf')[],
+    N,
+    NET,
+  ), // Q-96: только типы, которые core/files.ts распознаёт по сигнатуре
+  'event.party.min_minutes': def(int(30, 720), 120, N, NET), // 20 §4.10 (R-22)
+  'event.party.max_guests': def(int(1, 100), 10, N, NET),
+  'event.party.price_confirmed': def(z.boolean(), false, N, NET), // R-11 / Q-70
+  'event.prepayment_required': def(z.boolean(), false, N, NET), // Q-74, зарезервирован
+  'event.requests_enabled': def(z.boolean(), true, N, NET),
+  'event.request_hold_hours': def(int(1, 336), 48, N, NET),
+  'event.request_hold_remind_hours': def(int(0, 168), 24, N, NET),
+  'gift.valid_days': def(int(1, 365), 60, N, NET), // 11 §9.1
+  'gift.room_minutes': def(int(30, 120), 40, N, NET),
+  'gift.start_align_minutes': def(int(5, 60), 15, N, NET), // Q-118
+  'gift.per_client_days': def(int(1, 3650), 365, N, NET), // R-09 / Q-71: копия в EXCLUDE 0309
+  'gift.no_show_returns': def(z.boolean(), true, N, NET), // Q-114
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;

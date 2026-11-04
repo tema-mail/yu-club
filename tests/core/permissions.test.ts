@@ -114,8 +114,9 @@ const own: Record<string, Target> = { network: { network: true }, city: { cityId
 const foreign: Record<string, Target> = { network: { network: true }, city: { cityId: CITY_B }, branch: { branchId: BR_B1 } };
 
 describe('матрица K1 × роль × своя/чужая цель', () => {
-  it('реестр кода совпадает с K1 построчно', () => {
-    expect([...ACTIONS].sort()).toEqual(EXPECTED.map((r) => r[0]).sort());
+  it('реестр кода совпадает с K1 построчно (Э0–Э2; Э3 – tests/core/permissions-e3.test.ts)', () => {
+    const e3 = /^(shift|payroll|equipment|repair|event|gift|holiday)\.|^staff\.planning_status$/;
+    expect(ACTIONS.filter((a) => !e3.test(a)).sort()).toEqual(EXPECTED.map((r) => r[0]).sort());
   });
 
   const rows = EXPECTED.flatMap(([action, roles, kind]) =>
@@ -130,8 +131,8 @@ describe('матрица K1 × роль × своя/чужая цель', () => 
     expect(can(c, action, foreign[kind]!)).toBe(allowed && role === 'owner');
   });
 
-  it('неуказанное – запрещено всем, включая Владельца (payroll.*, shift.* – Э3; ledger.override_limit не вводится)', () => {
-    for (const a of ['payroll.view', 'shift.manage', 'ledger.override_limit', 'finance.export', 'booking.delete', '']) {
+  it('неуказанное – запрещено всем, включая Владельца (payroll.export – Э4; ledger.override_limit не вводится)', () => {
+    for (const a of ['payroll.export', 'payroll.view.own', 'ledger.override_limit', 'finance.export', 'booking.delete', '']) {
       expect(can(owner, a, { network: true })).toBe(false);
       expect(can(owner, a, { branchId: BR_A1 })).toBe(false);
       expect(roleAllows('owner', a)).toBe(false);
