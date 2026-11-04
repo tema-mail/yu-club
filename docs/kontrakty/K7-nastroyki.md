@@ -99,6 +99,39 @@ export function settingHistory(db: Db, key: SettingKey, scope: SettingScope): Pr
 - `loyalty.penalties_from = null` (решение S2-00): «дата запуска Э2» заранее неизвестна, поэтому системное значение – «штрафы не начисляются»; Владелец ставит дату при выпуске Э2 в бой (6.4.3 плана). Так ни одна неявка Э1 не получит штраф задним числом.
 - Сверка `nominal_min_kop ≤ nominal_max_kop` и существования кодов типов ресурсов – в модуле-потребителе при чтении (K16, K15), а не в схеме ключа: схема не видит второго ключа и справочника.
 
+## Реестр ключей Э3 (S3-01; основание – K18 §16, K19 §16, K20 §17; внесено S3-00 04.11.2026)
+
+Уровень – только сеть, меняет только Владелец (`settings.network.manage`, решение D2-02 продолжено на Э3). `affectsExisting: false`.
+
+| Ключ | Тип, пределы (`schema`) | `systemDefault` | Основание |
+|---|---|---|---|
+| `shift.min_minutes` | int 15..720 или null | null | K18 §16, 05 §5.5 |
+| `shift.self_edit_deadline_hours` | int 0..168 | 24 | Q-65 |
+| `shift.checkin_early_minutes` | int 0..240 | 30 | Q-110 |
+| `shift.review_grace_minutes` | int 0..720 | 60 | решение K18 |
+| `payroll.attendance_fee_min_minutes` | int 0..720 | 120 | Q-61 |
+| `payroll.bonus_enabled` | boolean | false | Q-107 |
+| `payroll.penalties_enabled` | boolean | false | Q-121, Q-153 |
+| `payroll.negative_carry` | `'carry'` \| `'write_off'` | `'carry'` | Q-154 |
+| `payroll.period_kind` | `'month'` \| `'half_month'` \| `'week'` | `'month'` | Q-62 (подсказка CRM) |
+| `equipment.critical_auto_block` | boolean | false | Q-111 |
+| `equipment.critical_block_hours` | int 1..720 | 24 | решение K19 |
+| `repair.approval_threshold_kop` | int 0..100 000 000 или null | 1 000 000 | Q-52 (`null` – согласование не требуется) |
+| `attachments.max_bytes` | int 1..52 428 800 | 10 485 760 | Q-96 |
+| `attachments.mime_types` | непустой массив без повторов из `image/jpeg`, `image/png`, `application/pdf` | `["image/jpeg","image/png","application/pdf"]` | Q-96 (список – подмножество типов, которые `core/files.ts` распознаёт по сигнатуре) |
+| `event.party.min_minutes` | int 30..720 | 120 | 20 §4.10 (R-22) |
+| `event.party.max_guests` | int 1..100 | 10 | 20 §4.10 (R-22) |
+| `event.party.price_confirmed` | boolean | false | R-11 / Q-70 |
+| `event.prepayment_required` | boolean | false | Q-74 (зарезервирован) |
+| `event.requests_enabled` | boolean | true | 11 §12 |
+| `event.request_hold_hours` | int 1..336 | 48 | решение K20 |
+| `event.request_hold_remind_hours` | int 0..168 | 24 | решение K20 |
+| `gift.valid_days` | int 1..365 | 60 | 11 §9.1 |
+| `gift.room_minutes` | int 30..120 | 40 | 11 §9.1 |
+| `gift.start_align_minutes` | int 5..60 | 15 | Q-118 |
+| `gift.per_client_days` | int 1..3650 | 365 | R-09 / Q-71 (копия в `EXCLUDE` 0309 – смена значения требует миграции) |
+| `gift.no_show_returns` | boolean | true | Q-114 |
+
 Шаг слота **не** настройка: единственный источник – `dict_resource_types.step_minutes` (+ `resources.step_minutes_override`), 15 §3.1 «один источник значения», 15 §7.2.
 Часы работы **не** настройка: `branch_weekly_hours` + `calendar_exceptions` (15 §3.1 «часы работы задаются в карточке филиала»).
 

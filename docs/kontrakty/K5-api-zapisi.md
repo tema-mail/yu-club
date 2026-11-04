@@ -88,6 +88,8 @@ interface ConfirmResultDto { checkoutId: string; bookings: BookingDto[] }
 
 **Э2 (внесено S2-00 02.11.2026).** Публичные маршруты баллов – K15 §11 (`GET /me/loyalty`, `GET /me/loyalty/history`, `POST`/`DELETE /holds/{holdId}/points-reserve`, `GET /goods`), сертификатов – K16 §8 (`GET /me/certificates`, `GET /me/certificates/{number}/history`). Оплаты на сайте в Э2 нет (K10 §1, Q-20): `BookingDto.paymentNote` остаётся `'pay_at_club'`. Резерв баллов живёт столько же, сколько удержание (K15 §3): таймер `HoldDto.expiresAt` – и срок резерва, отдельного поля нет. «Оплатить баллами» на шаге оформления – только резерв; списание – при оплате в клубе (K10).
 
+**Э3 (внесено S3-00 04.11.2026; K20 §8, §11).** Подарок имениннику: публичные маршруты – K20 §15 (П1 `GET /me/gifts`, `GET /me/gifts/{id}/slots`, П2 `POST /me/gifts/{id}/hold`; П3–П5 – мероприятия и заявка на праздник). Удержание подарка – обычное `HoldDto` с ценой 0 на служебный ресурс `gift_vr` (`self_bookable=false`). Внутренний параметр команд `createHold`, `addHoldItem`, CRM-брони и переноса – необязательный `serviceGrant: { kind: 'gift'; id: string }`; через публичное тело №6/№8 он **не** принимается – только маршрутом П2 (иначе клиент сам выдал бы себе грант). Реестр `registerServiceGrant(resourceType, validator)` (booking); без гранта поведение Э1–Э2 не меняется: ресурс `self_bookable=false` → `RESOURCE_UNAVAILABLE`. Ошибки валидатора (`GIFT_*`, K20 §16) проходят как есть.
+
 ### Поведение ключевых маршрутов
 
 **6. `POST /holds`** – одна транзакция:

@@ -1,6 +1,6 @@
-# Модель данных этапов 0–2
+# Модель данных этапов 0–3
 
-Версия 3 от 02.11.2026: добавлен раздел 4 «Этап 2» (шаг S2-00, миграции 0201–0207). Версия 2 от 01.11.2026 (шаг S0-00, правки по architecture-reviewer; сверено с закоммиченными `db/migrations/0001_init.sql`, `db/migrate.ts`, `tests/helpers/pg.ts`). Основа: план 3.3–3.4, 6.1–6.2; ADR 0001–0005.
+Версия 4 от 04.11.2026: добавлен раздел 4а «Этап 3» (шаг S3-00, миграции 0301–0311). Версия 3 от 02.11.2026: добавлен раздел 4 «Этап 2» (шаг S2-00, миграции 0201–0207). Версия 2 от 01.11.2026 (шаг S0-00, правки по architecture-reviewer; сверено с закоммиченными `db/migrations/0001_init.sql`, `db/migrate.ts`, `tests/helpers/pg.ts`). Основа: план 3.3–3.4, 6.1–6.2; ADR 0001–0005.
 Факты ТЗ – со ссылкой «файл §пункт». Мои решения помечены «решение».
 DDL ниже – нормативный: имена таблиц, столбцов, ограничений и их смысл – контракт для миграций. Порядок столбцов и индексы для скорости исполнитель может дополнять.
 
@@ -54,7 +54,7 @@ FK, которые смотрят «вперёд» (на таблицу из б�
 
 Проверка порядка (для S0-02 и далее): каждая миграция вверх на чистой базе после всех предыдущих, затем вниз в обратном порядке, затем снова вверх – без ошибок.
 
-Полиморфные ссылки без FK (решение, с проверкой в коде модуля): `occupancy.source_id` (удержание / бронь / мероприятие Э3), `client_time.source_id`, `audit_events.object_id`, `outbox_events.aggregate_id`, `ledger_entries.ref_id`.
+Полиморфные ссылки без FK (решение, с проверкой в коде модуля): `occupancy.source_id` (удержание / бронь / строка `event_resources` Э3), `client_time.source_id`, `audit_events.object_id`, `outbox_events.aggregate_id`, `ledger_entries.ref_id`.
 
 ---
 
@@ -485,7 +485,7 @@ CREATE TABLE app.occupancy (                     -- кто занимает ед
   branch_id uuid NOT NULL REFERENCES app.branches(id),
   period tstzrange NOT NULL,
   source_type text NOT NULL CHECK (source_type IN ('hold_item','booking','event')),   -- 'event' – Э3
-  source_id uuid NOT NULL,                   -- hold_items.id | bookings.id | events.id
+  source_id uuid NOT NULL,                   -- hold_items.id | bookings.id | event_resources.id (Э3, K6, правка S3-00)
   booking_version int,                       -- для source_type = 'booking'
   hold_expires_at timestamptz,               -- только у hold_item; копия holds.expires_at
   active boolean NOT NULL DEFAULT true,
@@ -1229,6 +1229,92 @@ CREATE TABLE app.loyalty_goods_orders (           -- выдача только �
 | Начальный остаток один на место | 06 §3.1 | `finance_opening_balances_one_active` |
 | Одна открытая смена | K17 §7 | `cash_shifts_one_open` |
 | Закрытый месяц не открывается | K17 §6 | у `yu_app` нет `UPDATE`/`DELETE` на `finance_periods` |
+
+---
+
+
+## 4а. Этап 3 – управление клубом (внесено S3-00, 04.11.2026)
+
+Порядок и FK – план 6.5.1 (таблица миграций 0301–0311); правило номеров 03xx/04xx – там же. Полный DDL таблиц смен, оборудования и мероприятий – в контрактах-владельцах (K18 §13, K19 §13, K20 §14): он нормативен так же, как DDL этого файла; здесь – владельцы, ключевые ограничения и то, что контракты не описывают. 0301 и 0302 даны целиком – их пишет подготовка (S3-05, S3-06).
+
+| № | Модуль | Таблицы | Ключевые гарантии |
+|---|---|---|---|
+| 0301 | finance | `finance_operation_links` | `finance_operation_links_one_live` – одна живая связь на операцию (K17 §14) |
+| 0302 | core (`core/files.ts`) | `attachments` | содержимое не меняется (`REVOKE UPDATE` + список столбцов), `DELETE` отозван, версия – новой строкой `supersedes` |
+| 0303 | shifts (+ столбцы `staff` – модуль staff) | `staff.employment_start/_end`, `staff.planning_status`, `staff.manager_comment`, `journal.staff_rates`, `payroll_periods`, `staff_shifts`, `journal.staff_shift_changes`, `staff_shift_change_acks` | `staff_shifts_no_overlap` (EXCLUDE по сотруднику во всех филиалах, TC-15); периоды не пересекаются (EXCLUDE); ставки – только вставка |
+| 0304 | equipment | `equipment_categories` (посев 10 §3.2), `equipment_items`, `equipment_placements`, `equipment_accounts`; `equipment_inventory_seq`, `repair_number_seq` | одно текущее размещение (`equipment_placements_current`); единица и комната – составным FK того же филиала |
+| 0305 | events | `event_types` (посев), `event_packages`, `events`, `event_lines`, `event_checklist`, `event_resources`, `event_bookings`; `event_number_seq`, `gift_number_seq` | бронь связана не больше чем с одним мероприятием (`UNIQUE booking_id`); занятость – строками K6 `source_type='event'` |
+| 0306 | shifts | `payroll_statements`, `payroll_penalties`, `journal.payroll_accruals`; CHECK `ledger_entry_type_known` пересоздаётся с `payroll.bonus` | одно начисление на версию факта (`UNIQUE (shift_id, fact_version)`), ведомость одна на период и сотрудника |
+| 0307 | equipment | `repair_executors`, `repairs`, `journal.repair_status_history`, `repair_blocks`, `equipment_warranties` | блокировка принадлежит одному ремонту (`UNIQUE block_id`); закрытие требует суммы или «без затрат» (CHECK) |
+| 0308 | network | `holiday_dates` | одна активная дата на (уровень, город, день) |
+| 0309 | events | `birthday_gifts`, `gift_uses` | один подарок клиенту в 365 дней (`EXCLUDE`); одна живая запись по подарку (`gift_uses_one_live`) |
+| 0310 | core/permissions | `staff_grants` | действие из закрытого списка `DELEGABLE` (CHECK), зона city/branch (CHECK как `staff_assignments`) |
+| 0311 | модули Э3 + finance | представления `rpt_events`, `rpt_event_money`, `rpt_repair_money`, `rpt_shifts`, `rpt_shift_gaps`, `rpt_payroll`, `rpt_equipment`, `rpt_repairs` (поля – K20 §11); CHECK `reconcile_discrepancies.check_name` – полный список | читаются ролью отчётов, а не таблицы модулей (ADR 0002) |
+
+### 0301 – finance_links (finance)
+
+```sql
+CREATE TABLE app.finance_operation_links (       -- K17 §14: операция кассы ↔ объект Э3
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  operation_id  uuid NOT NULL REFERENCES journal.finance_operations(id),
+  branch_id     uuid NOT NULL REFERENCES app.branches(id),   -- филиал операции (scopeFilter, отчёты)
+  ref_type      text NOT NULL CHECK (ref_type IN ('event','repair','payroll_statement')),
+  ref_id        uuid NOT NULL,                                -- полиморфная ссылка без FK (как occupancy.source_id)
+  role          text NOT NULL CHECK (role IN ('income','refund','expense','payout_expense')),
+  in_cost       boolean NOT NULL DEFAULT false,               -- расход мероприятия в себестоимость (K20 §6)
+  line_id       uuid,                                         -- строка состава мероприятия; FK → event_lines добавит 0305
+  linked_by     uuid NOT NULL, linked_at timestamptz NOT NULL,
+  unlinked_at   timestamptz, unlinked_by uuid, unlink_reason text,
+  CHECK ((unlinked_at IS NULL) = (unlink_reason IS NULL)),
+  CHECK ((unlinked_at IS NULL) = (unlinked_by IS NULL))
+);
+CREATE UNIQUE INDEX finance_operation_links_one_live ON app.finance_operation_links (operation_id) WHERE unlinked_at IS NULL;
+CREATE INDEX finance_operation_links_ref_idx ON app.finance_operation_links (ref_type, ref_id) WHERE unlinked_at IS NULL;
+REVOKE UPDATE, DELETE, TRUNCATE ON app.finance_operation_links FROM yu_app;
+GRANT UPDATE (unlinked_at, unlinked_by, unlink_reason) ON app.finance_operation_links TO yu_app;
+```
+
+Решение (D3-03): `line_id` без FK в 0301 – `event_lines` появляется в 0305; отложенный FK добавляет 0305 (смотрит назад, правило §1).
+
+### 0302 – attachments (core)
+
+```sql
+CREATE TABLE app.attachments (                   -- закрытые вложения Э3 (K19 §9); файл – в ATTACHMENTS_DIR по sha256
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_type      text NOT NULL CHECK (owner_type ~ '^[a-z][a-z_]{1,30}$'),   -- реестр registerAttachmentOwner
+  owner_id        uuid NOT NULL,                                               -- полиморфная ссылка без FK
+  doc_type        text NOT NULL CHECK (doc_type IN ('photo','receipt','check','invoice','act','warranty_card','waybill','service_report','other')),
+  storage_key     text NOT NULL CHECK (storage_key ~ '^[0-9a-f]{2}/[0-9a-f]{64}$'),
+  sha256          text NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+  size_bytes      bigint NOT NULL CHECK (size_bytes > 0),
+  mime_type       text NOT NULL,                                               -- по сигнатуре, не по заявлению клиента
+  original_name   text CHECK (char_length(original_name) <= 255),              -- только подпись; путь из него не строится
+  comment         text,
+  supersedes      uuid UNIQUE REFERENCES app.attachments(id),                  -- новая версия; у версии один наследник
+  status          text NOT NULL DEFAULT 'active' CHECK (status IN ('active','invalid')),
+  invalid_reason  text, invalidated_by uuid, invalidated_at timestamptz,
+  created_by_type text NOT NULL, created_by_id uuid,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  CHECK ((status = 'invalid') = (invalid_reason IS NOT NULL)),
+  CHECK (invalid_reason IS NULL OR btrim(invalid_reason) <> '')
+);
+CREATE INDEX attachments_owner_idx ON app.attachments (owner_type, owner_id, created_at);
+REVOKE UPDATE, DELETE, TRUNCATE ON app.attachments FROM yu_app;
+GRANT UPDATE (status, invalid_reason, invalidated_by, invalidated_at) ON app.attachments TO yu_app;
+```
+
+Файл пишется до вставки строки (адрес по содержимому, повтор того же файла – тот же ключ); откат транзакции оставляет на диске файл без строки – безвреден и убирается уборкой Э4 (решение D3-06). Бэкап и проверка «каждый живой `storage_key` есть на диске» – S3-94.
+
+### Ключевые правила Э3 → где гарантия
+
+| Правило | ТЗ / контракт | Гарантия |
+|---|---|---|
+| Смены сотрудника не пересекаются ни в одном филиале | 05 §5.4, TC-15; K18 §4 | `staff_shifts_no_overlap` |
+| Одна операция кассы – один объект | 10 §9.1, 11 §8.4; K17 §14 | `finance_operation_links_one_live` |
+| Начисление за смену – одно на версию факта | 16 §2.6; K18 §6 | `UNIQUE (shift_id, fact_version)` + ключ K3 |
+| Подарок – один в 365 дней, одна живая запись | R-09; K20 §8 | `birthday_gifts_one_per_year`, `gift_uses_one_live` |
+| Мероприятие против брони VR-места | TC-13; K6 | `occupancy_no_overlap` (строки `source_type='event'`) |
+| Вложение не заменяется | 10 §11 | `REVOKE UPDATE` содержимого, версия – `supersedes` |
 
 ---
 

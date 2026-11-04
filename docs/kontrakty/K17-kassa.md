@@ -91,7 +91,7 @@ export function previewBalance(db, ctx, input: { branchId; place; deltaKop }): P
 - **Продажа сертификата** – только K16 (`source='certificate_sale'`).
 - **Баллы и погашение сертификата** в кассу не пишутся никогда (06 §5.1, §12, приёмка 7).
 - **Зарплата** – расход только при фактической выплате (06 §2 п.6), автоматика – Э3 (R-15).
-- **Возврат** (`refund`) создаёт только K10 `refundPayment` и K16 отмена продажи; ссылка на исходную операцию обязательна (06 §5.2, приёмка 14).
+- **Возврат** (`refund`) создаёт только K10 `refundPayment`, K16 отмена продажи и `refundIncome` (§14) для поступлений мероприятий и прочих (K20 §6); ссылка на исходную операцию обязательна (06 §5.2, приёмка 14). (Правка S3-00, 04.11.2026.)
 - Повтор: HTTP `Idempotency-Key`; ключ K3 – `finance-op:<idempotencyKey>` для ручных, ключи K10/K16 – для их операций.
 
 ## 5. Категории (06 §7)
@@ -228,3 +228,41 @@ interface CashSummaryDto {
 - Сторно операции `refund` запрещено (`USE_PAYMENT_REFUND`): возврат привязан к платежу K10, исправление – корректировкой.
 - Порядок блокировок един для всего Э2: все счета журнала (места денег, баллы, сертификаты) – одним `lockAccounts` по возрастанию id, до любых других строк. Новые команды с несколькими счетами обязаны брать их одним вызовом.
 - Смена (§7 п.4–5): «принять» (`accept`) = признать пересчёт фактом и провести разницу, чтобы остаток `cash` совпал с пересчитанным: недостача – расход системной категории «Недостача кассы» (`code = cash_shortage`), излишек – доход «Излишек кассы» (`cash_surplus`, источник `other`); категории засевает `0210`, коды, вид и родитель неизменны (триггер). Операция ссылается на смену (`ref shift`, `shift_id`), её id – в `resolution_operation_id`, причина обязательна, всё в одной транзакции под `lockPlaces`. `correct` – операция `correction` на `diff`. Если к решению уже открыта следующая смена, её `opening_expected` (снят до проводки) сдвигается на `diff` – и при `correct`, и при `accept` (аудит `cash_shift.resolved` – `openingAdjustedShiftId`), иначе то же расхождение всплывёт её `openingDiff`. Расхождение только при открытии (при закрытии сошлось) – `accept` без проводки.
+
+## 14. Связи операций кассы с объектами (Э3; текст – K20 §11, внесено S3-00 04.11.2026)
+
+Модуль finance, файл `apps/api/src/modules/finance/links.ts` (S3-05), таблица `app.finance_operation_links` (`0301_finance_links.sql`). Потребители: K18 (расход выплаты, роль `payout_expense`), K19 (расход ремонта, `expense`), K20 (поступления, возвраты, расходы мероприятия). Межмодульный вызов – только функциями `links.ts` (ADR 0002); другие модули таблицу связей не пишут.
+
+```ts
+export type LinkRef = { type: 'event' | 'repair' | 'payroll_statement'; id: string };
+export type LinkRole = 'income' | 'refund' | 'expense' | 'payout_expense';
+/** Связать операцию с объектом. Одна операция – не больше одной живой связи (UNIQUE operation_id WHERE unlinked_at IS NULL).
+ *  Проверки: роль совместима с kind операции (income ↔ income, refund ↔ refund, expense/payout_expense ↔ expense);
+ *  операция не сторнирована; филиал операции в зоне ctx. Иначе OPERATION_LINK_INVALID / OPERATION_ALREADY_LINKED. */
+export function linkOperation(tx, ctx, input: { operationId; ref: LinkRef; role: LinkRole; inCost?: boolean; lineId?: string }, meta): Promise<void>;
+/** Создать операцию и связь в одной транзакции (обёртка над recordIncome / recordExpense). */
+export function createLinkedOperation(tx, ctx, input: NewOperation & { link: Omit<LinkInput, 'operationId'> }, meta): Promise<FinanceOperationDto>;
+/** Живые связи объекта; сторнированные операции исключены (reversedBy != null). */
+export function linksOf(db, ref: LinkRef): Promise<Array<{ operation: FinanceOperationDto; role; inCost; lineId }>>;
+/** Отвязать ошибочную связь: unlinked_at + причина, право finance.correct. Операция не меняется. */
+export function unlink(tx, ctx, input: { operationId; reason }, meta): Promise<void>;
+/** Возврат по ссылке на поступление (не K10 и не K16): kind 'refund', ref { type: 'operation', id: incomeId }.
+ *  Только для income с source 'event' | 'extra_service' | 'other'; Σ живых refund по поступлению ≤ его суммы. */
+export function refundIncome(tx, ctx, input: { incomeOperationId; amountKop; place; method; reason; link?: { ref: LinkRef } }, meta): Promise<FinanceOperationDto>;
+```
+
+- Сторно операции в K17 связь само не гасит – потребители читают `linksOf` (живая операция = без `reversed_by`). Связь сторнированной операции перестаёт считаться в «оплачено» объекта, а сама операция может быть привязана заново только новой операцией.
+- Гарантия «одна операция – один объект» – частичный уникальный индекс базы, не код: 20 параллельных `linkOperation` одной операции к разным объектам → ровно одна связь, остальные `OPERATION_ALREADY_LINKED` (`23505` → код).
+- `refundIncome`: под `lockPlaces` перечитывает поступление и сумму его живых возвратов; поступление `source='session'` → `USE_PAYMENT_REFUND`, `certificate_sale` → `USE_CERTIFICATE_CANCEL`, сторнированное → `OPERATION_REVERSED`, сумма больше остатка → `EVENT_REFUND_EXCEEDS_INCOME`. Возврат – новая операция `refund` своим способом и местом; если у поступления есть живая связь, возврат по умолчанию связывается с тем же объектом (`role='refund'`).
+- Сторно поступления, у которого есть живые возвраты, → `INCOME_HAS_REFUNDS` (сначала сторно возвратов) – проверка в `reverseOperation` (S3-54).
+- Касса = операции: связи не меняют ни одного остатка и ни одной суммы сводки §9 (тест S3-05).
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `OPERATION_ALREADY_LINKED` | 409 | у операции уже есть живая связь (`details.ref`) |
+| `OPERATION_LINK_INVALID` | 422 | роль не по виду операции, операция сторнирована или не того источника |
+| `EVENT_REFUND_EXCEEDS_INCOME` | 409 | возврат больше непогашенной части поступления (`details.availableKop`) |
+| `OPERATION_REVERSED` | 409 | возврат по сторнированному поступлению |
+| `INCOME_HAS_REFUNDS` | 409 | сторно поступления с живыми возвратами |
+
+Реестр: коды объявлены строкой `finance_links` в `core/registry.ts` (S3-04, решение D3-04: links.ts появляется в S3-05, а реестр правится до него); аудит – `finance.operation.linked`, `finance.operation.unlinked` (K2 «Э3»).

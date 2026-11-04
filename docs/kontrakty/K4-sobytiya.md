@@ -64,7 +64,7 @@ export function subscribe<T extends EventType>(type: T, name: string,
 
 ## События этапа 2 (K10 §6; внесены S2-00 02.11.2026)
 
-Тип агрегата `payment` (S2-06, `core/outbox.ts`). Схемы payload – `packages/contracts/src/events.ts`, типы – реестр `modules/finance/methods.ts` (S2-06).
+Тип агрегата `payment` (S2-06, `core/outbox.ts`). Типы payload Э2 – `declare module` в `modules/finance/payment.ts` и реестр способов `modules/finance/methods.ts` (S2-06); файла `packages/contracts/src/events.ts` в коде нет (уточнено S3-00 04.11.2026: прежняя ссылка была планом, а не фактом).
 
 | `type` @ver | Когда публикуется | `aggregateVersion` | Payload | Потребители |
 |---|---|---|---|---|
@@ -73,13 +73,31 @@ export function subscribe<T extends EventType>(type: T, name: string,
 
 Модули `loyalty` (K15) и `certificates` (K16) в Э2 **своих событий не публикуют**: их контракты событий не объявляют, эффекты видны через аудит K2 и чтение модуля. Тип агрегата `certificate` резервируется заранее (S2-06), чтобы будущее событие не требовало правки ядра; добавление события – правка этой таблицы и схемы (правило 5).
 
+## События этапа 3 (K18 §11, K19 §11, K20 §12; внесено S3-00 04.11.2026)
+
+Типы агрегатов Э3 – `shift`, `staff_rate`, `repair`, `event`, `gift` (S3-08, `core/outbox.ts`). Zod-схемы payload – `packages/contracts/src/events-e3.ts` (S3-08, экспорт `@yu/contracts/events-e3`); типы выводятся из схем и регистрируются в `EventRegistry` тем же файлом-схемой через модуль-производитель (`declare module`). Блокировки из ремонта публикуют существующие `resource.blocked` / `resource.unblocked`.
+
+| `type` @ver | Когда публикуется | `aggregateVersion` | Payload | Потребители |
+|---|---|---|---|---|
+| `shift.changed` @1 | создание, правка, отмена смены не её сотрудником | `row_version` | `{ shiftId, staffId, branchId, branchTimezone, changedBy, kind: 'created'\|'updated'\|'cancelled', before: { start, end, branchId } \| null, after: … \| null, reason }` | Э4: уведомление сотруднику (K21) |
+| `shift.attendance_changed` @1 | любое изменение факта смены | `fact_version` | `{ shiftId, staffId, branchId, localDate, factVersion }` | shifts: начисление (K18 §6) |
+| `staff.rate_set` @1 | `setRate` | `<rateId>` | `{ rateId, staffId, validFrom, affectedShiftIds }` | shifts: пересчёт открытых периодов (K18 §3) |
+| `repair.registered` @1 | `registerRepair` | `1` | `{ repairId, number, equipmentId, branchId, priority, impact, autoBlockId \| null }` | Э4 (K21) |
+| `repair.closed` @1 | `closeRepair` | `'closed'` | `{ repairId, branchId, finalEquipmentStatus, stillBlockedIds }` | Э4 |
+| `event.confirmed` @1 | переход в `confirmed` | `row_version` | `{ eventId, number, branchId, branchTimezone, customerClientId \| null, plannedStart, plannedEnd }` | Э4 |
+| `event.rescheduled` @1 | `moveEvent` | `row_version` | `{ eventId, branchId, customerClientId \| null, previous: { start, end }, current: { start, end } }` | Э4 |
+| `event.cancelled` @1 | `cancelled` / `not_held` | `'cancelled'` | `{ eventId, branchId, customerClientId \| null, reason, linkedBookingIds, giftIds }` | Э4 |
+| `gift.issued` @1 | `issueGift` | `1` | `{ giftId, clientId, validUntil, issueBranchId }` | Э4: центр уведомлений ЛК |
+
+Подарок (events) подписывается на `hold.expired`, `booking.confirmed`, `booking.cancelled`, `booking.rescheduled`, `visit.confirmed`, `visit.reverted`, `no_show.marked` (K20 §12, S3-59). Payload Э3 без сумм зарплаты и ставок (правило 2 – ПДн; K18 §10).
+
 ## Правила
 
 1. Публикуем только **фактом зафиксированное** изменение: `publish` вызывается после успешной записи в той же транзакции.
 2. Payload – без лишних ПДн: телефон и имя клиента в событие не кладём, только `clientId` (решение). Потребитель читает нужное через `clients/index.ts`.
 3. Обработчик идемпотентен дважды: `processed_events` + собственный ключ эффекта (`notifications.dedupe_key`, `ledger_entries.idempotency_key`).
 4. Внешний вызов (push) обработчик делает **не** внутри своей транзакции: обработчик только создаёт строки `notifications`, отправку делает задача `notifications:send` (K14).
-5. Новое событие или поле – правка этого файла + схема в `packages/contracts/src/events.ts`; добавление необязательного поля версию не меняет.
+5. Новое событие или поле – правка этого файла + схема (Э3 – `packages/contracts/src/events-e3.ts`); добавление необязательного поля версию не меняет.
 
 ## Проверка (S0-08)
 

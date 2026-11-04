@@ -132,8 +132,29 @@ export function quote(tx: Tx, input: { branchId: string; resourceType: string; s
 
 1. Код не проверяет пересечения «вручную» перед вставкой как гарантию – гарантию даёт `EXCLUDE`; предварительный `SELECT` допустим только ради понятного сообщения.
 2. Блокировки не пишутся в `occupancy` (ложатся поверх броней, 01 §13); проверка `assertNotBlocked` – в той же транзакции, что и `occupy`.
-3. Мероприятие (Э3) занимает комнату через `occupy` с `source.type='event'` – общая таблица, TC-13.
+3. Мероприятие (Э3) занимает комнату через `occupy` с `source.type='event'` – общая таблица, TC-13. Источник строки – `event_resources.id` (строка ресурса мероприятия), не `events.id`: у мероприятия несколько ресурсов и интервалов, каждый освобождается отдельно (K20 §1 п.2; правка S3-00 04.11). Модуль events не импортирует `occupancy.ts`: занятие, освобождение и перенос – провайдеры booking `occupyForEvent` / `releaseEvent` / `moveEventOccupancy` (ниже, S3-09).
 4. Изменение схемы VR-комнаты по ответу заказчика на R-01 – это данные (`resource_units`), не смена таблиц (план 9, риск 1).
+
+## Дополнения Э3 (внесено S3-00 04.11.2026; K19 §4, §8, K20 §4, §8)
+
+```ts
+// booking/providers.ts (S3-09) – межмодульные вызовы Э3; модули equipment и events ходят только сюда.
+/** Будущие брони, удержания и мероприятия на единицах с момента from (перемещение оборудования, K19 §4). */
+export function bookingsOnUnits(db, unitIds: string[], from: Date): Promise<{ bookingIds: string[]; holdIds: string[]; eventIds: string[] }>;
+/** Предпросмотр блокировки: те же затронутые, что дал бы createBlock, без записи (K19 §8 BlockProposal). */
+export function previewBlock(db, input: { branchId; target; period }): Promise<{ unitIds: string[]; bookingIds: string[]; holdIds: string[]; eventIds: string[] }>;
+/** Мероприятие занимает ресурс: occupy(source { type:'event', id: eventResourceId }), assertNotBlocked, clientId = null. */
+export function occupyForEvent(tx, input: { branchId; resourceId; eventResourceId; period }): Promise<{ unitIds: string[] }>;
+/** Освободить строки одного event_resources (не всего мероприятия). */
+export function releaseEvent(tx, eventResourceId: string, reason: 'released' | 'cancelled' | 'rescheduled'): Promise<void>;
+/** Перенос: старые строки источника гасятся, новые вставляются в той же транзакции; конфликт – откат, прежнее время цело. */
+export function moveEventOccupancy(tx, input: { branchId; resourceId; eventResourceId; period }): Promise<{ unitIds: string[] }>;
+/** Блокировка по команде equipment (ремонт, K19 §8): createBlock с проверкой block.manage. */
+export function createBlockFor(tx, ctx, input: Parameters<typeof createBlock>[2], meta): ReturnType<typeof createBlock> & { affectedEventIds: string[] };
+```
+
+- `createBlock` и `previewBlock` возвращают затронутые мероприятия отдельным списком `eventIds` (строки `occupancy.source_type='event'` → `event_resources.event_id`), не в `bookingIds` (K19 §8 `affectedEvents`).
+- **Грант бронирования** (K5 «Дополнения Э3», S3-58): необязательный `serviceGrant { kind, id }` у `createHold`, `addHoldItem`, CRM-брони и переноса; ресурс `self_bookable=false` без гранта – `RESOURCE_UNAVAILABLE`, как в Э1; с грантом – валидатор `registerServiceGrant(resourceType, validator)` в той же транзакции до `occupy`, его ошибки проходят как есть (`GIFT_*`).
 
 ## Ошибки
 

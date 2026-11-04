@@ -160,7 +160,76 @@ export function assertCanClient(db: Db | Tx, ctx: AccessContext, action: Action,
 | `certificate.review` | ✓ | ✓ | | branch | K16 §9 |
 | `certificate.link` | ✓ | ✓ | ✓ | branch | K16 §9 |
 
-`ledger.override_limit` из черновика K3 не вводится: режим «ниже предела» у баллов – право `loyalty.adjust_below_limit`; у кассы и сертификатов его нет (касса проверяет минус кодом K17 §6, сертификат – `min 0` без обхода). Зарплата (`payroll.*`) и смены сотрудников (`shift.*`) – Э3, их в реестре нет, значит запрещены.
+`ledger.override_limit` из черновика K3 не вводится: режим «ниже предела» у баллов – право `loyalty.adjust_below_limit`; у кассы и сертификатов его нет (касса проверяет минус кодом K17 §6, сертификат – `min 0` без обхода). Зарплата (`payroll.*`) и смены сотрудников (`shift.*`) – Э3, подраздел «Действия Э3» ниже.
+
+### Действия Э3 (S3-01; основание – K18 §12, K19 §12, K20 §13; внесено S3-00 04.11.2026)
+
+Как в Э2 – строки общей `MATRIX` (решение D2-01). Набор – умолчания Q-52, Q-54, Q-60, Q-62 / R-14, Q-64 / R-15, Q-107, Q-108, Q-115, Q-151 (ждут заказчика, 6.5.3 плана); меняется правкой `MATRIX`.
+
+| Действие (`Action`) | О | Д | А | Цель | Основание |
+|---|:-:|:-:|:-:|---|---|
+| `shift.view.own` | ✓ | ✓ | ✓ | branch | K18 §12, 05 §5.2 |
+| `shift.plan.own` (своя будущая смена) | ✓ | ✓ | ✓ | branch | K18 §12, 05 §5.1–5.2 |
+| `shift.attendance.self` | ✓ | ✓ | ✓ | branch | K18 §12, Q-60 |
+| `shift.view` (график, покрытие, чужие смены без сумм) | ✓ | ✓ | ✓ | branch | K18 §12, 05 §6.1 |
+| `shift.manage` (чужие смены) | ✓ | ✓ | | branch | K18 §12, 05 §5.6 |
+| `shift.outside_hours` | ✓ | ✓ | | branch | K18 §12, 05 §5.3 |
+| `shift.attendance.correct` | ✓ | ✓ | | branch | K18 §12, Q-60 |
+| `staff.planning_status` | ✓ | ✓ | | branch | K18 §12, 05 §3.2 |
+| `payroll.view` | ✓ | ✓ | | branch | K18 §12, 05 §10.1, Q-151 |
+| `payroll.rate.manage` | ✓ | | | network | K18 §12, Q-62 / R-14 |
+| `payroll.penalty.manage` | ✓ | ✓ | | branch | K18 §12, Q-62 / R-14 |
+| `payroll.bonus.manage` | ✓ | | | network | K18 §12, Q-107 |
+| `payroll.statement.review` | ✓ | ✓ | | branch | K18 §12, 05 §11 |
+| `payroll.period.manage`, `payroll.statement.ready`, `payroll.payout.mark`, `payroll.correct` | ✓ | | | network | K18 §12, 05 §5.1 |
+| `payroll.payout.expense` | ✓ | | | branch | K18 §12, Q-64 / R-15 |
+| `equipment.view` | ✓ | ✓ | ✓ | branch | K19 §12, 10 §14 |
+| `equipment.view.accounts` | ✓ | ✓ | | branch | K19 §12, Q-54 |
+| `equipment.manage` | ✓ | ✓ | | branch | K19 §12 |
+| `equipment.move` | ✓ | ✓ | | branch | K19 §12 |
+| `equipment.financial.edit` | ✓ | | | network | K19 §12 |
+| `equipment.write_off` | ✓ | | | network | K19 §12 |
+| `equipment.category.manage` | ✓ | | | network | K19 §12, 10 §3.2 |
+| `repair.register`, `repair.attach` | ✓ | ✓ | ✓ | branch | K19 §12 |
+| `repair.manage` | ✓ | ✓ | | branch | K19 §12 |
+| `repair.approve` | ✓ | | | network | K19 §12, Q-52 |
+| `repair.accept` | ✓ | ✓ | ✓ | branch | K19 §12, Q-52 |
+| `repair.close` | ✓ | ✓ | | branch | K19 §12, Q-52 |
+| `repair.expense.create` | ✓ | ✓ | | branch | K19 §12 (плюс `finance.expense.create` в филиале-плательщике) |
+| `repair.executor.manage` | ✓ | ✓ | | network | K19 §12, 10 §8.3 |
+| `event.view` | ✓ | ✓ | ✓ | branch | K20 §13 |
+| `event.manage` | ✓ | ✓ | ✓ | branch | K20 §13 |
+| `event.price.manage` | ✓ | ✓ | | branch | K20 §13 |
+| `event.money.view` | ✓ | ✓ | | branch | K20 §13 |
+| `event.money.record` | ✓ | ✓ | ✓ | branch | K20 §13 (плюс K17 `finance.income.create` / `finance.expense.create`) |
+| `event.package.manage`, `event.type.manage` | ✓ | | | network | K20 §13 |
+| `gift.issue` | ✓ | ✓ | ✓ | branch | K20 §13 |
+| `gift.issue.manual`, `gift.cancel` | ✓ | | | network | K20 §13, Q-115 |
+| `gift.book` | ✓ | ✓ | ✓ | branch | K20 §13 |
+| `holiday.manage` | ✓ | | | network | K20 §13, Q-73 |
+
+Цель `network` у Директора: строка с пустым «Д» – ему запрещено; строка `repair.executor.manage` (Д ✓, цель network) – справочник сети, Директор правит его без сетевой зоны: команда проверяет `roleAllows`, а не `assertCan({ network: true })` (решение: исполнитель не принадлежит филиалу; иначе Директору всегда `FORBIDDEN`). Экспорт зарплаты `payroll.export` – Э4. `payroll.view.own` не вводится (Q-108).
+
+### Делегирование (Э3.4, 04 §9; шаги S3-88, S3-89)
+
+Право с датами `staff_grants (staff_id, action, scope: city|branch, valid_from, valid_to, granted_by, revoked_at)` (`0310_staff_grants.sql`). Выдаёт и отзывает только Владелец; выдача – конкретному сотруднику, не роли (по умолчанию, Q-156); себе – нельзя.
+
+```ts
+/** Закрытый список делегируемых действий (04 §9). Остальные не делегируются: выдача → GRANT_ACTION_NOT_DELEGABLE. */
+export const DELEGABLE = ['block.manage', 'network.hours.manage', 'finance.income.create', 'finance.expense.create',
+  'equipment.view.accounts', 'client.merge', 'shift.manage', 'payroll.view', 'network.branch.create'] as const;
+```
+
+- `network.branch.create` (04 §5) делегируется отдельно от прочих прав сети; цель права – город (`cityId`).
+- `loadAccess` добавляет действующие на дату права (`valid_from ≤ дата ≤ valid_to`, `revoked_at IS NULL`) в `ctx.grants: Map<Action, { cityIds, branchIds }>`; `can` = роль ∪ право в зоне права; `scopeFilter(ctx, action)` = зона роли ∪ зона права **на это действие**.
+- Зона права ⊆ действующих `staff_assignments` получателя на дату выдачи, иначе `GRANT_SCOPE_INVALID`. Истёкшее и отозванное право не действует со следующего запроса (без кэша, 04 §12).
+- Делегированный `payroll.view` открывает все суммы зоны права, включая коллег получателя (Q-156).
+- Аудит: `staff.grant.created`, `staff.grant.revoked` (K2 «Э3»).
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `GRANT_ACTION_NOT_DELEGABLE` | 422 | действие вне `DELEGABLE` |
+| `GRANT_SCOPE_INVALID` | 422 | зона права вне назначений получателя |
 
 ## Ошибки
 

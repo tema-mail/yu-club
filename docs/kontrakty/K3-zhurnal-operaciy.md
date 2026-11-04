@@ -36,7 +36,7 @@ export type EntryType =
   // сертификат (08) – Э2
   | 'certificate.issue' | 'certificate.redeem' | 'certificate.expire' | 'certificate.correction'
   // расчёт сотрудника (05) – Э3
-  | 'payroll.accrual' | 'payroll.penalty' | 'payroll.payout' | 'payroll.correction'
+  | 'payroll.accrual' | 'payroll.penalty' | 'payroll.bonus' | 'payroll.payout' | 'payroll.correction'   // payroll.bonus – S3-00 (K18 §6), CHECK – 0306
   // общее
   | 'reversal';
 
@@ -46,7 +46,8 @@ export interface EntryInput {
   type: Exclude<EntryType, 'reversal'>;
   basis?: string;                      // основание/комментарий; обязателен для cash.expense, *.correction, loyalty.manual
   branchId: string | null;             // филиал ОПЕРАЦИИ (для счёта баллов – филиал визита)
-  ref?: { type: 'booking' | 'visit' | 'no_show' | 'event' | 'repair' | 'certificate' | 'shift' | 'goods_order' | 'payment'; id: string };   // 'payment' – Э2, S2-10 (K10)
+  ref?: { type: 'booking' | 'visit' | 'no_show' | 'event' | 'repair' | 'certificate' | 'shift' | 'goods_order' | 'payment'
+         | 'payroll_penalty' | 'payroll_bonus' | 'payroll_statement' | 'staff'; id: string };   // 'payment' – Э2, S2-10 (K10); payroll_* и staff – Э3 (K18 §6, §9; в коде – S3-15)
   refs?: Record<string, string>;       // доп. ссылки
   occurredAt: Date;                    // дата факта
 }
@@ -68,6 +69,8 @@ export interface PostedEntry {
 
 export interface PostingResult { postingId: string; entries: PostedEntry[]; replayed: boolean }
 ```
+
+Счёт `staff_payroll` (Э3, K18 §6): один на сотрудника, `owner_type='staff'`, `branch_id = NULL`, `min_balance = NULL`; филиал каждой записи – `EntryInput.branchId`. Ключи намерений: `payroll-accrual:<shiftId>:<factVersion>`, `payroll-penalty:<penaltyId>`, `payroll-payout:<statementId>`, `payroll-correction:<idempotencyKey>`.
 
 ## Функции
 
