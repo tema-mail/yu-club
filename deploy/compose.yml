@@ -16,6 +16,7 @@ services:
       YU_OWNER_PASSWORD: ${YU_OWNER_PASSWORD:?нет YU_OWNER_PASSWORD}
       YU_APP_PASSWORD: ${YU_APP_PASSWORD:?нет YU_APP_PASSWORD}
       YU_BOSS_PASSWORD: ${YU_BOSS_PASSWORD:?нет YU_BOSS_PASSWORD}
+      YU_REPORTS_PASSWORD: ${YU_REPORTS_PASSWORD:?нет YU_REPORTS_PASSWORD}
       TZ: UTC
     command: >-
       postgres -c shared_buffers=32MB -c effective_cache_size=128MB -c work_mem=2MB
@@ -62,6 +63,8 @@ services:
       APP_ENV: ${APP_ENV:-stage}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgres://yu_app:${YU_APP_PASSWORD}@postgres:5432/yu_club
+      # пул отчётов K24 §9: роль yu_reports – только SELECT на rpt_*, default_transaction_read_only = on
+      REPORTS_DATABASE_URL: postgres://yu_reports:${YU_REPORTS_PASSWORD}@postgres:5432/yu_club
       # секрет HMAC сессий сотрудников (K12): генерирует deploy.sh один раз на сервере, значения в репо нет
       SESSION_PEPPER: ${SESSION_PEPPER:?нет SESSION_PEPPER}
       # секрет HMAC кода сертификата (K16 §3, S2-08): тоже генерирует deploy.sh один раз; смена = выданные коды не сходятся
