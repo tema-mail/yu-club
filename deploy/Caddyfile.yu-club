@@ -58,10 +58,24 @@ yu-crm.168.113.179.49.nip.io {
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 	}
-	request_body {
-		max_size 2MB
+	# Тело запроса – 2 МБ на всё, кроме загрузки файлов (S4-09): медиа CMS (K11 №224) и вложения Э3 (№350) – 11 МБ
+	# (лимит части 10 МБ режет API, Q-96). Прокси CRM передаёт тело в API потоком.
+	@upload {
+		method POST
+		path /api/crm/v1/content/media /api/crm/v1/attachments
 	}
-	reverse_proxy yu-club-crm:4321
+	handle @upload {
+		request_body {
+			max_size 11MB
+		}
+		reverse_proxy yu-club-crm:4321
+	}
+	handle {
+		request_body {
+			max_size 2MB
+		}
+		reverse_proxy yu-club-crm:4321
+	}
 	log {
 		output stdout
 		format console
