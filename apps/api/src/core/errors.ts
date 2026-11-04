@@ -2,7 +2,7 @@
 // в modules/<x>/errors.ts, собираются в core/registry.ts (там же проверка на дубли).
 import type { ModuleErrorCode } from './registry.ts';
 
-export type HttpStatus = 400 | 401 | 403 | 404 | 409 | 410 | 422 | 429 | 500 | 503;
+export type HttpStatus = 400 | 401 | 403 | 404 | 409 | 410 | 413 | 415 | 422 | 429 | 500 | 503; // 413/415 – вложения Э3 (K19 §15)
 
 export const coreErrors = {
   VALIDATION_FAILED: 400,
@@ -15,6 +15,9 @@ export const coreErrors = {
   IDEMPOTENCY_KEY_REUSED: 409, // ADR 0004: ключ уже использован для другого запроса или ещё выполняется
   VERSION_CONFLICT: 409, // K11: устаревший rowVersion
   RATE_LIMITED: 429,
+  // Э3, core/files.ts (K19 §15, решение D3-07): лимит attachments.max_bytes и тип по сигнатуре, а не по заявленному MIME
+  ATTACHMENT_TOO_LARGE: 413,
+  ATTACHMENT_TYPE_NOT_ALLOWED: 415,
   INTERNAL: 500,
 } as const satisfies Record<string, HttpStatus>;
 

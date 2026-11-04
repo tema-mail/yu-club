@@ -57,6 +57,25 @@ export const AUDIT_OBJECT_TYPES = [
   'certificate', // Э2, K16 (K2 «Сертификаты»)
   'payment', // Э2, K10 (K2 «Деньги»)
   'cash_shift', // Э2, K17 §7 (K2 «Деньги»)
+  // Э3 (K2 «Э3», шаг S3-01b): смены и зарплата K18, оборудование и ремонт K19, вложения, мероприятия и подарок K20, делегирование K1
+  'shift',
+  'staff_rate',
+  'payroll_period',
+  'payroll_statement',
+  'payroll_penalty',
+  'equipment',
+  'equipment_account',
+  'equipment_category',
+  'repair',
+  'repair_executor',
+  'warranty',
+  'attachment',
+  'event',
+  'event_type',
+  'event_package',
+  'gift',
+  'holiday',
+  'staff_grant',
 ] as const;
 export type AuditObjectType = (typeof AUDIT_OBJECT_TYPES)[number];
 
