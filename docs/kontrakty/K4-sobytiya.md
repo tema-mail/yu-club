@@ -75,7 +75,7 @@ export function subscribe<T extends EventType>(type: T, name: string,
 
 ## События этапа 3 (K18 §11, K19 §11, K20 §12; внесено S3-00 04.11.2026)
 
-Типы агрегатов Э3 – `shift`, `staff_rate`, `repair`, `event`, `gift` (S3-08, `core/outbox.ts`). Zod-схемы payload – `packages/contracts/src/events-e3.ts` (S3-08, экспорт `@yu/contracts/events-e3`); типы выводятся из схем и регистрируются в `EventRegistry` тем же файлом-схемой через модуль-производитель (`declare module`). Блокировки из ремонта публикуют существующие `resource.blocked` / `resource.unblocked`.
+Типы агрегатов Э3 – `shift`, `staff_rate`, `repair`, `event`, `gift` (S3-08, `core/outbox.ts`). Zod-схемы payload – `packages/contracts/src/events-e3.ts` (S3-08; API импортирует его относительным путём, как `crm/booking.ts`); типы выводятся из схем (`E3EventPayloads`), и `EventRegistry` ядра (`core/outbox.ts`) расширяет это отображение – производителям Э3 `declare module` не нужен. Проверка payload перед публикацией – `parseE3Payload`. Блокировки из ремонта публикуют существующие `resource.blocked` / `resource.unblocked`.
 
 | `type` @ver | Когда публикуется | `aggregateVersion` | Payload | Потребители |
 |---|---|---|---|---|

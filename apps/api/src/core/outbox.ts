@@ -7,21 +7,24 @@
 // processEvent – обработка одной задачи: своя транзакция, processed_events гасит повторную доставку,
 //                исключение обработчика откатывает транзакцию и пробрасывается (повтор – дело очереди).
 import type pg from 'pg';
+import type { E3EventPayloads } from '../../../../packages/contracts/src/events-e3.ts';
 
 export type Tx = Pick<pg.ClientBase, 'query'>;
 
 /**
  * Реестр событий: модуль-производитель добавляет свои типы в своём файле (ADR 0002):
  *   declare module '<путь>/core/outbox.ts' { interface EventRegistry { 'booking.confirmed': BookingConfirmedPayload } }
- * Zod-схемы payload – packages/contracts/src/events/<модуль>.ts (K4).
+ * События Э3 – из Zod-схем packages/contracts/src/events-e3.ts (K4 «События этапа 3», S3-08): типы выведены из схем,
+ * поэтому производитель и потребитель (обработчик) проверяются компилятором по одному источнику.
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- точка расширения для модулей
-export interface EventRegistry {}
+export interface EventRegistry extends E3EventPayloads {}
 
 export type EventType = keyof EventRegistry & string;
 export type EventPayload<T extends EventType> = EventRegistry[T];
-// payment – Э2 (K10 §6); certificate – резерв Э2 (K4 «События этапа 2», решение D2-09).
-export type AggregateType = 'hold' | 'booking' | 'resource_block' | 'client' | 'payment' | 'certificate';
+// payment – Э2 (K10 §6); certificate – резерв Э2 (K4 «События этапа 2», решение D2-09);
+// shift, staff_rate, repair, event, gift – Э3 (K4 «События этапа 3», S3-08).
+export type AggregateType = 'hold' | 'booking' | 'resource_block' | 'client' | 'payment' | 'certificate' | 'shift' | 'staff_rate' | 'repair' | 'event' | 'gift';
 
 export interface EventEnvelope<T extends EventType = EventType> {
   eventId: string;
