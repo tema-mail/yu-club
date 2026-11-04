@@ -16,6 +16,8 @@ import { auditActions as certificatesAudit } from '../modules/certificates/audit
 import { errors as certificatesErrors } from '../modules/certificates/errors.ts';
 import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit.ts';
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
+import { auditActions as equipmentAudit } from '../modules/equipment/audit.ts';
+import { errors as equipmentErrors } from '../modules/equipment/errors.ts';
 import { auditActions as networkAudit } from '../modules/network/audit.ts';
 import { errors as networkErrors } from '../modules/network/errors.ts';
 import { auditActions as notificationsAudit } from '../modules/notifications/audit.ts';
@@ -44,6 +46,7 @@ const moduleErrors = {
   loyalty: loyaltyErrors,
   certificates: certificatesErrors,
   shifts: shiftsErrors, // Э3, K18 §15
+  equipment: equipmentErrors, // Э3, K19 §15
 } as const;
 const moduleAudit = {
   settings: settingsAudit,
@@ -61,6 +64,7 @@ const moduleAudit = {
   loyalty: loyaltyAudit,
   certificates: certificatesAudit,
   shifts: shiftsAudit, // Э3, K18 §17
+  equipment: equipmentAudit, // Э3, K19 §17
 } as const;
 
 type ModuleErrors = typeof moduleErrors;
