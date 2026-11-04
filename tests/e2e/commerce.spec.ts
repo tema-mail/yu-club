@@ -34,7 +34,7 @@ let site: Page;
 let noShow: BookingDto;
 const settingsSet: Array<() => Promise<void>> = [];
 const leftovers: string[] = [];
-const done: { cash?: BookingDto; cashPaymentId?: string } = {};
+const done: { cash?: BookingDto; cashPaymentId?: string; cashOperationId?: string } = {};
 
 const timeIn = (iso: string, tz: string) =>
   new Intl.DateTimeFormat('ru-RU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(iso));
@@ -88,7 +88,7 @@ async function paymentOf(id: string) {
 async function operations() {
   const r = await director.get(`/api/crm/v1/branches/${branch.id}/finance/operations?limit=200`);
   expect(r.ok()).toBe(true);
-  return ((await r.json()) as { items: Array<{ kind: string; source: string | null; direction: string; amountKop: number; ref: { type: string; id: string } | null }> }).items;
+  return ((await r.json()) as { items: Array<{ id: string; kind: string; source: string | null; direction: string; amountKop: number; ref: { type: string; id: string } | null }> }).items;
 }
 
 async function openCrm(browser: Browser) {
@@ -151,6 +151,7 @@ test('1. наличные: приход «Игровой сеанс» в жур�
   const op = (await operations()).filter((o) => o.ref?.type === 'payment' && o.ref.id === p.id);
   expect(op).toHaveLength(1);
   expect(op[0]).toMatchObject({ kind: 'income', source: 'session', direction: 'in', amountKop: due });
+  done.cashOperationId = op[0]!.id;
   await crm.goto(`${CRM_URL}/finance/${branch.id}`);
   await hydrated(crm);
   await expect(crm.getByTestId('fin-journal').locator('tbody tr').filter({ hasText: 'Игровой сеанс' }).filter({ hasText: kop(due) }).first()).toBeVisible();
@@ -256,7 +257,8 @@ test('4. полный возврат денег по брони 1: начисл�
   await expect(pay.getByTestId('pay-status')).toHaveText('Возвращено полностью');
   await expect(pay.getByTestId('pay-refunds')).toContainText(`Возврат ${kop(due)} · Наличные`);
 
-  const refund = (await operations()).filter((o) => o.kind === 'refund' && o.ref?.id === done.cashPaymentId);
+  // возврат ссылается на исходное поступление кассы, не на платёж (K17 §«Возврат»: ref operation)
+  const refund = (await operations()).filter((o) => o.kind === 'refund' && o.ref?.type === 'operation' && o.ref.id === done.cashOperationId);
   expect(refund).toHaveLength(1);
   expect(refund[0]).toMatchObject({ direction: 'out', amountKop: due });
   await crm.goto(`${CRM_URL}/finance/${branch.id}`);
@@ -291,8 +293,9 @@ test('5. штрафы включены: неявка → −5, баланс −5
   await site.getByRole('button', { name: /^Завтра/ }).click();
   await expect(site.getByRole('button', { name: /^Завтра/ })).toHaveAttribute('aria-pressed', 'true');
   const { r, slot } = await freeSlot(pcs, 1, '19:00');
-  await site.getByRole('button', { name: `${r.name}, ${timeIn(slot.start, branch.timezone)}–${timeIn(slot.end, branch.timezone)}, свободно`, exact: true }).click();
-  await expect(site.getByTestId('schedule-status')).toHaveText(LIMIT_TEXT);
+  // S2-72a: при −50 расписание сразу показывает баннер 07 §9.2 и выключает свободные слоты – кликом не выбрать
+  await expect(site.getByTestId('loyalty-limit-banner').first()).toHaveText(LIMIT_TEXT);
+  await expect(site.getByRole('button', { name: `${r.name}, ${timeIn(slot.start, branch.timezone)}–${timeIn(slot.end, branch.timezone)}, свободно`, exact: true })).toBeDisabled();
   await expect(site.getByTestId('hold-panel')).toHaveCount(0);
   await site.screenshot({ path: test.info().outputPath('site-limit-50.png'), fullPage: true });
   const api = await client.hold(branch.id, { resourceId: r.id, start: slot.start, end: slot.end }).then(() => null, (e: unknown) => e as { status: number; code: string });
