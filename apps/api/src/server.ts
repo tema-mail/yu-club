@@ -247,7 +247,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     const clients: ClientPublicDeps = { ...deps.clients, hooks: { onLogin: attachVisitorHolds, ...deps.clients.hooks } };
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     const push = deps.notifications ?? { vapidPublicKey: null };
-    void app.register(async (scope) => notificationPublicRoutes(scope, { clients, ...push }), { prefix: '/api/public/v1' });
+    void app.register(async (scope) => notificationPublicRoutes(scope, { clients, bookings: bookingLookup, ...push }), { prefix: '/api/public/v1' });
     // ЛК «Мои сертификаты» (K16 §8): только чтение, CERT_PEPPER не нужен
     void app.register(async (scope) => certificatePublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     // K15 §11: баллы в ЛК – баланс, история, резерв на своё удержание, каталог
