@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Шаблон расписания забора копии бэкапа yu-club на мак (S3-99). НЕ установлен: включает владелец.
+  Каждый день в 09:10 по часам мака (бэкап на сервере – 04:40 МСК = 08:40 НСК), с проверкой
+  восстановления. Если мак спал в это время, launchd запустит задачу при пробуждении.
+
+  Включить одной командой (из корня основного чекаута ~/Sites/yu-club, где есть node_modules):
+    sed "s|__HOME__|$HOME|g" deploy/offsite-pull.plist.example > ~/Library/LaunchAgents/ru.yu-club.offsite-pull.plist && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ru.yu-club.offsite-pull.plist
+
+  Проверить сразу:  launchctl kickstart -k gui/$(id -u)/ru.yu-club.offsite-pull
+  Журнал:           ~/Backups/yu-club/logs/offsite.log
+  Выключить:        launchctl bootout gui/$(id -u)/ru.yu-club.offsite-pull && rm ~/Library/LaunchAgents/ru.yu-club.offsite-pull.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ru.yu-club.offsite-pull</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/Sites/yu-club/deploy/offsite-pull.sh</string>
+    <string>--verify</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>OFFSITE_HOST</key>
+    <string>firstvds-msk</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>10</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Backups/yu-club/logs/launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Backups/yu-club/logs/launchd.err</string>
+</dict>
+</plist>
