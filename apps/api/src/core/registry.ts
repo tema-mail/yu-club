@@ -24,6 +24,8 @@ import { auditActions as pricingAudit } from '../modules/pricing/audit.ts';
 import { errors as pricingErrors } from '../modules/pricing/errors.ts';
 import { auditActions as resourcesAudit } from '../modules/resources/audit.ts';
 import { errors as resourcesErrors } from '../modules/resources/errors.ts';
+import { auditActions as shiftsAudit } from '../modules/shifts/audit.ts';
+import { errors as shiftsErrors } from '../modules/shifts/errors.ts';
 import { auditActions as staffAudit } from '../modules/staff/audit.ts';
 import { errors as staffErrors } from '../modules/staff/errors.ts';
 
@@ -41,6 +43,7 @@ const moduleErrors = {
   finance: financeErrors,
   loyalty: loyaltyErrors,
   certificates: certificatesErrors,
+  shifts: shiftsErrors, // Э3, K18 §15
 } as const;
 const moduleAudit = {
   settings: settingsAudit,
@@ -57,6 +60,7 @@ const moduleAudit = {
   finance: financeAudit,
   loyalty: loyaltyAudit,
   certificates: certificatesAudit,
+  shifts: shiftsAudit, // Э3, K18 §17
 } as const;
 
 type ModuleErrors = typeof moduleErrors;
