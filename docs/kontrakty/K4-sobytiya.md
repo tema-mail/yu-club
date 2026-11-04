@@ -73,6 +73,18 @@ export function subscribe<T extends EventType>(type: T, name: string,
 
 Модули `loyalty` (K15) и `certificates` (K16) в Э2 **своих событий не публикуют**: их контракты событий не объявляют, эффекты видны через аудит K2 и чтение модуля. Тип агрегата `certificate` резервируется заранее (S2-06), чтобы будущее событие не требовало правки ядра; добавление события – правка этой таблицы и схемы (правило 5).
 
+## События этапа 4 (K23 §5; внесены S4-00 04.11.2026)
+
+Публикуют владельцы слагов в транзакции своей команды (S4-51); подписчик – `content` (`content/handlers.ts`, S4-52) пишет `seo_slug_history`. Событие, а не прямой вызов: `network` и `resources` не зависят от `content` (иначе цикл – `content` читает филиалы). Публикуется только при фактической смене слага; правка без смены – события нет.
+
+| `type` @ver | Когда публикуется | `aggregateVersion` | Payload | Потребители |
+|---|---|---|---|---|
+| `city.slug_changed` @1 | смена слага города (`network/commands.ts`) | `<row_version города>` | `{ id, parentId: null, oldSlug, newSlug }` | content: история адресов (K23 §5) |
+| `branch.slug_changed` @1 | смена слага филиала (`network/commands.ts`) | `<row_version филиала>` | `{ id, parentId: cityId, oldSlug, newSlug }` | content |
+| `room.slug_changed` @1 | смена слага комнаты (`resources/routes.ts`) | `<row_version комнаты>` | `{ id, parentId: branchId, oldSlug, newSlug }` | content |
+
+Остальные модули Э4 событий не публикуют: `notifications` (K21 §14) и `content` (K22 §16 – `content.published` не вводится, пока нет подписчика, как D2-09). Э4 – потребитель событий Э3: `shift.changed` (K18 §11), `repair.registered` / `repair.closed` (K19 §11) – лента событий CRM (S4-28, без push сотрудникам, Q-147); `event.cancelled` / `event.rescheduled` (K20 §12) – сервисное заказчику с профилем (S4-29).
+
 ## Правила
 
 1. Публикуем только **фактом зафиксированное** изменение: `publish` вызывается после успешной записи в той же транзакции.

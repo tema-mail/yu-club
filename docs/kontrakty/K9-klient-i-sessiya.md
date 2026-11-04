@@ -91,6 +91,10 @@ interface MyBookingDto extends BookingDto {   // BookingDto – K5; без inter
 
 Курсор: base64url от `(start, id)` – стабильный порядок, `limit` 20 (17 §4.4).
 
+**Версия документа согласия (Э4, K22 §7; внесено S4-00 04.11.2026; шаг S4-20).** `documentVersion` в записи `client_consents(kind='marketing', granted=true)` – это `document_version` **живой** версии страницы `advertising-consent` (K22 §7, чтение через `content/index.ts`), а не константа `MARKETING_DOCUMENT_VERSION` Э1. Касается входа (№2 `consents.marketing`), `PUT /me/notification-settings` и CRM-правки согласия: страница не опубликована → включить рекламу нельзя, `409 MARKETING_DOCUMENT_MISSING` (выключить – можно всегда). База держит то же самое: CHECK 0401 `kind = 'marketing' AND granted → document_version IS NOT NULL` (K21 §4). Старые согласия при новой редакции текста не переписываются и действуют до ответа Q-149. Отписка по ссылке (K21 §11 №206) пишет `granted=false` с `source='site'` – CHECK `source` 0105 не меняется. Сайт берёт живые версии для галочек из K5 №215.
+
+**Обезличивание (Э4, K21 §15).** При переходе клиента в `anonymized` модуль `notifications` заменяет в его строках `notifications.title/body` подставленные имена текстом шаблона без подстановки (регистрация обработчика в процедуре обезличивания – S4-15).
+
 ## Бронь администратором без профиля (S1-13)
 
 Полный контракт маршрута – K11 №4; здесь – часть, которая касается клиента. Маршрут CRM `POST /api/crm/v1/branches/{branchId}/bookings` (`Idempotency-Key`, право `booking.create`):

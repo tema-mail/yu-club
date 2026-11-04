@@ -162,6 +162,45 @@ export function assertCanClient(db: Db | Tx, ctx: AccessContext, action: Action,
 
 `ledger.override_limit` из черновика K3 не вводится: режим «ниже предела» у баллов – право `loyalty.adjust_below_limit`; у кассы и сертификатов его нет (касса проверяет минус кодом K17 §6, сертификат – `min 0` без обхода). Зарплата (`payroll.*`) и смены сотрудников (`shift.*`) – Э3, их в реестре нет, значит запрещены.
 
+### Действия Э4 (S4-01; основание – K21 §10, K22 §10, K24 §8; внесено S4-00 04.11.2026)
+
+Как в Э2 – строки общей `MATRIX` (D2-01). Набор – умолчания Q-39, Q-80, Q-134, Q-139, Q-151, Q-152 (ждут заказчика, план 6.6.3); меняется правкой `MATRIX`. `notifications.view` и `export.pd` – есть с Э0–Э1, не меняются.
+
+| Действие (`Action`) | О | Д | А | Цель | Основание |
+|---|:-:|:-:|:-:|---|---|
+| `notifications.send.service` (личное и по записи) | ✓ | ✓ | ✓ | branch | K21 §10 |
+| `notifications.send.marketing` | ✓ | ✓ | | branch / city / network | K21 §10, Q-39 |
+| `notifications.send.mass` (аудитория `segment`) | ✓ | ✓ | | branch / city / network | K21 §10 |
+| `notifications.retry` | ✓ | ✓ | | branch | K21 §10 |
+| `notifications.templates.manage` | ✓ | | | network | K21 §10 |
+| `content.view` | ✓ | ✓ | ✓ | branch / роль (сетевое) | K22 §10 |
+| `content.draft.edit` | ✓ | ✓ | ✓ | по охвату (K22 §4) | K22 §10, Q-134, Q-152 |
+| `content.publish` (город, филиал) | ✓ | ✓ | | по охвату | K22 §10, Q-134 |
+| `content.network.manage` | ✓ | | | network | K22 §10 |
+| `content.catalog.availability` | ✓ | ✓ | | branch | K22 §10 |
+| `content.legal.publish` | ✓ | | | network | K22 §7, §10 |
+| `content.media.upload` | ✓ | ✓ | ✓ | роль | K22 §10 |
+| `content.media.archive` | ✓ | ✓ | | роль | K22 §10 |
+| `content.media.purge` | ✓ | | | network | K22 §8, §10 |
+| `content.preview` | ✓ | ✓ | ✓ | как `content.view` | K22 §10 |
+| `reports.ops.view` (3.2, 3.3, рабочий стол) | ✓ | ✓ | ✓ | branch | K24 §8, Q-80 |
+| `reports.finance.view` | ✓ | ✓ | | branch | K24 §8 |
+| `reports.clients.view` | ✓ | ✓ | | branch | K24 §8 |
+| `reports.loyalty.view` | ✓ | ✓ | | branch | K24 §8 |
+| `reports.events.view` | ✓ | ✓ | | branch | K24 §8 (данные – после Э3) |
+| `reports.staff.view` | ✓ | ✓ | | branch | K24 §8 (данные – после Э3) |
+| `reports.payroll.view` (деньги 3.9) | ✓ | ✓ | | branch | K24 §8; Директор – суммы своей зоны (решение техлида 04.11, Q-151) |
+| `reports.equipment.view` | ✓ | ✓ | ✓ | branch | K24 §8 |
+| `reports.comms.view` | ✓ | ✓ | | branch | K24 §8 |
+| `reports.export` | ✓ | ✓ | | branch | K24 §8 |
+| `reports.export.detail` | ✓ | ✓ | | branch | K24 §8 |
+| `reports.export.payroll` | ✓ | | | network | K24 §8 |
+| `search.global` | ✓ | ✓ | ✓ | роль (типы режет право типа, K24 §5) | K24 §8 |
+
+**Цель «роль»** (решение S4-00): медиатека и чтение сетевого контента – общие для сети, а сетевая зона (`{ network: true }`) по построению есть только у Владельца (ADR 0005 п.2). Поэтому для `content.media.upload`, `content.media.archive`, `search.global` и чтения сетевых сущностей по `content.view`/`content.preview` проверяется только набор роли (`roleAllows`), без зоны; контракты K22 §10 и K24 §8, где у этих строк записано `network`, читать так. Изменяющие сетевые действия (`content.network.manage`, `content.legal.publish`, `content.media.purge`, `notifications.templates.manage`, `reports.export.payroll`) – с целью `{ network: true }`, то есть только Владелец.
+
+Администратор в Э4 получает ровно: `notifications.send.service`, `content.view`, `content.draft.edit`, `content.media.upload`, `content.preview`, `reports.ops.view`, `reports.equipment.view`, `search.global` – и ничего из рекламы, массовых рассылок, публикации, финансовых отчётов и экспорта. Директор – всё, кроме `notifications.templates.manage`, `content.network.manage`, `content.legal.publish`, `content.media.purge`, `reports.export.payroll`, `export.pd`.
+
 ## Ошибки
 
 | Код | HTTP | Когда |

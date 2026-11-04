@@ -1,6 +1,6 @@
 # Модель данных этапов 0–2
 
-Версия 3 от 02.11.2026: добавлен раздел 4 «Этап 2» (шаг S2-00, миграции 0201–0207). Версия 2 от 01.11.2026 (шаг S0-00, правки по architecture-reviewer; сверено с закоммиченными `db/migrations/0001_init.sql`, `db/migrate.ts`, `tests/helpers/pg.ts`). Основа: план 3.3–3.4, 6.1–6.2; ADR 0001–0005.
+Версия 4 от 04.11.2026: добавлен раздел «Этап 4» в конце файла (шаг S4-00, миграции 0401–0411). Версия 3 от 02.11.2026: добавлен раздел 4 «Этап 2» (шаг S2-00, миграции 0201–0207). Версия 2 от 01.11.2026 (шаг S0-00, правки по architecture-reviewer; сверено с закоммиченными `db/migrations/0001_init.sql`, `db/migrate.ts`, `tests/helpers/pg.ts`). Основа: план 3.3–3.4, 6.1–6.2; ADR 0001–0005.
 Факты ТЗ – со ссылкой «файл §пункт». Мои решения помечены «решение».
 DDL ниже – нормативный: имена таблиц, столбцов, ограничений и их смысл – контракт для миграций. Порядок столбцов и индексы для скорости исполнитель может дополнять.
 
@@ -1250,3 +1250,302 @@ CREATE TABLE app.loyalty_goods_orders (           -- выдача только �
 | Смена состава не меняет старые брони | 02 §8.4 | `booking_versions.unit_ids` снимок |
 | Комментарий при отмене клубом | 01 §12 | CHECK в `bookings` |
 | Один активный Владелец | 04 §4.1 (вывод) | `staff_single_owner_idx` (решение) |
+
+---
+
+## Этап 4 – коммуникации, контент, отчёты (0401–0411)
+
+Версия от 04.11.2026 (шаг S4-00). Основа: контракты K21 (уведомления), K22 (CMS), K23 (SEO), K24 (отчёты), план 6.6.1. Номера 04xx пишутся параллельно с 03xx Э3 по общему правилу 6.5.1/6.6.1: CI каждой ветки – `migrate up` на чистой базе, стенд – `--reset-stage`, окончательный порядок – один раз перед первым выпуском в бой (Э5). Порядок по зависимостям: 0401 → 0402; 0403 → 0404 → 0405; 0406 → 0407 → 0408; 0409 – после 0402 и 0404; 0410 (если нужна) и 0411 – после 0311 и соответствующих 03xx.
+
+| № | Файл | Таблицы и изменения | FK наружу (на что) | Отложенные FK, добавляемые здесь | Шаг |
+|---|---|---|---|---|---|
+| 0401 | `0401_notifications_center.sql` | `notifications`: `read_at`, `push`, `campaign_id`, `retry_of`, `purpose`; CHECK `category`, `kind`, `status`; индексы центра и частоты; CHECK согласия на рекламу с версией документа в `journal.client_consents` | `notifications.retry_of → notifications` | `notifications.booking_id → bookings` (обещан шапкой 0111, ни одна миграция не добавила) | S4-10 |
+| 0402 | `0402_notification_campaigns.sql` | `notification_templates`, `notification_campaigns` (+ триггер неизменности), `journal.notification_campaign_recipients` | `→ branches`, `→ clients`, `→ notification_templates`, `→ staff` | `notifications.campaign_id → notification_campaigns` | S4-12 |
+| 0403 | `0403_content_media.sql` | `content_media`, `content_media_usages` | `→ staff` | – | S4-30 |
+| 0404 | `0404_content.sql` | `content_publications`, `content_publication_scopes`, `content_games`, `content_game_branches`, `content_room_pages`, `content_branch_pages`, `content_pages`, `content_home_blocks`, `journal.content_versions` | `→ cities`, `→ branches`, `→ rooms`, `→ content_media` | – | S4-32 |
+| 0405 | `0405_seo.sql` | `seo_slug_history`; CHECK зарезервированных слагов `cities` (владелец ограничения – `network`) | – | – | S4-50 |
+| 0406 | `0406_rpt_ops.sql` | представления `rpt_bookings`, `rpt_booking_reschedules`, `rpt_visits`, `rpt_no_shows`, `rpt_unit_booked`, `rpt_unit_blocks` (booking), `rpt_units` (resources), `rpt_clients` (clients); индексы владельцев; права роли `yu_reports` | – | – | S4-60 |
+| 0407 | `0407_rpt_money.sql` | `rpt_finance_operations`, `rpt_payments` (finance), `rpt_loyalty_moves`, `rpt_loyalty_balances` (loyalty), `rpt_certificate_ops` (certificates) | – | – | S4-61 |
+| 0408 | `0408_report_exports.sql` | `report_exports`; CHECK `journal.reconcile_discrepancies.check_name` и `object_type` – `DROP` + `ADD` с полным списком на момент 0408 | `→ staff` | – | S4-71 |
+| 0409 | `0409_rpt_comms.sql` | `rpt_notifications` (notifications), `rpt_consent_changes` (clients), `rpt_content_versions` (content) | – | – | S4-74 |
+| 0410 | `0410_rpt_e3.sql` | только недостающее по факту 0311 после сверки S4-76; расхождений нет – файла нет, номер свободен | – | – | S4-76 (ждёт Э3) |
+| 0411 | `0411_staff_feed.sql` | `staff_feed_events` (лента событий CRM, 13 §11) | `→ branches`, `→ staff` | – | S4-28 (ждёт Э3 и Q-147) |
+
+Общие правила Э4 (решение, продолжают раздел 0 и правила Э2):
+- Версии контента и получатели кампаний – журналы (`journal.*`, только вставка); черновики, статусы, связи – `app.*`.
+- Публичные запросы контента читают только `journal.content_versions.snapshot` через `live_version_id` и столбцы живой версии; столбец `draft` в публичном SQL не выбирается (K22 §3).
+- Представления `rpt_*` принадлежат модулю-владельцу данных (шапка миграции называет владельца каждого); у `yu_app` – только `SELECT` (`REVOKE INSERT, UPDATE, DELETE, TRUNCATE`, как 0211); у роли `yu_reports` – `SELECT` только на `rpt_*` и таблицы календаря `network` (`branches`, `branch_weekly_hours`, `calendar_exceptions`), `default_transaction_read_only = on` (K24 §9). Роль создаёт `deploy/initdb/01-roles.sh`, как `yu_app` (S4-60).
+- Файлы медиа и экспорта – на диске, не в БД: `storage_key` / `file_key` – относительный путь внутри корня `MEDIA_DIR` / `EXPORT_DIR` (адаптер `core/files.ts`, S3-06 + S4-06).
+- DDL ниже нормативен: имена и смысл – контракт; шаг-исполнитель может добавить индексы и уточнить `CHECK`, расхождение с K21–K24 – правкой этого раздела в том же коммите.
+
+### 0401 – notifications_center (notifications)
+
+```sql
+-- migrate:up
+-- перед сменой CHECK: строк с category IN ('event_cancel','personal') быть не должно – иначе миграция падает с понятным текстом
+ALTER TABLE app.notifications
+  ADD COLUMN read_at     timestamptz,
+  ADD COLUMN push        boolean NOT NULL DEFAULT true,
+  ADD COLUMN campaign_id uuid,                                   -- FK – в 0402
+  ADD COLUMN retry_of    uuid REFERENCES app.notifications(id),  -- ручной повтор (K21 §9)
+  ADD COLUMN purpose     text;                                    -- назначение личного (09 §3.5)
+ALTER TABLE app.notifications DROP CONSTRAINT notifications_category_check,
+  ADD CONSTRAINT notifications_category_check CHECK (category IN ('service','reminder','marketing'));
+ALTER TABLE app.notifications DROP CONSTRAINT notifications_kind_check,
+  ADD CONSTRAINT notifications_kind_check CHECK (kind IN ('booking_confirmed','booking_cancelled','booking_rescheduled',
+    'reminder_day_before','reminder_before_start','personal','campaign','event_cancelled','event_rescheduled','account_event'));
+ALTER TABLE app.notifications DROP CONSTRAINT notifications_status_check,
+  ADD CONSTRAINT notifications_status_check CHECK (status IN ('planned','queued','sending','sent_to_provider','delivered','error',
+    'cancelled','skipped_by_prefs','skipped_booking_changed','no_channel','skipped_by_frequency','inbox_only'));
+ALTER TABLE app.notifications ADD CONSTRAINT notifications_push_or_inbox CHECK (push OR status IN ('inbox_only','cancelled'));
+ALTER TABLE app.notifications ADD CONSTRAINT notifications_booking_fk FOREIGN KEY (booking_id) REFERENCES app.bookings(id);
+CREATE INDEX notifications_inbox_idx ON app.notifications (client_id, (coalesce(sent_at, planned_at)) DESC)
+  WHERE status IN ('sent_to_provider','no_channel','error','inbox_only');
+CREATE INDEX notifications_marketing_recent_idx ON app.notifications (client_id, sent_at DESC)
+  WHERE category = 'marketing' AND status = 'sent_to_provider';
+-- 38-ФЗ ст. 18: согласие на рекламу – только с версией текста (K21 §4); NOT VALID, затем VALIDATE после проверки строк Э1
+ALTER TABLE journal.client_consents ADD CONSTRAINT client_consents_marketing_version
+  CHECK (kind <> 'marketing' OR NOT granted OR document_version IS NOT NULL) NOT VALID;
+ALTER TABLE journal.client_consents VALIDATE CONSTRAINT client_consents_marketing_version;
+-- migrate:down – обратные изменения; падает, если есть строки новых видов или статусов (откат только на пустом Э4, K21 §15)
+```
+Имена прежних CHECK – по факту 0111 (если автоматическое имя другое, миграция берёт его из `pg_constraint`). Согласия на рекламу Э1 писались с константой `MARKETING_DOCUMENT_VERSION`, поэтому `VALIDATE` проходит; найденная строка без версии – миграция падает, решение по данным принимает техлид (на стенде – `--reset-stage`).
+
+### 0402 – notification_campaigns (notifications)
+
+```sql
+CREATE TABLE app.notification_templates (               -- K21 §8
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  category text NOT NULL CHECK (category IN ('service','marketing')),
+  title text NOT NULL, body text NOT NULL,              -- плейсхолдеры – белый список K21 §8, проверка в коде
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+  row_version int NOT NULL DEFAULT 1,
+  created_by uuid NOT NULL REFERENCES app.staff(id), created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE app.notification_campaigns (                -- K21 §6; любое ручное сообщение – кампания
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','confirmed','expanding','sending','done','cancelled')),
+  purpose text,
+  category text NOT NULL CHECK (category IN ('service','marketing')),
+  title text NOT NULL, body text NOT NULL,
+  url text CHECK (url IS NULL OR url ~ '^/([^/\\]|$)'),  -- только путь своего сайта, как CHECK 0111
+  push boolean NOT NULL DEFAULT true,
+  audience jsonb NOT NULL,                               -- { kind: client|booking|event|segment, … }, segment.v1 (K21 §5)
+  area_type text NOT NULL CHECK (area_type IN ('network','city','branch')),
+  area_ids uuid[] NOT NULL DEFAULT '{}',
+  planned_at timestamptz,
+  advertiser_note text, erid text,                       -- 38-ФЗ ст. 18.1 (Q-130, Q-148)
+  template_id uuid REFERENCES app.notification_templates(id),
+  preview_snapshot jsonb, preview_at timestamptz,
+  total int CHECK (total IS NULL OR total >= 0),
+  created_by uuid NOT NULL REFERENCES app.staff(id), created_at timestamptz NOT NULL DEFAULT now(),
+  confirmed_by uuid REFERENCES app.staff(id), confirmed_at timestamptz,
+  cancelled_reason text,
+  row_version int NOT NULL DEFAULT 1,
+  CHECK (status IN ('draft','cancelled') OR confirmed_at IS NOT NULL),
+  CHECK (status <> 'cancelled' OR cancelled_reason IS NOT NULL)
+);
+-- триггер notification_campaigns_frozen: при OLD.status <> 'draft' UPDATE title, body, url, category, audience, push → 42501 (09 §14)
+CREATE TABLE journal.notification_campaign_recipients (  -- снимок аудитории при подтверждении (09 §14)
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  campaign_id uuid NOT NULL REFERENCES app.notification_campaigns(id),
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  home_branch_id uuid REFERENCES app.branches(id),       -- для тихих часов (K21 §5)
+  decision text NOT NULL,                                -- решение decideSend на момент снимка
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (campaign_id, client_id)
+);
+SELECT journal.make_append_only('journal.notification_campaign_recipients');
+ALTER TABLE app.notifications ADD CONSTRAINT notifications_campaign_fk FOREIGN KEY (campaign_id) REFERENCES app.notification_campaigns(id);
+CREATE INDEX notification_campaigns_list_idx ON app.notification_campaigns (created_at DESC);
+```
+`dedupe_key` строк кампании – `'campaign:<campaignId>:<clientId>'`, ручного повтора – `'<старый>:retry:<n>'` (K21 §6, §9).
+
+### 0403 – content_media (content)
+
+```sql
+CREATE TABLE app.content_media (                         -- K22 §8
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  sha256 text NOT NULL UNIQUE CHECK (sha256 ~ '^[0-9a-f]{64}$'),   -- дедупликация повторной загрузки
+  mime text NOT NULL CHECK (mime IN ('image/jpeg','image/png','image/webp','application/pdf')),
+  bytes bigint NOT NULL CHECK (bytes > 0),
+  width int, height int,                                 -- у PDF – NULL
+  variants jsonb NOT NULL DEFAULT '[]',                  -- [{ w, format, key }] – WebP 480/960/1600 + JPEG 1600
+  storage_key text NOT NULL,                             -- media/<aa>/<bb>/<sha256>… внутри MEDIA_DIR
+  alt text, title text, original_name text,              -- original_name очищен, только для показа в CRM
+  purpose text NOT NULL CHECK (purpose IN ('image','document')),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived','purged')),
+  uploaded_by uuid NOT NULL REFERENCES app.staff(id),
+  created_at timestamptz NOT NULL DEFAULT now(), archived_at timestamptz,
+  row_version int NOT NULL DEFAULT 1,
+  CHECK ((purpose = 'document') = (mime = 'application/pdf'))
+);
+CREATE TABLE app.content_media_usages (                  -- пересчёт при saveDraft и publish
+  media_id uuid NOT NULL REFERENCES app.content_media(id),
+  entity_type text NOT NULL, entity_id uuid NOT NULL, field text NOT NULL,
+  live boolean NOT NULL,                                 -- по живой версии (true) или по черновику (false)
+  PRIMARY KEY (media_id, entity_type, entity_id, field, live)
+);
+```
+
+### 0404 – content (content)
+
+Общие столбцы каждой версионируемой таблицы (K22 §3): `status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published','unpublished','archived'))`, `draft jsonb NOT NULL`, `draft_updated_at`, `draft_updated_by uuid`, `live_version_id bigint REFERENCES journal.content_versions(id)`, `row_version int NOT NULL DEFAULT 1`, `created_by uuid NOT NULL`, `created_at`, `archived_at`. Поля поиска и фильтра живой версии пишет только `publish`.
+
+```sql
+CREATE TABLE journal.content_versions (                  -- только вставка (12 §9.5)
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  entity_type text NOT NULL CHECK (entity_type IN ('publication','game','room_page','branch_page','content_page','home_block')),
+  entity_id uuid NOT NULL, version_no int NOT NULL CHECK (version_no >= 1),
+  snapshot jsonb NOT NULL,                               -- что видит посетитель; alt и размеры медиа заморожены (K22 §8 п.5)
+  action text NOT NULL CHECK (action IN ('publish','rollback_publish')),
+  published_by uuid NOT NULL, published_at timestamptz NOT NULL, reason text,
+  source_version_id bigint REFERENCES journal.content_versions(id),
+  UNIQUE (entity_type, entity_id, version_no),
+  CHECK ((action = 'rollback_publish') = (source_version_id IS NOT NULL))
+);
+SELECT journal.make_append_only('journal.content_versions');
+CREATE TABLE app.content_publications (                  -- + общие столбцы
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  type text NOT NULL CHECK (type IN ('news','promotion','giveaway','tournament')),
+  slug text CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 90),   -- живая версия
+  publish_from timestamptz, publish_to timestamptz,
+  indexable boolean NOT NULL DEFAULT true,               -- K23 §9
+  cover_media_id uuid REFERENCES app.content_media(id), rules_media_id uuid REFERENCES app.content_media(id),
+  UNIQUE (type, slug)
+);
+CREATE INDEX content_publications_live_idx ON app.content_publications (type, publish_from DESC) WHERE status = 'published';
+CREATE TABLE app.content_publication_scopes (            -- охват живой версии (K22 §4)
+  publication_id uuid NOT NULL REFERENCES app.content_publications(id),
+  scope_type text NOT NULL CHECK (scope_type IN ('network','city','branch')),
+  city_id uuid REFERENCES app.cities(id), branch_id uuid REFERENCES app.branches(id),
+  CHECK ((scope_type = 'network') = (city_id IS NULL AND branch_id IS NULL)),
+  CHECK (scope_type <> 'city' OR (city_id IS NOT NULL AND branch_id IS NULL)),
+  CHECK (scope_type <> 'branch' OR (branch_id IS NOT NULL AND city_id IS NULL))
+);  -- «одна строка network или строки одного вида» – проверка publish (K22 §4)
+CREATE TABLE app.content_games (                         -- + общие столбцы; каталог сети
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  direction text NOT NULL CHECK (direction IN ('pc','vr','playstation')),
+  slug text CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) <= 90),
+  has_full boolean NOT NULL DEFAULT false,               -- живая версия с непустым full → есть карточка (K23 §2)
+  cover_media_id uuid REFERENCES app.content_media(id), sort_order int NOT NULL DEFAULT 0,
+  UNIQUE (direction, slug)
+);
+CREATE TABLE app.content_game_branches (                 -- оперативный факт, не версионируется; без строки = недоступна
+  game_id uuid NOT NULL REFERENCES app.content_games(id), branch_id uuid NOT NULL REFERENCES app.branches(id),
+  available boolean NOT NULL, note text CHECK (length(note) <= 120),
+  updated_by uuid NOT NULL, updated_at timestamptz NOT NULL,
+  PRIMARY KEY (game_id, branch_id)
+);
+CREATE TABLE app.content_room_pages (                    -- + общие столбцы
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), room_id uuid NOT NULL UNIQUE REFERENCES app.rooms(id)
+);
+CREATE TABLE app.content_branch_pages (                  -- + общие столбцы; postal и geo – в draft/snapshot (K22 §2)
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), branch_id uuid NOT NULL UNIQUE REFERENCES app.branches(id)
+);
+CREATE TABLE app.content_pages (                         -- + общие столбцы
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  key text NOT NULL CHECK (key IN ('about','contacts_intro','rules','privacy-policy','personal-data-consent','cookie-policy','advertising-consent')),
+  city_id uuid REFERENCES app.cities(id),                -- подмена для города; юридические – только сеть (K22 §2)
+  document_version text CHECK (document_version IS NULL OR document_version ~ '^[a-z-]+-\d{4}-\d{2}-\d{2}(-\d+)?$'),  -- живая версия
+  CHECK (city_id IS NULL OR key IN ('about','rules','contacts_intro')),
+  UNIQUE NULLS NOT DISTINCT (key, city_id)
+);
+CREATE TABLE app.content_home_blocks (                   -- + общие столбцы; главная одна на сеть, подмена города
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  block_type text NOT NULL CHECK (block_type IN ('hero','about','directions','advantages','promo_strip','cta')),
+  city_id uuid REFERENCES app.cities(id), sort_order int NOT NULL DEFAULT 0
+);
+```
+
+### 0405 – seo (content; CHECK городов – network)
+
+```sql
+CREATE TABLE app.seo_slug_history (                      -- K23 §5
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  entity_type text NOT NULL CHECK (entity_type IN ('city','branch','room','game','publication')),
+  entity_id uuid NOT NULL,                               -- полиморфная ссылка без FK (решение, как outbox)
+  parent_key text NOT NULL,                              -- city_id / branch_id / direction / type; у города – ''
+  old_slug text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (entity_type, parent_key, old_slug)
+);
+-- владелец ограничения – network; перед добавлением проверка существующих городов (иначе падение с понятным текстом)
+ALTER TABLE app.cities ADD CONSTRAINT cities_slug_reserved CHECK (slug NOT IN ('rooms','games','schedule','birthday','news',
+  'promotions','giveaways','tournaments','reviews','about','contacts','rules','privacy-policy','personal-data-consent',
+  'cookie-policy','advertising-consent','login','account','sitemap','api','admin','crm','assets','media','preview','unsubscribe','info'));
+```
+Занятие старого слага новой сущностью удаляет строку истории в той же транзакции (K23 §5): таблица в `app`, не журнал, `DELETE` у `yu_app` есть (решение).
+
+### 0406, 0407, 0409 – представления `rpt_*` (владельцы – по строкам K24 §1)
+
+Состав столбцов – таблица K24 §1 (нормативна). Владельцы: `rpt_bookings`, `rpt_booking_reschedules`, `rpt_visits`, `rpt_no_shows`, `rpt_unit_booked`, `rpt_unit_blocks` – `booking`; `rpt_units` – `resources`; `rpt_clients` – `clients` (без телефона и имени); `rpt_finance_operations`, `rpt_payments` – `finance` (сторно – со знаком в строку исходного вида, `signed_kop`); `rpt_loyalty_moves`, `rpt_loyalty_balances` – `loyalty`; `rpt_certificate_ops` – `certificates`; `rpt_notifications` – `notifications`; `rpt_consent_changes` – `clients`; `rpt_content_versions` – `content`. `period` у `rpt_unit_booked` и `rpt_unit_blocks` – `tstzrange` для мультидиапазонов (`range_agg`, PostgreSQL 16). Индексы под отчёты – владельцами таблиц, если ещё нет: `bookings (branch_id, created_at)`, `visits (branch_id, arrived_at)`, `finance_operations (branch_id, occurred_at)`, `ledger_entries (account_id, created_at)` (сверка `EXPLAIN` – S4-131).
+
+```sql
+-- 0406, после CREATE VIEW: права (K24 §9)
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON app.rpt_bookings /* …каждое представление… */ FROM yu_app;
+GRANT USAGE ON SCHEMA app TO yu_reports;
+GRANT SELECT ON app.rpt_bookings /* …все rpt_* 0211 и 0406… */, app.branches, app.branch_weekly_hours, app.calendar_exceptions TO yu_reports;
+-- роль создаёт deploy/initdb/01-roles.sh: CREATE ROLE yu_reports LOGIN …; ALTER ROLE yu_reports SET default_transaction_read_only = on
+-- миграция проверяет, что роль есть (как 0001 для yu_app), иначе падает с понятным текстом; тестовая база создаёт её в helpers/pg.ts
+```
+0407 и 0409 выдают `SELECT` роли `yu_reports` на свои представления тем же способом.
+
+### 0408 – report_exports (reports)
+
+```sql
+CREATE TABLE app.report_exports (                        -- K24 §7
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  staff_id uuid NOT NULL REFERENCES app.staff(id),
+  report text NOT NULL CHECK (report IN ('dashboard','bookings','utilization','finance','events','clients','loyalty','certificates','staff','equipment','comms')),
+  format text NOT NULL CHECK (format IN ('xlsx','csv')),
+  params jsonb NOT NULL, params_hash text NOT NULL,      -- SHA-256 нормализованных параметров + staff_id + format
+  detail boolean NOT NULL, masked boolean NOT NULL,
+  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','ready','expired','failed','cancelled')),
+  error_code text, rows int, bytes bigint, file_key text,  -- случайный UUID внутри EXPORT_DIR
+  created_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, finished_at timestamptz,
+  expires_at timestamptz, downloaded_at timestamptz,
+  CHECK (status <> 'ready' OR (file_key IS NOT NULL AND expires_at IS NOT NULL)),
+  CHECK (status <> 'failed' OR error_code IS NOT NULL)
+);
+CREATE UNIQUE INDEX report_exports_same_request ON app.report_exports (staff_id, params_hash) WHERE status IN ('queued','running','ready');
+-- 0408 и 0311 пересоздают CHECK полным списком на свой момент – применённая позже содержит всё (K24 §12)
+ALTER TABLE journal.reconcile_discrepancies DROP CONSTRAINT reconcile_discrepancies_check_name_check,
+  ADD CONSTRAINT reconcile_discrepancies_check_name_check CHECK (check_name IN ('ledger_balance','loyalty_points','loyalty_batch',
+    'certificate_balance','cash_place', /* значения 0311 – по факту S3-95 */ 'utilization_over_capacity'));
+ALTER TABLE journal.reconcile_discrepancies DROP CONSTRAINT reconcile_discrepancies_object_type_check,
+  ADD CONSTRAINT reconcile_discrepancies_object_type_check CHECK (object_type IN ('ledger_account','client','loyalty_batch',
+    'certificate','branch', /* значения 0311 */ 'occupancy_unit'));
+```
+Решения S4-00: (1) K24 §12 расширяет только `check_name`, но расхождение загрузки ссылается на единицу занятости – без `occupancy_unit` в CHECK `object_type` его не записать; бронь вне расписания – `details.bookingId`, уровень – `details.level = 'warning'` (столбца уровня в 0211 нет). (2) `status = 'cancelled'` – отмена задачи автором (K11 №247); в K24 §7 такого статуса не было.
+
+### 0411 – staff_feed (notifications; ждёт Э3 и Q-147)
+
+```sql
+CREATE TABLE app.staff_feed_events (                     -- лента событий CRM (13 §11), без push сотрудникам
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  staff_id uuid REFERENCES app.staff(id),                -- адресат; NULL – все сотрудники зоны филиала
+  kind text NOT NULL CHECK (kind IN ('shift_changed','repair_registered','repair_closed','service_notification_failed')),
+  ref_type text NOT NULL, ref_id uuid NOT NULL,          -- объект для перехода в карточку
+  title text NOT NULL,
+  dedupe_key text NOT NULL UNIQUE,                       -- '<kind>:<eventId>' – двойная доставка события → одна строка
+  created_at timestamptz NOT NULL DEFAULT now(), read_at timestamptz
+);
+CREATE INDEX staff_feed_events_branch_idx ON app.staff_feed_events (branch_id, created_at DESC);
+```
+
+### Ключевые правила Э4 → где гарантия
+
+| Правило | ТЗ / контракт | Гарантия |
+|---|---|---|
+| Реклама только по согласию с версией текста | 38-ФЗ ст. 18; K21 §4 | CHECK `client_consents_marketing_version` (0401) + `decideSend` при постановке и в `send` |
+| Подтверждённая кампания не меняется | 09 §14; K21 §6 | триггер `notification_campaigns_frozen` (0402), `42501` |
+| Повтор разворачивания не дублирует | 16 §15.2 | `notifications.dedupe_key` UNIQUE + `UNIQUE (campaign_id, client_id)` получателей |
+| Черновик не виден посетителю | 12 §9.2; K22 §3 | публичный SQL читает только `content_versions.snapshot` через `live_version_id` |
+| Версии контента не правятся | 12 §9.5 | `journal.content_versions` только вставка |
+| Медиа не дублируются | K22 §8 | `content_media.sha256` UNIQUE |
+| Зарезервированные слова не становятся городом | карта сайта п.2.8; K23 §9 | CHECK `cities_slug_reserved` (0405) |
+| Отчёт не пишет и не читает в обход `rpt_*` | 17 §6; K24 §9 | роль `yu_reports` (только `SELECT` на `rpt_*`, read only) |
+| Одинаковый экспорт – одна задача | K24 §7 | `report_exports_same_request` |
