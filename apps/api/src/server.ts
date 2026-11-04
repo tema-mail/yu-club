@@ -11,6 +11,8 @@ import { registerBookingGate } from './modules/clients/index.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
+import type { FileStore } from './core/files.ts';
+import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
@@ -51,6 +53,8 @@ export interface ServerDeps {
   notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[] };
   /** Сертификаты (K16): CERT_PEPPER – HMAC кода. Нет – маршруты сертификатов не подключаются. */
   certificates?: { pepper: string };
+  /** Вложения Э3 (K19 №350): адаптер диска с корнем ATTACHMENTS_DIR вне веб-корня. Нет – маршруты не подключаются. */
+  attachments?: { store: FileStore };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
 }
@@ -224,6 +228,20 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
     );
+    // K19 №350: закрытые вложения – выдача только через API с правом на объект-владелец
+    if (deps.attachments) {
+      const store = deps.attachments.store;
+      void app.register(
+        async (scope) =>
+          attachmentCrmRoutes(scope, {
+            pool: staff.pool,
+            store,
+            ...(staff.clock ? { clock: staff.clock } : {}),
+            authenticate: (request, reply) => authenticate(staff, request, reply),
+          }),
+        { prefix: '/api/crm/v1' },
+      );
+    }
     // K15 №24–28: бонусный счёт и товары за баллы; зона клиента – через брони (clientBranchLinks)
     void app.register(
       async (scope) =>
