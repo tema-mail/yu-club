@@ -1,6 +1,7 @@
 // S4-01: права Э4 – K1 «Действия Э4» (K21 §10, K22 §10, K24 §8), переписаны независимо от кода.
 import { describe, expect, it } from 'vitest';
 import { ACTIONS, actionsOf, assertCan, can, roleAllows, type AccessContext, type StaffRole, type Target } from '../../apps/api/src/core/permissions.ts';
+import { SETTINGS, settingDef } from '../../apps/api/src/core/settings.ts';
 
 const CITY_A = 'aaaaaaaa-0000-4000-8000-00000000000a';
 const CITY_B = 'bbbbbbbb-0000-4000-8000-00000000000b';
@@ -113,5 +114,58 @@ describe('S4-01: действия Э4 × роль × своя/чужая цел�
     expect(roleAllows('director', 'export.pd')).toBe(false);
     expect(roleAllows('admin', 'finance.view')).toBe(false);
     expect(roleAllows('director', 'finance.correct')).toBe(false);
+  });
+});
+
+describe('S4-01b: ключи настроек Э4 (K7 «Реестр ключей Э4»)', () => {
+  const expected: Record<string, unknown> = {
+    'notifications.marketing_min_interval_hours': 168,
+    'notifications.marketing_window_from': '10:00',
+    'notifications.marketing_window_to': '21:00',
+    'notifications.inbox_retention_days': 365,
+    'notifications.campaign_max_plan_days': 30,
+    'notifications.marketing_title_prefix': 'Реклама.',
+    'notifications.marketing_require_erid': true,
+    'content.ended_promotion_mode': 'banner_noindex',
+    'reports.interactive_max_days': 92,
+    'reports.export_ttl_hours': 24,
+    'reports.loyalty_threshold_warn_centi': -4500,
+    'reports.repeat_breakdown_days': 90,
+  };
+
+  it('умолчания = контракты, только сеть, менять – только Владелец', () => {
+    for (const [key, value] of Object.entries(expected)) {
+      const d = settingDef(key);
+      expect(d.systemDefault, key).toEqual(value);
+      expect([...d.levels], key).toEqual(['network']);
+      expect(d.editAction, key).toBe('settings.network.manage');
+      expect(d.schema.safeParse(d.systemDefault).success, key).toBe(true);
+    }
+    const e4Keys = Object.keys(SETTINGS).filter(
+      (k) => /^(content|reports)\./.test(k) || /^notifications\.(marketing|inbox|campaign)_/.test(k),
+    );
+    expect(e4Keys.sort()).toEqual(Object.keys(expected).sort());
+    expect(roleAllows('director', 'settings.network.manage')).toBe(false);
+  });
+
+  it('схемы ключей Э4 отсекают неверное', () => {
+    const bad: [string, unknown][] = [
+      ['notifications.marketing_min_interval_hours', 721],
+      ['notifications.marketing_min_interval_hours', -1],
+      ['notifications.marketing_window_from', '24:00'],
+      ['notifications.marketing_window_to', '9:00'],
+      ['notifications.inbox_retention_days', 29],
+      ['notifications.campaign_max_plan_days', 91],
+      ['notifications.marketing_title_prefix', 'x'.repeat(21)],
+      ['notifications.marketing_require_erid', 'true'],
+      ['content.ended_promotion_mode', 'hide'],
+      ['reports.interactive_max_days', 6],
+      ['reports.export_ttl_hours', 169],
+      ['reports.loyalty_threshold_warn_centi', 1],
+      ['reports.repeat_breakdown_days', 1.5],
+    ];
+    for (const [key, v] of bad) expect(settingDef(key).schema.safeParse(v).success, `${key}=${JSON.stringify(v)}`).toBe(false);
+    expect(settingDef('notifications.marketing_title_prefix').schema.safeParse('').success).toBe(true);
+    expect(settingDef('notifications.marketing_min_interval_hours').schema.safeParse(0).success).toBe(true);
   });
 });

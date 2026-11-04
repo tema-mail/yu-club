@@ -92,6 +92,24 @@ export const SETTINGS = {
   ), // Q-42: комната целиком баллами не оплачивается
   'loyalty.accrue_for_points': def(z.boolean(), false, N, NET), // Q-40 / R-06
   'loyalty.accrue_for_certificate': def(z.boolean(), true, N, NET),
+  // ---- Э4 (K7 «Реестр ключей Э4»; K21 §13, K22 §15, K24 §11). Только сеть, меняет Владелец (D4-01).
+  'notifications.marketing_min_interval_hours': def(int(0, 720), 168, N, NET), // Q-39
+  'notifications.marketing_window_from': def(HHMM, '10:00', N, NET), // Q-39; from < to сверяет notifications при чтении
+  'notifications.marketing_window_to': def(HHMM, '21:00', N, NET),
+  'notifications.inbox_retention_days': def(int(30, 1095), 365, N, NET), // Q-132
+  'notifications.campaign_max_plan_days': def(int(0, 90), 30, N, NET), // Q-133
+  'notifications.marketing_title_prefix': def(z.string().max(20), 'Реклама.', N, NET), // Q-130
+  'notifications.marketing_require_erid': def(z.boolean(), true, N, NET), // Q-130, Q-148
+  'content.ended_promotion_mode': def(
+    z.enum(['banner_noindex', 'not_found']),
+    'banner_noindex' as 'banner_noindex' | 'not_found',
+    N,
+    NET,
+  ), // вопрос карты сайта 9
+  'reports.interactive_max_days': def(int(7, 366), 92, N, NET),
+  'reports.export_ttl_hours': def(int(1, 168), 24, N, NET), // Q-145
+  'reports.loyalty_threshold_warn_centi': def(int(-1_000_000, 0), -4500, N, NET), // Q-80; пределы – решение S4-00
+  'reports.repeat_breakdown_days': def(int(7, 365), 90, N, NET),
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;
