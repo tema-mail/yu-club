@@ -115,7 +115,9 @@ const foreign: Record<string, Target> = { network: { network: true }, city: { ci
 
 describe('матрица K1 × роль × своя/чужая цель', () => {
   it('реестр кода совпадает с K1 построчно', () => {
-    expect([...ACTIONS].sort()).toEqual(EXPECTED.map((r) => r[0]).sort());
+    // Действия Э4 сверяет построчно permissions-e4.test.ts (K1 «Действия Э4»).
+    const e4 = /^(content|reports|search)\.|^notifications\.(send|retry|templates)(\.|$)/;
+    expect(ACTIONS.filter((a) => !e4.test(a)).sort()).toEqual(EXPECTED.map((r) => r[0]).sort());
   });
 
   const rows = EXPECTED.flatMap(([action, roles, kind]) =>
