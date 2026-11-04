@@ -1,0 +1,32 @@
+// Действия аудита модуля events (K2 §Реестр, группы «Мероприятия», «Подарок и праздники» Э3; K20 §18).
+// holiday.* пишет network/holidays.ts (S3-56), код – здесь: праздничный календарь описан в K20 (решение D3-05).
+export const auditActions = [
+  'event.created',
+  'event.updated',
+  'event.status_changed',
+  'event.rescheduled',
+  'event.line_added',
+  'event.line_updated',
+  'event.line_removed',
+  'event.package_applied',
+  'event.resource_reserved',
+  'event.resource_released',
+  'event.booking_linked',
+  'event.booking_unlinked',
+  'event.checklist_changed',
+  'event.money_linked',
+  'event.request_received', // заявка с сайта (K20 §10, П4)
+  'event.type.created',
+  'event.type.updated',
+  'event.package.created',
+  'event.package.updated',
+  'event.package.archived',
+  'gift.issued',
+  'gift.cancelled',
+  'gift.expired',
+  'gift.reserved',
+  'gift.used',
+  'gift.released',
+  'holiday.set',
+  'holiday.cancelled',
+] as const;

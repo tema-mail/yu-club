@@ -18,6 +18,8 @@ import { auditActions as dictionariesAudit } from '../modules/dictionaries/audit
 import { errors as dictionariesErrors } from '../modules/dictionaries/errors.ts';
 import { auditActions as equipmentAudit } from '../modules/equipment/audit.ts';
 import { errors as equipmentErrors } from '../modules/equipment/errors.ts';
+import { auditActions as eventsAudit } from '../modules/events/audit.ts';
+import { errors as eventsErrors } from '../modules/events/errors.ts';
 import { auditActions as networkAudit } from '../modules/network/audit.ts';
 import { errors as networkErrors } from '../modules/network/errors.ts';
 import { auditActions as notificationsAudit } from '../modules/notifications/audit.ts';
@@ -47,6 +49,15 @@ const moduleErrors = {
   certificates: certificatesErrors,
   shifts: shiftsErrors, // Э3, K18 §15
   equipment: equipmentErrors, // Э3, K19 §15
+  events: eventsErrors, // Э3, K20 §16
+  // K17 §14 – связи операций кассы (modules/finance/links.ts, S3-05); строкой здесь, а не в finance/errors.ts (решение D3-04)
+  finance_links: {
+    OPERATION_ALREADY_LINKED: 409, // у операции уже есть живая связь (details.ref)
+    OPERATION_LINK_INVALID: 422, // роль не по виду операции, сторнирована, не тот источник (details.reason)
+    EVENT_REFUND_EXCEEDS_INCOME: 409, // возврат больше непогашенной части поступления (details.availableKop)
+    OPERATION_REVERSED: 409, // возврат по сторнированному поступлению
+    INCOME_HAS_REFUNDS: 409, // сторно поступления с живыми возвратами (S3-54)
+  },
 } as const;
 const moduleAudit = {
   settings: settingsAudit,
@@ -65,6 +76,8 @@ const moduleAudit = {
   certificates: certificatesAudit,
   shifts: shiftsAudit, // Э3, K18 §17
   equipment: equipmentAudit, // Э3, K19 §17
+  events: eventsAudit, // Э3, K20 §18
+  finance_links: ['finance.operation.linked', 'finance.operation.unlinked'] as const, // K17 §14, решение D3-04
 } as const;
 
 type ModuleErrors = typeof moduleErrors;
