@@ -5,6 +5,7 @@
 # deploy/restore-check.sh сверяет восстановленную базу без гонки с живыми записями.
 # Неуспех: строка «ОШИБКА» в выводе (cron пишет его в backup.log) и ненулевой код;
 # если задан BACKUP_ALERT_URL – туда уходит POST с текстом (канал оповещения выберут позже).
+# Рядом с дампом – снимки каталогов файлов (медиатека CMS, S4-07): <имя>.media/ – см. FILE_DIRS ниже.
 # Запуск: /opt/yu-club/backup.sh   (окружение – /opt/yu-club/.env, если есть)
 set -euo pipefail
 ENV_FILE=${ENV_FILE:-/opt/yu-club/.env}
@@ -20,6 +21,7 @@ fail() {
   echo "$(date -Is) ОШИБКА бэкапа $DB: $*"
   [ -n "${BACKUP_ALERT_URL:-}" ] && curl -s -m 10 -X POST --data-urlencode "text=yu-club: бэкап $DB не удался: $*" "$BACKUP_ALERT_URL" >/dev/null || true
   rm -f "$DIR/$NAME.dump.part" "$DIR/$NAME.counts.part" "$DIR/$NAME.snap" "$DIR/$NAME.failed"
+  rm -rf "$DIR/$NAME".*.part
   exit 1
 }
 trap 'fail "команда упала (строка $LINENO)"' ERR
@@ -53,11 +55,33 @@ rm -f "$DIR/$NAME.snap"
 if [ -f "$DIR/$NAME.failed" ]; then rm -f "$DIR/$NAME.failed"; fail "pg_dump вернул ошибку"; fi
 [ -s "$DIR/$NAME.dump.part" ] || fail "пустой дамп"
 [ -s "$DIR/$NAME.counts.part" ] || fail "нет подсчёта записей"
+
+# Файлы рядом с дампом (S4-07, K22 §8): снимок каждого каталога – rsync с жёсткими ссылками на прошлый снимок
+# (неизменные файлы место не занимают). Снимается ПОСЛЕ дампа: файл, записанный между ними, лишний, но не потерян;
+# строка БД пишется после файла (K22 §8 п.4), поэтому каждый storage_key дампа есть в снимке.
+# Список каталогов – общий с вложениями Э3 (S3-94 добавляет attachments=…) и с копией вне сервера (S3-99).
+# Каталога ещё нет (Э4 не выложен) – пропуск со строкой в выводе, не ошибка.
+FILE_DIRS=${BACKUP_FILE_DIRS:-"media=${MEDIA_DIR:-/opt/yu-club/media}"}
+SNAPS=""
+for entry in $FILE_DIRS; do
+  label=${entry%%=*}; src=${entry#*=}
+  if [ ! -d "$src" ]; then echo "$(date -Is) каталог $label ($src) не найден – снимок пропущен"; continue; fi
+  command -v rsync >/dev/null || fail "нет rsync для снимка $label"
+  prev=$(ls -1dt "$DIR"/"$DB"-*."$label" 2>/dev/null | head -1 || true)
+  rsync -a --delete ${prev:+--link-dest="$prev"} "$src"/ "$DIR/$NAME.$label.part"/ || fail "rsync $label упал"
+  mv "$DIR/$NAME.$label.part" "$DIR/$NAME.$label"
+  chmod 700 "$DIR/$NAME.$label"; touch "$DIR/$NAME.$label"   # rsync -a переносит mtime источника – срок хранения считаем от снимка
+  SNAPS="$SNAPS, $label $(du -sh "$DIR/$NAME.$label" | cut -f1)"
+done
+
 mv "$DIR/$NAME.dump.part" "$DIR/$NAME.dump"
 mv "$DIR/$NAME.counts.part" "$DIR/$NAME.counts"
 chmod 600 "$DIR/$NAME.dump" "$DIR/$NAME.counts"
 
-# хранение: старше KEEP суток – удалить (только свои файлы этой базы)
+# хранение: старше KEEP суток – удалить (только свои файлы и снимки этой базы)
 find "$DIR" -maxdepth 1 -type f \( -name "$DB-*.dump" -o -name "$DB-*.counts" \) -mtime +"$((KEEP - 1))" -delete
+for entry in $FILE_DIRS; do
+  find "$DIR" -maxdepth 1 -type d -name "$DB-*.${entry%%=*}" -mtime +"$((KEEP - 1))" -exec rm -rf {} +
+done
 
-echo "$(date -Is) бэкап $NAME.dump $(du -h "$DIR/$NAME.dump" | cut -f1), таблиц $(grep -c '^rows ' "$DIR/$NAME.counts"), $(grep '^ledger_sum ' "$DIR/$NAME.counts")"
+echo "$(date -Is) бэкап $NAME.dump $(du -h "$DIR/$NAME.dump" | cut -f1), таблиц $(grep -c '^rows ' "$DIR/$NAME.counts"), $(grep '^ledger_sum ' "$DIR/$NAME.counts")$SNAPS"

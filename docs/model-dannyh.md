@@ -1372,7 +1372,7 @@ CREATE TABLE app.content_media (                         -- K22 §8
   bytes bigint NOT NULL CHECK (bytes > 0),
   width int, height int,                                 -- у PDF – NULL
   variants jsonb NOT NULL DEFAULT '[]',                  -- [{ w, format, key }] – WebP 480/960/1600 + JPEG 1600
-  storage_key text NOT NULL,                             -- media/<aa>/<bb>/<sha256>… внутри MEDIA_DIR
+  storage_key text NOT NULL,                             -- <aa>/<bb>/<sha256>… относительно MEDIA_DIR; адрес – /media/<storage_key> (Caddy, S4-07)
   alt text, title text, original_name text,              -- original_name очищен, только для показа в CRM
   purpose text NOT NULL CHECK (purpose IN ('image','document')),
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived','purged')),
