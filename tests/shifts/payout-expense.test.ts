@@ -147,6 +147,23 @@ describe('createPayoutExpense', () => {
   });
 });
 
+describe('право раньше статуса', () => {
+  it('чужой Директор и Директор зоны не узнают ни статуса, ни суммы: 404 и 403 до чтения', async () => {
+    const zero = await statement(0, [{ branchId: a, accruedKop: 100 }]);
+    const notPaid = await statement(10_000, [{ branchId: a, accruedKop: 10_000 }], 'ready');
+    const foreign = ctx('director', [b]);
+    await expect(create(zero, {}, foreign)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(create(notPaid, {}, foreign)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const zone = ctx('director', [a]);
+    const err = await create(zero, {}, zone).catch((e: AppError) => e);
+    expect(err).toMatchObject({ code: 'FORBIDDEN' });
+    expect((err as AppError).details?.toPayKop).toBeUndefined();
+    await expect(create(notPaid, {}, zone)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(tx((t) => linkPayoutExpense(t, foreign, notPaid, { operationIds: [randomUUID()] }, meta(foreign), clock))).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(tx((t) => linkPayoutExpense(t, zone, notPaid, { operationIds: [randomUUID()] }, meta(zone), clock))).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+});
+
 describe('linkPayoutExpense', () => {
   const manual = (branchId: string, amountKop: number) =>
     tx((t) => recordExpense(t, owner, { branchId, method: 'cash', amountKop, ...salary, occurredAt: AT, comment: 'зарплата вручную' }, meta(), { idempotencyKey: randomUUID(), clock }));

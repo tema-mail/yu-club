@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { writeAudit, type AuditRequestMeta, type Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { ensureAccount, lockAccounts, type Tx } from '../../core/ledger.ts';
-import { assertCan, type AccessContext } from '../../core/permissions.ts';
+import { assertCan, roleAllows, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { PLACE_ACCOUNT, getOperation, type FinanceOperationDto } from '../finance/cashbox.ts';
 import { createLinkedOperation, linkOperation, linksOf } from '../finance/links.ts';
@@ -38,12 +38,14 @@ interface StatementRow {
   totals: PayrollTotals & { byBranch?: BranchLine[] };
 }
 
-/** Строка ведомости FOR UPDATE; расход – только после paid. */
-async function lockPaidStatement(tx: Tx, id: string): Promise<StatementRow> {
+/** Строка ведомости FOR UPDATE: сначала зона (вне её – 404) и право (403), статус и сумма – только после них; расход – только после paid. */
+async function lockPaidStatement(tx: Tx, ctx: AccessContext, id: string): Promise<StatementRow> {
   if (!isUuid(id)) throw notFound();
   const r = await tx.query<StatementRow>(`SELECT id, staff_id, status, totals FROM app.payroll_statements WHERE id = $1 FOR UPDATE`, [id]);
   const row = r.rows[0];
   if (!row) throw notFound();
+  if (!ctx.network && !(row.totals.byBranch ?? []).some((l) => ctx.branchIds.has(l.branchId))) throw notFound();
+  if (!roleAllows(ctx.role, 'payroll.payout.expense')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'payroll.payout.expense' });
   if (row.status !== 'paid') throw new AppError('VALIDATION_FAILED', 400, 'Расход создаётся только после отметки «Выплачен»', { reason: 'statement_not_paid', status: row.status });
   return row;
 }
@@ -97,7 +99,7 @@ export async function createPayoutExpense(
   const input = parsed.data;
   if ((input.method === 'cash') !== (input.place === 'cash')) throw new AppError('VALIDATION_FAILED', 400, 'Способ не подходит к месту денег', { field: 'method' });
 
-  const row = await lockPaidStatement(tx, statementId);
+  const row = await lockPaidStatement(tx, ctx, statementId);
   const toPay = Number(row.totals.toPayKop ?? 0);
   if (toPay <= 0) throw new AppError('VALIDATION_FAILED', 400, 'По ведомости нет выплаты: расход не нужен', { reason: 'nothing_paid', toPayKop: toPay });
   let parts: SplitPart[];
@@ -147,7 +149,7 @@ const linkSchema = z.object({ operationIds: z.array(z.string()).min(1).max(50) }
 export async function linkPayoutExpense(tx: Tx, ctx: AccessContext, statementId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<{ operations: FinanceOperationDto[] }> {
   const parsed = linkSchema.safeParse(raw ?? {});
   if (!parsed.success) throw new AppError('VALIDATION_FAILED', 400, 'Нужен список операций operationIds');
-  const row = await lockPaidStatement(tx, statementId);
+  const row = await lockPaidStatement(tx, ctx, statementId);
   const found: FinanceOperationDto[] = [];
   for (const id of [...new Set(parsed.data.operationIds)]) {
     const op = await getOperation(tx, id);
