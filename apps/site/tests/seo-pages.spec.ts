@@ -41,7 +41,7 @@ test('JSON-LD главной и города: организация и сайт
   expect(ofType(home, 'Organization')).toMatchObject({ name: 'Ю-Клуб', url: 'https://yu-club.test/' });
   expect(ofType(home, 'WebSite')).toBeTruthy();
   expect(ofType(home, 'BreadcrumbList')).toBeUndefined();
-  for (const path of ['/novosibirsk/', '/rules/']) {
+  for (const path of ['/novosibirsk/', '/rules/', '/schedule/']) {
     expect(ofType(jsonLd(await html(request, path)), 'BreadcrumbList'), path).toBeTruthy();
   }
 });
