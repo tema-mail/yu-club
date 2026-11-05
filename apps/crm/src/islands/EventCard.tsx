@@ -13,6 +13,7 @@ import { rub } from './CashJournal.tsx';
 import EventChecklist from './EventChecklist.tsx';
 import { ClientPicker, type PickedClient } from './EventForm.tsx';
 import EventLines from './EventLines.tsx';
+import EventMoney from './EventMoney.tsx';
 import { ReasonDialog, type EventTabProps } from './EventParts.tsx';
 import EventResources from './EventResources.tsx';
 
@@ -335,8 +336,8 @@ export default function EventCard(p: EventCardProps) {
         {tab === 'lines' && <EventLines {...tabProps} />}
         {tab === 'resources' && <EventResources {...tabProps} minMinutes={p.minMinutes} />}
         {tab === 'checklist' && <EventChecklist {...tabProps} />}
-        
-        
+        {tab === 'income' && <EventMoney {...tabProps} mode="income" />}
+        {tab === 'expenses' && <EventMoney {...tabProps} mode="expense" />}
         
         {tab === 'history' && <TimelineView items={c.timeline} tz={tz} staff={p.staff} hasDiff={fullMoney(m)} />}
       </section>
