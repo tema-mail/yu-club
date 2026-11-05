@@ -17,6 +17,7 @@ import { dashboard } from './dashboard.ts';
 import { financeDetail, financeReport, type FinanceParams } from './finance.ts';
 import { parsePeriod, unavailable, withReportTx, DAY_RULE, type ReportEnv, type ReportParams, type ReportsPool } from './framework.ts';
 import { loyaltyDetail, loyaltyReport } from './loyalty.ts';
+import { globalSearch } from './search.ts';
 import { utilizationCalendar, utilizationDetail, utilizationReport, utilizationSeries, type UtilizationParams } from './utilization.ts';
 
 export interface ReportsCrmDeps {
@@ -140,6 +141,7 @@ export async function reportsCrmRoutes(app: FastifyInstance, deps: ReportsCrmDep
     const { access } = await deps.authenticate(request, reply);
     if (!roleAllows(access.role, 'audit.view')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'audit.view' });
     const cursor = parseQuery(request.query).cursor ?? null;
+    if (cursor !== null && Number.isNaN(Date.parse(cursor))) throw new AppError('REPORT_FILTER_INVALID', 422, 'Неверный курсор', { field: 'cursor' });
     const runs = await deps.pool.query<{ id: string; trigger: string; scheduled_for: string | null; started_at: Date; finished_at: Date | null; status: string; checked: unknown; discrepancy_count: number; error: string | null }>(
       `SELECT id, trigger, scheduled_for::text AS scheduled_for, started_at, finished_at, status, checked, discrepancy_count, error
        FROM app.reconcile_runs WHERE ($1::timestamptz IS NULL OR started_at < $1) ORDER BY started_at DESC LIMIT $2`,
@@ -162,6 +164,12 @@ export async function reportsCrmRoutes(app: FastifyInstance, deps: ReportsCrmDep
       })),
       nextCursor: runs.rows.length > RUNS_LIMIT ? rows[rows.length - 1]!.started_at.toISOString() : null,
     };
+  });
+
+  // №250: глобальный поиск (права типов и аудит телефонов – в search.ts)
+  app.get('/search', async (request, reply) => {
+    const { access, meta } = await deps.authenticate(request, reply);
+    return globalSearch({ pool: deps.pool, clock }, access, meta, (request.query as { q?: unknown } | undefined)?.q);
   });
 
   // №242
