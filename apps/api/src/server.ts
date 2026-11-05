@@ -23,6 +23,7 @@ import { contentInternalRoutes } from './modules/content/routes.internal.ts';
 import { contentPublicRoutes } from './modules/content/routes.public.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { createReportsPool } from './modules/reports/framework.ts';
+import { reportsExportRoutes } from './modules/reports/routes.crm.export.ts';
 import { reportsCrmRoutes } from './modules/reports/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
@@ -76,7 +77,7 @@ export interface ServerDeps {
   /** Вложения Э3 (K19 №350): адаптер диска с корнем ATTACHMENTS_DIR вне веб-корня. Нет – маршруты не подключаются. */
   attachments?: { store: FileStore };
   /** Пул отчётов K24 §9 под ролью yu_reports. Нет – маршруты отчётов не подключаются (нужен и staff). */
-  reports?: { pool: pg.Pool };
+  reports?: { pool: pg.Pool; /** Каталог EXPORT_DIR (K24 §7). Нет – маршрутов экспорта нет. */ exportStore?: FileStore };
   /** CMS (K22): медиатека – адаптер диска с корнем MEDIA_DIR и квотой. Нет – маршруты медиа не подключаются. */
   content?: { mediaStore: FileStore; previewSecret?: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
@@ -336,6 +337,20 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
           }),
         { prefix: '/api/crm/v1' },
       );
+      // K24 §7, K11 №243–247: экспорт – файл считает worker, здесь постановка и скачивание
+      const exportStore = deps.reports.exportStore;
+      if (exportStore) {
+        void app.register(
+          async (scope) =>
+            reportsExportRoutes(scope, {
+              pool: staff.pool,
+              store: exportStore,
+              ...(staff.clock ? { clock: staff.clock } : {}),
+              authenticate: (request, reply) => authenticate(staff, request, reply),
+            }),
+          { prefix: '/api/crm/v1' },
+        );
+      }
     }
     // K21 §11, K11 №201–212: кампании, журнал отправок, шаблоны, сводка клиента
     void app.register(
@@ -480,7 +495,7 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
   // Диспетчер уведомлений работает и без VAPID: строки получают статус «нет канала» и остаются в ЛК.
   // sender здесь – только для предупреждения о VAPID при старте; отправляет worker (startWorkerTasks, с bookingLookup)
   const reportsPool = config.REPORTS_DATABASE_URL ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX) : null;
-  if (reportsPool) deps.reports = { pool: reportsPool };
+  if (reportsPool) deps.reports = { pool: reportsPool, exportStore: createFileStore({ root: config.EXPORT_DIR }) };
   const close = async () => {
     await reportsPool?.end();
     await pool.end();
