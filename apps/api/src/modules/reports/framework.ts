@@ -17,7 +17,7 @@ const DETAIL_MAX_LIMIT = 500;
 
 // ---- значение показателя (K24 §2)
 
-export type MetricUnit = 'count' | 'kop' | 'centi' | 'minutes' | 'pct';
+export type MetricUnit = 'count' | 'kop' | 'centi' | 'minutes' | 'pct' | 'days';
 export type UnavailableReason = 'source_not_ready' | 'missing_input' | 'not_permitted';
 export type Metric =
   | { state: 'ok'; value: number; unit: MetricUnit; prev?: number | null; deltaAbs?: number | null; deltaPct?: number | null }
@@ -118,7 +118,8 @@ export async function resolveBranches(db: Db | Tx, ctx: AccessContext, action: s
 }
 
 export interface BranchWindow {
-  branchId: string;
+  /** null – записи без филиала (ручная корректировка баллов): только сетевая область, spec.nullableBranch. */
+  branchId: string | null;
   start: Date;
   end: Date;
 }
@@ -134,6 +135,7 @@ export interface MetricSpec {
   view: string; // только app.rpt_*
   branchCol?: string; // по умолчанию branch_id
   date?: string; // колонка периода; нет – показатель на момент запроса (только филиалы)
+  nullableBranch?: boolean; // в источнике бывают строки без филиала
   /** Условие сегмента: SQL с ? на место значений. */
   conds?: Array<{ sql: string; values?: unknown[] }>;
 }
@@ -147,7 +149,7 @@ export function where(spec: MetricSpec, windows: readonly BranchWindow[]): { sql
   const branchCol = spec.branchCol ?? 'branch_id';
   if (!IDENT_RE.test(branchCol) || (spec.date && !IDENT_RE.test(spec.date))) throw new Error('reports: недопустимое имя столбца');
   const params: unknown[] = [windows.map((w) => w.branchId), windows.map((w) => w.start), windows.map((w) => w.end)];
-  const on = [`w.branch_id = t.${branchCol}`];
+  const on = [spec.nullableBranch ? `(w.branch_id = t.${branchCol} OR (w.branch_id IS NULL AND t.${branchCol} IS NULL))` : `w.branch_id = t.${branchCol}`];
   if (spec.date) on.push(`t.${spec.date} >= w.s`, `t.${spec.date} < w.e`);
   const conds = (spec.conds ?? []).map((c) => {
     let i = 0;
