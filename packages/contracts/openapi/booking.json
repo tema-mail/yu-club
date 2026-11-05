@@ -394,6 +394,31 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "weeklyHours": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "weekday": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 7
+                          },
+                          "open": {
+                            "type": "string"
+                          },
+                          "close": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "weekday",
+                          "open",
+                          "close"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -408,7 +433,8 @@
                     "publicContacts",
                     "bookingWindow",
                     "holdMinutes",
-                    "hoursToday"
+                    "hoursToday",
+                    "weeklyHours"
                   ],
                   "additionalProperties": false
                 }
