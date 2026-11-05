@@ -292,8 +292,9 @@ queued|running → failed (error_code)
 - 0406 `rpt_ops` – представления §1 строк 1–8 (владельцы `booking`, `resources`, `clients`); индексы владельцев; `GRANT SELECT` роли `yu_reports` на `rpt_*` и таблицы календаря `network` (роль создаёт скрипт кластера, §9).
 - 0407 `rpt_money` – строки 9–13 (`finance`, `loyalty`, `certificates`).
 - 0408 `report_exports`: `id`, `staff_id → staff`, `report`, `format`, `params jsonb`, `params_hash`, `detail boolean`, `masked boolean`, `status`, `error_code`, `rows int`, `bytes bigint`, `file_key`, `created_at`, `started_at`, `finished_at`, `expires_at`, `downloaded_at`; частичный `UNIQUE (staff_id, params_hash) WHERE status IN ('queued','running','ready')`; расширение CHECK `journal.reconcile_discrepancies.check_name` значением `utilization_over_capacity` – пересозданием с полным списком (значения 0211, 0311 и новое; §12).
-- 0409 `rpt_comms` – строки 14–16 (`notifications`, `clients`, `content`).
-- 0410 `rpt_e3` – только недостающее по факту 0311 (строка 17); `rpt_*` Э3 создаёт 0311, 0410 их не трогает; может не понадобиться вовсе.
+- 0409 `rpt_comms` – строки 14–16 (`notifications`, `clients`, `content`); сама выдаёт `GRANT SELECT … TO yu_reports` и `REVOKE` записи у `yu_app`.
+- 0410 `rpt_e3` – только недостающее по факту 0311 (строка 17); `rpt_*` Э3 создаёт 0311, 0410 их не трогает; может не понадобиться вовсе. Новое представление – со своим `GRANT` в этой же миграции.
+- **Права на будущие `rpt_*`:** `ALTER DEFAULT PRIVILEGES` не используется, каждая миграция, создающая представление для отчётов (0311 Э3, 0409, 0410 и последующие), сама выдаёт `GRANT SELECT` роли `yu_reports` (D4-23). Страж – `tests/reports/grants.test.ts`: всё `rpt_*`, кроме сверки 0211, читается под `yu_reports`.
 
 ## 14. Проверка
 
