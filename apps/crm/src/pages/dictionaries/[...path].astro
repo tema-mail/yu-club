@@ -3,9 +3,15 @@
 // apps/api/src/modules/dictionaries/routes.ts: список целиком (без курсора), PATCH без rowVersion, архив/возврат,
 // DELETE всегда 409. Системный код не удаляется, не архивируется и не меняется; пользовательское значение – архив.
 // Экран – только Владельцу (dictionary.manage), остальным – 404, как у несуществующей страницы.
+// S3-86, справочники Э3: праздничный календарь, категории оборудования, типы и пакеты мероприятий, исполнители ремонта. Правят их по своим правам
+// (holiday.manage, equipment.category.manage, event.type.manage, event.package.manage, repair.executor.manage); Директор видит их через меню, но правит
+// только исполнителей – остальное читает. Администратору раздела нет. Архив вместо удаления.
 import Crm from '../../layouts/Crm.astro';
 import EntityList, { type ListColumn } from '../../islands/EntityList.tsx';
 import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import DictE3, { type DictE3Kind } from '../../islands/DictE3.tsx';
+import HolidayCalendar from '../../islands/HolidayCalendar.tsx';
+import '../../styles/events.css';
 import { ApiError, serverCall } from '../../lib/api.ts';
 
 type Kind = 'reasons' | 'space-types' | 'resource-types';
@@ -27,16 +33,29 @@ const DOMAIN_LABEL: Record<string, string> = {
 const DOMAINS = Object.entries(DOMAIN_LABEL).map(([value, label]) => ({ value, label }));
 const CODE_HINT = 'Для программы: латиница в нижнем регистре, цифры и _. После создания не меняется';
 
-const { me, cookie } = Astro.locals;
+const E3: Array<{ kind: DictE3Kind | 'holidays'; title: string; edit: string }> = [
+  { kind: 'holidays', title: 'Праздничный календарь', edit: 'holiday.manage' },
+  { kind: 'equipment-categories', title: 'Категории оборудования', edit: 'equipment.category.manage' },
+  { kind: 'event-types', title: 'Типы мероприятий', edit: 'event.type.manage' },
+  { kind: 'event-packages', title: 'Пакеты мероприятий', edit: 'event.package.manage' },
+  { kind: 'repair-executors', title: 'Исполнители ремонта', edit: 'repair.executor.manage' },
+];
+
+const { me, cookie, branches } = Astro.locals;
 const [kindRaw = '', key = '', extra] = (Astro.params.path ?? '').split('/');
-if (me.actions.includes('dictionary.manage') && !kindRaw) return Astro.redirect('/dictionaries/reasons');
+const owns = me.actions.includes('dictionary.manage');
+const seesE3 = owns || me.actions.includes('repair.executor.manage');
+if (owns && !kindRaw) return Astro.redirect('/dictionaries/reasons');
+if (seesE3 && !kindRaw) return Astro.redirect('/dictionaries/holidays');
+const e3 = seesE3 && !key && extra === undefined ? E3.find((x) => x.kind === kindRaw) : undefined;
+const cities = [...new Map(branches.map((b) => [b.cityId, { id: b.cityId, name: b.cityName }])).values()];
 
 const kind = kindRaw as Kind;
 const spec = KINDS[kind] as (typeof KINDS)[Kind] | undefined;
-let notFound = !me.actions.includes('dictionary.manage') || !spec || extra !== undefined || (key === 'new' && !spec.creatable);
+let notFound = !e3 && (!owns || !spec || extra !== undefined || (key === 'new' && !spec.creatable));
 
 let row: Row | null = null;
-if (!notFound && key && key !== 'new') {
+if (!e3 && !notFound && key && key !== 'new') {
   try {
     const r = await serverCall<{ items: Row[] }>(cookie, `/dictionaries/${kind}?includeArchived=true`);
     row = r.items.find((x) => (kind === 'reasons' ? x.id : x.code) === key) ?? null;
@@ -83,7 +102,7 @@ const blocked = !row
       : undefined;
 const ref = row ? (kind === 'reasons' ? row.id! : row.code) : '';
 const archived = Boolean(row?.archivedAt);
-const title = notFound ? 'Не найдено' : row ? row.name : key === 'new' ? `${spec!.one}: новое значение` : 'Справочники';
+const title = notFound ? 'Не найдено' : e3 ? e3.title : row ? row.name : key === 'new' ? `${spec!.one}: новое значение` : 'Справочники';
 ---
 <Crm title={title}>
   {notFound ? (
@@ -92,6 +111,17 @@ const title = notFound ? 'Не найдено' : row ? row.name : key === 'new' 
       <p>Такой страницы нет или она вам недоступна. Проверьте ссылку.</p>
       <p><a href="/">На главную</a></p>
     </div>
+  ) : e3 ? (
+    <>
+      <div class="yc-head"><h1>{e3.title}</h1></div>
+      <nav class="yc-tabs" aria-label="Справочники">
+        {owns && (Object.keys(KINDS) as Kind[]).map((k) => <a class="yc-tabs__link" href={`/dictionaries/${k}`}>{KINDS[k].title}</a>)}
+        {E3.map((x) => <a class="yc-tabs__link" href={`/dictionaries/${x.kind}`} aria-current={x.kind === e3.kind ? 'page' : undefined}>{x.title}</a>)}
+      </nav>
+      {e3.kind === 'holidays'
+        ? <HolidayCalendar client:load canManage={me.actions.includes(e3.edit)} cities={cities} year={new Date().getUTCFullYear()} />
+        : <DictE3 client:load kind={e3.kind} canEdit={me.actions.includes(e3.edit)} seesPlan={me.actions.includes('event.money.view')} />}
+    </>
   ) : (
     <>
       <div class="yc-head">
@@ -106,6 +136,7 @@ const title = notFound ? 'Не найдено' : row ? row.name : key === 'new' 
             {(Object.keys(KINDS) as Kind[]).map((k) => (
               <a class="yc-tabs__link" href={`/dictionaries/${k}`} aria-current={k === kind ? 'page' : undefined}>{KINDS[k].title}</a>
             ))}
+            {E3.map((x) => <a class="yc-tabs__link" href={`/dictionaries/${x.kind}`}>{x.title}</a>)}
             {spec!.creatable && <a class="yc-btn yc-tabs__action" href={`/dictionaries/${kind}/new`}>Добавить значение</a>}
           </nav>
           {!spec!.creatable && <p class="yc-empty">Типы ресурсов задаёт программа: новые не добавляются, у имеющихся меняются название, шаг и порядок.</p>}

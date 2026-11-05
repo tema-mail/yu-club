@@ -13,6 +13,8 @@ interface MenuItem {
   href: string;
   label: string;
   action: string;
+  /** Есть и при этом праве: у Директора справочники Э3 (S3-86). */
+  also?: string;
   active: (path: string) => boolean;
 }
 
@@ -27,14 +29,14 @@ const MENU: MenuItem[] = [
   { href: '/staff', label: 'Сотрудники', action: 'staff.view', active: (p) => p.startsWith('/staff') },
   { href: '/resources', label: 'Ресурсы', action: 'resources.view', active: (p) => p.startsWith('/resources') },
   { href: '/network/branches', label: 'Сеть', action: 'network.branch.update', active: (p) => p.startsWith('/network') },
-  { href: '/dictionaries', label: 'Справочники', action: 'dictionary.manage', active: (p) => p.startsWith('/dictionaries') },
+  { href: '/dictionaries', label: 'Справочники', action: 'dictionary.manage', also: 'repair.executor.manage', active: (p) => p.startsWith('/dictionaries') },
   { href: '/settings', label: 'Настройки', action: 'settings.branch.manage', active: (p) => p.startsWith('/settings') },
 ];
 
 const { title } = Astro.props;
 const { me, branches, ctx } = Astro.locals;
 const path = Astro.url.pathname;
-const menu = MENU.filter((m) => me.actions.includes(m.action));
+const menu = MENU.filter((m) => me.actions.includes(m.action) || (m.also !== undefined && me.actions.includes(m.also)));
 
 // Группы переключателя: «Вся сеть» – только Владельцу; «Весь город» – при назначении на город; филиалы – вся зона.
 const groups: ContextGroup[] = [];

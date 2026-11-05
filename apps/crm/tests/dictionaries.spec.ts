@@ -109,11 +109,12 @@ test('типы ресурсов: без создания и архива, шаг
   await expect(page.getByTestId('history')).toContainText('Шаг записи, минут: 15 → 30');
 });
 
-test('Администратор и Директор: экрана справочников нет, прямая ссылка – 404, изменение – 403', async ({ page, browser }) => {
+test('Администратор и Директор: прежних справочников нет, прямая ссылка – 404, изменение – 403', async ({ page, browser }) => {
   for (const [p, email] of [[page, 'admin@yu.test'], [await (await browser.newContext()).newPage(), 'director@yu.test']] as const) {
     await login(p, email);
-    await expect(p.getByRole('navigation', { name: 'Разделы' }).getByRole('link', { name: 'Справочники' })).toHaveCount(0);
-    for (const url of ['/dictionaries', '/dictionaries/reasons', `/dictionaries/reasons/${SYSTEM_REASON}`, '/dictionaries/space-types/new']) {
+    // S3-86: Директору раздел виден ради справочников Э3 (только чтение), Администратору – нет
+    await expect(p.getByRole('navigation', { name: 'Разделы' }).getByRole('link', { name: 'Справочники' })).toHaveCount(email === 'director@yu.test' ? 1 : 0);
+    for (const url of [...(email === 'admin@yu.test' ? ['/dictionaries'] : []), '/dictionaries/reasons', `/dictionaries/reasons/${SYSTEM_REASON}`, '/dictionaries/space-types/new']) {
       const r = await p.goto(url);
       expect(r?.status(), `${email} ${url}`).toBe(404);
       await expect(p.getByTestId('not-found')).toBeVisible();
