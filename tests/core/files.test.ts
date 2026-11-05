@@ -244,3 +244,53 @@ describe('вложения (0302)', () => {
     }
   });
 });
+
+describe('S4-06: квота по корню, обход и удаление', () => {
+  let quotaRoot: string;
+  const body = (n: number, fill = 1) => new Uint8Array(n).fill(fill);
+  beforeAll(async () => {
+    quotaRoot = await mkdtemp(path.join(os.tmpdir(), 'yu-quota-'));
+  });
+  afterAll(async () => {
+    await rm(quotaRoot, { recursive: true, force: true });
+  });
+
+  it('путь наружу в корне медиа → ошибка, файла снаружи нет', async () => {
+    const media = createFileStore({ root: quotaRoot, quota: { maxBytes: 100, code: 'MEDIA_QUOTA_EXCEEDED' } });
+    await expect(media.writeAtomic('../../etc/passwd', body(1))).rejects.toBeInstanceOf(UnsafePathError);
+    await expect(media.remove('../../etc/passwd')).rejects.toBeInstanceOf(UnsafePathError);
+  });
+
+  it('запись сверх квоты → MEDIA_QUOTA_EXCEEDED 507; файла и временного остатка нет; замена считается по разнице', async () => {
+    const dir = path.join(quotaRoot, 'q1');
+    const media = createFileStore({ root: dir, quota: { maxBytes: 100, code: 'MEDIA_QUOTA_EXCEEDED' } });
+    expect(await media.usedBytes()).toBe(0); // корня ещё нет
+    await media.writeAtomic('aa/first.webp', body(60));
+    expect(await media.usedBytes()).toBe(60);
+    const err = await media.writeAtomic('aa/second.webp', body(41)).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).code).toBe('MEDIA_QUOTA_EXCEEDED');
+    expect((err as AppError).httpStatus).toBe(507);
+    expect(await media.exists('aa/second.webp')).toBe(false);
+    expect(await readdir(path.join(dir, '.tmp'))).toEqual([]);
+    await media.writeAtomic('aa/second.webp', body(40)); // ровно до предела
+    await media.writeAtomic('aa/first.webp', body(60, 2)); // замена того же размера – не превышение
+    expect(await media.usedBytes()).toBe(100);
+    await expect(media.putContent(PNG, { maxBytes: 1000, allowedTypes: [] })).rejects.toMatchObject({ code: 'MEDIA_QUOTA_EXCEEDED' });
+  });
+
+  it('обход не видит временный каталог; удаление – без ошибки при повторе; без квоты – как раньше', async () => {
+    const dir = path.join(quotaRoot, 'q2');
+    const media = createFileStore({ root: dir });
+    await media.writeAtomic('aa/bb/one.webp', body(5));
+    await media.writeAtomic('aa/two.webp', body(7));
+    await expect(media.writeAtomic('aa/three.webp', body(9), { maxBytes: 8 })).rejects.toMatchObject({ code: 'ATTACHMENT_TOO_LARGE' });
+    const seen: string[] = [];
+    for await (const e of media.list()) seen.push(`${e.relative}:${e.sizeBytes}`);
+    expect(seen.sort()).toEqual(['aa/bb/one.webp:5', 'aa/two.webp:7']);
+    await media.remove('aa/two.webp');
+    await media.remove('aa/two.webp');
+    expect(await media.exists('aa/two.webp')).toBe(false);
+    expect(await media.usedBytes()).toBe(5);
+  });
+});

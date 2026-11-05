@@ -3,6 +3,9 @@ import { defineConfig, devices } from '@playwright/test';
 
 const MOCK_PORT = 4012;
 const CRM_PORT = 4332;
+// Предпросмотр K22 §11: «сайт» внутренней сети поднимает сам tests/content-preview.spec.ts.
+export const SITE_PORT = 4333;
+export const PREVIEW_SECRET = 'e2e-preview-secret-not-for-production';
 
 export default defineConfig({
   testDir: 'tests',
@@ -23,7 +26,7 @@ export default defineConfig({
     },
     {
       command: `npm run build && node dist/server/entry.mjs`,
-      env: { HOST: '127.0.0.1', PORT: String(CRM_PORT), API_URL: `http://127.0.0.1:${MOCK_PORT}` },
+      env: { HOST: '127.0.0.1', PORT: String(CRM_PORT), API_URL: `http://127.0.0.1:${MOCK_PORT}`, SITE_INTERNAL_URL: `http://127.0.0.1:${SITE_PORT}`, PREVIEW_SECRET },
       url: `http://127.0.0.1:${CRM_PORT}/login`,
       reuseExistingServer: false,
       timeout: 120_000,

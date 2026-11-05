@@ -1,0 +1,55 @@
+---
+// S4-43. Предпросмотр черновика в CRM (K22 §11, 12 §9.3): сервер CRM берёт страницу у сайта по внутренней сети с X-Preview-Secret и показывает в
+// <iframe srcdoc sandbox> шириной 390 и 1440 px. sandbox пустой: БЕЗ allow-same-origin и БЕЗ allow-scripts – черновик, прошедший мимо очистки,
+// не получает ни куки CRM, ни доступа к её API и не исполняется. Страница за входом (middleware); токен вне CRM бесполезен: нужен секрет.
+import Crm from '../../../layouts/Crm.astro';
+
+const notFound = () => new Response(null, { status: 404, headers: { 'cache-control': 'no-store' } });
+
+const site = process.env.SITE_INTERNAL_URL?.replace(/\/+$/, '');
+const secret = process.env.PREVIEW_SECRET;
+const token = Astro.params.token ?? '';
+if (!site || !secret || !token) return notFound();
+
+// Смотрит тот, кому выдан токен: права проверены при выдаче именно ему. Подпись проверит API; подделать здесь свой staffId без неё нельзя.
+function staffIdOf(raw: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(raw.split('.')[0] ?? '', 'base64url').toString());
+    const id = (parsed as { staffId?: unknown } | null)?.staffId;
+    return typeof id === 'string' ? id : null;
+  } catch {
+    return null;
+  }
+}
+if (staffIdOf(token) !== Astro.locals.me.staff.id) return notFound();
+
+let html: string;
+try {
+  const res = await fetch(`${site}/preview/${encodeURIComponent(token)}/`, { headers: { 'x-preview-secret': secret }, redirect: 'error' });
+  if (!res.ok) return notFound();
+  html = await res.text();
+} catch (err) {
+  console.error('crm: предпросмотр не получен от сайта', err);
+  return new Response('Предпросмотр недоступен: сайт не отвечает', { status: 503, headers: { 'cache-control': 'no-store', 'content-type': 'text/plain; charset=utf-8' } });
+}
+Astro.response.headers.set('cache-control', 'no-store');
+
+const widths = [
+  { width: 390, label: 'Телефон, 390 px' },
+  { width: 1440, label: 'Компьютер, 1440 px' },
+];
+---
+<Crm title="Предпросмотр черновика">
+  <h1>Предпросмотр черновика</h1>
+  <p>На сайте этого текста нет. Ссылка действует 10 минут и до новой правки черновика.</p>
+  {
+    widths.map(({ width, label }) => (
+      <section>
+        <h2>{label}</h2>
+        <div style="overflow-x:auto;border:1px solid #d0d5dd">
+          <iframe title={`Черновик: ${label}`} srcdoc={html} sandbox="" width={width} height="800" style={`display:block;border:0;width:${width}px`} />
+        </div>
+      </section>
+    ))
+  }
+</Crm>

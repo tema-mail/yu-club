@@ -15,10 +15,12 @@ import { pathToFileURL } from 'node:url';
 import { PgBoss } from 'pg-boss';
 import pg from 'pg';
 import { loadConfig } from './config.ts';
+import { createFileStore, type FileStore } from './core/files.ts';
 import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/outbox-worker.ts';
 import { systemClock, type Clock, type LocalTime, type TimeZone } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
 import { startCertificateExpiry } from './modules/certificates/lifecycle.ts';
+import { startMediaGc } from './modules/content/media.ts';
 import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
 import { paymentLookup } from './modules/finance/payment.ts';
 import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/accrual.ts';
@@ -66,6 +68,8 @@ export async function startWorkerTasks(opts: {
   reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
   /** Чтение оплаты для начисления баллов и снятия резерва paid_other (K15 §3–4); по умолчанию – finance paymentLookup (K10, S2-20). */
   payments?: PaymentLookup;
+  /** Медиатека CMS: ночная уборка «сирот» content:media-gc (K22 §8). Нет – задача не запускается. */
+  mediaStore?: FileStore;
 }): Promise<WorkerTasks> {
   const clock = opts.clock ?? systemClock;
   const logger = opts.logger ?? { error: (obj: Record<string, unknown>, msg: string) => log('error', msg, obj) };
@@ -125,10 +129,22 @@ export async function startWorkerTasks(opts: {
     ...(opts.reconcile?.timeZone ? { timeZone: opts.reconcile.timeZone } : {}),
     ...(opts.reconcile?.intervalMs ? { intervalMs: opts.reconcile.intervalMs } : {}),
   });
+  const mediaGc = opts.mediaStore
+    ? startMediaGc({
+        pool: opts.pool,
+        store: opts.mediaStore,
+        clock,
+        onError: (err) => logger.error({ err: errText(err) }, 'content:media-gc: проход упал'),
+        onDone: (r) => {
+          if (r.removed.length > 0) log('info', 'content:media-gc: удалены файлы без строки', { removed: r.removed.length, kept: r.kept });
+        },
+      })
+    : null;
   return {
     outbox,
     reconcile,
     stop: async () => {
+      mediaGc?.stop();
       reconcile.stop();
       holds.stop();
       certificates.stop();
@@ -158,7 +174,14 @@ async function main(): Promise<void> {
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   const schedule = scheduleFromEnv();
-  const tasks = await startWorkerTasks({ pool, boss, vapid, reconcile: schedule, unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null });
+  const tasks = await startWorkerTasks({
+    pool,
+    boss,
+    vapid,
+    reconcile: schedule,
+    unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null,
+    mediaStore: createFileStore({ root: config.MEDIA_DIR }),
+  });
   log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, партий баллов 10 мин, сгорание сертификатов 5 мин, отправка 30 с, сверка раз в сутки', {
     version: config.GIT_SHA,
     webPush: Boolean(vapid),

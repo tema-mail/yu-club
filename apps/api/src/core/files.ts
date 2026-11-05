@@ -1,16 +1,17 @@
 // S3-06. Общий адаптер диска ядра и закрытые вложения Э3 (K19 §9, model-dannyh 0302).
 // Адаптер (FileStore) – один на корень каталога: безопасный путь только внутри корня, атомарная запись (временный файл
 // в <корень>/.tmp → fsync → rename → fsync каталога), адрес по sha256, тип по сигнатуре первых байтов, а не по заявленному
-// MIME. Э4 его не пишет заново, а расширяет (S4-06: квота, корни MEDIA_DIR / EXPORT_DIR; медиа CMS – content/media.ts).
+// MIME. S4-06: квота по корню (createFileStore({ quota })), обход и удаление файлов – для медиа CMS (content/media.ts, корень
+// MEDIA_DIR) и экспортов Э4 (EXPORT_DIR); корень – один адаптер на каталог, общий код не дублируется.
 // Вложения поверх адаптера: каталог ATTACHMENTS_DIR вне веб-корня (Caddy его не раздаёт, S3-94), выдача – только через
 // API с правом на объект-владелец (реестр registerAttachmentOwner), версия вместо замены (supersedes), ошибочная –
 // status 'invalid' с причиной. Файл пишется до строки базы: откат транзакции оставляет безвредный файл без строки (D3-06).
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, type ReadStream } from 'node:fs';
-import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { writeAudit, type AuditRequestMeta, type Db } from './audit.ts';
-import { AppError } from './errors.ts';
+import { AppError, type ErrorCode } from './errors.ts';
 import type { AccessContext } from './permissions.ts';
 import { resolveSettings } from './settings.ts';
 import { systemClock, type Clock } from './time.ts';
@@ -83,6 +84,25 @@ export interface FileStore {
   exists(relative: string): Promise<boolean>;
   read(relative: string): Promise<Buffer>;
   openRead(relative: string): ReadStream;
+  /** Удалить файл; нет файла – без ошибки. Безопасный путь – как у записи. */
+  remove(relative: string): Promise<void>;
+  /** Все файлы корня (без временного каталога .tmp): относительный путь, размер, время изменения. */
+  list(): AsyncIterable<StoredEntry>;
+  /** Сколько занято в корне, байт. Временные файлы не считаются. */
+  usedBytes(): Promise<number>;
+}
+
+export interface StoredEntry {
+  relative: string;
+  sizeBytes: number;
+  modifiedAt: Date;
+}
+
+/** Квота корня: запись, с которой корень стал бы больше maxBytes, отклоняется кодом code (HTTP 507); на диск файл не попадает.
+ *  Проверка – перед rename, по факту размера: параллельные записи могут превысить квоту на один файл (приемлемо: квота – защита диска, а не деньги). */
+export interface RootQuota {
+  maxBytes: number;
+  code: ErrorCode;
 }
 
 async function* chunks(source: FileSource): AsyncIterable<Uint8Array> {
@@ -101,9 +121,46 @@ async function fsyncDir(dir: string): Promise<void> {
   }
 }
 
-export function createFileStore(opts: { root: string }): FileStore {
+export function createFileStore(opts: { root: string; quota?: RootQuota }): FileStore {
   const root = path.resolve(opts.root);
   const tmpDir = path.join(root, '.tmp');
+
+  async function* walk(dir: string, prefix: string): AsyncIterable<StoredEntry> {
+    let names;
+    try {
+      names = await readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // корень создаётся при первой записи
+      throw err;
+    }
+    for (const e of names) {
+      if (e.name === '.tmp' && prefix === '') continue;
+      const relative = prefix === '' ? e.name : `${prefix}/${e.name}`;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) yield* walk(full, relative);
+      else if (e.isFile()) {
+        const st = await stat(full);
+        yield { relative, sizeBytes: st.size, modifiedAt: st.mtime };
+      }
+    }
+  }
+
+  async function usedBytes(): Promise<number> {
+    let total = 0;
+    for await (const e of walk(root, '')) total += e.sizeBytes;
+    return total;
+  }
+
+  /** Квота – до rename: замена того же файла считается по разнице размеров. Превышение удаляет временный файл. */
+  async function checkQuota(tmp: string, sizeBytes: number, finalPath: string): Promise<void> {
+    if (!opts.quota) return;
+    const replaced = await stat(finalPath).then((st) => st.size, () => 0);
+    const used = await usedBytes();
+    if (used - replaced + sizeBytes > opts.quota.maxBytes) {
+      await rm(tmp, { force: true });
+      throw new AppError(opts.quota.code, 507, 'Место в хранилище закончилось', { maxBytes: opts.quota.maxBytes });
+    }
+  }
 
   /** Временный файл → fsync → rename → fsync каталога. Любая ошибка посреди записи удаляет временный файл. */
   async function writeTemp(source: FileSource, maxBytes: number | undefined): Promise<{ tmp: string; sizeBytes: number; sha256: string; head: Uint8Array }> {
@@ -157,12 +214,15 @@ export function createFileStore(opts: { root: string }): FileStore {
         throw new AppError('ATTACHMENT_TYPE_NOT_ALLOWED', 415, 'Тип файла не разрешён', { allowed: limits.allowedTypes });
       }
       const storageKey = `${t.sha256.slice(0, 2)}/${t.sha256}`;
-      await commit(t.tmp, safeJoin(root, storageKey)); // тот же адрес – то же содержимое: rename атомарно заменяет копию
+      const finalPath = safeJoin(root, storageKey);
+      await checkQuota(t.tmp, t.sizeBytes, finalPath);
+      await commit(t.tmp, finalPath); // тот же адрес – то же содержимое: rename атомарно заменяет копию
       return { storageKey, sha256: t.sha256, sizeBytes: t.sizeBytes, mimeType };
     },
     async writeAtomic(relative, source, o = {}) {
       const finalPath = safeJoin(root, relative);
       const t = await writeTemp(source, o.maxBytes);
+      await checkQuota(t.tmp, t.sizeBytes, finalPath);
       await commit(t.tmp, finalPath);
       return { sizeBytes: t.sizeBytes, sha256: t.sha256, head: t.head };
     },
@@ -177,6 +237,9 @@ export function createFileStore(opts: { root: string }): FileStore {
     },
     read: (relative) => readFile(safeJoin(root, relative)),
     openRead: (relative) => createReadStream(safeJoin(root, relative)),
+    remove: async (relative) => rm(safeJoin(root, relative), { force: true }),
+    list: () => walk(root, ''),
+    usedBytes,
   };
 }
 
