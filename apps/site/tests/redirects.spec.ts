@@ -42,7 +42,7 @@ test('старые адреса города, филиала и комнаты: 
   // Старый адрес с другим регистром – всё равно один переход, сразу на текущий.
   await oneHop(request, '/Old-Nsk/Krasny-Prospekt/', '/novosibirsk/krasny-prospekt/');
   await oneHop(request, '/OLD-TOMSK/', '/tomsk/lenina/');
-  // Без слеша: первый 301 даёт Astro (до middleware), второй – на текущий адрес (отклонение, см. TEHDOLG-zapusk; канонические адреса и ссылки всегда со слешем).
+  // Без слеша: первый 301 даёт Astro (до middleware), второй – на текущий адрес (D4-27, TEHDOLG-zapusk 1.16; канонические адреса и ссылки всегда со слешем).
   await oneHop(request, '/old-tomsk', '/old-tomsk/');
   // Параметры идут за переходом; промежуточный /rooms/ старого адреса – сразу на раздел.
   await oneHop(request, '/old-nsk/krasny-prospekt/?zone=pc', '/novosibirsk/krasny-prospekt/?zone=pc');

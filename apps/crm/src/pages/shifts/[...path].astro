@@ -1,0 +1,84 @@
+---
+// Смены сотрудников (K18 №301–310): /shifts – расписание (S3-71, shift.view), /shifts/my – своё (S3-72, shift.view.own), /shifts/{id} – карточка (S3-73).
+// Решает всё равно сервер (K1): чужой филиал – 404, без права – 403.
+import Crm from '../../layouts/Crm.astro';
+import MySchedule from '../../islands/MySchedule.tsx';
+import ShiftCalendar from '../../islands/ShiftCalendar.tsx';
+import ShiftCard from '../../islands/ShiftCard.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+import { today as todayIn } from '../../lib/booking.ts';
+import { fmtDate, type ShiftDto, type TimelineEvent } from '../../lib/shifts.ts';
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const segments = (Astro.params.path ?? '').split('/').filter(Boolean);
+const key = segments[0] ?? '';
+
+const fullName = `${me.staff.firstName} ${me.staff.lastName}`;
+const isMy = key === 'my';
+const isCard = key !== '' && !isMy;
+let notFound = segments.length > 1 || (isMy ? !can('shift.view.own') : !isCard && !can('shift.view'));
+if (branches.length === 0) notFound = true;
+
+// Карточка: своя смена видна и вне зоны, чужая – при shift.view; нет – 404 с телом несуществующей (K18 TC-16).
+let shift: ShiftDto | null = null;
+let timeline: TimelineEvent[] = [];
+if (isCard && !notFound) {
+  try {
+    const id = encodeURIComponent(key);
+    [shift, { items: timeline }] = await Promise.all([serverCall<ShiftDto>(cookie, `/shifts/${id}`), serverCall<{ items: TimelineEvent[] }>(cookie, `/shifts/${id}/timeline`)]);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFound = true;
+  }
+}
+
+/** Имена – только с staff.view (Владелец, Директор): Администратору API список не отдаёт. */
+async function staffList() {
+  const list: Array<{ id: string; name: string }> = [];
+  if (!can('staff.view')) return list;
+  let cursor: string | null = null;
+  for (let page = 0; page < 20; page++) {
+    const q: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+    const r: { items: Array<{ id: string; firstName: string; lastName: string }>; nextCursor: string | null } = await serverCall(cookie, `/staff?limit=100${q}`);
+    for (const s of r.items) list.push({ id: s.id, name: `${s.firstName} ${s.lastName}` });
+    if (!r.nextCursor) break;
+    cursor = r.nextCursor;
+  }
+  return list;
+}
+const staff = notFound ? [] : await staffList();
+if (notFound) Astro.response.status = 404;
+
+const zone = branches.map((b) => ({ id: b.id, name: b.name, timezone: b.timezone }));
+const first = ctx.kind === 'branch' ? ctx.branch : (branches[0] ?? null);
+const staffNames = Object.fromEntries(staff.map((x) => [x.id, x.name]));
+const title = notFound ? 'Не найдено' : shift ? `Смена ${fmtDate(shift.localDate)}` : isMy ? 'Моё расписание' : 'Расписание сотрудников';
+const inZoneOf = (id: string) => branches.some((b) => b.id === id);
+const shiftOwn = shift?.staffId === me.staff.id;
+const staffName = shift ? (shiftOwn ? fullName : (staffNames[shift.staffId] ?? 'Коллега')) : '';
+const cardMoney = shift ? can('payroll.view') && inZoneOf(shift.branchId) : false;
+const cardCorrect = shift ? can('shift.attendance.correct') && inZoneOf(shift.branchId) : false;
+const cardEdit = shift ? can(shiftOwn ? 'shift.plan.own' : 'shift.manage') && inZoneOf(shift.branchId) : false;
+---
+<Crm title={title}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такой записи нет или она вне вашей зоны доступа. Проверьте ссылку.</p>
+      <p><a href="/">На главную</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        {shift && <p class="yc-crumbs"><a href={can('shift.view') ? '/shifts' : '/shifts/my'}>Расписание сотрудников</a> / {title}</p>}
+        <h1>{title}</h1>
+      </div>
+      {shift && <ShiftCard client:load initial={shift} initialTimeline={timeline} staffName={staffName} branches={zone} staffNames={staffNames} meId={me.staff.id}
+        canCorrect={cardCorrect} canEdit={cardEdit} canMoney={cardMoney} />}
+      {isMy && <MySchedule client:load meId={me.staff.id} branches={zone} today={todayIn(first!.timezone)} staffNames={staffNames} />}
+      {!isMy && !shift && <ShiftCalendar client:load branches={zone} staff={staff} meId={me.staff.id} meName={fullName} initialBranchId={first!.id} today={todayIn(first!.timezone)}
+        canManage={can('shift.manage')} canStaffCard={can('staff.view')} />}
+    </>
+  )}
+</Crm>

@@ -35,6 +35,8 @@ export interface ResourcesDeps {
   clock?: Clock;
   /** Будущие брони и удержания ресурса для смены состава (booking/providers.ts, ADR 0002 п.1). */
   usage: ResourceUsageProvider;
+  /** Ресурс создан с экрана ресурсов, в той же транзакции: подарочный ресурс VR-комнаты (K20 §8.2, S3-62; подключает server.ts). */
+  onResourceCreated?: (tx: Tx, ctx: AccessContext, resource: { branchId: string; type: string }, meta: AuditRequestMeta, clock: Clock) => Promise<void>;
 }
 
 // ---- права и отказы
@@ -183,6 +185,12 @@ const DEFS: Record<Kind, EntityDef> = {
   },
 };
 
+/** Служебные типы: открываются только грантом booking (K5, K20 §8.2), самостоятельной записи у них нет ни при каких правах. */
+const SERVICE_RESOURCE_TYPES: ReadonlySet<string> = new Set(['gift_vr']);
+function assertNotSelfBookable(input: Record<string, unknown>): void {
+  if (input.selfBookable === true) throw new AppError('VALIDATION_FAILED', 400, 'Служебный ресурс нельзя открыть для самостоятельной записи', { field: 'selfBookable' });
+}
+
 export type EntityRow = Record<string, unknown> & { id: string; branchId: string; status: string; rowVersion: number };
 
 const selectList = (d: EntityDef) =>
@@ -226,6 +234,10 @@ export async function createEntity(tx: Tx, ctx: AccessContext, kind: Kind, branc
   if (branch.status === 'archived') throw new AppError('RESOURCE_ARCHIVED', 409, 'Филиал в архиве');
   const { unitCode, unitIds, ...input } = parse(d.create, raw) as Record<string, unknown> & { unitCode?: string; unitIds?: string[] };
   assertRoomSlug(kind, input.slug);
+  if (kind === 'resource' && SERVICE_RESOURCE_TYPES.has(input.type as string)) {
+    assertNotSelfBookable(input);
+    input.selfBookable = false; // в столбце по умолчанию true: служебный тип без флага – тоже закрыт
+  }
   await checkLinks(tx, branchId, input);
   const keys = Object.keys(input).filter((k) => input[k] !== undefined);
   const cols = ['branch_id', ...keys.map((k) => d.cols[k]!)];
@@ -264,6 +276,7 @@ export async function updateEntity(tx: Tx, ctx: AccessContext, kind: Kind, id: s
   if (cur.status === 'archived') throw new AppError('RESOURCE_ARCHIVED', 409, 'Объект в архиве');
   checkVersion(cur.rowVersion, input.rowVersion);
   if (input.slug !== cur.slug) assertRoomSlug(kind, input.slug);
+  if (kind === 'resource' && SERVICE_RESOURCE_TYPES.has(cur.type as string)) assertNotSelfBookable(input);
   await checkLinks(tx, cur.branchId, input);
   const keys = Object.keys(input).filter((k) => k !== 'rowVersion' && input[k] !== undefined);
   const sets = keys.map((k, i) => `${d.cols[k]!} = $${i + 2}`);
@@ -440,7 +453,16 @@ export async function resourcesRoutes(app: FastifyInstance, deps: ResourcesDeps)
     );
     app.post(
       `/branches/:branchId/${plural}`,
-      commandHandler(deps, `${kind}.create`, (tx, ctx, branchId, body, meta, c) => createEntity(tx, ctx, kind, branchId, body, meta, c), 201),
+      commandHandler(
+        deps,
+        `${kind}.create`,
+        async (tx, ctx, branchId, body, meta, c) => {
+          const row = await createEntity(tx, ctx, kind, branchId, body, meta, c);
+          if (kind === 'resource') await deps.onResourceCreated?.(tx, ctx, { branchId: row.branchId, type: row.type as string }, meta, c);
+          return row;
+        },
+        201,
+      ),
     );
     app.patch(`/${plural}/:${idParam}`, commandHandler(deps, `${kind}.update`, (tx, ctx, id, body, meta, c) => updateEntity(tx, ctx, kind, id, body, meta, c)));
     app.post(`/${plural}/:${idParam}/archive`, commandHandler(deps, `${kind}.archive`, (tx, ctx, id, body, meta, c) => archiveEntity(tx, ctx, kind, id, body, meta, c)));

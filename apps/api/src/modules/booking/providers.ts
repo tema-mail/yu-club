@@ -8,7 +8,7 @@
 import type { AuditRequestMeta, Db, Tx } from '../../core/audit.ts';
 import type { AccessContext } from '../../core/permissions.ts';
 import type { CrmBookingRow } from '../../../../../packages/contracts/src/crm/booking.ts';
-import { interval, systemClock, type Clock, type Interval, type TimeZone } from '../../core/time.ts';
+import { interval, systemClock, toPgRange, type Clock, type Interval, type TimeZone } from '../../core/time.ts';
 import { getClientRefs } from '../clients/index.ts';
 import { expandToUnits, unitsOfTarget } from '../resources/index.ts';
 import { affectedOnUnits, createBlock, getBlock, liftBlock, type AffectedOnUnits, type BlockInfo, type BlockTarget } from './blocks.ts';
@@ -349,4 +349,23 @@ export async function eventOccupancy(db: Db | Tx, eventResourceId: string): Prom
   );
   return r.rows.map((x) => ({ unitId: x.unit_id, start: x.start, end: x.end }));
 }
+/** Занятое время единиц в интервале: живые занятия (непросроченные удержания) и блокировки (K20 №377: окна подарка). */
+export async function busyOnUnits(db: Db | Tx, unitIds: string[], period: Interval, now: Date): Promise<Array<{ s: Date; e: Date }>> {
+  const r = await db.query<{ s: Date; e: Date }>(
+    `SELECT lower(period) AS s, upper(period) AS e FROM app.occupancy
+      WHERE active AND unit_id = ANY($1::uuid[]) AND period && $2::tstzrange AND (hold_expires_at IS NULL OR hold_expires_at > $3)
+     UNION ALL
+     SELECT lower(period), upper(period) FROM app.resource_block_units WHERE active AND unit_id = ANY($1::uuid[]) AND period && $2::tstzrange`,
+    [unitIds, toPgRange(period), now],
+  );
+  return r.rows;
+}
+
+/** Из переданных удержаний – уже не действующие: закрыты или истекли, а задача ещё не прошла. */
+export async function deadHoldIds(db: Db | Tx, holdIds: string[], now: Date): Promise<string[]> {
+  if (holdIds.length === 0) return [];
+  const r = await db.query<{ id: string }>(`SELECT id FROM app.holds WHERE id = ANY($1::uuid[]) AND (status <> 'active' OR expires_at <= $2)`, [holdIds, now]);
+  return r.rows.map((x) => x.id);
+}
+
 export { registerEventSourceResolver, type EventSourceResolver } from './blocks.ts';

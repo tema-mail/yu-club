@@ -103,9 +103,10 @@ export function moveEvent(tx, ctx, eventId, input: { rowVersion; plannedStart; p
 | праздничный стол/кейтеринг – опционально, отдельной строкой `catering` | – | – |
 | цена не рассчитывается, пока `event.party.price_confirmed = false` | у строк праздника нет цены из тарифа; сотрудник с `event.price.manage` вводит её руками, на сайте – «цена уточняется» | – |
 
+  Правила перепроверяются по всем активным ресурсам при правке `party` и `participantsCount` и при подтверждении: комната не расходится с форматом после резервирования (ревизия 05.11).
   TC-13: «непрерывный блок VR+PS4 минимум 120 минут, гости 1–10, стол отдельно; неподтверждённая цена не рассчитывается».
 - Тарифы K6 `quote` для мероприятий не вызываются никогда (решение: стоимость мероприятия – строки состава, 11 §7.1; тариф брони – про сеанс).
-- `moveEvent` (перенос, 11 §10): в одной транзакции `release(old)` → `occupy(new)`; конфликт нового интервала откатывает всё – старое время остаётся (16 §9 «если недоступен, исходная остаётся»). История старой даты – аудит `event.rescheduled`.
+- `moveEvent` (перенос, 11 §10): в одной транзакции `release(old)` → `occupy(new)`; конфликт нового интервала откатывает всё – старое время остаётся (16 §9 «если недоступен, исходная остаётся»). История старой даты – аудит `event.rescheduled`. `resources` обязан содержать каждую активную строку `event_resources` ровно один раз, период каждого ресурса – внутри новых `plannedStart…plannedEnd`; иначе `EVENT_MOVE_RESOURCES_INVALID` (422, `details.reason`: `missing`, `duplicate`, `outside_planned`) и откат: дата не уезжает от комнаты. Пустой список допустим, только если занятых ресурсов нет (ревизия 05.11).
 
 ## 5. Чек-лист (11 §6)
 
@@ -163,7 +164,7 @@ export interface BirthdayGiftDto {
   status: GiftStatus; bookingId: string | null; cancelReason: string | null;
 }
 export function issueGift(tx, ctx, input: { clientId; basisEventId?; reason?: string }, meta): Promise<BirthdayGiftDto>;
-export function cancelGift(tx, ctx, giftId, input: { reason }, meta): Promise<BirthdayGiftDto>;
+export function cancelGift(tx, ctx, giftId, input: { reason }, meta): Promise<BirthdayGiftDto>;   // только из issued: живая запись не отменяется молча (D3-14)
 ```
 
 - Состав – 2 × Meta Quest 3S по 30 минут, 40 минут комнаты с подготовкой, 60 дней, по записи, Пн–Пт кроме праздников; PS4, PS VR и еда не входят (11 §2 п.7–10, §9.1, приёмка 13–17). Состав – константа снимка, а не настройка; меняются только `gift.valid_days` и `gift.room_minutes` и только для новых подарков.
@@ -176,8 +177,8 @@ export function cancelGift(tx, ctx, giftId, input: { reason }, meta): Promise<Bi
 ### 8.2. Запись по подарку – 7 проверок 11 §9.3
 
 ```ts
-export function holdGift(tx, owner: HoldOwner, giftId, input: { branchId; start }, clock): Promise<HoldDto>;     // ЛК: удержание K5 на подарочный ресурс
-export function bookGiftByStaff(tx, ctx, giftId, input: { branchId; start; comment? }, meta): Promise<CrmBooking>;   // CRM, бронь сразу
+export function holdGift(tx, owner: HoldOwner, giftId, input: { branchId; start }, meta, clock): Promise<HoldDto>;     // ЛК: удержание K5 на подарочный ресурс
+export function bookGiftByStaff(tx, ctx, giftId, input: { branchId; start; comment?; clientId? }, meta): Promise<CrmBooking>;   // CRM, бронь сразу
 ```
 
 | № | 11 §9.3 | Как проверяется | Ошибка |
@@ -259,7 +260,7 @@ export function refundIncome(tx, ctx, input: { incomeOperationId; amountKop; pla
 
 **K1, K2, K4, K7, K11** – строки §12–§16 этого файла и K18, K19.
 
-**Для Э4 (K24 отчёты, K21 уведомления) – представления и провайдеры Э3** (миграция `0311_rpt_e3.sql`, шаг S3-95; владельцы – модули Э3, как 0211; 0410 Э4 эти представления не создаёт и не меняет – только то, чего по факту 0311 нет, решение техлида 04.11):
+**Для Э4 (K24 отчёты, K21 уведомления) – представления и провайдеры Э3** (миграция `0311_rpt_e3.sql`, шаг S3-95; владельцы – модули Э3, как 0211; 0410 Э4 эти представления не создаёт и не меняет – только то, чего по факту 0311 нет, решение техлида 04.11). **Права:** 0311 сама выдаёт `GRANT SELECT ON <все представления ниже> TO yu_reports` и отзывает запись у `yu_app` – пул отчётов ходит под этой ролью (K24 §9, §13, D4-23), иначе отчёты Э3 упадут с `permission denied`; проверяет `tests/reports/grants.test.ts`:
 
 | Представление | Владелец | Поля |
 |---|---|---|
@@ -334,7 +335,8 @@ CREATE TABLE app.event_checklist (id uuid PK, event_id uuid NOT NULL → events,
   updated_by uuid, updated_at timestamptz);
 CREATE TABLE app.event_resources (id uuid PK, event_id uuid NOT NULL → events, branch_id uuid NOT NULL → branches,
   resource_id uuid NOT NULL → resources, period tstzrange NOT NULL /* [) конечные */, unit_ids uuid[] NOT NULL,
-  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','released')), released_at timestamptz, release_reason text);
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','released')), released_at timestamptz, release_reason text,
+  reserved_at timestamptz NOT NULL, request_hold_reminded_at timestamptz);   -- D3-12: срок удержания под new_request (§4)
 CREATE TABLE app.event_bookings (event_id uuid NOT NULL → events, booking_id uuid NOT NULL UNIQUE → bookings,
   linked_by uuid NOT NULL, linked_at timestamptz NOT NULL, PRIMARY KEY (event_id, booking_id));
 -- 0308 (network)
@@ -342,18 +344,21 @@ CREATE TABLE app.holiday_dates (id uuid PK, scope text NOT NULL CHECK (scope IN 
   local_date date NOT NULL, name text NOT NULL, status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','cancelled')),
   created_by uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), CHECK ((scope = 'city') = (city_id IS NOT NULL)));
 CREATE UNIQUE INDEX holiday_dates_one ON app.holiday_dates (scope, coalesce(city_id, '00000000-0000-0000-0000-000000000000'), local_date) WHERE status = 'active';
--- 0309 (events)
+-- 0309 (events); тип ресурса для FK – строка gift_vr в dict_resource_types (D3-12)
 CREATE TABLE app.birthday_gifts (id uuid PK, number text NOT NULL UNIQUE, client_id uuid NOT NULL → clients,
   basis_event_id uuid → events, issue_branch_id uuid NOT NULL → branches, issued_on date NOT NULL, valid_until date NOT NULL,
   terms jsonb NOT NULL, status text NOT NULL DEFAULT 'issued' CHECK (status IN ('issued','reserved','used','expired','cancelled')),
-  cancel_reason text, issued_by uuid NOT NULL, row_version int NOT NULL DEFAULT 1, CHECK (valid_until > issued_on),
+  cancel_reason text, manual_reason text /* D3-12: выдача без мероприятия, Q-115 */, issued_by uuid NOT NULL, issued_at timestamptz NOT NULL,
+  row_version int NOT NULL DEFAULT 1, CHECK (valid_until > issued_on),
   CONSTRAINT birthday_gifts_one_per_year EXCLUDE USING gist (client_id WITH =, daterange(issued_on, issued_on + 365) WITH &&) WHERE (status <> 'cancelled'));
 CREATE TABLE app.gift_uses (id uuid PK, gift_id uuid NOT NULL → birthday_gifts, hold_id uuid → holds, booking_id uuid → bookings,
   status text NOT NULL CHECK (status IN ('held','booked','used','released')), changed_at timestamptz NOT NULL);
 CREATE UNIQUE INDEX gift_uses_one_live ON app.gift_uses (gift_id) WHERE status IN ('held','booked','used');
 ```
 
-`REVOKE DELETE` на все таблицы. Константа `365` в `EXCLUDE` – копия умолчания `gift.per_client_days` (решение: ограничение базы не читает настройку; смена срока – миграцией, вопрос Q-71).
+**ПДн (152-ФЗ, K9).** `events.customer_name`, `customer_phone_e164`, `birthday_person_name`, `wishes` – персональные данные заказчика и именинника; они есть и у заказчика без профиля (§2). Процедура обезличивания клиента обязана в той же транзакции заменить их у мероприятий с `customer_client_id` или `birthday_client_id` этого клиента (`customer_name` и телефон – заглушкой: столбцы `NOT NULL` с `CHECK`); контакт без профиля обезличивается по сроку хранения (K21 §15, TEHDOLG 4.6, Q-100). Суммы, состав и история остаются.
+
+`REVOKE DELETE` на все таблицы, кроме `event_bookings`: связь с бронью – ссылка, её снятие удаляет строку (у неё нет UPDATE). Константа `365` в `EXCLUDE` – копия умолчания `gift.per_client_days` (решение: ограничение базы не читает настройку; смена срока – миграцией, вопрос Q-71).
 
 ## 15. API (номера 3xx)
 
@@ -386,6 +391,7 @@ CREATE UNIQUE INDEX gift_uses_one_live ON app.gift_uses (gift_id) WHERE status I
 | `EVENT_NOT_READY` | 422 | подтверждение без даты, филиала, состава (`details.fields`) |
 | `EVENT_TRANSITION_INVALID` | 409 | переход не по таблице §2 |
 | `EVENT_CLOSED` | 409 | правка состава/ресурсов в конечном статусе |
+| `EVENT_MOVE_RESOURCES_INVALID` | 422 | перенос не покрывает все активные ресурсы или период вне новых дат (§4) |
 | `PARTY_RESOURCE_INVALID`, `PARTY_TOO_SHORT`, `PARTY_GUESTS_LIMIT`, `PARTY_FORMAT_MISMATCH` | 422 | правила праздника §4 (TC-13) |
 | `EVENT_REFUND_EXCEEDS_INCOME` | 409 | возврат больше поступления |
 | `OPERATION_ALREADY_LINKED`, `OPERATION_LINK_INVALID` | 409 / 422 | связь операции (§11) |

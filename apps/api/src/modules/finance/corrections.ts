@@ -71,13 +71,28 @@ function reversalDeltas(op: FinanceOperationDto): Array<{ place: MoneyPlace; del
   return [{ place: op.place, delta: op.direction === 'in' ? -op.amountKop : op.amountKop }];
 }
 
+/** Возврат refundIncome (K20 §6, K17 §14): ссылка на поступление мероприятия, доп. услуги или прочее – не K10 и не K16. */
+async function isIncomeRefund(tx: Tx, op: FinanceOperationDto): Promise<boolean> {
+  if (op.ref?.type !== 'operation') return false;
+  const income = await getOperation(tx, op.ref.id);
+  return income?.kind === 'income' && (income.source === 'event' || income.source === 'extra_service' || income.source === 'other');
+}
+
+/** Исправление №45 связанной операции потеряло бы связь: сторно плюс новая операция без объекта – объект снова «не оплачен» (K17 §14).
+ *  Такую операцию сторнируют и вводят заново через карточку объекта. Вызывается под lockPlaces: linkOperation берёт те же замки. */
+async function assertNotLinked(tx: Tx, operationId: string): Promise<void> {
+  const r = await tx.query<{ ref_type: string; ref_id: string; role: string }>(`SELECT ref_type, ref_id, role FROM app.finance_operation_links WHERE operation_id = $1 AND unlinked_at IS NULL`, [operationId]);
+  const link = r.rows[0];
+  if (link) throw new AppError('OPERATION_ALREADY_LINKED', 409, 'Операция связана с объектом: сторно и новая операция – через его карточку', { ref: { type: link.ref_type, id: link.ref_id }, role: link.role });
+}
+
 /** Общая часть сторно и исправления: права, запреты по источнику, блокировка, перечитывание, проводка, аудит. */
 async function reverseCore(
   tx: Tx,
   ctx: AccessContext,
   input: { operationId: string; reason?: string | undefined },
   meta: AuditRequestMeta,
-  opts: CommandOpts & { auditAction: AuditAction },
+  opts: CommandOpts & { auditAction: AuditAction; refuseLinked?: boolean },
 ): Promise<{ original: FinanceOperationDto; reversal: FinanceOperationDto; replayed: boolean }> {
   const clock = opts.clock ?? systemClock;
   const found = await getOperation(tx, input.operationId);
@@ -88,8 +103,9 @@ async function reverseCore(
   const branch = await guardFinance(tx, ctx, found.branchId, 'finance.correct', { action: opts.auditAction, operationId: found.id });
   const reason = requireComment(input.reason, 'reason');
   if (found.kind === 'reversal') throw new AppError('CANNOT_REVERSE_REVERSAL', 409, 'Сторно нельзя сторнировать');
-  if (found.kind === 'refund') {
-    // возврат привязан к платежу K10 – исправление корректировкой, не сторно (решение 02.11 внизу K17)
+  if (found.kind === 'refund' && !(await isIncomeRefund(tx, found))) {
+    // возврат привязан к платежу K10 или продаже K16 – исправление корректировкой, не сторно (решение 02.11 внизу K17).
+    // Возврат refundIncome (K20 §6) сторнируется: иначе поступление с возвратом осталось бы без сторно навсегда.
     throw new AppError('USE_PAYMENT_REFUND', 409, 'Возврат не сторнируется: исправление – корректировкой', { operationId: found.id });
   }
   if (found.kind === 'income' && found.source === 'session') {
@@ -113,6 +129,16 @@ async function reverseCore(
   }
   const original = (await getOperation(tx, found.id))!;
   if (original.reversedBy) throw new AppError('ALREADY_REVERSED', 409, 'Операция уже сторнирована', { reversalId: original.reversedBy });
+  if (opts.refuseLinked) await assertNotLinked(tx, original.id);
+  // K20 §6: возврат не повисает без основания – сначала сторно возвратов. Проверка под lockPlaces: возврат берёт те же замки.
+  if (original.kind === 'income') {
+    const live = await tx.query<{ id: string }>(
+      `SELECT fo.id FROM journal.finance_operations fo WHERE fo.kind = 'refund' AND fo.ref_type = 'operation' AND fo.ref_id = $1
+         AND NOT EXISTS (SELECT 1 FROM journal.finance_operations r WHERE r.reversal_of = fo.id) ORDER BY fo.number`,
+      [original.id],
+    );
+    if (live.rows.length > 0) throw new AppError('INCOME_HAS_REFUNDS', 409, 'По поступлению есть возвраты: сначала сторно возвратов', { refundIds: live.rows.map((x) => x.id) });
+  }
 
   const now = clock.now();
   await assertPeriodOpen(tx, branch, now);
@@ -190,6 +216,7 @@ export async function correctOperation(
     ...opts,
     idempotencyKey: `correct:${opts.idempotencyKey}`,
     auditAction: 'finance.operation.corrected',
+    refuseLinked: true,
   });
   const { kind, ...body } = input.replacement;
   const replacement = await REPLACE[kind](tx, ctx, { ...body, branchId: original.branchId }, meta, { idempotencyKey: `${opts.idempotencyKey}:replacement`, clock });

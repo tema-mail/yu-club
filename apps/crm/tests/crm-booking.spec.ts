@@ -245,7 +245,8 @@ test('перенос: новый слот из календаря, «было �
   await expect(timeline(page).first()).toContainText(`ПК 2, ${d}, 18:00–20:00`);
   // календарь видит новое место
   await page.goto(`/schedule?date=${day(1)}`);
-  await expect(page.getByTestId('cal-lane-res-pc2').getByTestId('cal-item')).toHaveAttribute('aria-label', /18:00–20:00, Ольга Смирнова/);
+  // ночью в этот день может заходить и засевная бронь предыдущих суток – ищем именно перенесённую
+  await expect(page.getByTestId('cal-lane-res-pc2').locator('[href="/bookings/bk-pc1-evening"]')).toHaveAttribute('aria-label', /18:00–20:00, Ольга Смирнова/);
   await expect(page.getByTestId('cal-lane-res-pc1').getByTestId('cal-item')).toHaveCount(0);
 });
 

@@ -30,7 +30,7 @@ async function login(page: Page, email: string) {
 
 test('рабочий стол: требуют решения, записи дня; календарь дня совпадает со списком броней', async ({ page }) => {
   await login(page, 'admin@yu.test');
-  await page.getByRole('link', { name: 'Расписание' }).click();
+  await page.getByRole('link', { name: 'Расписание', exact: true }).click();
   await expect(page).toHaveURL(/\/schedule/);
   await expect(page.getByRole('heading', { name: 'Расписание', level: 1 })).toBeVisible();
 

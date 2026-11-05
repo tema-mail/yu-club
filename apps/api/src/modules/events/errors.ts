@@ -8,6 +8,7 @@ export const errors = {
   EVENT_NOT_READY: 422, // подтверждение без даты, филиала, состава (details.fields)
   EVENT_TRANSITION_INVALID: 409, // переход не по таблице K20 §2
   EVENT_CLOSED: 409, // правка состава/ресурсов в конечном статусе
+  EVENT_MOVE_RESOURCES_INVALID: 422, // перенос: не все активные строки, повтор строки, период вне новых дат (details.reason, eventResourceIds)
   PARTY_RESOURCE_INVALID: 422, // праздник не на комнате целиком (K20 §4, TC-13)
   PARTY_TOO_SHORT: 422, // короче event.party.min_minutes
   PARTY_GUESTS_LIMIT: 422, // гостей больше event.party.max_guests

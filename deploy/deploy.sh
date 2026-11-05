@@ -72,6 +72,8 @@ echo "→ CRM и сайт собраны на маке и отправлены"
 "${SSH[@]}" "set -e; grep -q '^VAPID_PRIVATE_KEY=' $ROOT/.env || { umask 077; K=\$(mktemp); openssl ecparam -name prime256v1 -genkey -noout -outform DER -out \$K; test \$(wc -c <\$K) -eq 121; printf 'VAPID_PUBLIC_KEY=%s\nVAPID_PRIVATE_KEY=%s\nVAPID_SUBJECT=https://%s\n' \$(tail -c 65 \$K | base64 | tr '+/' '-_' | tr -d '=\n') \$(head -c 39 \$K | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') $DOMAIN >> $ROOT/.env; rm -f \$K; echo '→ в $ROOT/.env добавлены VAPID_*'; }; chmod 600 $ROOT/.env"
 # пароль роли yu_boss (pg-boss процесса worker) – тоже один раз
 "${SSH[@]}" "set -e; grep -q '^YU_BOSS_PASSWORD=' $ROOT/.env || { umask 077; printf 'YU_BOSS_PASSWORD=%s\n' \$(openssl rand -hex 24) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен YU_BOSS_PASSWORD'; }; chmod 600 $ROOT/.env"
+# пароль роли yu_reports (пул отчётов K24 §9) – тоже один раз
+"${SSH[@]}" "set -e; grep -q '^YU_REPORTS_PASSWORD=' $ROOT/.env || { umask 077; printf 'YU_REPORTS_PASSWORD=%s\n' \$(openssl rand -hex 24) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен YU_REPORTS_PASSWORD'; }; chmod 600 $ROOT/.env"
 
 # 3. образ, база, миграции, API, worker
 "${SSH[@]}" "bash -s" <<REMOTE
@@ -85,6 +87,10 @@ GIT_SHA=$REV "\${DC[@]}" build --pull -q api </dev/null   # по одному о
 # роль yu_boss (pg-boss процесса worker) – и на кластере, созданном до неё; пароль идёт в psql через stdin
 BOSS_PW=\$(grep '^YU_BOSS_PASSWORD=' $ROOT/.env | cut -d= -f2-)
 printf "DO \\\$\\\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yu_boss') THEN CREATE ROLE yu_boss LOGIN; END IF; END \\\$\\\$;\nALTER ROLE yu_boss PASSWORD '%s';\n" "\$BOSS_PW" \
+  | docker exec -i yu-club-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q
+# роль yu_reports (пул отчётов K24 §9: только чтение) – так же; SELECT на rpt_* выдаёт миграция 0406
+REPORTS_PW=\$(grep '^YU_REPORTS_PASSWORD=' $ROOT/.env | cut -d= -f2-)
+printf "DO \\\$\\\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yu_reports') THEN CREATE ROLE yu_reports LOGIN; END IF; END \\\$\\\$;\nALTER ROLE yu_reports PASSWORD '%s';\nALTER ROLE yu_reports SET default_transaction_read_only = on;\n" "\$REPORTS_PW" \
   | docker exec -i yu-club-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q
 if [ "$RESET" = 1 ]; then
   grep -qx 'APP_ENV=stage' $ROOT/.env || { echo "!!! не stage – отказ"; exit 1; }

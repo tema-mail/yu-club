@@ -32,7 +32,7 @@ test('Директор: своя зона, создание только Адм�
   await expect(page).toHaveURL(/\/staff$/);
   await expect(rows(page)).toHaveCount(2); // порция по 2 (MOCK_PAGE_SIZE)
   await page.getByRole('button', { name: 'Показать ещё' }).click();
-  await expect(rows(page)).toHaveCount(3); // Админова, Директоров, Новиков – Новосибирск
+  await expect(rows(page)).toHaveCount(4); // Админова, Двухфилиальная (S3-72), Директоров, Новиков – Новосибирск
   await expect(page.getByTestId('staff')).not.toContainText('Томский');
   expect((await page.goto('/staff/s-admin-tsk'))?.status()).toBe(404);
 

@@ -54,6 +54,54 @@ declare module '../../core/outbox.ts' {
   }
 }
 
+// ---- грант бронирования (K5, K6, K20 §8, S3-58): служебный ресурс (self_bookable=false) обычной записи закрыт и открывается только
+// правом стороннего модуля. Реестр – здесь: booking не импортирует модули-владельцы прав (ADR 0002), events регистрирует валидатор.
+
+export interface ServiceGrant {
+  kind: 'gift';
+  id: string;
+}
+export type GrantPhase = 'hold' | 'add_item' | 'staff' | 'reschedule' | 'attach' | 'confirm';
+export interface GrantCheck {
+  phase: GrantPhase;
+  /** Переданный грант; при переносе и подтверждении может быть null – право определяется по брони или удержанию. */
+  grant: ServiceGrant | null;
+  /** Клиент будущей брони; null – посетитель без входа. */
+  clientId: string | null;
+  holdId: string | null;
+  bookingId: string | null;
+  resource: { id: string; type: string; roomId: string | null };
+  branch: BranchInfo;
+  period: Interval;
+  now: Date;
+}
+export interface ServiceGrantValidator {
+  /** В транзакции команды, до occupy; ошибка проходит как есть. */
+  check(tx: Tx, c: GrantCheck): Promise<void>;
+  /** Удержание закрыто владельцем (отпущено, снята позиция), в той же транзакции. Истечение – событие hold.expired. */
+  onHoldClosed?(tx: Tx, holdId: string, now: Date): Promise<void>;
+}
+const serviceGrants = new Map<string, ServiceGrantValidator>();
+export function registerServiceGrant(resourceType: string, validator: ServiceGrantValidator): void {
+  serviceGrants.set(resourceType, validator);
+}
+export function clearServiceGrants(): void {
+  serviceGrants.clear();
+}
+export const serviceGrantFor = (resourceType: string): ServiceGrantValidator | undefined => serviceGrants.get(resourceType);
+/** Как checkItem видит команду: кто и на каком шаге просит служебный ресурс. Нет – обычная запись. */
+export type GrantAccess = Pick<GrantCheck, 'phase' | 'grant' | 'clientId' | 'holdId' | 'bookingId'>;
+
+/** Служебные типы среди активных позиций удержания, у которых есть зарегистрированный валидатор. */
+async function grantedItems(tx: Tx, holdId: string): Promise<Array<{ type: string; resourceId: string; roomId: string | null; period: string }>> {
+  const r = await tx.query<{ type: string; resourceId: string; roomId: string | null; period: string }>(
+    `SELECT r.resource_type AS type, r.id AS "resourceId", r.room_id AS "roomId", hi.period::text AS period
+       FROM app.hold_items hi JOIN app.resources r ON r.id = hi.resource_id WHERE hi.hold_id = $1 AND hi.status = 'active' ORDER BY hi.id`,
+    [holdId],
+  );
+  return r.rows.filter((x) => serviceGrants.has(x.type));
+}
+
 const SYSTEM_META: AuditRequestMeta = { actor: { kind: 'system', process: 'hold-expiry' }, source: 'system', requestId: 'hold-expiry' };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const notFound = () => new AppError('NOT_FOUND', 404, 'Не найдено');
@@ -101,12 +149,17 @@ function itemError(err: unknown, index: number, item: HoldItemInput): never {
 
 /** Проверки позиции 01 §8.2 (кроме пересечений – их даёт база): ресурс, окно, шаг, график → развёрнутые единицы.
  *  Те же проверки – у переноса и брони администратором (change.ts, 01 §10.2, §11). */
-export async function checkItem(tx: Tx, branch: BranchInfo, now: Date, maxDays: number, item: HoldItemInput) {
+export async function checkItem(tx: Tx, branch: BranchInfo, now: Date, maxDays: number, item: HoldItemInput, access: GrantAccess | null = null) {
   const r = await getResource(tx, item.resourceId);
   if (!r || r.branchId !== branch.id) throw notFound();
-  assertBookable(r);
+  // тип с зарегистрированным грантом закрыт для обычной записи всегда: флаг self_bookable его не открывает
+  const validator = serviceGrants.get(r.type);
+  if (validator && access === null) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи', { resourceId: r.id });
+  if (!validator) assertBookable(r); // служебный ресурс без гранта – RESOURCE_UNAVAILABLE, как и раньше
   if (!(item.start.getTime() < item.end.getTime())) throw new AppError('INVALID_DURATION', 422, 'Конец раньше начала', { reason: 'empty' });
   const period: Interval = { start: item.start, end: item.end };
+  // валидатор – в той же транзакции до occupy: его отказ важнее окна записи и графика (подарок после срока – GIFT_EXPIRED)
+  if (validator) await validator.check(tx, { ...access!, resource: { id: r.id, type: r.type, roomId: r.roomId }, branch, period, now });
   const date = instantToLocal(item.start, branch.timezone).date;
   if (item.start.getTime() <= now.getTime() || !isDateInWindow(date, { now: () => now }, branch.timezone, maxDays)) {
     throw new AppError('OUTSIDE_BOOKING_WINDOW', 422, `Запись доступна на ${maxDays} дней вперёд`, { maxDays });
@@ -115,7 +168,7 @@ export async function checkItem(tx: Tx, branch: BranchInfo, now: Date, maxDays: 
   if (!isAcceptingBookings(branch, item.start)) throw new AppError('BRANCH_NOT_ACTIVE', 409, 'Филиал сейчас не принимает записи');
   const open = await openIntervals(tx, { branchId: branch.id, date, roomId: r.roomId, resourceId: r.id });
   if (!open.some((i) => contains(i, period))) throw new AppError('OUTSIDE_SCHEDULE', 409, 'В это время филиал не работает');
-  return { resource: r, period, units: await expandToUnits(tx, r.id, item.start) };
+  return { resource: r, period, units: await expandToUnits(tx, r.id, item.start, { serviceGrant: validator !== undefined }) };
 }
 
 async function activeBranch(tx: Tx, branchId: string, now: Date): Promise<BranchInfo> {
@@ -156,9 +209,9 @@ async function ownActiveHold(tx: Tx, branchId: string, owner: HoldOwner, now: Da
 const eventItem = (id: string, i: HoldItemInput): HoldItemEvent => ({ itemId: id, resourceId: i.resourceId, start: i.start.toISOString(), end: i.end.toISOString() });
 
 /** Проверить позиции, погасить истёкшие удержания на их единицах, занять все одним INSERT. */
-async function occupyItems(tx: Tx, branch: BranchInfo, owner: HoldOwner, now: Date, maxDays: number, items: HoldItemInput[], ids: string[], expiresAt: Date, holdId: string) {
+async function occupyItems(tx: Tx, branch: BranchInfo, owner: HoldOwner, now: Date, maxDays: number, items: HoldItemInput[], ids: string[], expiresAt: Date, holdId: string, access: GrantAccess | null) {
   const checked = [];
-  for (const [k, item] of items.entries()) checked.push(await checkItem(tx, branch, now, maxDays, item).catch((e) => itemError(e, k, item)));
+  for (const [k, item] of items.entries()) checked.push(await checkItem(tx, branch, now, maxDays, item, access).catch((e) => itemError(e, k, item)));
   for (const c of checked) await releaseExpiredHolds(tx, now, { unitIds: c.units.unitIds, clientId: owner.clientId ?? undefined, period: c.period });
   for (const [k, c] of checked.entries()) {
     await tx.query(`INSERT INTO app.hold_items (id, hold_id, resource_id, period, unit_ids, created_at) VALUES ($1, $2, $3, $4, $5, $6)`, [
@@ -180,7 +233,7 @@ async function occupyItems(tx: Tx, branch: BranchInfo, owner: HoldOwner, now: Da
 }
 
 /** K5 №6: создать удержание – все позиции или ничего. Владелец уже определён маршрутом (клиент или посетитель). */
-export async function createHold(tx: Tx, owner: HoldOwner, input: { branchId: string; items: HoldItemInput[] }, clock: Clock = systemClock): Promise<HoldDto> {
+export async function createHold(tx: Tx, owner: HoldOwner, input: { branchId: string; items: HoldItemInput[]; serviceGrant?: ServiceGrant }, clock: Clock = systemClock): Promise<HoldDto> {
   if (owner.clientId === null && owner.visitorId === null) throw new AppError('VISITOR_REQUIRED', 400, 'Нужна кука посетителя');
   const now = clock.now();
   const branch = await activeBranch(tx, input.branchId, now);
@@ -207,7 +260,8 @@ export async function createHold(tx: Tx, owner: HoldOwner, input: { branchId: st
     [holdId, branch.id, owner.clientId, owner.visitorId, owner.clientId ? 'client' : 'visitor', owner.clientId ?? owner.visitorId, s.ttl, expiresAt, now],
   );
   const ids = input.items.map(() => randomUUID());
-  await occupyItems(tx, branch, owner, now, s.maxDays, input.items, ids, expiresAt, holdId);
+  const access: GrantAccess | null = input.serviceGrant ? { phase: 'hold', grant: input.serviceGrant, clientId: owner.clientId, holdId, bookingId: null } : null;
+  await occupyItems(tx, branch, owner, now, s.maxDays, input.items, ids, expiresAt, holdId, access);
   await publish(tx as OutboxTx, {
     type: 'hold.created',
     aggregateType: 'hold',
@@ -227,18 +281,23 @@ async function activeItemIds(tx: Tx, holdId: string): Promise<string[]> {
 }
 
 /** K5 №8: добавить слот – общий таймер перезапускается для всех позиций и их строк (01 §7.2). */
-export async function addHoldItem(tx: Tx, owner: HoldOwner, holdId: string, item: HoldItemInput, clock: Clock = systemClock): Promise<HoldDto> {
+export async function addHoldItem(tx: Tx, owner: HoldOwner, holdId: string, item: HoldItemInput, clock: Clock = systemClock, serviceGrant?: ServiceGrant): Promise<HoldDto> {
   const now = clock.now();
   const h = await lockHold(tx, holdId, owner);
   if (!isLive(h, now)) throw holdExpired();
   if (h.client_id !== null) await lockClients(tx, [h.client_id]);
   const branch = await activeBranch(tx, h.branch_id, now);
   const s = await holdSettings(tx, branch.id, now);
+  // удержание со служебной позицией: добавлять ли что-то ещё – решает валидатор гранта (подарок – GIFT_COMPOSITION_INVALID, K20 §8.2)
+  for (const g of await grantedItems(tx, h.id)) {
+    await serviceGrants.get(g.type)!.check(tx, { phase: 'add_item', grant: serviceGrant ?? null, clientId: h.client_id, holdId: h.id, bookingId: null, resource: { id: g.resourceId, type: g.type, roomId: g.roomId }, branch, period: { start: item.start, end: item.end }, now });
+  }
   const current = await activeItemIds(tx, h.id);
   if (current.length + 1 > s.maxItems) throw new AppError('HOLD_LIMIT_REACHED', 422, 'Слишком много слотов в одной записи', { max: s.maxItems });
   const expiresAt = new Date(now.getTime() + h.ttl_minutes * 60_000);
   const id = randomUUID();
-  await occupyItems(tx, branch, { clientId: h.client_id, visitorId: h.visitor_id }, now, s.maxDays, [item], [id], expiresAt, h.id);
+  const access: GrantAccess | null = serviceGrant ? { phase: 'add_item', grant: serviceGrant, clientId: h.client_id, holdId: h.id, bookingId: null } : null;
+  await occupyItems(tx, branch, { clientId: h.client_id, visitorId: h.visitor_id }, now, s.maxDays, [item], [id], expiresAt, h.id, access);
   const all = [...current, id];
   await tx.query('UPDATE app.holds SET expires_at = $2 WHERE id = $1', [h.id, expiresAt]);
   await tx.query(`UPDATE app.occupancy SET hold_expires_at = $2 WHERE active AND source_type = 'hold_item' AND source_id = ANY($1::uuid[])`, [all, expiresAt]);
@@ -263,9 +322,13 @@ export async function removeHoldItem(tx: Tx, owner: HoldOwner, holdId: string, i
   if (!isLive(h, now)) throw holdExpired();
   const items = await activeItemIds(tx, h.id);
   if (!items.includes(itemId.toLowerCase())) throw notFound();
+  const granted = await grantedItems(tx, h.id);
   await releaseSources(tx, { type: 'hold_item', ids: [itemId] }, 'released', now);
   await tx.query(`UPDATE app.hold_items SET status = 'removed' WHERE id = $1`, [itemId]);
-  if (items.length === 1) await tx.query(`UPDATE app.holds SET status = 'released', closed_at = $2 WHERE id = $1`, [h.id, now]);
+  if (items.length === 1) {
+    await tx.query(`UPDATE app.holds SET status = 'released', closed_at = $2 WHERE id = $1`, [h.id, now]);
+    await notifyHoldClosed(tx, h.id, granted, now);
+  }
   return holdDto(tx, h.id, now);
 }
 
@@ -275,10 +338,16 @@ export async function releaseHold(tx: Tx, owner: HoldOwner, holdId: string, cloc
   const h = await lockHold(tx, holdId, owner);
   if (h.status !== 'active') return holdDto(tx, h.id, now);
   const items = await activeItemIds(tx, h.id);
+  const granted = await grantedItems(tx, h.id);
   await releaseSources(tx, { type: 'hold_item', ids: items }, 'released', now);
   await tx.query(`UPDATE app.hold_items SET status = 'removed' WHERE hold_id = $1 AND status = 'active'`, [h.id]);
   await tx.query(`UPDATE app.holds SET status = 'released', closed_at = $2 WHERE id = $1`, [h.id, now]);
+  await notifyHoldClosed(tx, h.id, granted, now);
   return holdDto(tx, h.id, now);
+}
+
+async function notifyHoldClosed(tx: Tx, holdId: string, granted: Array<{ type: string }>, now: Date): Promise<void> {
+  for (const type of new Set(granted.map((g) => g.type))) await serviceGrants.get(type)!.onHoldClosed?.(tx, holdId, now);
 }
 
 /** K5 №11: удержание посетителя переходит к вошедшему клиенту; client_time по всем позициям → CLIENT_OVERLAP. */
@@ -291,6 +360,13 @@ export async function attachHold(tx: Tx, clientId: string, visitorId: string | n
   await assertBookingGates(tx, clientId, now); // Э2 (K15 §8): ворота записи; при входе отказ гасит attachVisitorHolds
   const other = await ownActiveHold(tx, h.branch_id, { clientId, visitorId: null }, now);
   if (other) throw new AppError('HOLD_ALREADY_ACTIVE', 409, 'Уже есть активное удержание в этом филиале', { holdId: other });
+  // служебная позиция: удержание может перейти только к тому, кому положено (K20 §8.2 п.8)
+  const granted = await grantedItems(tx, h.id);
+  if (granted.length > 0) {
+    const branch = await getBranch(tx, h.branch_id);
+    if (!branch) throw notFound();
+    for (const g of granted) await serviceGrants.get(g.type)!.check(tx, { phase: 'attach', grant: null, clientId, holdId: h.id, bookingId: null, resource: { id: g.resourceId, type: g.type, roomId: g.roomId }, branch, period: fromPgRange(g.period), now });
+  }
   await tx.query('UPDATE app.holds SET client_id = $2 WHERE id = $1', [h.id, clientId]);
   const items = await tx.query<{ id: string; period: string }>(`SELECT id, period::text FROM app.hold_items WHERE hold_id = $1 AND status = 'active' ORDER BY id`, [h.id]);
   // истёкшие удержания клиента на эти периоды ещё держат client_time – гасим до вставки (ревизия S1-06 п.7)
