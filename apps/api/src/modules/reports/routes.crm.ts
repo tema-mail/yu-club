@@ -18,6 +18,7 @@ import { financeDetail, financeReport, type FinanceParams } from './finance.ts';
 import { parsePeriod, unavailable, withReportTx, DAY_RULE, type ReportEnv, type ReportParams, type ReportsPool } from './framework.ts';
 import { loyaltyDetail, loyaltyReport } from './loyalty.ts';
 import { globalSearch } from './search.ts';
+import { applySegment } from './segment.ts';
 import { utilizationCalendar, utilizationDetail, utilizationReport, utilizationSeries, type UtilizationParams } from './utilization.ts';
 
 export interface ReportsCrmDeps {
@@ -54,7 +55,7 @@ const QUERY = z.object({
   cursor: z.string().max(400).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
-type Query = z.infer<typeof QUERY>;
+type Query = z.infer<typeof QUERY> & { segmentSource?: string | undefined; segmentPlace?: 'cash' | 'noncash' | undefined; segmentHour?: string | undefined };
 
 function parseQuery(raw: unknown): Query {
   const r = QUERY.safeParse(raw ?? {});
@@ -79,6 +80,17 @@ const bookingsP = (q: Query, p: ReportParams): BookingsParams => defined({ ...p,
 const financeP = (q: Query, p: ReportParams): FinanceParams => defined({ ...p, method: q.method, categoryId: q.categoryId });
 const utilizationP = (q: Query, p: ReportParams): UtilizationParams => defined({ ...p, resourceType: q.resourceType });
 
+/** Сегмент сужает фильтры (K24 §10, segment.ts) – дальше тот же where(spec), что и у итога. */
+function segmented(report: string, q: Query, p: ReportParams): { q: Query; p: ReportParams } {
+  const s = applySegment(report, q.segment, {
+    period: p.period, branchIds: p.branchIds, resourceType: q.resourceType, status: q.status, method: q.method, categoryId: q.categoryId,
+  });
+  return {
+    q: { ...q, resourceType: s.resourceType, status: s.status, method: s.method as Query['method'], categoryId: s.categoryId, segmentSource: s.source, segmentPlace: s.place, segmentHour: s.hour },
+    p: { ...p, period: s.period, branchIds: s.branchIds },
+  };
+}
+
 const HANDLERS: Record<string, ReportHandler> = {
   bookings: {
     metrics: (env, q, p) => bookingsReport(env, bookingsP(q, p)) as unknown as Promise<Record<string, unknown>>,
@@ -89,11 +101,11 @@ const HANDLERS: Record<string, ReportHandler> = {
       const r = await utilizationReport(env, utilizationP(q, p));
       return { ...r, ...(q.series ? { series: await utilizationSeries(env, utilizationP(q, p), q.series) } : {}) };
     },
-    detail: (env, q, p) => utilizationDetail(env, utilizationP(q, p), q.metric, page(q)),
+    detail: (env, q, p) => utilizationDetail(env, defined({ ...utilizationP(q, p), hour: q.segmentHour }), q.metric, page(q)),
   },
   finance: {
     metrics: (env, q, p) => financeReport(env, financeP(q, p)) as unknown as Promise<Record<string, unknown>>,
-    detail: (env, q, p) => financeDetail(env, financeP(q, p), q.metric, page(q)),
+    detail: (env, q, p) => financeDetail(env, defined({ ...financeP(q, p), source: q.segmentSource, place: q.segmentPlace }), q.metric, page(q)),
   },
   clients: {
     metrics: (env, _q, p) => clientsReport(env, p) as unknown as Promise<Record<string, unknown>>,
@@ -187,7 +199,8 @@ export async function reportsCrmRoutes(app: FastifyInstance, deps: ReportsCrmDep
       const h = assertKnown(request.params.report, env.ctx);
       const p = await periodParams(deps, clock, q);
       if (!h) return { columns: [], rows: [], total: unavailable('source_not_ready'), nextCursor: null };
-      const d = await h.detail(env, q, p);
+      const s = segmented(request.params.report, q, p);
+      const d = await h.detail(env, s.q, s.p);
       return { columns: d.columns ?? (d.rows[0] ? Object.keys(d.rows[0]) : []), rows: d.rows, total: d.total, nextCursor: d.nextCursor };
     }),
   );

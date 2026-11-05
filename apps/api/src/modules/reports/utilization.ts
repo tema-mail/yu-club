@@ -18,6 +18,8 @@ export const UTILIZATION_ACTION = 'reports.ops.view';
 
 export interface UtilizationParams extends ReportParams {
   resourceType?: string[] | undefined;
+  /** Сегмент детализации (K24 §10): один час суток '00'..'23' по зоне филиала. Все показатели считаются внутри A, значит и внутри часа. */
+  hour?: string | undefined;
 }
 
 export interface UnitRow {
@@ -106,8 +108,23 @@ function mergeIntervals(list: readonly Interval[]): Interval[] {
   return out;
 }
 
-/** Открытые интервалы единиц периода: один вызов openIntervalsRange на филиал (K24 §3.3), затем обрезка составом. */
-async function openOfUnits(tx: Tx, branches: readonly BranchInfo[], units: readonly UnitInfo[], period: Period): Promise<Map<string, Interval[]>> {
+/** Части интервалов, попадающие в один час суток по зоне филиала. */
+function onlyHour(list: readonly Interval[], tz: TimeZone, hour: string): Interval[] {
+  const out: Interval[] = [];
+  for (const iv of list) {
+    let at = iv.start;
+    while (at < iv.end) {
+      const local = instantToLocal(at, tz).time;
+      const stop = new Date(Math.min(at.getTime() + (60 - Number(local.slice(3, 5))) * 60_000 - at.getUTCSeconds() * 1000, iv.end.getTime()));
+      if (local.slice(0, 2) === hour) out.push({ start: at, end: stop });
+      at = stop;
+    }
+  }
+  return out;
+}
+
+/** Открытые интервалы единиц периода: один вызов openIntervalsRange на филиал (K24 §3.3), затем обрезка составом и сегментом часа. */
+async function openOfUnits(tx: Tx, branches: readonly BranchInfo[], units: readonly UnitInfo[], period: Period, hour?: string): Promise<Map<string, Interval[]>> {
   const out = new Map<string, Interval[]>();
   for (const b of branches) {
     const mine = units.filter((u) => u.branch_id === b.id);
@@ -117,7 +134,8 @@ async function openOfUnits(tx: Tx, branches: readonly BranchInfo[], units: reado
     for (const u of mine) {
       const list: Interval[] = [];
       for (const day of range.values()) for (const part of u.parts) list.push(...clip(day.get(part.resourceId) ?? [], part));
-      out.set(u.unit_id, mergeIntervals(list));
+      const merged = mergeIntervals(list);
+      out.set(u.unit_id, hour ? onlyHour(merged, b.timezone, hour) : merged);
     }
   }
   return out;
@@ -147,8 +165,8 @@ const OPEN_CTE = `a AS (SELECT x.unit_id, range_agg(tstzrange(x.s, x.e, '[)')) A
 /** До текущего момента ($4): база фактической загрузки и сам факт – идущее посещение не считается наперёд. */
 const ELAPSED = `tstzmultirange(tstzrange(NULL, $4::timestamptz, '[)'))`;
 
-async function unitRows(tx: Tx, branches: readonly BranchInfo[], units: readonly UnitInfo[], period: Period, now: Date): Promise<UnitRow[]> {
-  const open = await openOfUnits(tx, branches, units, period);
+async function unitRows(tx: Tx, branches: readonly BranchInfo[], units: readonly UnitInfo[], period: Period, now: Date, hour?: string): Promise<UnitRow[]> {
+  const open = await openOfUnits(tx, branches, units, period, hour);
   const [ids, starts, ends] = openArrays(open);
   const byUnit = new Map<string, { a: string; ae: string; l: string; t: string; bk: string; f: string; free: string }>();
   if (ids.length > 0) {
@@ -256,8 +274,8 @@ export async function utilizationReport(env: ReportEnv, p: UtilizationParams): P
   const branches = await resolveBranches(env.tx, env.ctx, UTILIZATION_ACTION, p);
   const prevP = prevPeriod(p.period);
   const now = env.clock.now();
-  const rows = await unitRows(env.tx, branches, await unitsOf(env.tx, branches, p, p.period), p.period, now);
-  const prev = await unitRows(env.tx, branches, await unitsOf(env.tx, branches, p, prevP), prevP, now);
+  const rows = await unitRows(env.tx, branches, await unitsOf(env.tx, branches, p, p.period), p.period, now, p.hour);
+  const prev = await unitRows(env.tx, branches, await unitsOf(env.tx, branches, p, prevP), prevP, now, p.hour);
   return {
     metrics: metricsOf(rows, prev),
     rows,

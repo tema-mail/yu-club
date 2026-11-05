@@ -16,6 +16,9 @@ export const FINANCE_ACTION = 'reports.finance.view';
 export interface FinanceParams extends ReportParams {
   method?: string[] | undefined;
   categoryId?: string | undefined;
+  /** Только условие сегмента детализации (K24 §10). */
+  source?: string | undefined;
+  place?: 'cash' | 'noncash' | undefined;
 }
 
 export type FinanceMetric =
@@ -29,6 +32,8 @@ export function financeDefs(p: FinanceParams): Record<FinanceMetric, MetricDef> 
   const common: Conds = [];
   if (p.method?.length) common.push({ sql: 't.method = ANY(?::text[])', values: [p.method] });
   if (p.categoryId) common.push({ sql: '(t.category_id = ?::uuid OR t.subcategory_id = ?::uuid)', values: [p.categoryId, p.categoryId] });
+  if (p.source) common.push({ sql: 't.source = ?', values: [p.source] });
+  if (p.place) common.push({ sql: 't.place = ?', values: [p.place] });
   const money = (conds: Conds, col: 'signed_kop' | 'delta_kop' = 'signed_kop'): MetricDef => ({
     spec: { view: VIEW, date: 'occurred_at', conds: [...common, ...conds] },
     agg: 'sum', col, unit: 'kop', dateBasis: 'occurred_at', idCol: 'operation_id',
@@ -199,7 +204,7 @@ export async function financeDetail(
 ): Promise<{ rows: Array<FinanceDetailRow & { value: number }> | Array<PlaceBalance & { value: number }>; total: Metric; nextCursor: string | null }> {
   if (metric === 'cashOpening' || metric === 'cashClosing') {
     const branches = await resolveBranches(env.tx, env.ctx, FINANCE_ACTION, p);
-    const rows = await placeBalances(env.tx, windowsOf(branches, p.period));
+    const rows = (await placeBalances(env.tx, windowsOf(branches, p.period))).filter((r) => !p.place || r.place === p.place);
     const key = metric === 'cashOpening' ? 'openingKop' : 'closingKop';
     return { rows: rows.map((r) => ({ ...r, value: r[key] })), total: rows.length ? okMetric(placeTotal(rows, key), 'kop') : noData, nextCursor: null };
   }

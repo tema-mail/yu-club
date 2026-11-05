@@ -258,7 +258,7 @@ queued|running → failed (error_code)
 |---|---|---|---|
 | K11 №239 | `GET /reports/dashboard?from=&to=&cityId=&branchIds=` | по карточкам (§8; нет права – карточки нет) | `200 { cards: Card[], period, prevPeriod, dayRule, computedAt }` |
 | K11 №240 | `GET /reports/{report}?from=&to=&…фильтры` (`report` ∈ `bookings`, `utilization`, `finance`, `events`, `clients`, `loyalty`, `certificates`, `staff`, `equipment`, `comms`) | `reports.<x>.view` | `200 { metrics: Record<string, Metric>, groups?, series?, computedAt, dateBasis, dayRule }` |
-| K11 №241 | `GET /reports/{report}/detail?metric=&segment=&…фильтры&cursor=&limit=` | как №240 | `200 { columns, rows, total: Metric, nextCursor }` – `total` равен агрегату показателя |
+| K11 №241 | `GET /reports/{report}/detail?metric=&segment=&…фильтры&cursor=&limit=` | как №240 | `200 { columns, rows, total: Metric, nextCursor }` – `total` равен агрегату показателя с теми же фильтрами и сегментом. `segment=<измерение>:<значение>`: `branch`, `day` – все отчёты; `resourceType` – 3.2, 3.3; `status` – 3.2; `hour` (`00`..`23` по зоне филиала) – 3.3; `method`, `source`, `category`, `place` – 3.4. Сегмент сужает фильтры, дальше тот же `where(spec)`; не совместим с фильтром или неизвестен отчёту – `REPORT_FILTER_INVALID` |
 | K11 №242 | `GET /reports/utilization/calendar?unitId=&date=` | `reports.ops.view` | `200 { open, booked, blocked, free }` (мультидиапазоны → интервалы) |
 | K11 №243 | `POST /reports/exports` (`{ report, params, format: 'xlsx'\|'csv', detail }`) | `reports.export` (+ §7 по составу) | `202 ExportJob` |
 | K11 №244 | `GET /reports/exports?cursor=` (свои) | `reports.export` | `200 { items: ExportJob[] }` |
