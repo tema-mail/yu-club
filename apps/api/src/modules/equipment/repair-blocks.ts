@@ -3,7 +3,7 @@
 // и не переносятся (01 §13, 18 §7.4): решение – в CRM существующими командами. Единица VR1 закрывает «VR-место 1» и «комнату
 // целиком», VR2 остаётся (K19 §1 п.3) – это даёт состав ресурсов K6, отдельной таблицы зависимостей нет. Простой – только по блокировкам.
 import { z } from 'zod';
-import { writeAudit, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
+import type { AuditRequestMeta, Db, Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { can, type AccessContext } from '../../core/permissions.ts';
 import { interval, systemClock, type Clock, type Interval } from '../../core/time.ts';
