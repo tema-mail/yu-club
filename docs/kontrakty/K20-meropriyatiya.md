@@ -271,7 +271,7 @@ export function refundIncome(tx, ctx, input: { incomeOperationId; amountKop; pla
 | `rpt_shift_gaps` | shifts | `branch_id, local_date, gap_period` – пустые интервалы (state `empty` отчёта K24 3.9) |
 | `rpt_payroll` | shifts | `period_id, staff_id, branch_id, hours_amount_kop, per_shift_kop, penalties_kop, bonuses_kop, adjustments_kop, to_pay_kop, paid_kop, paid_at, statement_status` |
 | `rpt_equipment` | equipment | `equipment_id, branch_id, unit_id, room_id, resource_ids` (ресурсы, в составе которых единица), `status, inventory_no, serial_no, category_id` |
-| `rpt_repairs` | equipment | `repair_id, equipment_id, branch_id, incident_at` (`broken_at`, иначе `detected_at` с флагом), `started_at` (первый переход в `in_repair`, иначе `null`), `finished_at` (`completed_at`), `contractor_id` (`executor_id`), `warranty boolean, priority, status, block_ids` |
+| `rpt_repairs` | equipment | `repair_id, equipment_id, branch_id, incident_at` (`broken_at`, иначе `detected_at` с флагом `incident_at_is_detected`), `started_at` (первый переход в `in_repair`, иначе `null`), `finished_at` (`completed_at`), `contractor_id` (`executor_id`), `warranty boolean, priority, status, block_ids` |
 
 Важно для K24: деньги мероприятий и ремонтов брать из `rpt_event_money` / `rpt_repair_money`, **а не** по `finance_operations.ref_type`: привязанный вручную расход (K17 §14 `linkOperation`) своего `ref_type` не имеет (журнал только на вставку). Аудитория `event` для K21 – провайдер `events.audienceOf(eventId)`: клиент-заказчик с профилем, именинник с профилем, клиенты связанных броней (`event_bookings`), без дублей.
 
