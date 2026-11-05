@@ -6,6 +6,7 @@
     "start": "node src/server.ts"
   },
   "dependencies": {
+    "@fastify/multipart": "^10.1.7",
     "fastify": "^5.12.7",
     "pg-boss": "^12.38.0",
     "sharp": "^0.35.5",
