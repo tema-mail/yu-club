@@ -16,7 +16,7 @@ import { runOccupancyCommand } from '../booking/occupancy.ts';
 import { bookingLookup } from '../booking/providers.ts';
 import { addChecklistItem, listChecklist, updateChecklistItem } from './checklist.ts';
 import { changeEventStatus, createEvent, EVENT_SELECT, EVENT_STATUSES, getEventRow, guardEvent, lockEvent, notFound, parseBody, toEventDto, updateEvent, UUID_RE, type EventDto, type EventRow } from './events.ts';
-import { addLine, applyPackage, createEventType, createPackage, listEventTypes, listLines, listPackages, removeLine, updateEventType, updateLine, updatePackage, type EventLineDto } from './lines.ts';
+import { addLine, applyPackage, createEventType, createPackage, listEventTypes, listLines, listPackages, removeLine, updateEventType, updateLine, updatePackage, type EventLineDto, type EventPackageDto } from './lines.ts';
 import { addEventExpense, dueOf, eventMoneySummary, eventOperations, linkEventExpense, recordEventIncome, refundEventIncome, type EventMoneySummary } from './money.ts';
 import { listEventResources, moveEvent, releaseResource, reserveResource } from './resources.ts';
 
@@ -49,6 +49,17 @@ function lineView(ctx: AccessContext, branchId: string, l: EventLineDto): EventL
   const { planCostKop: _hidden, ...rest } = l;
   void _hidden;
   return rest;
+}
+
+/** Строка в ответе команды: филиал – по её мероприятию. Ответ повтора по ключу принадлежит тому же сотруднику. */
+async function lineResult(tx: Db, ctx: AccessContext, l: EventLineDto) {
+  const e = await getEventRow(tx, l.eventId);
+  return lineView(ctx, e!.branch_id, l);
+}
+/** №370: шаблоны сетевые – план виден тому, у кого право есть хотя бы в одной зоне (K20 №370). */
+function packageView(ctx: AccessContext, p: EventPackageDto) {
+  if (scopeFilter(ctx, 'event.money.view').kind !== 'none') return p;
+  return { ...p, lines: p.lines.map(({ planCostKop: _hidden, ...rest }) => (void _hidden, rest)) };
 }
 
 /** №361. Строки по зоне; hasDue – постфильтр страницы: остаток считается из кассы, а не из строки мероприятия. */
@@ -210,10 +221,14 @@ export async function eventCrmRoutes(app: FastifyInstance, deps: EventCrmDeps): 
   );
 
   // №364 состав
-  app.post('/events/:id/lines', command('line.add', 'event.line_added', (tx, ctx, p, body, meta) => addLine(tx, ctx, idOf(p), body, meta, clock), 201));
-  app.patch('/event-lines/:id', command('line.update', 'event.line_updated', (tx, ctx, p, body, meta) => updateLine(tx, ctx, idOf(p), body, meta, clock)));
-  app.post('/event-lines/:id/remove', command('line.remove', 'event.line_removed', (tx, ctx, p, body, meta) => removeLine(tx, ctx, idOf(p), body, meta, clock)));
-  app.post('/events/:id/apply-package', command('package.apply', 'event.package_applied', async (tx, ctx, p, body, meta) => ({ items: await applyPackage(tx, ctx, idOf(p), body, meta, clock) })));
+  app.post('/events/:id/lines', command('line.add', 'event.line_added', async (tx, ctx, p, body, meta) => lineResult(tx, ctx, await addLine(tx, ctx, idOf(p), body, meta, clock)), 201));
+  app.patch('/event-lines/:id', command('line.update', 'event.line_updated', async (tx, ctx, p, body, meta) => lineResult(tx, ctx, await updateLine(tx, ctx, idOf(p), body, meta, clock))));
+  app.post('/event-lines/:id/remove', command('line.remove', 'event.line_removed', async (tx, ctx, p, body, meta) => lineResult(tx, ctx, await removeLine(tx, ctx, idOf(p), body, meta, clock))));
+  app.post('/events/:id/apply-package', command('package.apply', 'event.package_applied', async (tx, ctx, p, body, meta) => {
+    const items = await applyPackage(tx, ctx, idOf(p), body, meta, clock);
+    const e = await getEventRow(tx, idOf(p));
+    return { items: items.map((l) => lineView(ctx, e!.branch_id, l)) };
+  }));
 
   // №365 ресурсы и перенос
   app.post('/events/:id/resources', command('resource.reserve', 'event.resource_reserved', (tx, ctx, p, body, meta) => reserveResource(tx, ctx, idOf(p), body, meta, clock), 201));
@@ -275,7 +290,8 @@ export async function eventCrmRoutes(app: FastifyInstance, deps: EventCrmDeps): 
   app.get('/event-packages', read(async (ctx, r) => {
     anyZone(ctx);
     const q = parseBody(z.object({ typeId: Uuid.optional(), includeArchived: z.enum(['true', 'false']).optional() }), r.query);
-    return { items: await listPackages(deps.pool, { typeId: q.typeId, includeArchived: q.includeArchived === 'true' }) };
+    const items = await listPackages(deps.pool, { typeId: q.typeId, includeArchived: q.includeArchived === 'true' });
+    return { items: items.map((x) => packageView(ctx, x)) };
   }));
   app.post('/event-packages', command('package.create', 'event.package.created', (tx, ctx, _p, body, meta) => createPackage(tx, ctx, body, meta, clock), 201));
   app.patch('/event-packages/:id', command('package.update', 'event.package.updated', (tx, ctx, p, body, meta) => updatePackage(tx, ctx, idOf(p), body, meta, clock)));

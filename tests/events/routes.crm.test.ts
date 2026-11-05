@@ -161,6 +161,37 @@ describe('S3-55: список', () => {
   });
 });
 
+describe('ревизия: плановая себестоимость не уходит без event.money.view', () => {
+  it('Администратор: POST, PATCH, remove строки, apply-package и GET /event-packages – без planCostKop; Директор видит', async () => {
+    const e = await newEvent();
+    const added = await req('admin', 'POST', `/events/${e.id}/lines`, { kind: 'service', name: 'Шаблонная', quantity: 1, unit: 'шт', priceKop: 0, planCostKop: 500 });
+    expect(added.statusCode).toBe(201);
+    expect(added.json()).not.toHaveProperty('planCostKop');
+    const mine = added.json();
+    const patched = await req('admin', 'PATCH', `/event-lines/${mine.id}`, { rowVersion: mine.rowVersion, comment: 'к столу' });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json()).not.toHaveProperty('planCostKop');
+    const removed = await req('admin', 'POST', `/event-lines/${mine.id}/remove`, { rowVersion: patched.json().rowVersion, reason: 'не нужно' });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).not.toHaveProperty('planCostKop');
+
+    const pack = await req('owner', 'POST', '/event-packages', { typeId: types.other, name: 'С себестоимостью', lines: [{ kind: 'service', name: 'x', quantity: 1, unit: 'шт', priceKop: 100, planCostKop: 40 }] });
+    expect(pack.statusCode).toBe(201);
+    const applied = await req('admin', 'POST', `/events/${e.id}/apply-package`, { packageId: pack.json().id });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json().items[0].priceKop).toBe(100);
+    expect(applied.json().items[0]).not.toHaveProperty('planCostKop');
+    const seen = (await req('admin', 'GET', '/event-packages')).json().items.find((x: { id: string }) => x.id === pack.json().id);
+    expect(seen.lines[0].priceKop).toBe(100);
+    expect(seen.lines[0]).not.toHaveProperty('planCostKop');
+
+    const dirLine = await req('director', 'POST', `/events/${e.id}/lines`, { kind: 'service', name: 'Д', quantity: 1, unit: 'шт', priceKop: 10, planCostKop: 7 });
+    expect(dirLine.json().planCostKop).toBe(7);
+    const dirPack = (await req('director', 'GET', '/event-packages')).json().items.find((x: { id: string }) => x.id === pack.json().id);
+    expect(dirPack.lines[0].planCostKop).toBe(40);
+  });
+});
+
 describe('S3-55: команды', () => {
   it('повтор ключа: та же заявка; другой запрос с тем же ключом отвергнут', async () => {
     const key = randomUUID();
