@@ -13,6 +13,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { randomBytes, randomUUID } from 'node:crypto';
 import { registerBooking, resetBooking } from './mock-booking.ts';
 import { registerCertificates, resetCertificates } from './mock-certificates.ts';
+import { EQUIPMENT_ACTIONS, registerEquipment, resetEquipment } from './mock-equipment.ts';
 import { registerFinance, resetFinance } from './mock-finance.ts';
 import { registerLoyalty, resetLoyalty } from './mock-loyalty.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
@@ -381,6 +382,8 @@ function registerNetwork(app: FastifyInstance, P: string) {
     if (q.objectType === 'city' && !zoneCityIds(s).includes(q.objectId ?? '')) return notFound(reply);
     if (q.objectType === 'staff' && !staffTimelineVisible({ access, can }, s, q.objectId ?? '')) return notFound(reply);
     // routes.crm.ts assertTimelineObject: комнаты, ресурсы, тарифы и прочее – пока только Владельцу (вне сети – 404).
+    // assertTimelineObject: equipment не входит в BRANCH_OBJECTS – хронологию карточки видит только Владелец.
+    if (q.objectType === 'equipment' && !access(s).network) return notFound(reply);
     const opsBranch = opsObjectBranch(q.objectType ?? '', q.objectId ?? '');
     if (opsBranch !== undefined && (!opsBranch || !access(s).network)) return notFound(reply);
     if (q.objectType === 'client') {
@@ -703,6 +706,7 @@ export function buildMock() {
     resetLoyalty();
     resetPayments();
     resetShifts();
+    resetEquipment();
     return { ok: true };
   });
 
@@ -748,6 +752,14 @@ export function buildMock() {
   registerShifts(app, P, {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
     ownerCookie: () => `yu_staff=${serviceToken}`,
+  });
+  // S3-76…S3-80: оборудование и ремонт – mock-equipment.ts (по equipment/routes.crm.ts, routes.repairs.ts, attachments/routes.crm.ts).
+  for (const r of ['owner', 'director', 'admin'] as const) ACTIONS[r] = [...new Set([...ACTIONS[r], ...EQUIPMENT_ACTIONS[r]])];
+  resetEquipment();
+  registerEquipment(app, P, {
+    current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
+    reasonId: (domain, code) => String(dict.reasons.find((r) => r.domain === domain && r.code === code)?.id ?? ''),
+    audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),
   });
   registerStaff(app, P, {
     staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
