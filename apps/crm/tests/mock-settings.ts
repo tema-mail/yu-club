@@ -72,6 +72,7 @@ const DEFS: Record<string, Def> = {
   'loyalty.points_resource_types': d({ kind: 'list', nullable: false }, ['pc', 'vr_seat', 'ps_room'], N, NET),
   'loyalty.accrue_for_points': d(bool, false, N, NET),
   'loyalty.accrue_for_certificate': d(bool, true, N, NET),
+  'payroll.penalties_enabled': d(bool, false, N, NET),
 };
 const KEYS = Object.keys(DEFS);
 
