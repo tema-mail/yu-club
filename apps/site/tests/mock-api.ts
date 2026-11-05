@@ -62,6 +62,27 @@ export function buildMock() {
   const app = Fastify({ logger: false });
   const P = '/api/public/v1';
 
+  // K5 №217: черновик, снятое и архив сюда не попадают (проверено на настоящем API, tests/content/redirects.routes.test.ts).
+  // Страниц /news/ и /games/ на сайте пока нет: их адреса не должны попасть в карту, пока не появятся файлы страниц.
+  // Переключатель сбоя для sitemap.spec.ts: API молчит – карта отвечает 503, а не урезанным списком.
+  let sitemapDown = false;
+  app.post('/__mock/sitemap-down', async (request) => {
+    sitemapDown = (request.body as { down: boolean }).down;
+    return { down: sitemapDown };
+  });
+  app.get(`${P}/seo/sitemap-entries`, async (_request, reply) => {
+    if (sitemapDown) return reply.code(500).send({ error: { code: 'INTERNAL', message: 'сбой' } });
+    reply.header('cache-control', 'public, max-age=60');
+    return {
+      items: [
+        { path: '/rules/', title: 'Правила клуба', lastmod: '2026-11-01T10:00:00.000Z' },
+        { path: '/novosibirsk/krasny-prospekt/', title: null, lastmod: '2026-11-02T10:00:00.000Z' },
+        { path: '/news/live-news/', title: 'Живая новость', lastmod: '2026-11-03T10:00:00.000Z' },
+        { path: '/games/vr/alyx/', title: 'Half-Life: Alyx', lastmod: '2026-11-03T10:00:00.000Z' },
+      ],
+    };
+  });
+
   app.get(`${P}/redirects/resolve`, async (request, reply) => {
     const { path } = request.query as { path?: string };
     if (path === '/api-down/' || path === '/api-down/x/') return reply.code(500).send({ error: { code: 'INTERNAL', message: 'сбой' } });
