@@ -12,6 +12,7 @@ import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../co
 import type { AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { archiveMedia, assertRole, getMediaRow, listMedia, MEDIA_MAX_BYTES, mediaDto, mediaUsages, updateMedia, uploadMedia, type MediaPurpose } from './media.ts';
+import { purgeMedia } from './media-purge.ts';
 import { mediaInVersions } from './versions.ts';
 
 export interface MediaRoutesDeps {
@@ -37,6 +38,7 @@ const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 const patchBody = z.strictObject({ alt: z.string().max(500).nullable().optional(), title: z.string().max(200).nullable().optional(), rowVersion: z.number().int().min(1) });
+const purgeBody = z.strictObject({ reason: z.string().max(2000).optional(), basis: z.string().max(2000).optional() });
 
 /** Физическое удаление (K11 №227, K22 §8): только если файл нигде не используется и не упомянут ни в одной версии. */
 async function deleteUnused(tx: Db, ctx: AccessContext, id: string, meta: AuditRequestMeta, clock: Clock): Promise<string[]> {
@@ -189,6 +191,25 @@ export async function mediaRoutes(app: FastifyInstance, deps: MediaRoutesDeps): 
       runIdempotent(tx, { scope: idempotencyScope('staff', access.actor.staffId, 'media.delete'), key, request: { route: 'DELETE /content/media/:id', params: { id } }, clock }, async () => {
         files = await deleteUnused(tx, access, id, meta, clock);
         return { status: 200, body: { deleted: true } };
+      }),
+    );
+    for (const f of files) await deps.store.remove(f);
+    if (result.replayed) reply.header('idempotent-replay', 'true');
+    return reply.code(result.status).send(result.body);
+  });
+
+  // S4-45: принудительная очистка по требованию субъекта (ГК ст. 152.1). Файлы всех вариантов – даже при использовании в версиях; стираются после фиксации.
+  app.post('/content/media/:id/purge', async (request, reply) => {
+    const { access, meta } = await deps.authenticate(request, reply);
+    const key = requireIdempotencyKey(request.headers['idempotency-key']);
+    const id = (request.params as { id: string }).id;
+    const body = parse(purgeBody, request.body);
+    let files: string[] = [];
+    const result = await inTx((tx) =>
+      runIdempotent(tx, { scope: idempotencyScope('staff', access.actor.staffId, 'media.purge'), key, request: { route: 'POST /content/media/:id/purge', params: { id }, body }, clock }, async () => {
+        const r = await purgeMedia(tx, access, id, { reason: body.reason ?? '', basis: body.basis ?? '' }, meta, clock);
+        files = r.files;
+        return { status: 200, body: { purged: true, affected: r.affected } };
       }),
     );
     for (const f of files) await deps.store.remove(f);
