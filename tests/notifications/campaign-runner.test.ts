@@ -79,6 +79,8 @@ describe('окно тихих часов', () => {
     expect(windowStart(new Date('2026-11-20T01:00:00Z'), NSK, WINDOW).toISOString()).toBe('2026-11-20T03:00:00.000Z');
     expect(windowStart(new Date('2026-11-20T14:00:00Z'), NSK, WINDOW).toISOString()).toBe('2026-11-21T03:00:00.000Z');
     expect(windowStart(new Date('2026-11-20T03:00:00Z'), NSK, WINDOW).toISOString()).toBe('2026-11-20T03:00:00.000Z');
+    // неверное окно в базе (мимо проверки сохранения) не открывает ночь: действует окно по умолчанию
+    expect(windowStart(new Date('2026-11-20T16:00:00Z'), NSK, { from: '21:00', to: '10:00' }).toISOString()).toBe('2026-11-21T03:00:00.000Z');
   });
 });
 

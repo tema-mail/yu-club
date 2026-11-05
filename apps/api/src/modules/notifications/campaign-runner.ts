@@ -26,13 +26,16 @@ export async function marketingWindow(db: Db, at: Date): Promise<MarketingWindow
   return { from: s['notifications.marketing_window_from'].value, to: s['notifications.marketing_window_to'].value };
 }
 
+const DEFAULT_MARKETING_WINDOW: MarketingWindow = { from: '10:00', to: '21:00' }; // K21 §13
+
 /** Момент не раньше at внутри окна [from, to) по зоне tz: в окне – сам at, до окна – его начало сегодня, после – начало завтра. */
 export function windowStart(at: Date, tz: TimeZone, w: MarketingWindow): Date {
-  if (w.from >= w.to) return at; // окно настроено неверно (from < to сверяется при чтении, K7) – не задерживаем навсегда
+  // from < to держит сохранение настройки (core/settings); неверная строка в базе не должна открывать рекламу ночью
+  const { from, to } = w.from < w.to ? w : DEFAULT_MARKETING_WINDOW;
   const local = instantToLocal(at, tz);
-  if (local.time >= w.from && local.time < w.to) return at;
-  const day: LocalDate = local.time < w.from ? local.date : addDays(local.date, 1);
-  return localToInstant(day, parseLocalTime(w.from), tz);
+  if (local.time >= from && local.time < to) return at;
+  const day: LocalDate = local.time < from ? local.date : addDays(local.date, 1);
+  return localToInstant(day, parseLocalTime(from), tz);
 }
 
 /** Заголовок рекламы с пометкой (K21 §4). Уже начинается с неё – без повтора. Обрезка – по CHECK 0111. */
