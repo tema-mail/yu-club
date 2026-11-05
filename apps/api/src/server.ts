@@ -23,6 +23,7 @@ import { registerGiftGrant } from './modules/events/gift-booking.ts';
 import { registerEventSources } from './modules/events/resources.ts';
 import { giftCrmRoutes, giftPublicRoutes } from './modules/events/routes.gifts.ts';
 import { eventCrmRoutes } from './modules/events/routes.crm.ts';
+import { eventPublicRoutes } from './modules/events/routes.public.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
 import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
@@ -296,6 +297,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(async (scope) => certificatePublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     // K20 П1–П2: «Мой подарок» – не сертификат: свой адрес и свой номер
     void app.register(async (scope) => giftPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
+    // K20 П3–П5: мои мероприятия, заявка на праздник и сведения для /birthday/
+    void app.register(async (scope) => eventPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     // K15 §11: баллы в ЛК – баланс, история, резерв на своё удержание, каталог
     void app.register(async (scope) => loyaltyPublicRoutes(scope, { clients, bookings: paymentBookingProvider }), { prefix: '/api/public/v1' });
     void app.register(
