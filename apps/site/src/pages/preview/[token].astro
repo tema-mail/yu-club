@@ -1,0 +1,78 @@
+---
+// S4-43. Предпросмотр черновика (K22 §11, 12 §9.3): страницу рисует сайт, отдаёт только CRM по внутренней сети с X-Preview-Secret.
+// Без секрета и при любой ошибке – 404, как нет страницы; на публичном домене Caddy отвечает 404 раньше (S4-07).
+// <base href> – на адрес сайта: страницу показывает iframe srcdoc CRM, стили и /media/… должны грузиться с сайта. Скриптов нет и не должно быть:
+// iframe без allow-scripts и allow-same-origin, текст прошёл очистку rich-text.ts, CSP в <meta> – третий заслон. Острова здесь не работают – это приемлемо.
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { apiBase } from '../../lib/api.ts';
+import { renderRichText, type MediaMap } from '../../lib/rich-text.ts';
+import '../../styles/site.css';
+
+interface PreviewDraft {
+  entityType: string;
+  kind: string | null;
+  draft: Record<string, unknown>;
+  media: MediaMap;
+}
+
+const notFound = () => new Response(null, { status: 404, headers: { 'cache-control': 'no-store', 'x-robots-tag': 'noindex, nofollow' } });
+const digest = (s: string) => createHash('sha256').update(s).digest();
+
+const secret = process.env.PREVIEW_SECRET;
+const given = Astro.request.headers.get('x-preview-secret');
+if (!secret || !given || !timingSafeEqual(digest(given), digest(secret))) return notFound();
+
+let preview: PreviewDraft;
+try {
+  const res = await fetch(`${apiBase()}/api/internal/v1/content/preview/${encodeURIComponent(Astro.params.token ?? '')}`, { headers: { 'x-preview-secret': secret } });
+  if (!res.ok) return notFound();
+  preview = (await res.json()) as PreviewDraft;
+} catch (err) {
+  console.error('site: черновик для предпросмотра не получен', err);
+  return new Response(null, { status: 503, headers: { 'cache-control': 'no-store', 'x-robots-tag': 'noindex, nofollow' } });
+}
+
+Astro.response.headers.set('cache-control', 'no-store');
+Astro.response.headers.set('x-robots-tag', 'noindex, nofollow');
+
+const d = preview.draft;
+const media = preview.media;
+const payload = (d.payload ?? {}) as Record<string, unknown>;
+const text = (v: unknown) => (typeof v === 'string' ? v : '');
+const title = text(d.title) || text(payload.title) || text(payload.text) || 'Без заголовка';
+const lead = text(d.lead) || text(d.short) || text(payload.subtitle);
+const cover = typeof d.coverMediaId === 'string' ? media[d.coverMediaId] : undefined;
+const gallery = (Array.isArray(d.gallery) ? (d.gallery as string[]) : []).map((id) => media[id]).filter((m) => m !== undefined);
+// Поля Markdown всех сущностей: у каждой заполнены только свои (K22 §2).
+const sections = [d.body, d.full, d.description, payload.body, d.conditions, d.restrictions, d.rulesBody, d.howToGet, d.rentFormatsText, payload.text]
+  .map(text)
+  .filter((s) => s !== '' && s !== title)
+  .map((s) => renderRichText(s, media));
+const base = `${(process.env.PUBLIC_SITE_URL ?? Astro.url.origin).replace(/\/+$/, '')}/`;
+---
+<!doctype html>
+<html lang="ru">
+  <head>
+    <base href={base} />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta http-equiv="Content-Security-Policy" content="script-src 'none'" />
+    <title>{`Черновик: ${title}`}</title>
+  </head>
+  <body>
+    <p class="yu-preview-banner" role="status" style="margin:0;padding:8px 16px;background:#ffd24a;color:#000;font-weight:600">Черновик – не опубликовано</p>
+    <main class="yu-page" id="main">
+      <h1>{title}</h1>
+      {lead && <p>{lead}</p>}
+      {cover && !cover.removed && cover.url && <img src={cover.url} alt={cover.alt} width={cover.width ?? undefined} height={cover.height ?? undefined} style="max-width:100%;height:auto" />}
+      {cover?.removed && <p class="media-removed">изображение удалено</p>}
+      {sections.map((html) => <div class="yu-rich-text" set:html={html} />)}
+      {gallery.length > 0 && (
+        <div class="yu-preview-gallery">
+          {gallery.map((m) => (m.removed || !m.url ? <p class="media-removed">изображение удалено</p> : <img src={m.url} alt={m.alt} width={m.width ?? undefined} height={m.height ?? undefined} loading="lazy" style="max-width:100%;height:auto" />))}
+        </div>
+      )}
+    </main>
+  </body>
+</html>
