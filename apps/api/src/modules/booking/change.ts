@@ -17,7 +17,7 @@ import { getBranch, isAcceptingBookings, type BranchInfo } from '../network/inde
 import { quote } from '../pricing/tariff.ts';
 import { lockCompositions } from '../resources/index.ts';
 import type { BookingStatus } from './confirm.ts';
-import { checkItem, releaseExpiredHolds } from './hold.ts';
+import { checkItem, releaseExpiredHolds, serviceGrantFor, type GrantAccess, type ServiceGrant } from './hold.ts';
 import { lockUnitsForWrite, occupyMany, releaseSources } from './occupancy.ts';
 
 declare module '../../core/outbox.ts' {
@@ -218,6 +218,8 @@ export interface RescheduleInput {
   start: Date;
   end: Date;
   reason: string | undefined;
+  /** K5 грант (S3-58). Бронь уже на служебном ресурсе проверяется валидатором и без него: маршрут K11 №7 о подарке не знает. */
+  serviceGrant?: ServiceGrant | undefined;
 }
 
 /** Снимок версии (как в confirm): ресурс, комната, филиал на момент версии. */
@@ -244,7 +246,9 @@ export async function rescheduleBooking(tx: Tx, bookingId: string, input: Resche
   if (!branch) throw notFound();
   const maxDays = (await resolveSetting(tx, 'booking.window_max_days', { branchId: branch.id }, now)).value;
   await lockClients(tx, [b.clientId]);
-  const c = await checkItem(tx, branch, now, maxDays, { resourceId: input.resourceId, start: input.start, end: input.end });
+  const access: GrantAccess | null =
+    input.serviceGrant || serviceGrantFor(b.resourceType) ? { phase: 'reschedule', grant: input.serviceGrant ?? null, clientId: b.clientId, holdId: null, bookingId: b.id } : null;
+  const c = await checkItem(tx, branch, now, maxDays, { resourceId: input.resourceId, start: input.start, end: input.end }, access);
   const period: Interval = c.period;
   // замки: ресурсы → единицы (старые и новые одним запросом в порядке id), затем гашение старой версии
   await lockCompositions(tx, [{ resourceId: c.resource.id, unitIds: c.units.unitIds, at: period.start }]);
@@ -291,6 +295,8 @@ export interface StaffCreateInput {
   internalComment?: string | undefined;
   /** Э2 (K11 изменение №4, K15 §8, R-13): бронь клиенту на −50 – только с правом loyalty.book_below_limit и причиной. */
   overrideLoyaltyLimit?: { reason: string } | undefined;
+  /** K5 грант (S3-58): бронь на служебный ресурс. */
+  serviceGrant?: ServiceGrant | undefined;
 }
 
 /** Ворота записи для брони сотрудником: при LOYALTY_LIMIT_REACHED обход – только с причиной и правом
@@ -330,7 +336,8 @@ export async function createStaffBooking(tx: Tx, input: StaffCreateInput, meta: 
   await lockClients(tx, [clientId]);
   const belowLimitReason = await assertCanBookByStaff(tx, input, branch.id, clientId, now);
   const maxDays = (await resolveSetting(tx, 'booking.window_max_days', { branchId: branch.id }, now)).value;
-  const c = await checkItem(tx, branch, now, maxDays, { resourceId: input.resourceId, start: input.start, end: input.end });
+  const access: GrantAccess | null = input.serviceGrant ? { phase: 'staff', grant: input.serviceGrant, clientId, holdId: null, bookingId: null } : null;
+  const c = await checkItem(tx, branch, now, maxDays, { resourceId: input.resourceId, start: input.start, end: input.end }, access);
   const q = await quote(tx, { branchId: branch.id, resourceType: c.resource.type, start: c.period.start, durationMinutes: durationMinutes(c.period) });
   await releaseExpiredHolds(tx, now, { unitIds: c.units.unitIds, clientId, period: c.period });
   const bookingId = randomUUID();

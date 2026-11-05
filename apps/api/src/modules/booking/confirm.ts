@@ -17,6 +17,7 @@ import { getBranch, isAcceptingBookings, openIntervals, type BranchInfo } from '
 import { quote } from '../pricing/tariff.ts';
 import { assertBookable, getResource, lockCompositions } from '../resources/index.ts';
 import { assertNotBlocked } from './blocks.ts';
+import { serviceGrantFor } from './hold.ts';
 import { convertHoldItem, lockUnitsForWrite } from './occupancy.ts';
 
 export type BookingStatus = 'confirmed' | 'arrived' | 'completed' | 'no_show' | 'cancelled_by_client' | 'cancelled_by_club';
@@ -88,10 +89,17 @@ function mergeItems(items: ItemRow[]): ItemRow[][] {
 }
 
 /** Повторная проверка позиции на момент подтверждения (01 §8.2): ресурс, начало в будущем, филиал, график. */
-async function recheck(tx: Tx, branch: BranchInfo, now: Date, i: ItemRow): Promise<void> {
+async function recheck(tx: Tx, branch: BranchInfo, now: Date, i: ItemRow, grant: { clientId: string; holdId: string }): Promise<void> {
   const r = await getResource(tx, i.resource_id);
   if (!r) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
-  assertBookable(r);
+  // служебный ресурс (S3-58): подтверждает валидатор гранта – удержание создано по праву, оно ещё в силе? Статус ресурса – как обычно.
+  const validator = r.selfBookable ? undefined : serviceGrantFor(r.type);
+  if (validator) {
+    if (r.status !== 'active' || (r.roomId !== null && r.roomStatus !== 'active')) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи', { resourceId: r.id });
+    await validator.check(tx, { phase: 'confirm', grant: null, clientId: grant.clientId, holdId: grant.holdId, bookingId: null, resource: { id: r.id, type: r.type, roomId: r.roomId }, branch, period: { start: i.s, end: i.e }, now });
+  } else {
+    assertBookable(r);
+  }
   if (i.s.getTime() <= now.getTime()) throw new AppError('OUTSIDE_BOOKING_WINDOW', 422, 'Это время уже прошло');
   if (!isAcceptingBookings(branch, i.s)) throw new AppError('BRANCH_NOT_ACTIVE', 409, 'Филиал сейчас не принимает записи');
   const period: Interval = { start: i.s, end: i.e };
@@ -135,7 +143,7 @@ export async function confirmHold(tx: Tx, clientId: string, holdId: string, cloc
   // замки «ресурсы → единицы» и совместимость состава (COMPOSITE_CHANGED)
   await lockCompositions(tx, items.map((i) => ({ resourceId: i.resource_id, unitIds: i.unit_ids, at: i.s })));
   await lockUnitsForWrite(tx, branch.id, items.flatMap((i) => i.unit_ids));
-  for (const [k, i] of items.entries()) await recheck(tx, branch, now, i).catch((e) => itemError(e, k, i));
+  for (const [k, i] of items.entries()) await recheck(tx, branch, now, i, { clientId, holdId: h.id }).catch((e) => itemError(e, k, i));
   await assertCanBook(tx, clientId, now);
 
   const checkoutId = randomUUID();
