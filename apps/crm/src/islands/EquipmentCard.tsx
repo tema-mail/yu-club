@@ -5,14 +5,22 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { browserCall } from '../lib/api.ts';
 import {
-  DOC_TYPE, EQUIPMENT_BADGE, EQUIPMENT_STATUS, PLATFORM, PRIORITY, REPAIR_BADGE, REPAIR_STATUS, errorText, fmtAt, ruDate,
-  type AttachmentDto, type BlockProposal, type EquipmentDto, type EquipmentStatus, type PlacementRow, type RepairDto, type WarrantyDto,
+  EQUIPMENT_BADGE, EQUIPMENT_STATUS, PRIORITY, REPAIR_BADGE, REPAIR_STATUS, errorText, fmtAt, ruDate,
+  type BlockProposal, type CategoryDto, type EquipmentDto, type EquipmentStatus, type PlaceOption, type PlacementRow, type RepairDto, type WarrantyDto,
 } from '../lib/equipment.ts';
+import Attachments from './Attachments.tsx';
 import { rub } from './CashJournal.tsx';
+import EquipmentAccounts from './EquipmentAccounts.tsx';
+import EquipmentForm from './EquipmentForm.tsx';
+import MoveEquipment from './MoveEquipment.tsx';
 
 export interface EquipmentCardProps {
   initial: EquipmentDto;
   timezone: string;
+  categories: CategoryDto[];
+  branches: Array<{ id: string; name: string; timezone: string }>;
+  roomsByBranch: Record<string, PlaceOption[]>;
+  unitsByBranch: Record<string, PlaceOption[]>;
   categoryNames: Record<string, string>;
   branchNames: Record<string, string>;
   roomNames: Record<string, string>;
@@ -51,6 +59,8 @@ export default function EquipmentCard(p: EquipmentCardProps) {
   const [notice, setNotice] = useState('');
   const [proposal, setProposal] = useState<BlockProposal | null>(null);
   const [version, setVersion] = useState(0);
+  const [moving, setMoving] = useState(false);
+  const [editing, setEditing] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const [dlg, setDlg] = useState<'status' | 'writeoff' | 'warranty' | 'warranty-off' | null>(null);
   const [status, setStatus] = useState<EquipmentStatus>('in_service');
@@ -74,7 +84,6 @@ export default function EquipmentCard(p: EquipmentCardProps) {
   const placements = useTab<{ items: PlacementRow[] }>(tab === 'place', `/equipment/${e.id}/placements`, version);
   const repairs = useTab<{ items: RepairDto[] }>(tab === 'repairs', `/repairs?equipmentId=${e.id}`, version);
   const warranties = useTab<{ items: WarrantyDto[] }>(tab === 'warranty', `/equipment/${e.id}/warranties`, version);
-  const docs = useTab<{ items: AttachmentDto[] }>(tab === 'docs', `/attachments?ownerType=equipment&ownerId=${e.id}`, version);
   const history = useTab<{ items: AuditItem[] }>(tab === 'history', `/audit/timeline?objectType=equipment&objectId=${e.id}&limit=50`, version);
 
   const reload = async () => {
@@ -159,7 +168,26 @@ export default function EquipmentCard(p: EquipmentCardProps) {
         {tabs.map((t) => <button key={t} type="button" role="tab" class="yc-eq__tab" aria-selected={tab === t} onClick={() => setTab(t)}>{TAB_LABEL[t]}</button>)}
       </div>
 
-      {tab === 'main' && (
+      {tab === 'main' && editing && (
+        <section class="yc-panel" role="tabpanel" aria-label="Основное">
+          <EquipmentForm
+            initial={e}
+            categories={p.categories}
+            branches={p.branches}
+            defaultBranchId={e.placement.branchId}
+            roomsByBranch={p.roomsByBranch}
+            unitsByBranch={p.unitsByBranch}
+            canFinancial={can('equipment.financial.edit')}
+            onCancel={() => setEditing(false)}
+            onSaved={(_saved, text) => {
+              setEditing(false);
+              setNotice(text);
+              void reload();
+            }}
+          />
+        </section>
+      )}
+      {tab === 'main' && !editing && (
         <section class="yc-panel" role="tabpanel" aria-label="Основное">
           <dl class="yc-props">
             <dt>Инвентарный номер</dt><dd>{e.inventoryNumber}</dd>
@@ -177,6 +205,7 @@ export default function EquipmentCard(p: EquipmentCardProps) {
           </dl>
           {!writtenOff && can('equipment.manage') && (
             <div class="yc-eq__actions">
+              <button type="button" class="yc-btn yc-btn--ghost" onClick={() => setEditing(true)}>Изменить…</button>
               {canChangeStatus && <button type="button" class="yc-btn yc-btn--ghost" onClick={() => open('status')}>Сменить статус…</button>}
               {can('equipment.write_off') && <button type="button" class="yc-btn yc-btn--ghost yc-btn--danger-text" onClick={() => open('writeoff')}>Убрать из работы…</button>}
             </div>
@@ -188,6 +217,23 @@ export default function EquipmentCard(p: EquipmentCardProps) {
         <section class="yc-panel" role="tabpanel" aria-label="Размещение">
           <h2>Сейчас: {place(e.placement)}</h2>
           <p class="yc-eq__muted">С {fmtAt(e.placement.since, p.timezone)}.</p>
+          {!writtenOff && can('equipment.move') && <div class="yc-eq__actions"><button type="button" class="yc-btn yc-btn--ghost" onClick={() => setMoving(true)}>Переместить…</button></div>}
+          {moving && (
+            <MoveEquipment
+              equipment={e}
+              timezone={p.timezone}
+              branches={p.branches}
+              roomsByBranch={p.roomsByBranch}
+              unitsByBranch={p.unitsByBranch}
+              onClose={() => setMoving(false)}
+              onMoved={(r) => {
+                setProposal(r.blockProposal);
+                setNotice(r.affectedBookingIds.length > 0 ? `Перемещено. Брони не тронуты (${r.affectedBookingIds.length}), ваше решение записано в историю.` : 'Перемещено.');
+                setE(r.equipment);
+                void reload();
+              }}
+            />
+          )}
           {placements.error && <p class="yc-alert yc-alert--error" role="alert">{placements.error.text}</p>}
           <ul class="yc-eq__rows" data-testid="eq-placements">
             {placements.data?.items.map((r) => (
@@ -202,12 +248,17 @@ export default function EquipmentCard(p: EquipmentCardProps) {
       )}
 
       {tab === 'accounts' && hasAccounts && (
-        <section class="yc-panel" role="tabpanel" aria-label="Учётные записи">
-          <h2>Учётные записи PS/VR</h2>
-          <ul class="yc-eq__rows" data-testid="eq-accounts">
-            {e.accounts?.map((a) => <li class="yc-eq__row" key={a.id}><strong>{a.displayName}</strong><span class="yc-eq__muted">{PLATFORM[a.platform]} · {a.status === 'active' ? 'действует' : 'завершена'}</span></li>)}
-          </ul>
-        </section>
+        <EquipmentAccounts
+          equipmentId={e.id}
+          branchId={e.placement.branchId}
+          timezone={p.timezone}
+          accounts={e.accounts ?? []}
+          canManage={!writtenOff && can('equipment.manage')}
+          onChanged={(text) => {
+            setNotice(text);
+            void reload();
+          }}
+        />
       )}
 
       {tab === 'repairs' && (
@@ -247,15 +298,7 @@ export default function EquipmentCard(p: EquipmentCardProps) {
         </section>
       )}
 
-      {tab === 'docs' && (
-        <section class="yc-panel" role="tabpanel" aria-label="Документы">
-          {docs.error && <p class="yc-alert yc-alert--error" role="alert">{docs.error.text}</p>}
-          {docs.data?.items.length === 0 && <p class="yc-empty">Документов нет.</p>}
-          <ul class="yc-eq__rows">
-            {docs.data?.items.map((a) => <li class="yc-eq__row" key={a.id}><a href={`/api/crm/v1/attachments/${a.id}`}>{a.originalName ?? DOC_TYPE[a.docType]}</a></li>)}
-          </ul>
-        </section>
-      )}
+      {tab === 'docs' && <Attachments ownerType="equipment" ownerId={e.id} timezone={p.timezone} canAttach={can('repair.attach')} />}
 
       {tab === 'history' && (
         <section class="yc-panel" role="tabpanel" aria-label="История">

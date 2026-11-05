@@ -4,6 +4,7 @@
 // фильтры обычной формой GET, «Показать ещё» – курсором. Комнаты и единицы – подписи и фильтр, по всей зоне сотрудника.
 import Crm from '../../layouts/Crm.astro';
 import EquipmentCard from '../../islands/EquipmentCard.tsx';
+import EquipmentForm from '../../islands/EquipmentForm.tsx';
 import { ApiError, serverCall } from '../../lib/api.ts';
 import { EQUIPMENT_BADGE, EQUIPMENT_STATUS, fmtAt, ruDate, type CategoryDto, type EquipmentDto, type EquipmentStatus } from '../../lib/equipment.ts';
 
@@ -26,14 +27,16 @@ const filters = {
   hasOpenRepair: q.get('hasOpenRepair') ?? '',
 };
 const warrantyDays = q.get('warrantyDays') ?? '';
-if (!notFound && key) {
+const creating = key === 'new';
+if (creating && !can('equipment.manage')) notFound = true;
+if (!notFound && key && !creating) {
   try {
     card = await serverCall<EquipmentDto>(cookie, `/equipment/${encodeURIComponent(key)}`);
   } catch (e) {
     if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
     notFound = true;
   }
-} else if (!notFound) {
+} else if (!notFound && !creating) {
   const p = new URLSearchParams({ limit: '50' });
   for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
   if (/^\d{1,3}$/.test(warrantyDays)) p.set('warrantyExpiresBefore', new Date(Date.now() + Number(warrantyDays) * 86_400_000).toISOString().slice(0, 10));
@@ -98,7 +101,7 @@ const nextLink = () => {
   return `/equipment?${p}`;
 };
 ---
-<Crm title={card ? `${card.inventoryNumber} – оборудование` : 'Оборудование'}>
+<Crm title={card ? `${card.inventoryNumber} – оборудование` : creating ? 'Постановка на учёт' : 'Оборудование'}>
   {notFound ? (
     <div class="yc-head"><h1>Не найдено</h1><p>Такого оборудования нет или оно вне вашей зоны.</p><a href="/equipment">К списку оборудования</a></div>
   ) : card ? (
@@ -108,6 +111,10 @@ const nextLink = () => {
         client:load
         initial={card}
         timezone={tz(card.placement.branchId)}
+        categories={categories}
+        branches={branches.map((b) => ({ id: b.id, name: b.name, timezone: b.timezone }))}
+        roomsByBranch={roomsByBranch}
+        unitsByBranch={unitsByBranch}
         categoryNames={categoryNames}
         branchNames={branchNames}
         roomNames={roomNames}
@@ -117,12 +124,29 @@ const nextLink = () => {
         actions={me.actions}
       />
     </>
+  ) : creating ? (
+    <>
+      <p class="yc-crumbs"><a href="/equipment">Оборудование</a> / Постановка на учёт</p>
+      <div class="yc-head"><h1>Поставить на учёт</h1><p>Инвентарный номер выдаст система. Каждая единица с серийным номером – отдельная карточка.</p></div>
+      <section class="yc-panel yc-eq">
+        <EquipmentForm
+          client:load
+          categories={categories}
+          branches={branches.map((b) => ({ id: b.id, name: b.name }))}
+          defaultBranchId={ctx.kind === 'branch' ? ctx.branch.id : branches[0]?.id ?? ''}
+          roomsByBranch={roomsByBranch}
+          unitsByBranch={unitsByBranch}
+          canFinancial={can('equipment.financial.edit')}
+        />
+      </section>
+    </>
   ) : (
     <>
       <div class="yc-head">
         <h1>Оборудование</h1>
         <p>Каждая единица – своя карточка с инвентарным номером. Статус не закрывает ресурс: это делает только блокировка, которую подтверждает сотрудник.</p>
       </div>
+      {can('equipment.manage') && <div class="yc-eq__actions"><a class="yc-btn" href="/equipment/new">Поставить на учёт</a></div>}
       <section class="yc-panel" aria-labelledby="eq-filter">
         <h2 id="eq-filter">Фильтры</h2>
         <form class="yc-eq__filters" method="get" action="/equipment">
