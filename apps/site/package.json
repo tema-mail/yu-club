@@ -14,11 +14,15 @@
     "@astrojs/node": "^11.1.9",
     "@astrojs/preact": "^6.1.1",
     "astro": "^7.4.4",
-    "preact": "^11.1.1"
+    "markdown-it": "^15.0.3",
+    "preact": "^11.1.1",
+    "sanitize-html": "^2.18.1"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
     "@playwright/test": "^1.64.1",
+    "@types/markdown-it": "^14.2.0",
+    "@types/sanitize-html": "^2.16.2",
     "fastify": "^5.12.7"
   }
 }
