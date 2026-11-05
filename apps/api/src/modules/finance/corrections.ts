@@ -78,13 +78,21 @@ async function isIncomeRefund(tx: Tx, op: FinanceOperationDto): Promise<boolean>
   return income?.kind === 'income' && (income.source === 'event' || income.source === 'extra_service' || income.source === 'other');
 }
 
+/** Исправление №45 связанной операции потеряло бы связь: сторно плюс новая операция без объекта – объект снова «не оплачен» (K17 §14).
+ *  Такую операцию сторнируют и вводят заново через карточку объекта. Вызывается под lockPlaces: linkOperation берёт те же замки. */
+async function assertNotLinked(tx: Tx, operationId: string): Promise<void> {
+  const r = await tx.query<{ ref_type: string; ref_id: string; role: string }>(`SELECT ref_type, ref_id, role FROM app.finance_operation_links WHERE operation_id = $1 AND unlinked_at IS NULL`, [operationId]);
+  const link = r.rows[0];
+  if (link) throw new AppError('OPERATION_ALREADY_LINKED', 409, 'Операция связана с объектом: сторно и новая операция – через его карточку', { ref: { type: link.ref_type, id: link.ref_id }, role: link.role });
+}
+
 /** Общая часть сторно и исправления: права, запреты по источнику, блокировка, перечитывание, проводка, аудит. */
 async function reverseCore(
   tx: Tx,
   ctx: AccessContext,
   input: { operationId: string; reason?: string | undefined },
   meta: AuditRequestMeta,
-  opts: CommandOpts & { auditAction: AuditAction },
+  opts: CommandOpts & { auditAction: AuditAction; refuseLinked?: boolean },
 ): Promise<{ original: FinanceOperationDto; reversal: FinanceOperationDto; replayed: boolean }> {
   const clock = opts.clock ?? systemClock;
   const found = await getOperation(tx, input.operationId);
@@ -121,6 +129,7 @@ async function reverseCore(
   }
   const original = (await getOperation(tx, found.id))!;
   if (original.reversedBy) throw new AppError('ALREADY_REVERSED', 409, 'Операция уже сторнирована', { reversalId: original.reversedBy });
+  if (opts.refuseLinked) await assertNotLinked(tx, original.id);
   // K20 §6: возврат не повисает без основания – сначала сторно возвратов. Проверка под lockPlaces: возврат берёт те же замки.
   if (original.kind === 'income') {
     const live = await tx.query<{ id: string }>(
@@ -207,6 +216,7 @@ export async function correctOperation(
     ...opts,
     idempotencyKey: `correct:${opts.idempotencyKey}`,
     auditAction: 'finance.operation.corrected',
+    refuseLinked: true,
   });
   const { kind, ...body } = input.replacement;
   const replacement = await REPLACE[kind](tx, ctx, { ...body, branchId: original.branchId }, meta, { idempotencyKey: `${opts.idempotencyKey}:replacement`, clock });

@@ -56,7 +56,7 @@ const moduleErrors = {
   events: eventsErrors, // Э3, K20 §16
   // K17 §14 – связи операций кассы (modules/finance/links.ts, S3-05); строкой здесь, а не в finance/errors.ts (решение D3-04)
   finance_links: {
-    OPERATION_ALREADY_LINKED: 409, // у операции уже есть живая связь (details.ref)
+    OPERATION_ALREADY_LINKED: 409, // у операции уже есть живая связь (details.ref); в том числе исправление №45
     OPERATION_LINK_INVALID: 422, // роль не по виду операции, сторнирована, не тот источник (details.reason)
     EVENT_REFUND_EXCEEDS_INCOME: 409, // возврат больше непогашенной части поступления (details.availableKop)
     OPERATION_REVERSED: 409, // возврат по сторнированному поступлению
