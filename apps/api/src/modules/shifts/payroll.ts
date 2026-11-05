@@ -14,7 +14,7 @@ import { assertCan, roleAllows, type AccessContext } from '../../core/permission
 import { resolveSetting } from '../../core/settings.ts';
 import { addDays, parseLocalDate, systemClock, type Clock, type LocalDate, type TimeZone } from '../../core/time.ts';
 import { getBranch } from '../network/index.ts';
-import { HANDLER_RATE, openPayrollDate, payrollDateSql, payrollInstant, staffAccount } from './accrual.ts';
+import { HANDLER_ATTENDANCE, HANDLER_RATE, openPayrollDate, payrollDateSql, payrollInstant, staffAccount } from './accrual.ts';
 import { SHIFT_SELECT, shiftDtos, type ShiftRow } from './plan.ts';
 import { isUuid, lockPeriodCreation, lockPeriodsShared, notFound, requireReason } from './rates.ts';
 
@@ -237,9 +237,19 @@ export async function closePeriod(tx: Tx, ctx: AccessContext, periodId: string, 
       GROUP BY e.aggregate_id`,
     [range.from, range.to, HANDLER_RATE],
   );
-  if (bad.length > 0 || rates.rows.length > 0) {
+  // Необработанное shift.attendance_changed: факт смены ещё не дошёл до начисления, в том числе у смены, перенесённой из этого периода.
+  const facts = await tx.query<{ shift_id: string }>(
+    `SELECT DISTINCT s.id AS shift_id
+       FROM app.outbox_events e JOIN app.staff_shifts s ON s.id = e.aggregate_id
+      WHERE e.event_type = 'shift.attendance_changed' AND NOT EXISTS (SELECT 1 FROM app.processed_events p WHERE p.event_id = e.id AND p.handler = $3)
+        AND (s.local_date BETWEEN $1::date AND $2::date OR EXISTS (
+          SELECT 1 FROM journal.payroll_accruals a JOIN journal.ledger_entries le ON le.id = a.ledger_entry_id
+           WHERE a.shift_id = s.id AND ${payrollDateSql('le')} BETWEEN $1::date AND $2::date AND NOT EXISTS (SELECT 1 FROM journal.ledger_entries rv WHERE rv.reversal_of = le.id)))`,
+    [range.from, range.to, HANDLER_ATTENDANCE],
+  );
+  if (bad.length > 0 || rates.rows.length > 0 || facts.rows.length > 0) {
     throw new AppError('PAYROLL_PERIOD_HAS_UNRESOLVED', 409, 'В периоде есть нерешённые смены или необработанные ставки', {
-      shiftIds: [...new Set([...bad.map((b) => b.shiftId), ...rates.rows.flatMap((r) => r.shift_ids)])],
+      shiftIds: [...new Set([...bad.map((b) => b.shiftId), ...rates.rows.flatMap((r) => r.shift_ids), ...facts.rows.map((f) => f.shift_id)])],
       rateIds: rates.rows.map((r) => r.rate_id),
       reasons: bad,
     });

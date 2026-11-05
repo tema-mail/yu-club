@@ -71,7 +71,7 @@ const STATE_SQL = `SELECT s.id, s.staff_id, s.branch_id, b.timezone, to_char(s.l
   FROM app.staff_shifts s JOIN app.branches b ON b.id = s.branch_id WHERE s.id = $1`;
 
 /** Привести начисление смены к её текущему состоянию. mode='rate': смену закрытого периода не трогать. */
-export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 'rate', clock: Clock = systemClock): Promise<void> {
+export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 'rate', clock: Clock = systemClock, eventFactVersion?: number): Promise<void> {
   const seen = (await tx.query<ShiftState>(STATE_SQL, [shiftId])).rows[0];
   if (!seen) return;
   const shiftDate = seen.local_date as LocalDate;
@@ -98,8 +98,19 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
   // Закрытый период: снимок не меняем, разницу – корректировкой в открытом (K18 §6, §7).
   const closed = closedAt(date);
   if (closed && mode === 'attendance') {
-    const sum = await tx.query<{ sum: string }>(`SELECT coalesce(sum(amount), 0) AS sum FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2`, [account.id, shift.id]);
-    const diff = targetKop - Number(sum.rows[0]!.sum);
+    // Версия уже учтена начислением или системной корректировкой – событие опоздало: снимок и журнал не трогаем.
+    const last = (await tx.query<{ fact_version: number; rate_id: string | null }>(`SELECT fact_version, rate_id FROM journal.payroll_accruals WHERE shift_id = $1 ORDER BY fact_version DESC LIMIT 1`, [shift.id])).rows[0];
+    const corrected = await tx.query<{ v: number | null }>(`SELECT max((refs->>'factVersion')::int) AS v FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND refs ? 'closedPeriodId'`, [account.id, shift.id]);
+    if ((eventFactVersion ?? shift.fact_version) <= Math.max(last?.fact_version ?? 0, corrected.rows[0]?.v ?? 0)) return;
+    // Цель – по ставке, с которой период закрыт, а не по новой (K18 §3); ручные корректировки в сумму не входят: их разницей не поглощаем.
+    const applied = last?.rate_id ? (await tx.query<{ hourly_kop: string; attendance_fee_kop: string }>(`SELECT hourly_kop, attendance_fee_kop FROM journal.staff_rates WHERE id = $1`, [last.rate_id])).rows[0] : undefined;
+    const closedRate = applied ? { hourlyKop: Number(applied.hourly_kop), attendanceFeeKop: Number(applied.attendance_fee_kop) } : rate;
+    const closedTarget = shift.status === 'worked' && !shift.unpaid_confirmed && closedRate !== null && shift.paid_minutes !== null ? accrualParts(shift.paid_minutes, closedRate, feeMin).totalKop : 0;
+    const sum = await tx.query<{ sum: string }>(
+      `SELECT coalesce(sum(amount), 0) AS sum FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND (entry_type IN ('payroll.accrual','reversal') OR refs ? 'closedPeriodId')`,
+      [account.id, shift.id],
+    );
+    const diff = closedTarget - Number(sum.rows[0]!.sum);
     if (diff !== 0) {
       const onDate = openDate ?? date;
       await post(tx, {
@@ -165,7 +176,7 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
 export function registerPayrollHandlers(deps: { clock?: Clock } = {}): void {
   const clock = deps.clock ?? systemClock;
   subscribe('shift.attendance_changed', HANDLER_ATTENDANCE, async (tx: Tx, e: EventEnvelope<'shift.attendance_changed'>) => {
-    await settleShift(tx, e.payload.shiftId, 'attendance', clock);
+    await settleShift(tx, e.payload.shiftId, 'attendance', clock, e.payload.factVersion);
   });
   subscribe('staff.rate_set', HANDLER_RATE, async (tx: Tx, e: EventEnvelope<'staff.rate_set'>) => {
     for (const shiftId of e.payload.affectedShiftIds) await settleShift(tx, shiftId, 'rate', clock);

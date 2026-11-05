@@ -10,7 +10,7 @@ import { verifyBalance } from '../../apps/api/src/core/ledger.ts';
 import { clearSubscriptions, processEvent } from '../../apps/api/src/core/outbox.ts';
 import type { AccessContext, StaffRole } from '../../apps/api/src/core/permissions.ts';
 import { addDays, localToInstant, type Clock, type LocalDate, type LocalTime, type TimeZone } from '../../apps/api/src/core/time.ts';
-import { HANDLER_ATTENDANCE, HANDLER_RATE, registerPayrollHandlers } from '../../apps/api/src/modules/shifts/accrual.ts';
+import { HANDLER_ATTENDANCE, HANDLER_RATE, registerPayrollHandlers, settleShift } from '../../apps/api/src/modules/shifts/accrual.ts';
 import { checkIn, checkOut, setAttendance } from '../../apps/api/src/modules/shifts/attendance.ts';
 import { calculateStatements, closePeriod, createPeriod, getStatement, markPaid, postCorrection, setStatementStatus, type PayrollPeriodDto, type PayrollStatementDto } from '../../apps/api/src/modules/shifts/payroll.ts';
 import { createPenalty } from '../../apps/api/src/modules/shifts/penalties.ts';
@@ -233,6 +233,48 @@ describe('периоды', () => {
     expect(outcomes.before).toBeGreaterThan(0);
     expect(outcomes.closed).toBeGreaterThan(0);
   }, 120_000);
+
+  it('необработанное shift.attendance_changed блокирует закрытие, даже если начисление на текущую версию уже есть', async () => {
+    const r = nextRange();
+    const p = await period(r);
+    const s = await newStaff();
+    const shift = await worked(await plan(s, r.day), 60);
+    await tx((t) => settleShift(t, shift.id, 'attendance', nowClock)); // начисление есть (ставка пересчитала раньше), событие v1 ещё в очереди
+    const err = await close(p.id).catch((e: AppError) => e);
+    expect(err).toMatchObject({ code: 'PAYROLL_PERIOD_HAS_UNRESOLVED', details: { shiftIds: [shift.id] } });
+    await settleEvents();
+    expect((await close(p.id)).status).toBe('closed');
+  });
+
+  it('опоздавшее v1 после закрытия гасится: новая ставка не даёт системной корректировки и не поглощает ручную правку', async () => {
+    const r = nextRange();
+    const p = await period(r);
+    const s = await newStaff();
+    const shift = await worked(await plan(s, r.day), 60);
+    await settleEvents();
+    await close(p.id);
+    await tx((t) => setRate(t, owner, { staffId: s, validFrom: '2020-01-01', hourlyKop: 113_000, attendanceFeeKop: 0, reason: 'повышение' }, meta(), nowClock));
+    await tx((t) => postCorrection(t, owner, { staffId: s, amountKop: 7_000, ref: { type: 'shift', id: shift.id }, reason: 'ручная' }, meta(), { idempotencyKey: randomUUID(), clock: nowClock }));
+    await tx((t) => settleShift(t, shift.id, 'attendance', nowClock, 1)); // доставка v1 с опозданием
+    const rows = await db.client.query<{ entry_type: string; amount: string }>(`SELECT entry_type, amount FROM journal.ledger_entries WHERE ref_type = 'shift' AND ref_id = $1 ORDER BY id`, [shift.id]);
+    expect(rows.rows).toEqual([{ entry_type: 'payroll.accrual', amount: '60000' }, { entry_type: 'payroll.correction', amount: '7000' }]);
+  });
+
+  it('новая версия факта в закрытом периоде: разница по ставке начисления, ручная корректировка в сумму не входит', async () => {
+    const r = nextRange();
+    const p = await period(r);
+    const s = await newStaff();
+    const shift = await worked(await plan(s, r.day), 60);
+    await settleEvents();
+    await close(p.id);
+    await tx((t) => setRate(t, owner, { staffId: s, validFrom: '2020-01-01', hourlyKop: 113_000, attendanceFeeKop: 0, reason: 'повышение' }, meta(), nowClock));
+    await tx((t) => postCorrection(t, owner, { staffId: s, amountKop: 7_000, ref: { type: 'shift', id: shift.id }, reason: 'ручная' }, meta(), { idempotencyKey: randomUUID(), clock: nowClock }));
+    await db.client.query(`UPDATE app.staff_shifts SET paid_minutes = 90, fact_version = fact_version + 1 WHERE id = $1`, [shift.id]);
+    await tx((t) => settleShift(t, shift.id, 'attendance', nowClock, shift.factVersion + 1));
+    await tx((t) => settleShift(t, shift.id, 'attendance', nowClock, shift.factVersion + 1)); // дубль
+    const rows = await db.client.query<{ entry_type: string; amount: string }>(`SELECT entry_type, amount FROM journal.ledger_entries WHERE ref_type = 'shift' AND ref_id = $1 ORDER BY id`, [shift.id]);
+    expect(rows.rows.map((x) => x.amount)).toEqual(['60000', '7000', '30000']); // 30 минут по ставке 600 ₽/ч, а не по новой
+  });
 
   it('после закрытия смена и штраф с датой периода – PAYROLL_PERIOD_CLOSED; корректировка закрытого – запись в открытом со ссылкой', async () => {
     const r = nextRange();
