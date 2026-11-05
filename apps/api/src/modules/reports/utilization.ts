@@ -12,7 +12,7 @@ import { can } from '../../core/permissions.ts';
 import { branchDay, instantToLocal, parseLocalDate, type Interval, type LocalDate, type TimeZone } from '../../core/time.ts';
 import { openIntervalsRange } from '../network/calendar.ts';
 import type { BranchInfo } from '../network/index.ts';
-import { DAY_RULE, noData, okMetric, prevPeriod, resolveBranches, unavailable, windowsOf, type Metric, type Period, type ReportEnv, type ReportParams } from './framework.ts';
+import { DAY_RULE, noData, okMetric, pageByKey, prevPeriod, resolveBranches, unavailable, windowsOf, type Metric, type PageOpts, type Period, type ReportEnv, type ReportParams } from './framework.ts';
 
 export const UTILIZATION_ACTION = 'reports.ops.view';
 
@@ -272,11 +272,12 @@ export async function utilizationReport(env: ReportEnv, p: UtilizationParams): P
 }
 
 /** Детализация: строка = единица; сумма value по минутам = итог, у долей value – доля единицы. */
-export async function utilizationDetail(env: ReportEnv, p: UtilizationParams, metric: unknown): Promise<{ rows: Array<UnitRow & { value: number | null }>; total: Metric }> {
+export async function utilizationDetail(env: ReportEnv, p: UtilizationParams, metric: unknown, opts: PageOpts = {}): Promise<{ rows: Array<UnitRow & { value: number | null }>; total: Metric; nextCursor: string | null }> {
   const r = await utilizationReport(env, p);
   if (typeof metric !== 'string' || !Object.hasOwn(r.metrics, metric)) throw new AppError('REPORT_FILTER_INVALID', 422, 'Неизвестный показатель', { field: 'metric' });
   const key = metric as UtilizationMetric;
-  const rows = r.rows.map((row) => {
+  const { slice, nextCursor } = pageByKey([...r.rows].sort((a, b) => (a.unitId < b.unitId ? -1 : 1)), (row) => row.unitId, opts);
+  const rows = slice.map((row) => {
     if (key === 'actualLoad' || key === 'commercialLoad') {
       const top = key === 'actualLoad' ? row.usedMin : row.bookedMin;
       const base = key === 'actualLoad' ? row.availableElapsedMin : row.availableMin;
@@ -284,7 +285,7 @@ export async function utilizationDetail(env: ReportEnv, p: UtilizationParams, me
     }
     return { ...row, value: row[UTILIZATION_MINUTES[key]] as number };
   });
-  return { rows, total: r.metrics[key] };
+  return { rows, total: r.metrics[key], nextCursor };
 }
 
 // ---- график: по дням и по часам

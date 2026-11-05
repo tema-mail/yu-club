@@ -13,6 +13,7 @@ import { BRANCH_COLUMNS, BRANCH_FROM, toBranchInfo, type BranchInfo, type Branch
 export const DAY_RULE = 'Сутки – по времени каждого филиала';
 export const SCREEN_TIMEOUT_MS = 15_000;
 export const EXPORT_TIMEOUT_MS = 300_000;
+const DETAIL_PAGE = 100; // экран – по 100 строк (K24 §9, 17 §4.4)
 const DETAIL_MAX_LIMIT = 500;
 const POOL_WAIT_MS = 15_000; // пул занят отчётами дольше – тот же ответ, что на долгий запрос
 
@@ -237,6 +238,30 @@ export async function computeMetrics<K extends string>(
 
 // ---- детализация: курсор по ключу, тот же where
 
+export interface PageOpts {
+  cursor?: string | undefined;
+  limit?: number | undefined;
+}
+
+export const pageLimit = (opts: PageOpts): number => Math.min(Math.max(opts.limit ?? DETAIL_PAGE, 1), DETAIL_MAX_LIMIT);
+
+/** Курсор детализации по клиенту или сертификату – сам ключ; чужая строка – ошибка фильтра, а не 500 от базы. */
+export function uuidCursor(cursor: string | undefined): string | null {
+  if (cursor === undefined) return null;
+  if (!UUID_RE.test(cursor)) throw new AppError('REPORT_FILTER_INVALID', 422, 'Неверный курсор', { field: 'cursor' });
+  return cursor.toLowerCase();
+}
+
+/** Страница уже посчитанных строк, упорядоченных по ключу: итог считает вызывающий по всем строкам, в ответ – только страница. */
+export function pageByKey<T>(rows: readonly T[], key: (row: T) => string, opts: PageOpts): { slice: T[]; nextCursor: string | null } {
+  const after = uuidCursor(opts.cursor);
+  const limit = pageLimit(opts);
+  const from = after === null ? 0 : rows.findIndex((r) => key(r) > after);
+  const start = from < 0 ? rows.length : from;
+  const slice = rows.slice(start, start + limit);
+  return { slice, nextCursor: start + limit < rows.length ? key(slice[slice.length - 1]!) : null };
+}
+
 export interface DetailPage<R> {
   rows: R[];
   total: RawValue;
@@ -262,7 +287,7 @@ export async function detailPage<R extends pg.QueryResultRow>(
   opts: { cursor?: string | undefined; limit?: number | undefined } = {},
 ): Promise<DetailPage<R>> {
   const total = await aggregate(db, def, windows);
-  const limit = Math.min(Math.max(opts.limit ?? 100, 1), DETAIL_MAX_LIMIT);
+  const limit = pageLimit(opts);
   if (windows.length === 0) return { rows: [], total, nextCursor: null };
   if (!IDENT_RE.test(def.idCol)) throw new Error('reports: недопустимое имя столбца');
   const w = where(def.spec, windows);

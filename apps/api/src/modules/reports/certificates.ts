@@ -5,7 +5,7 @@
 import type { Tx } from '../../core/audit.ts';
 import { formatLocal } from '../../core/time.ts';
 import {
-  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, metricDef, noData, okMetric, prevPeriod, resolveBranches, unavailable, windowsOf,
+  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, metricDef, noData, okMetric, pageByKey, prevPeriod, resolveBranches, unavailable, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
 
@@ -130,11 +130,12 @@ export async function certificatesDetail(
   if (metric === 'activeCount' || metric === 'activeBalance' || metric === 'partiallyRedeemed') {
     const all = await endRows(env.tx, windows);
     const rows = all.filter((r) => Number(r.balance_after_kop) > 0 && (metric !== 'partiallyRedeemed' || r.has_redeem));
-    const out = rows.map((r) => ({
+    const { slice, nextCursor } = pageByKey(rows, (r) => r.certificate_id, opts);
+    const out = slice.map((r) => ({
       certificateId: r.certificate_id, number: r.number, atLocal: null, op: null, branchId: r.sale_branch_id, client: null, bookingId: null, authorId: null,
       balanceAfterKop: Number(r.balance_after_kop), value: metric === 'activeBalance' ? Number(r.balance_after_kop) : 1,
     }));
-    return { rows: out, total: endMetrics(all)[metric], nextCursor: null };
+    return { rows: out, total: endMetrics(all)[metric], nextCursor };
   }
   const def = metricDef(certificateDefs(), metric);
   const page = await detailPage<OpRow>(env.tx, def, windows, opts);

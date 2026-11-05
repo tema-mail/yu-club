@@ -5,7 +5,7 @@
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import {
-  loadMaskedClients, noData, okMetric, prevPeriod, resolveBranches, windowsOf,
+  loadMaskedClients, noData, okMetric, pageByKey, pageLimit, prevPeriod, resolveBranches, uuidCursor, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type Period, type ReportEnv, type ReportParams, DAY_RULE,
 } from './framework.ts';
 
@@ -231,16 +231,33 @@ export async function clientsDetail(
   };
   if (metric === 'avgIntervalDays') {
     const rows = await intervalRows(env.tx, windows);
+    const { slice, nextCursor } = pageByKey(rows, (r) => r.client_id, opts);
     return {
-      rows: await mask(rows.map((r) => ({ clientId: r.client_id, branchId: r.branch_id, value: r.days }))),
+      rows: await mask(slice.map((r) => ({ clientId: r.client_id, branchId: r.branch_id, value: r.days }))),
       total: rows.length ? okMetric(avg(rows.map((r) => r.days)), 'days') : noData,
-      nextCursor: null,
+      nextCursor,
     };
   }
   if (metric === 'newProfiles') {
-    const f = windows.length ? newProfilesFrom({ networkWide: isNetworkWide(env, p), windows }) : null;
-    const rows = f ? (await env.tx.query<{ client_id: string }>(`SELECT t.client_id FROM ${f.sql} ORDER BY t.client_id LIMIT 10000`, f.params)).rows : [];
-    return { rows: await mask(rows.map((r) => ({ clientId: r.client_id, branchId: null, value: 1 }))), total: rows.length ? okMetric(rows.length, 'count') : noData, nextCursor: null };
+    const after = uuidCursor(opts.cursor);
+    if (windows.length === 0) return { rows: [], total: noData, nextCursor: null };
+    const scope = { networkWide: isNetworkWide(env, p), windows };
+    const f = newProfilesFrom(scope);
+    const limit = pageLimit(opts);
+    const params = [...f.params, after, limit + 1];
+    const found = (
+      await env.tx.query<{ client_id: string }>(
+        `SELECT t.client_id FROM ${f.sql} AND ($${params.length - 1}::uuid IS NULL OR t.client_id > $${params.length - 1}::uuid) ORDER BY t.client_id LIMIT $${params.length}`,
+        params,
+      )
+    ).rows;
+    const rows = found.slice(0, limit);
+    const total = await countNew(env.tx, scope); // из агрегата, а не из строк страницы (TC-20)
+    return {
+      rows: await mask(rows.map((r) => ({ clientId: r.client_id, branchId: null, value: 1 }))),
+      total: total > 0 ? okMetric(total, 'count') : noData,
+      nextCursor: found.length > limit ? rows[rows.length - 1]!.client_id : null,
+    };
   }
   if (metric === 'visitsPerClient') {
     if (windows.length === 0) return { rows: [], total: noData, nextCursor: null };
@@ -254,26 +271,24 @@ export async function clientsDetail(
       )
     ).rows;
     const values = rows.map((r) => Number(r.n));
+    const { slice, nextCursor } = pageByKey(rows, (r) => r.client_id, opts);
     return {
-      rows: await mask(rows.map((r) => ({ clientId: r.client_id, branchId: r.branch_id, value: Number(r.n) }))),
+      rows: await mask(slice.map((r) => ({ clientId: r.client_id, branchId: r.branch_id, value: Number(r.n) }))),
       total: rows.length ? okMetric(avg(values), 'count') : noData,
-      nextCursor: null,
+      nextCursor,
     };
   }
   if (metric === 'profileVisits' || (typeof metric === 'string' && Object.hasOwn(STAT_FILTERS, metric))) {
     const key = metric as ClientsPeriodMetric;
     const all = await clientStats(env.tx, windows);
     const chosen = key === 'profileVisits' ? all.filter((s) => s.visits > 0) : all.filter(STAT_FILTERS[key]);
-    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
-    const from = opts.cursor ? chosen.findIndex((s) => s.client_id > opts.cursor!) : 0;
-    const start = from < 0 ? chosen.length : from;
-    const slice = chosen.slice(start, start + limit);
+    const { slice, nextCursor } = pageByKey(chosen, (s) => s.client_id, opts);
     const value = (s: ClientStat) => (key === 'profileVisits' ? s.visits : 1);
     const total = chosen.reduce((n, s) => n + value(s), 0);
     return {
       rows: await mask(slice.map((s) => ({ clientId: s.client_id, branchId: s.branch_id, value: value(s) }))),
       total: chosen.length ? okMetric(total, 'count') : noData,
-      nextCursor: start + limit < chosen.length ? slice[slice.length - 1]!.client_id : null,
+      nextCursor,
     };
   }
   throw new AppError('REPORT_FILTER_INVALID', 422, 'Неизвестный показатель', { field: 'metric' });

@@ -7,7 +7,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { formatLocal } from '../../core/time.ts';
 import type { BranchInfo } from '../network/index.ts';
 import {
-  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, metricDef, noData, okMetric, prevPeriod, resolveBranches, windowsOf,
+  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, metricDef, noData, okMetric, pageLimit, prevPeriod, resolveBranches, uuidCursor, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
 
@@ -175,14 +175,24 @@ export async function loyaltyDetail(
     const f = balancesFrom(scope);
     const c = BALANCE_CONDS(warn);
     const cond = metric === 'totalBalance' ? 'TRUE' : c[metric as Exclude<BalanceMetric, 'totalBalance'>];
-    const rows = (await env.tx.query<{ client_id: string; balance: string }>(`SELECT x.client_id, x.balance FROM ${f.sql} AND ${cond} ORDER BY x.client_id LIMIT 10000`, f.params)).rows;
+    const limit = pageLimit(opts);
+    const after = uuidCursor(opts.cursor);
+    const params = [...f.params, after, limit + 1];
+    const found = (
+      await env.tx.query<{ client_id: string; balance: string }>(
+        `SELECT x.client_id, x.balance FROM ${f.sql} AND ${cond} AND ($${params.length - 1}::uuid IS NULL OR x.client_id > $${params.length - 1}::uuid) ORDER BY x.client_id LIMIT $${params.length}`,
+        params,
+      )
+    ).rows;
+    const rows = found.slice(0, limit);
     const clients = await masked(rows.map((r) => ({ clientId: r.client_id, branchId: null })));
     const out: LoyaltyDetailRow[] = rows.map((r) => ({
       entryId: null, clientId: r.client_id, client: clients.get(`${r.client_id}:${fallback?.id ?? ''}`) ?? null, atLocal: null, type: null, isReversal: false, spendKind: null,
       value: metric === 'totalBalance' ? Number(r.balance) : 1, ref: null, authorType: null,
     }));
-    const total = out.reduce((s, r) => s + r.value, 0);
-    return { rows: out, total: out.length ? okMetric(total, metric === 'totalBalance' ? 'centi' : 'count') : noData, nextCursor: null };
+    // итог – из агрегата того же условия, а не из строк страницы (TC-20)
+    const total = (await balanceMetrics(env.tx, scope, warn))[metric as BalanceMetric];
+    return { rows: out, total, nextCursor: found.length > limit ? rows[rows.length - 1]!.client_id : null };
   }
   const def = metricDef(loyaltyDefs(), metric);
   const page = await detailPage<MoveRow>(env.tx, def, moveWindows(env, p, branches, p.period), opts);

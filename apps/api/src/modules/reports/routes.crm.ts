@@ -89,7 +89,7 @@ const HANDLERS: Record<string, ReportHandler> = {
       const r = await utilizationReport(env, utilizationP(q, p));
       return { ...r, ...(q.series ? { series: await utilizationSeries(env, utilizationP(q, p), q.series) } : {}) };
     },
-    detail: async (env, q, p) => ({ ...(await utilizationDetail(env, utilizationP(q, p), q.metric)), nextCursor: null }),
+    detail: (env, q, p) => utilizationDetail(env, utilizationP(q, p), q.metric, page(q)),
   },
   finance: {
     metrics: (env, q, p) => financeReport(env, financeP(q, p)) as unknown as Promise<Record<string, unknown>>,
