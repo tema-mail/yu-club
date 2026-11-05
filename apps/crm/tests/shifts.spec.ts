@@ -55,8 +55,7 @@ test('масштабы и фильтр: неделя 7 дней, месяц пл
   await open(page, '/shifts');
   await expect(page.getByTestId('shift-day')).toHaveCount(7);
   await page.getByRole('group', { name: 'Масштаб' }).getByRole('button', { name: 'Месяц' }).click();
-  await expect(page.getByTestId('month-tile').first()).toBeVisible();
-  expect(await page.getByTestId('month-tile').count()).toBeGreaterThanOrEqual(28);
+  await expect.poll(() => page.getByTestId('month-tile').count()).toBeGreaterThanOrEqual(28);
   await page.getByRole('group', { name: 'Масштаб' }).getByRole('button', { name: 'Неделя' }).click();
   await page.getByLabel('Статус').selectOption('cancelled');
   await expect(page.getByTestId('shift-item')).toHaveCount(0);
