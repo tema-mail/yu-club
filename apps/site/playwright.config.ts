@@ -5,6 +5,7 @@ import { defineConfig, devices } from '@playwright/test';
 export const MOCK_PORT = 4022;
 export const STAGE_PORT = 4342;
 export const PROD_PORT = 4343;
+export const PREVIEW_SECRET = 'e2e-preview-secret-not-for-production';
 
 export default defineConfig({
   testDir: 'tests',
@@ -16,13 +17,13 @@ export default defineConfig({
   webServer: [
     {
       command: 'node tests/mock-api.ts',
-      env: { MOCK_PORT: String(MOCK_PORT) },
+      env: { MOCK_PORT: String(MOCK_PORT), MOCK_PREVIEW_SECRET: PREVIEW_SECRET },
       url: `http://127.0.0.1:${MOCK_PORT}/api/public/v1/cities`,
       reuseExistingServer: false,
     },
     {
       command: 'npm run build && node dist/server/entry.mjs',
-      env: { HOST: '127.0.0.1', PORT: String(STAGE_PORT), API_URL: `http://127.0.0.1:${MOCK_PORT}`, APP_ENV: 'stage' },
+      env: { HOST: '127.0.0.1', PORT: String(STAGE_PORT), API_URL: `http://127.0.0.1:${MOCK_PORT}`, APP_ENV: 'stage', PREVIEW_SECRET },
       url: `http://127.0.0.1:${STAGE_PORT}/robots.txt`,
       reuseExistingServer: false,
       timeout: 120_000,
