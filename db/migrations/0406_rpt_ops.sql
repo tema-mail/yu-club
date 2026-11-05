@@ -38,7 +38,7 @@ CREATE INDEX booking_versions_created_idx ON journal.booking_versions (created_a
 CREATE VIEW app.rpt_bookings AS
 SELECT b.id AS booking_id, b.number, b.branch_id, br.city_id, b.client_id,
        CASE WHEN c.status = 'guest' THEN 'guest' ELSE 'profile' END AS client_kind,
-       b.resource_id, r.resource_type, r.room_id,
+       b.resource_id, r.resource_type, r.name AS resource_name, r.room_id,
        lower(b.period) AS start_at, upper(b.period) AS end_at,
        (extract(epoch FROM upper(b.period) - lower(b.period)) / 60)::int AS minutes,
        b.status, b.created_at, b.source, b.price_kop, b.cancelled_at,

@@ -225,7 +225,9 @@ export async function computeMetrics<K extends string>(
       out[k] = noData;
       return;
     }
-    out[k] = okMetric(curs[i]!.value, defs[k].unit, anyPrev && !(isAvg && prevs[i]!.rows === 0) ? prevs[i]!.value : null);
+    // показатель «на момент запроса» (без колонки периода) прошлого значения не имеет
+    const hasPrev = anyPrev && defs[k].spec.date !== undefined && !(isAvg && prevs[i]!.rows === 0);
+    out[k] = okMetric(curs[i]!.value, defs[k].unit, hasPrev ? prevs[i]!.value : null);
   });
   return out;
 }
@@ -289,6 +291,58 @@ export async function detailPage<R extends pg.QueryResultRow>(
       ? encodeCursor(date ? (last[date] as Date).toISOString() : null, String(last[id]))
       : null;
   return { rows, total, nextCursor };
+}
+
+// ---- запуск отчёта: область + показатели + детализация (K24 §10)
+
+/** tx – снимок под yu_reports (withReportTx); main – основной пул, только для ПДн через clients/index.ts. */
+export interface ReportEnv {
+  tx: Tx;
+  main: Db;
+  ctx: AccessContext;
+  clock: Clock;
+}
+
+export interface ReportParams extends ReportFilter {
+  period: Period;
+}
+
+export interface ReportResult<K extends string = string> {
+  metrics: Record<K, Metric>;
+  dateBasis: Record<K, string>;
+  period: Period;
+  prevPeriod: Period;
+  computedAt: string;
+  dayRule: string;
+}
+
+export async function runMetrics<K extends string>(env: ReportEnv, action: string, params: ReportParams, defs: Record<K, MetricDef>): Promise<ReportResult<K>> {
+  const branches = await resolveBranches(env.tx, env.ctx, action, params);
+  const prev = prevPeriod(params.period);
+  const metrics = await computeMetrics(env.tx, defs, windowsOf(branches, params.period), windowsOf(branches, prev));
+  const dateBasis = Object.fromEntries((Object.keys(defs) as K[]).map((k) => [k, defs[k].dateBasis])) as Record<K, string>;
+  return { metrics, dateBasis, period: params.period, prevPeriod: prev, computedAt: env.clock.now().toISOString(), dayRule: DAY_RULE };
+}
+
+/** Страница строк одного показателя с тем же условием; total – как итог на экране (Metric без прошлого периода). */
+export async function runDetail<R extends pg.QueryResultRow>(
+  env: ReportEnv,
+  action: string,
+  params: ReportParams,
+  def: MetricDef,
+  opts: { cursor?: string | undefined; limit?: number | undefined } = {},
+): Promise<{ rows: R[]; total: Metric; nextCursor: string | null; branches: BranchInfo[] }> {
+  const branches = await resolveBranches(env.tx, env.ctx, action, params);
+  const page = await detailPage<R>(env.tx, def, windowsOf(branches, params.period), opts);
+  const noRows = page.total.rows === 0;
+  return { rows: page.rows, total: noRows ? noData : okMetric(page.total.value, def.unit), nextCursor: page.nextCursor, branches };
+}
+
+/** Неизвестный показатель детализации – ошибка фильтра (K24 §10). */
+export function metricDef<K extends string>(defs: Record<K, MetricDef>, key: unknown): MetricDef {
+  const def = typeof key === 'string' && Object.hasOwn(defs, key) ? defs[key as K] : undefined;
+  if (!def) throw new AppError('REPORT_FILTER_INVALID', 422, 'Неизвестный показатель', { field: 'metric' });
+  return def;
 }
 
 // ---- маска ПДн (K24 §6)
