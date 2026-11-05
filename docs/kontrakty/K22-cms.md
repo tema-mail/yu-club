@@ -180,6 +180,7 @@ DTO ответов не содержат `draft`, автора, внутренн
 | K11 №226 | `GET /content/media/{id}/usages` | `content.view` |
 | K11 №227 | `DELETE /content/media/{id}` (физическое удаление, §8) | `content.media.purge` |
 | K11 №228 | `GET/PUT /content/home-blocks?cityId=`, `POST /content/home-blocks/{id}/publish|unpublish|rollback`, `PUT /content/home-blocks/order` | `content.network.manage` (город – `content.publish` по `cityId`) |
+| K11 №227а | `POST /content/media/{id}/purge` (`{ reason, basis }`; S4-45, §8 «Принудительная очистка»; маршрут – решение S4-45, в контракте не был выделен) | `content.media.purge` |
 | K11 №229–232 | резерв (комментарии к черновикам, шаблоны блоков 12 §16 эт.3 п.6 – не в Э4) | – |
 | K11 №233 | `POST /content/{entityType}/{id}/preview-token` (`{ branchId? }`) | `content.preview` |
 

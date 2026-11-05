@@ -138,7 +138,6 @@ services:
       # предпросмотр черновика (K22 §11): CRM берёт страницу у сайта по внутренней сети; на публичном домене её нет
       SITE_INTERNAL_URL: ${SITE_INTERNAL_URL:-http://yu-club-site:4341}
       PREVIEW_SECRET: ${PREVIEW_SECRET:?нет PREVIEW_SECRET}
-      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
       # Caddy общего сервера приходит из сети Docker – его X-Forwarded-For принимаем (lib/client-ip.ts)
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
     depends_on:

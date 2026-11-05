@@ -1541,7 +1541,8 @@ CREATE TABLE app.content_pages (                         -- + общие сто�
 CREATE TABLE app.content_home_blocks (                   -- + общие столбцы; главная одна на сеть, подмена города
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   block_type text NOT NULL CHECK (block_type IN ('hero','about','directions','advantages','promo_strip','cta')),
-  city_id uuid REFERENCES app.cities(id), sort_order int NOT NULL DEFAULT 0
+  city_id uuid REFERENCES app.cities(id), sort_order int NOT NULL DEFAULT 0,
+  UNIQUE NULLS NOT DISTINCT (block_type, city_id)        -- S4-32: тип на уровне один, на этом держится подмена города (K22 §2)
 );
 ```
 
