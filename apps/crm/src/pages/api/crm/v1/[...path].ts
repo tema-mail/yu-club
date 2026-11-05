@@ -6,7 +6,8 @@ import { API_PREFIX, apiBase } from '../../../../lib/api.ts';
 import { clientIp, parseTrusted } from '../../../../lib/client-ip.ts';
 
 const FORWARD_REQUEST = ['accept', 'content-type', 'cookie', 'idempotency-key', 'user-agent'];
-const FORWARD_RESPONSE = ['content-type', 'retry-after', 'cache-control'];
+// Выдача вложений (№350): без content-disposition, nosniff и CSP файл открылся бы на домене CRM как страница.
+const FORWARD_RESPONSE = ['content-type', 'retry-after', 'cache-control', 'content-disposition', 'x-content-type-options', 'content-security-policy'];
 
 export const ALL: APIRoute = async ({ request, params, clientAddress }) => {
   const path = params.path ?? '';
