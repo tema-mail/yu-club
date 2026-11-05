@@ -128,6 +128,37 @@ describe('права K21 §10', () => {
   });
 });
 
+describe('предпросмотр и ПДн (K21 §5)', () => {
+  it('Директор получил имена в ответе; в кампании хранятся только счётчики – Администратор не видит имени ни в карточке, ни в списке', async () => {
+    const name = 'Савва';
+    await client(b1);
+    const c = (await req('director', 'POST', '/notifications/campaigns', marketing(b1))).json();
+    const preview = (await req('director', 'POST', `/notifications/campaigns/${c.id}/preview`, {})).json();
+    expect(preview.sample[0].displayName).toBe(name); // у Директора client.view.full – полное имя в ответе
+    const stored = await db.client.query<{ preview_snapshot: { sample?: unknown; total: number } }>('SELECT preview_snapshot FROM app.notification_campaigns WHERE id = $1', [c.id]);
+    expect(stored.rows[0]!.preview_snapshot.total).toBe(preview.total);
+    expect(stored.rows[0]!.preview_snapshot.sample).toBeUndefined();
+    const card = await req('admin', 'GET', `/notifications/campaigns/${c.id}`);
+    expect(card.statusCode).toBe(200);
+    expect(card.json().previewSnapshot.total).toBe(preview.total);
+    expect(card.body).not.toContain(name);
+    const list = await req('admin', 'GET', '/notifications/campaigns?status=draft');
+    expect(list.json().items.map((x: { id: string }) => x.id)).toContain(c.id);
+    expect(list.body).not.toContain(name);
+    expect((await req('owner', 'POST', `/notifications/campaigns/${c.id}/preview`, {})).json().sample[0].displayName).toBe(name);
+  });
+
+  it('предпросмотр только у черновика: подтверждённая → 409 CAMPAIGN_NOT_EDITABLE, снимок не меняется', async () => {
+    await client(b1);
+    const c = (await req('director', 'POST', '/notifications/campaigns', marketing(b1))).json();
+    const p = (await req('director', 'POST', `/notifications/campaigns/${c.id}/preview`, {})).json();
+    expect((await req('director', 'POST', `/notifications/campaigns/${c.id}/confirm`, { rowVersion: 1, expectedTotal: p.total })).statusCode).toBe(200);
+    const before = (await db.client.query('SELECT preview_at FROM app.notification_campaigns WHERE id = $1', [c.id])).rows[0];
+    expect(code(await req('director', 'POST', `/notifications/campaigns/${c.id}/preview`, {}))).toEqual([409, 'CAMPAIGN_NOT_EDITABLE']);
+    expect((await db.client.query('SELECT preview_at FROM app.notification_campaigns WHERE id = $1', [c.id])).rows[0]).toEqual(before);
+  });
+});
+
 describe('Idempotency-Key', () => {
   it('все изменяющие без ключа → 400; создание и подтверждение с ключом – повтор отдаёт то же', async () => {
     const id = randomUUID();

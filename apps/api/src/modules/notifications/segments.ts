@@ -145,6 +145,9 @@ export interface AudiencePreview {
   computedAt: string;
 }
 
+/** Что хранится в кампании: только счётчики. sample (имена) – лишь в ответе предпросмотра с маской по правам смотрящего (K21 §5). */
+export type AudienceCounters = Omit<AudiencePreview, 'sample'>;
+
 export interface SegmentRecipient {
   clientId: string;
   homeBranchId: string | null;

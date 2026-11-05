@@ -12,7 +12,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import type { Clock } from '../../core/time.ts';
 import { withTx, type Pool } from '../clients/index.ts';
 import { decideSend, type SendDecision } from './index.ts';
-import { parseSegment, previewSegment, resolveArea, segmentRecipients, type AudiencePreview, type ResolvedArea, type SegmentRecipient } from './segments.ts';
+import { parseSegment, previewSegment, resolveArea, segmentRecipients, type AudienceCounters, type AudiencePreview, type ResolvedArea, type SegmentRecipient } from './segments.ts';
 import { activeTemplate, assertPlaceholders } from './templates.ts';
 
 export type CampaignCategory = 'service' | 'marketing';
@@ -67,7 +67,7 @@ export interface CampaignDto {
   advertiserNote: string | null;
   erid: string | null;
   templateId: string | null;
-  previewSnapshot: AudiencePreview | null;
+  previewSnapshot: AudienceCounters | null;
   previewAt: string | null;
   total: number | null;
   createdBy: string;
@@ -94,7 +94,7 @@ export interface CampaignRow {
   advertiser_note: string | null;
   erid: string | null;
   template_id: string | null;
-  preview_snapshot: AudiencePreview | null;
+  preview_snapshot: (AudienceCounters & { sample?: unknown }) | null;
   preview_at: Date | null;
   total: number | null;
   created_by: string;
@@ -103,6 +103,14 @@ export interface CampaignRow {
   confirmed_at: Date | null;
   cancelled_reason: string | null;
   row_version: number;
+}
+
+/** Снимок наружу – только счётчики, в том числе у строк, записанных до этого правила. */
+function withoutSample(s: CampaignRow['preview_snapshot']): AudienceCounters | null {
+  if (!s) return null;
+  const counters = { ...s };
+  delete counters.sample;
+  return counters;
 }
 
 export function campaignDto(r: CampaignRow): CampaignDto {
@@ -122,7 +130,7 @@ export function campaignDto(r: CampaignRow): CampaignDto {
     advertiserNote: r.advertiser_note,
     erid: r.erid,
     templateId: r.template_id,
-    previewSnapshot: r.preview_snapshot,
+    previewSnapshot: withoutSample(r.preview_snapshot),
     previewAt: r.preview_at?.toISOString() ?? null,
     total: r.total,
     createdBy: r.created_by,
@@ -291,11 +299,12 @@ function singlePreview(d: SendDecision, category: CampaignCategory, push: boolea
   };
 }
 
-/** Предпросмотр (K11 №205, K21 §5): результат запоминается в кампании. */
+/** Предпросмотр (K11 №205, K21 §5): только черновик. В кампании запоминаются счётчики; имена – только в этом ответе. */
 export async function previewCampaign(deps: CampaignDeps, ctx: AccessContext, id: string): Promise<AudiencePreview> {
   const now = deps.clock.now();
   const c = await loadInZone(deps.pool, ctx, id);
   assertSendRole(ctx, c.category, c.audience);
+  if (c.status !== 'draft') throw new AppError('CAMPAIGN_NOT_EDITABLE', 409, 'Предпросмотр доступен только для черновика');
   let preview: AudiencePreview;
   if (c.audience.kind === 'segment') {
     const segment = parseSegment(c.audience.segment);
@@ -304,7 +313,7 @@ export async function previewCampaign(deps: CampaignDeps, ctx: AccessContext, id
     const a = await resolveAudience(deps.pool, deps, ctx, c.category, c.audience);
     preview = singlePreview(await decideSend(deps.pool, { clientId: a.clientId!, category: c.category, push: c.push }, now), c.category, c.push, now);
   }
-  await deps.pool.query('UPDATE app.notification_campaigns SET preview_snapshot = $2, preview_at = $3 WHERE id = $1', [id, JSON.stringify(preview), now]);
+  await deps.pool.query(`UPDATE app.notification_campaigns SET preview_snapshot = $2, preview_at = $3 WHERE id = $1 AND status = 'draft'`, [id, JSON.stringify(withoutSample(preview)), now]);
   return preview;
 }
 
