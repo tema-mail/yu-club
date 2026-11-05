@@ -36,6 +36,19 @@ export const METRIC_TITLES: Record<string, string> = {
   expiredAmount: 'Сгорело на сумму', cancelledCount: 'Отменено, шт.', activeCount: 'Действующие, шт.', activeBalance: 'Остаток действующих', partiallyRedeemed: 'Погашены частично', birthdayGift: 'Подарки на день рождения',
 };
 
+// 3.11: показатели уведомлений по категориям собираются из двух частей
+const COMMS_CATEGORY_TITLES: Record<string, string> = { service: 'Сервисные', reminder: 'Напоминания', marketing: 'Реклама' };
+const COMMS_PART_TITLES: Record<string, string> = {
+  Created: 'создано', SentToProvider: 'передано в браузер, показ не подтверждён', InboxOnly: 'только в центре уведомлений', SkippedByPrefs: 'пропущено по настройкам',
+  SkippedByFrequency: 'пропущено по частоте', SkippedBookingChanged: 'пропущено: бронь изменилась', Errors: 'ошибки', OpenedInCabinet: 'открыто в кабинете',
+};
+for (const [c, ct] of Object.entries(COMMS_CATEGORY_TITLES)) for (const [k, pt] of Object.entries(COMMS_PART_TITLES)) METRIC_TITLES[`${c}${k}`] = `${ct}: ${pt}`;
+Object.assign(METRIC_TITLES, {
+  campaignsCount: 'Рекламные кампании', campaignsReach: 'Охват кампаний', optOuts: 'Отказы от рекламы', publishedNews: 'Опубликовано: новости', publishedPromotion: 'Опубликовано: акции',
+  publishedGiveaway: 'Опубликовано: розыгрыши', publishedTournament: 'Опубликовано: турниры', publishedGame: 'Опубликовано: игры', publishedRoomPage: 'Опубликовано: страницы комнат',
+  publishedBranchPage: 'Опубликовано: страницы филиалов', publishedPage: 'Опубликовано: страницы', publishedHomeBlock: 'Опубликовано: блоки главной', siteViews: 'Просмотры на сайте', siteClicks: 'Переходы с сайта',
+});
+
 export const COLUMN_TITLES: Record<string, string> = {
   bookingId: 'ID брони', number: 'Номер', startLocal: 'Начало сеанса', branchId: 'ID филиала', branchName: 'Филиал', clientId: 'ID клиента', clientName: 'Клиент', clientPhone: 'Телефон',
   clientKind: 'Вид клиента', resourceType: 'Тип ресурса', resourceName: 'Ресурс', minutes: 'Минут', status: 'Статус', priceKop: 'Стоимость, ₽', paymentState: 'Оплата', paymentMethods: 'Способы оплаты',
@@ -46,6 +59,8 @@ export const COLUMN_TITLES: Record<string, string> = {
   transferOutKop: 'Переводы отсюда, ₽', correctionKop: 'Исправления, ₽', closingKop: 'На конец, ₽',
   entryId: 'ID записи', atLocal: 'Дата', type: 'Тип', spendKind: 'Вид списания', authorType: 'Автор', certificateId: 'ID сертификата', op: 'Операция', balanceAfterKop: 'Остаток после, ₽',
   unitId: 'ID единицы', unitName: 'Единица', resourceId: 'ID ресурса', roomId: 'ID комнаты', availableMin: 'Доступно, мин', availableElapsedMin: 'Доступно до текущего момента, мин',
+  notificationId: 'ID уведомления', category: 'Категория', campaignId: 'ID кампании', createdLocal: 'Создано', sentLocal: 'Передано', readLocal: 'Прочитано', consentId: 'ID записи согласия',
+  versionId: 'ID версии', entityType: 'Сущность', entityId: 'ID сущности', scopeType: 'Охват',
   blockedMin: 'Заблокировано, мин', technicalMin: 'Техническое, мин', bookedMin: 'Забронировано, мин', usedMin: 'Использовано, мин', freeMin: 'Свободно, мин',
 };
 

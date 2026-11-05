@@ -16,6 +16,7 @@ export const REPORT_SEGMENTS: Readonly<Record<string, readonly SegmentDimension[
   clients: ['branch', 'day'],
   loyalty: ['branch', 'day'],
   certificates: ['branch', 'day'],
+  comms: ['branch', 'day'],
 };
 
 /** Фильтры, которые сегмент может сузить. */
