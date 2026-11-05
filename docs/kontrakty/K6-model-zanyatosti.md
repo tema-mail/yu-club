@@ -151,6 +151,10 @@ export function releaseEvent(tx, eventResourceId: string, reason: 'released' | '
 export function moveEventOccupancy(tx, input: { branchId; resourceId; eventResourceId; period }): Promise<{ unitIds: string[] }>;
 /** Блокировка по команде equipment (ремонт, K19 §8): createBlock с проверкой block.manage. */
 export function createBlockFor(tx, ctx, input: Parameters<typeof createBlock>[2], meta): ReturnType<typeof createBlock> & { affectedEventIds: string[] };
+/** Блокировка по id; снятие по решению сотрудника с block.manage (закрытие ремонта, K19 §7); строки CRM затронутых броней с маской телефона (K19 §8). */
+export function blockInfo(db, blockId: string): Promise<BlockInfo | null>;
+export function liftBlockFor(tx, ctx, blockId: string, input: { comment?: string }, meta): Promise<BlockInfo>;
+export function bookingRowsByIds(db, ids: string[], now: Date): Promise<CrmBookingRow[]>;
 ```
 
 - `createBlock` (`affectedEventIds`) и `previewBlock` (`eventIds`) возвращают затронутые мероприятия отдельным списком, не в `bookingIds` (K19 §8 `affectedEvents`); общий источник – `affectedOnUnits` в `blocks.ts`. Преобразование «строки `event_resources` → мероприятие» регистрирует модуль events (`registerEventSourceResolver`, S3-52): booking его не импортирует, а таблицы `event_resources` до 0305 нет; без регистрации в списке – id строк источника (решение S3-09). `eventOccupancy(db, eventResourceId)` – активные строки источника для проверок.

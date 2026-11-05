@@ -7,9 +7,11 @@
 // (bookingsOnUnits, previewBlock, occupyForEvent, releaseEvent, moveEventOccupancy, createBlockFor), а не импортом occupancy.ts.
 import type { AuditRequestMeta, Db, Tx } from '../../core/audit.ts';
 import type { AccessContext } from '../../core/permissions.ts';
+import type { CrmBookingRow } from '../../../../../packages/contracts/src/crm/booking.ts';
 import { interval, systemClock, type Clock, type Interval, type TimeZone } from '../../core/time.ts';
+import { getClientRefs } from '../clients/index.ts';
 import { expandToUnits, unitsOfTarget } from '../resources/index.ts';
-import { affectedOnUnits, createBlock, type AffectedOnUnits, type BlockTarget } from './blocks.ts';
+import { affectedOnUnits, createBlock, getBlock, liftBlock, type AffectedOnUnits, type BlockInfo, type BlockTarget } from './blocks.ts';
 import { lockUnitsForWrite, occupyMany, releaseSources } from './occupancy.ts';
 
 /** Действующие брони (confirmed / arrived) – они и считаются «затронутыми» при сокращении часов и блокировках. */
@@ -250,6 +252,46 @@ export function createBlockFor(
   clock: Clock = systemClock,
 ): ReturnType<typeof createBlock> {
   return createBlock(tx, ctx, input, meta, clock);
+}
+
+/** Блокировка по id (карточка ремонта K19 §6 blocks, простой §8); нет – null. */
+export function blockInfo(db: Db | Tx, blockId: string): Promise<BlockInfo | null> {
+  return getBlock(db, blockId);
+}
+
+/** Снять блокировку по решению сотрудника (закрытие ремонта, K19 §7): K6 liftBlock с block.manage и текущей версией.
+ *  Строка блокировки захватывается в самом liftBlock; версию читаем перед ним, параллельное снятие – VERSION_CONFLICT или no-op. */
+export async function liftBlockFor(tx: Tx, ctx: AccessContext, blockId: string, input: { comment?: string }, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<BlockInfo> {
+  const cur = await getBlock(tx, blockId);
+  return liftBlock(tx, ctx, blockId, { rowVersion: cur?.rowVersion ?? 1, ...(input.comment ? { comment: input.comment } : {}) }, meta, clock);
+}
+
+/** Строки броней для CRM по id (K11 CrmBookingRow; K19 §8 affectedBookings): порядок – по началу и номеру, неизвестные id
+ *  пропускаются. Телефон только маскированный (03 §14); право на филиал проверяет вызывающий. */
+export async function bookingRowsByIds(db: Db | Tx, ids: string[], now: Date): Promise<CrmBookingRow[]> {
+  if (ids.length === 0) return [];
+  const r = await db.query<{ id: string; number: string; client_id: string; status: BookingStatus; name: string; s: Date; e: Date; source: 'site' | 'crm'; row_version: number }>(
+    `SELECT b.id, b.number, b.client_id, b.status, v.resource_snapshot ->> 'name' AS name, lower(b.period) AS s, upper(b.period) AS e, b.source, b.row_version
+       FROM app.bookings b JOIN journal.booking_versions v ON v.booking_id = b.id AND v.version = b.current_version
+      WHERE b.id = ANY($1::uuid[]) ORDER BY lower(b.period), b.number`,
+    [ids],
+  );
+  const clients = await getClientRefs(db, r.rows.map((x) => x.client_id));
+  return r.rows.map((x) => {
+    const c = clients.get(x.client_id);
+    return {
+      id: x.id,
+      number: Number(x.number),
+      status: x.status,
+      resourceName: x.name,
+      start: x.s.toISOString(),
+      end: x.e.toISOString(),
+      client: { id: x.client_id, name: c ? [c.firstName, c.lastName].filter((n) => n).join(' ') || null : null, phoneMasked: c?.phoneMasked ?? '', isGuest: c?.status === 'guest' },
+      source: x.source,
+      rowVersion: x.row_version,
+      needsDecision: x.status === 'confirmed' && x.e.getTime() <= now.getTime(),
+    };
+  });
 }
 
 /** Мероприятие занимает ресурс (K6, K20 §4): строки occupancy с source 'event' = event_resources.id, без client_time.
