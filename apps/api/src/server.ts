@@ -14,6 +14,7 @@ import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { equipmentCrmRoutes } from './modules/equipment/routes.crm.ts';
+import { registerEquipmentAttachmentOwners, repairCrmRoutes } from './modules/equipment/routes.repairs.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
@@ -67,6 +68,7 @@ function registerModuleHooks(): void {
   if (hooksRegistered) return;
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
+  registerEquipmentAttachmentOwners(); // K19 §9: вложения оборудования и ремонта
   hooksRegistered = true;
 }
 
@@ -233,6 +235,16 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(
       async (scope) =>
         equipmentCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    // K19 №341–349: ремонт (S3-39)
+    void app.register(
+      async (scope) =>
+        repairCrmRoutes(scope, {
           pool: staff.pool,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
