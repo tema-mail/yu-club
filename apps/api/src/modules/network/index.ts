@@ -14,7 +14,7 @@ export {
   previewHoursChange,
   resolveDay,
   unconnectedTargets,
-  weeklyDay,
+  weeklyDaysRange,
   type AffectedBookingsProvider,
   type CalendarTargets,
   type FutureBooking,

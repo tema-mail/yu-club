@@ -6,7 +6,7 @@ import type { Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { assertCan, type AccessContext } from '../../core/permissions.ts';
 import { addDays, fromPgRange, parseLocalDate, type Interval, type LocalDate } from '../../core/time.ts';
-import { activeExceptions, getBranch, resolveDay, weeklyDay } from '../network/index.ts';
+import { activeExceptions, getBranch, resolveDay, weeklyDaysRange } from '../network/index.ts';
 import { isUuid, notFound } from './rates.ts';
 
 export interface CoverageDto {
@@ -100,13 +100,11 @@ export async function coverage(db: Db, ctx: AccessContext, raw: { branchIds: str
       if (!branch) throw notFound();
       assertCan(ctx, 'shift.view', { branchId });
       const exceptions = await activeExceptions(db, branchId, from, to);
-      return Promise.all(
-        dates.map(async (date): Promise<CoverageDto> => {
-          const day = await weeklyDay(db, branchId, date);
-          const open = day ? resolveDay({ date, tz: day.tz, weekly: day.weekly, exceptions, target: {} }) : [];
-          return { branchId, date, timezone: branch.timezone, open, ...coverDay(open, byDay.get(`${branchId}|${date}`) ?? []) };
-        }),
-      );
+      const weekly = await weeklyDaysRange(db, branchId, from, to);
+      return dates.map((date): CoverageDto => {
+        const open = weekly ? resolveDay({ date, tz: weekly.tz, weekly: weekly.days.get(date) ?? null, exceptions, target: {} }) : [];
+        return { branchId, date, timezone: branch.timezone, open, ...coverDay(open, byDay.get(`${branchId}|${date}`) ?? []) };
+      });
     }),
   );
   return perBranch.flat();
