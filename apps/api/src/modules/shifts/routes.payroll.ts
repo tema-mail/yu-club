@@ -10,7 +10,7 @@ import { writeDenied, type AuditAction, type AuditObjectType, type AuditRequestM
 import { AppError } from '../../core/errors.ts';
 import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../core/idempotency.ts';
 import type { Tx } from '../../core/ledger.ts';
-import { can, roleAllows, type AccessContext } from '../../core/permissions.ts';
+import { branchScopeSql, can, hasAction, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { calculateStatements, closePeriod, createPeriod, getStatement, listPeriods, markPaid, postCorrection, setStatementStatus } from './payroll.ts';
 import { createPayoutExpense, linkPayoutExpense } from './payout-expense.ts';
@@ -78,10 +78,7 @@ async function payrollAudit(db: Db, ctx: AccessContext, raw: unknown) {
   const q = parsed.data;
   const params: unknown[] = [];
   const where = [`(action LIKE 'payroll.%' OR action = 'staff.rate_set')`];
-  if (!ctx.network) {
-    params.push([...ctx.branchIds]);
-    where.push(`branch_id = ANY($${params.length}::uuid[])`);
-  }
+  if (!ctx.network) where.push(branchScopeSql('branch_id', scopeFilter(ctx, 'payroll.view'), params));
   if (q.objectType) {
     params.push(q.objectType);
     where.push(`object_type = $${params.length}`);
@@ -119,7 +116,7 @@ export async function payrollCrmRoutes(app: FastifyInstance, deps: PayrollCrmDep
   /** Вход в раздел: Администратору закрыто всё, что про деньги, ещё до чтения объекта. */
   const viewer = async (request: FastifyRequest, reply: FastifyReply): Promise<AccessContext> => {
     const { access } = await deps.authenticate(request, reply);
-    if (!roleAllows(access.role, 'payroll.view')) throw forbidden('payroll.view');
+    if (!hasAction(access, 'payroll.view')) throw forbidden('payroll.view');
     return access;
   };
 
@@ -128,7 +125,7 @@ export async function payrollCrmRoutes(app: FastifyInstance, deps: PayrollCrmDep
       const { access, meta } = await deps.authenticate(request, reply);
       const params = request.params as Record<string, string>;
       const logDenied = (err: AppError) => writeDenied(deps.pool, meta, { action: denied.action, object: { type: denied.type, id: params.id ?? null }, reason: `FORBIDDEN: ${String(err.details?.action ?? '')}`, result: 'denied' }, clock);
-      if (!roleAllows(access.role, 'payroll.view')) {
+      if (!hasAction(access, 'payroll.view')) {
         const err = forbidden('payroll.view');
         await logDenied(err);
         throw err;

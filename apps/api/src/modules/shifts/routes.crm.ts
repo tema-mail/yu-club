@@ -142,7 +142,7 @@ async function assertStaffPayrollView(db: Db, ctx: AccessContext, staffId: strin
   const target = await staffTargets(db, staffId);
   if (!target) throw notFound();
   if (ctx.network) return assertCan(ctx, 'payroll.view', { network: true });
-  const zone = target.branchIds.find((b) => ctx.branchIds.has(b));
+  const zone = target.branchIds.find((b) => can(ctx, 'payroll.view', { branchId: b })) ?? target.branchIds.find((b) => ctx.branchIds.has(b));
   if (!zone) throw notFound();
   assertCan(ctx, 'payroll.view', { branchId: zone });
 }
