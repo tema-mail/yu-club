@@ -32,7 +32,11 @@ export interface ResourceDto {
 }
 
 /** K5 №3 + расширение API: часы сегодня 'HH:mm' по зоне филиала (пусто – сегодня закрыт). */
-export interface BranchDetailDto extends BranchDto { hoursToday: Array<{ start: string; end: string }> }
+export interface BranchDetailDto extends BranchDto {
+  hoursToday: Array<{ start: string; end: string }>;
+  /** Действующий недельный график для разметки часов работы (K23 §6); выходных в списке нет. */
+  weeklyHours: Array<{ weekday: number; open: string; close: string }>;
+}
 
 /** Город с его филиалами – то, из чего строятся выбор, хабы и sitemap. */
 export interface CityWithBranches extends CityDto { branches: BranchDto[] }

@@ -106,7 +106,7 @@ export function buildMock() {
     const b = publicBranches().find((x) => x.id === (req.params as { id: string }).id);
     if (!b) return fail(reply, 404, 'NOT_FOUND', 'Не найдено');
     // Временно закрытый – API отдаёт пустые часы (tempClosed действует сейчас).
-    return { ...toDto(b), hoursToday: b.status === 'active' ? (HOURS[b.id] ?? []) : [] };
+    return { ...toDto(b), hoursToday: b.status === 'active' ? (HOURS[b.id] ?? []) : [], weeklyHours: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, open: '10:00', close: '22:00' })) };
   });
 
   registerResources(app, P, (id) => publicBranches().some((b) => b.id === id), fail);

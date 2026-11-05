@@ -8,13 +8,14 @@
 // Запись – кнопкой в /schedule/?branch={город}/{филиал} (карта п.2.9: своего адреса расписания у филиала нет); у закрытого её нет.
 import Site from '../../../layouts/Site.astro';
 import {
-  ApiError, ZONE_LABEL, ZONE_ORDER, branchRooms, findBranch, roomPath, scheduleHref, site,
+  ApiError, ZONE_LABEL, ZONE_ORDER, branchPath, branchRooms, findBranch, roomPath, scheduleHref, site,
   type BranchDetailDto, type ResourceDto,
 } from '../../../lib/api.ts';
 import { metaFor } from '../../../lib/seo.ts';
+import { branchLd, breadcrumbLd, organizationLd } from '../../../lib/jsonld.ts';
 
 const { city: citySlug = '', branch: branchSlug = '' } = Astro.params;
-const { network } = Astro.locals;
+const { network, origin } = Astro.locals;
 
 const found = network ? findBranch(network, citySlug, branchSlug) : null;
 if (network && !found) return Astro.rewrite('/404/');
@@ -54,12 +55,20 @@ const zones = ZONE_ORDER.map((code) => {
 }).filter((z) => z.rooms.length > 0);
 
 const title = branch && city ? `${branch.name}, ${city.name}` : 'Клуб временно недоступен';
+// Адрес, координаты и фото из страницы CMS (postal, geo, gallery) добавит S4-121: нет данных – нет полей (K23 §6).
+const jsonLd = branch && city
+  ? [
+      organizationLd(origin),
+      branchLd(origin, { path: branchPath(city.slug, branch.slug), name: branch.name, status: branch.status, phone: branch.phone, weeklyHours: detail?.weeklyHours }),
+      breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, ...(city.branches.length >= 2 ? [{ name: city.name, path: `/${city.slug}/` }] : []), { name: branch.name, path: branchPath(city.slug, branch.slug) }]),
+    ]
+  : [];
 const meta = branch && city
   ? metaFor({ page: 'branch', branch: branch.name, city: city.name, address: branch.address, directions: zones.map((z) => ZONE_LABEL[z.code]), hoursToday: closed ? 'Временно закрыт' : `Сегодня: ${hoursToday}`, closed })
   : null;
 const hasCityHub = (city?.branches.length ?? 0) >= 2;
 ---
-<Site title={meta?.title ?? `${title} – Ю-Клуб`} description={meta?.description} index={{ kind: 'branch', status: branch?.status ?? 'active' }}>
+<Site title={meta?.title ?? `${title} – Ю-Клуб`} description={meta?.description} index={{ kind: 'branch', status: branch?.status ?? 'active' }} jsonLd={jsonLd}>
   {failed || !branch || !city ? (
     <section class="yu-error">
       <span class="yu-error__code">503</span>
