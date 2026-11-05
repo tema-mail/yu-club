@@ -203,6 +203,24 @@ describe('setSetting / resetToInherited: проверки до сохранен�
     expect(n.rows[0].n).toBe(0);
   });
 
+  it('окно рекламы K21 §13: from не раньше to – SETTING_INVALID при сохранении любого из пары и при сбросе; значение не остаётся', async () => {
+    const F = 'notifications.marketing_window_from';
+    const T = 'notifications.marketing_window_to';
+    const net = { network: true } as const;
+    const at = d('2026-12-05T00:00:00Z');
+    const rejected = { code: 'SETTING_INVALID' };
+    await expect(set(owner, { key: F, scope: net, value: '22:00', validFrom: at })).rejects.toMatchObject(rejected); // умолчание to = 21:00
+    await expect(set(owner, { key: F, scope: net, value: '21:00', validFrom: at })).rejects.toMatchObject(rejected); // пустое окно
+    await expect(set(owner, { key: T, scope: net, value: '09:00', validFrom: at })).rejects.toMatchObject(rejected); // умолчание from = 10:00
+    expect((await resolveSettings(db.client, [F, T], net, at))[F].value).toBe('10:00');
+    await set(owner, { key: F, scope: net, value: '08:00', validFrom: at });
+    await set(owner, { key: T, scope: net, value: '09:00', validFrom: at }); // [08:00, 09:00) – верное окно
+    await expect(inTx(() => resetToInherited(db.client, owner, { key: F, scope: net, at: d('2026-12-06T00:00:00Z') }, meta(owner), clock))).rejects.toMatchObject(rejected); // from вернулся бы к 10:00
+    // будущая строка пары сверяется тоже: новое значение не должно сломать её дату
+    await set(owner, { key: F, scope: net, value: '08:30', validFrom: d('2026-12-07T00:00:00Z') });
+    await expect(set(owner, { key: T, scope: net, value: '08:15', validFrom: d('2026-12-06T00:00:00Z') })).rejects.toMatchObject(rejected);
+  });
+
   it('окно: максимум меньше окна по умолчанию – SETTING_INVALID', async () => {
     await expect(set(owner, { key: 'booking.window_max_days', scope: { branchId: ids.b1! }, value: 10, validFrom: d('2026-12-01T00:00:00Z') })).rejects.toMatchObject({
       code: 'SETTING_INVALID',

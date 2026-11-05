@@ -126,7 +126,7 @@ export const SETTINGS = {
   'gift.no_show_returns': def(z.boolean(), true, N, NET), // Q-114
   // ---- Э4 (K7 «Реестр ключей Э4»; K21 §13, K22 §15, K24 §11). Только сеть, меняет Владелец (D4-01).
   'notifications.marketing_min_interval_hours': def(int(0, 720), 168, N, NET), // Q-39
-  'notifications.marketing_window_from': def(HHMM, '10:00', N, NET), // Q-39; from < to сверяет notifications при чтении
+  'notifications.marketing_window_from': def(HHMM, '10:00', N, NET), // Q-39; from < to проверяет сохранение (assertMarketingWindowPair)
   'notifications.marketing_window_to': def(HHMM, '21:00', N, NET),
   'notifications.inbox_retention_days': def(int(30, 1095), 365, N, NET), // Q-132
   'notifications.campaign_max_plan_days': def(int(0, 90), 30, N, NET), // Q-133
@@ -335,6 +335,7 @@ export async function setSetting<K extends SettingKey>(
       });
     const valueId = ins.rows[0]!.id;
     await assertWindowPair(tx, input.key, input.scope, input.validFrom);
+    await assertMarketingWindowPair(tx, input.key, input.scope, input.validFrom);
     await writeAudit(
       tx,
       meta,
@@ -389,6 +390,32 @@ async function assertWindowPair(tx: Tx, key: SettingKey, scope: SettingScope, fr
   }
 }
 
+const MARKETING_WINDOW_KEYS = ['notifications.marketing_window_from', 'notifications.marketing_window_to'] as const;
+
+/** Окно рекламы (K21 §13): from < to на дату изменения и на каждую дату будущих строк пары. Ночного окна через полночь нет:
+ *  from ≥ to отключило бы тихие часы. Ключи только сетевые. Откат и SETTING_INVALID – как у assertWindowPair. */
+async function assertMarketingWindowPair(tx: Tx, key: SettingKey, scope: SettingScope, from: Date): Promise<void> {
+  if (!(MARKETING_WINDOW_KEYS as readonly string[]).includes(key)) return;
+  const pts = await tx.query<{ t: Date }>(
+    `SELECT DISTINCT t FROM (SELECT valid_from AS t FROM app.settings_values WHERE key = ANY($1::text[])
+       UNION SELECT valid_to FROM app.settings_values WHERE key = ANY($1::text[]) AND valid_to IS NOT NULL) x
+     WHERE t > $2 ORDER BY t`,
+    [MARKETING_WINDOW_KEYS, from],
+  );
+  for (const at of [from, ...pts.rows.map((r) => r.t)]) {
+    const r = await resolveSettings(tx, MARKETING_WINDOW_KEYS, scope, at);
+    const start = r['notifications.marketing_window_from'].value;
+    const end = r['notifications.marketing_window_to'].value;
+    if (start >= end) {
+      throw new AppError('SETTING_INVALID', 422, 'Начало окна рекламы должно быть раньше конца', {
+        key,
+        at: at.toISOString(),
+        issues: [{ path: '', message: `marketing_window_from (${start}) >= marketing_window_to (${end})` }],
+      });
+    }
+  }
+}
+
 /** Запись под SAVEPOINT: исключение – откат только этих изменений и проброс. */
 async function savepoint<T>(tx: Tx, fn: () => Promise<T>): Promise<T> {
   await tx.query('SAVEPOINT settings_write');
@@ -421,6 +448,7 @@ export async function resetToInherited(
     if (!current) return;
     await tx.query('UPDATE app.settings_values SET valid_to = $2 WHERE id = $1', [current.id, input.at]);
     await assertWindowPair(tx, input.key, input.scope, input.at);
+    await assertMarketingWindowPair(tx, input.key, input.scope, input.at);
     const inherited = await resolveSetting(tx, input.key, input.scope, input.at);
     await writeAudit(
       tx,
