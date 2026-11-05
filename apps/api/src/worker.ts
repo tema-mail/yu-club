@@ -1,10 +1,11 @@
 // Фоновый процесс (ADR 0002: процесс worker – тот же образ API, другая команда).
 // Запускает: подписки уведомлений на события брони (K14, до startOutboxWorker – подписки замораживаются),
-// подписки баллов (K15: штраф за неявку, резерв, начисление и paid_other по PaymentLookup finance),
+// подписки баллов (K15: штраф за неявку, резерв, начисление и paid_other по PaymentLookup finance), начисление зарплаты (K18 §6),
 // доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение партий баллов раз в 10 мин, истечение удержаний раз в 15 с
 // (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер
 // запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts) и ночную сверку 16 §14 раз в сутки
-// (modules/reports/reconcile.ts, 03:30 по RECONCILE_TIMEZONE; ручной запуск – командой из того же файла).
+// (modules/reports/reconcile.ts, 03:30 по RECONCILE_TIMEZONE; ручной запуск – командой из того же файла),
+// проверку смен без отметки раз в 15 мин (modules/shifts/attendance.ts, K18 §5).
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
 //
 // Окружение: DATABASE_URL – рантайм yu_app (данные модулей); PGBOSS_DATABASE_URL – роль yu_boss, владелец
@@ -34,6 +35,8 @@ import { startRequestHoldExpiry } from './modules/events/resources.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
+import { registerPayrollHandlers } from './modules/shifts/accrual.ts';
+import { startShiftReview } from './modules/shifts/attendance.ts';
 import { vapidKeys, type VapidKeys } from './modules/notifications/webpush.ts';
 
 const log = (level: 'info' | 'error', msg: string, extra: Record<string, unknown> = {}): void => {
@@ -63,6 +66,7 @@ export async function startWorkerTasks(opts: {
   loyaltyExpiryIntervalMs?: number;
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
+  shiftReviewIntervalMs?: number;
   campaignIntervalMs?: number;
   /** UNSUBSCRIBE_SECRET: без него рекламные строки не уходят (K21 §7). */
   unsubscribeSecret?: string | null;
@@ -85,6 +89,7 @@ export async function startWorkerTasks(opts: {
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
   registerAccrualHandlers({ bookings: paymentBookingProvider, payments, clock });
   registerGiftHandlers({ clock }); // K20 §8.2: жизненный цикл записи по подарку
+  registerPayrollHandlers({ clock }); // K18 §6: начисление зарплаты по факту смены и новой ставке
   const outbox = await startOutboxWorker({
     pool: opts.pool,
     boss: opts.boss,
@@ -119,6 +124,13 @@ export async function startWorkerTasks(opts: {
     clock,
     intervalMs: opts.giftExpiryIntervalMs ?? 10 * 60_000,
     onError: (err) => logger.error({ err: errText(err) }, 'events.gift_expire: проход упал'),
+  });
+  // K18 §5: смена без отметки после review_grace – needs_review
+  const shiftReview = startShiftReview({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.shiftReviewIntervalMs ?? 15 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'shifts.review: проход упал'),
   });
   // K15 §2: истечение партий баллов (при loyalty.batch_ttl_days = null проход ничего не делает)
   const loyaltyExpiry = startLoyaltyExpiry({
@@ -170,6 +182,7 @@ export async function startWorkerTasks(opts: {
       certificates.stop();
       requestHolds.stop();
       gifts.stop();
+      shiftReview.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
       stopCampaigns();

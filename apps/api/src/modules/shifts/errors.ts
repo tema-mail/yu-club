@@ -14,6 +14,7 @@ export const errors = {
   CHECKIN_WINDOW: 409, // приход раньше окна или после конца смены
   PAYROLL_PERIOD_CLOSED: 409, // запись или изменение с датой в закрытом периоде
   PAYROLL_PERIOD_OVERLAP: 409, // новый период пересекает существующий
+  PAYROLL_PERIOD_GAP: 409, // новый период оставляет разрыв (details.expectedFrom) или корректировку перед первым (details.date)
   PAYROLL_PERIOD_HAS_UNRESOLVED: 409, // закрытие при needs_review / rate_missing / без начисления (details.shiftIds, details.rateIds)
   PAYROLL_PERIOD_OPEN: 409, // ready / paid у ведомости незакрытого периода
   BRANCH_REQUIRED: 422, // штраф Директора без филиала
