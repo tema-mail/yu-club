@@ -35,6 +35,7 @@ import { createCertificatePaymentMethod, verifyCertificatePin } from './modules/
 import { certificateCrmRoutes } from './modules/certificates/routes.crm.ts';
 import { certificatePublicRoutes } from './modules/certificates/routes.public.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
+import { notificationCrmRoutes } from './modules/notifications/routes.crm.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
 import type { SenderDeps } from './modules/notifications/sender.ts';
 import { vapidKeys } from './modules/notifications/webpush.ts';
@@ -223,6 +224,19 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
       async (scope) =>
         clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
+    );
+    // K21 §11, K11 №201–212: кампании, журнал отправок, шаблоны, сводка клиента
+    void app.register(
+      async (scope) =>
+        notificationCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          network: staff.network ?? networkLookup,
+          bookings: bookingLookup,
+          unsubscribeSecret: deps.notifications?.unsubscribeSecret ?? null,
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
     );
     // K15 №24–28: бонусный счёт и товары за баллы; зона клиента – через брони (clientBranchLinks)
     void app.register(
