@@ -15,6 +15,9 @@ import { maskClient, resolveBranches, where, windowsOf, withReportTx, type Maske
 
 export const SEARCH_TIMEOUT_MS = 2_000;
 const SEARCH_BUDGET_MS = 5_000; // все запросы поиска вместе (D4-22)
+/** Поиск идёт основным пулом (10 соединений): ввод по буквам у многих сотрудников не должен занять соединения брони и оплаты (17 §6). */
+export const MAX_CONCURRENT_SEARCHES = 3;
+let searching = 0;
 const GROUP_LIMIT = 5;
 const FINANCE_COMMENT_DAYS = 92;
 const PHONE_LIKE_RE = /^[+\d\s().-]+$/;
@@ -150,6 +153,8 @@ export async function globalSearch(
   // номер брони и операции тоже из цифр: короткий запрос отвергается только когда это не номер
   if (q.length < 2 || q.length > 100) throw new AppError('SEARCH_QUERY_TOO_SHORT', 422, 'Введите не меньше 2 символов', { min: 2 });
   if (phoneLike && digits.length < 4 && !NUMBER_RE.test(q)) throw new AppError('SEARCH_QUERY_TOO_SHORT', 422, 'Для поиска по телефону нужно от 4 цифр', { min: 4 });
+  if (searching >= MAX_CONCURRENT_SEARCHES) throw new AppError('RATE_LIMITED', 429, 'Слишком много одновременных поисков, повторите запрос');
+  searching += 1;
   const groups = await withReportTx(
     { connect: () => deps.pool.connect(), end: async () => {} },
     async (tx) => {
@@ -168,7 +173,9 @@ export async function globalSearch(
       return out;
     },
     { timeoutMs: SEARCH_TIMEOUT_MS, budgetMs: SEARCH_BUDGET_MS, signal: deps.signal },
-  );
+  ).finally(() => {
+    searching -= 1;
+  });
   // перебор телефонов виден в журнале: номер – в поле phone, redact маскирует его (K2 PD_KEYS)
   if (phoneLike && digits.length >= 4) {
     await writeAudit(deps.pool, meta, { action: 'client.searched', object: { type: 'client', id: null }, after: { phone: q } }, deps.clock);

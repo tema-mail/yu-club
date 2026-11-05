@@ -4,6 +4,8 @@
 #   POSTGRES_PASSWORD=... docker compose -f deploy/compose.dev.yml up -d
 # Роль рантайма до первой миграции (на стенде – скрипт инициализации, S0-19):
 #   psql ... -c "CREATE ROLE yu_app NOLOGIN"
+# Роль отчётов (K24 §9) – тоже до миграций: 0406 без неё падает; иначе маршруты отчётов не подключаются (нет REPORTS_DATABASE_URL):
+#   psql ... -c "CREATE ROLE yu_reports LOGIN PASSWORD '...'" -c "ALTER ROLE yu_reports SET default_transaction_read_only = on"
 # Миграции: MIGRATION_DATABASE_URL=postgres://postgres:$POSTGRES_PASSWORD@127.0.0.1:5432/yu_club node db/migrate.ts up
 services:
   postgres:
