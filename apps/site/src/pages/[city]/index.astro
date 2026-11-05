@@ -6,6 +6,7 @@
 //    списке (K5 №1 отдаёт только города с active/temporarily_closed) – 404.
 import Site from '../../layouts/Site.astro';
 import { branchPath } from '../../lib/api.ts';
+import { metaFor } from '../../lib/seo.ts';
 
 const DOCS: Record<string, { title: string; index: boolean }> = {
   rules: { title: 'Правила клуба', index: true },
@@ -23,12 +24,13 @@ if (!doc && network && !city) return Astro.rewrite('/404/');
 if (city && city.branches.length === 1) return Astro.redirect(branchPath(city.slug, city.branches[0]!.slug), 301);
 if (!doc && !network) Astro.response.status = 503;
 
-const title = doc ? doc.title : city ? `${city.name}: клубы Ю-Клуб` : 'Клубы временно недоступны';
+const title = doc ? doc.title : 'Клубы временно недоступны';
+const meta = city ? metaFor({ page: 'city', city: city.name, branches: city.branches.map((b) => b.name) }) : null;
 ---
 <Site
-  title={`${title} – Ю-Клуб`}
-  description={city ? `Компьютерные клубы Ю-Клуб в городе ${city.name}: адреса, часы работы, ПК, VR и PlayStation.` : undefined}
-  noindex={doc ? !doc.index : false}
+  title={meta?.title ?? `${title} – Ю-Клуб`}
+  description={meta?.description}
+  index={city ? { kind: 'city', openBranches: city.branches.length } : doc?.index ? { kind: 'open' } : { kind: 'closed' }}
 >
   {doc ? (
     <>
@@ -55,7 +57,7 @@ const title = doc ? doc.title : city ? `${city.name}: клубы Ю-Клуб` : 
       </ol>
       <section class="yu-hero">
         <div>
-          <h1>Клубы Ю-Клуб, {city.name}</h1>
+          <h1>{meta?.h1}</h1>
           <p class="yu-lead">Выберите клуб: адрес, часы работы и зоны.</p>
         </div>
       </section>
