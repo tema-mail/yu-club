@@ -7,7 +7,7 @@ import type { Db } from '../../core/audit.ts';
 import { resolveSettings } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import {
-  RESERVED_CITY_SLUGS, SLUG_RE, STATIC_PATHS, branchPath, cityPath, gamePath, giveawayRulesPath, normalizePath, parsePath, publicationPath, roomPath,
+  RESERVED_CITY_SLUGS, SLUG_RE, STATIC_PATHS, branchPath, cityPath, gamePath, giveawayRulesPath, normalizePath, pagePath, parsePath, publicationPath, roomPath,
   type GameDirection, type PublicationType,
 } from '../../../../../packages/contracts/src/paths.ts';
 
@@ -153,6 +153,37 @@ async function canonicalOf(db: Db, pathname: string, now: Date): Promise<string 
 export async function resolveLegacyPath(db: Db, pathname: string, now: Date): Promise<{ status: 301; location: string } | null> {
   const location = await canonicalOf(db, normalizePath(pathname), now);
   return location && location !== pathname ? { status: 301, location } : null;
+}
+
+// ---- записи карты сайта (K5 №217)
+
+export interface SitemapEntry {
+  path: string;
+  lastmod: string | null;
+}
+
+/** Индексируемые сущности контента по K23 §2: игры с полным описанием, живые публикации с indexable и незавершённым сроком, страницы about, rules, contacts.
+ *  Юридические – noindex всегда, в карту не идут. Черновик, снятое и архив отсекает status = 'published'. lastmod – дата живой версии. */
+export async function sitemapEntries(db: Db, now: Date): Promise<SitemapEntry[]> {
+  const iso = (d: Date) => d.toISOString();
+  const games = await db.query<{ direction: GameDirection; slug: string; at: Date }>(
+    `SELECT g.direction, g.slug, v.published_at AS at FROM app.content_games g JOIN journal.content_versions v ON v.id = g.live_version_id
+      WHERE g.status = 'published' AND g.has_full AND g.slug IS NOT NULL ORDER BY g.direction, g.slug`,
+  );
+  const pubs = await db.query<{ type: PublicationType; slug: string; at: Date }>(
+    `SELECT p.type, p.slug, v.published_at AS at FROM app.content_publications p JOIN journal.content_versions v ON v.id = p.live_version_id
+      WHERE p.status = 'published' AND p.indexable AND p.slug IS NOT NULL AND p.publish_from <= $1 AND (p.publish_to IS NULL OR p.publish_to > $1) ORDER BY p.type, p.slug`,
+    [now],
+  );
+  const pages = await db.query<{ key: 'about' | 'rules' | 'contacts_intro'; at: Date }>(
+    `SELECT p.key, v.published_at AS at FROM app.content_pages p JOIN journal.content_versions v ON v.id = p.live_version_id
+      WHERE p.status = 'published' AND p.city_id IS NULL AND p.key IN ('about','rules','contacts_intro') ORDER BY p.key`,
+  );
+  return [
+    ...pages.rows.map((x) => ({ path: pagePath(x.key), lastmod: iso(x.at) })),
+    ...games.rows.map((x) => ({ path: gamePath(x.direction, x.slug), lastmod: iso(x.at) })),
+    ...pubs.rows.map((x) => ({ path: publicationPath(x.type, x.slug), lastmod: iso(x.at) })),
+  ];
 }
 
 // ---- черновой транслит (K23 §3)
