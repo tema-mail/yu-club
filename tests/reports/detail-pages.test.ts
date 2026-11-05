@@ -19,7 +19,6 @@ const NOV = { from: d('2026-11-01'), to: d('2026-11-30') };
 const OCT = { from: d('2026-10-01'), to: d('2026-10-31') };
 let db: TestDatabase;
 let fx: Fx;
-let branch: string;
 
 const val = (m: { state: string; value?: number } | undefined) => (m?.state === 'ok' ? m.value : m?.state);
 type Page = { rows: Array<{ value: number | null }>; total: { state: string; value?: number }; nextCursor: string | null };
@@ -43,7 +42,7 @@ async function walk(load: (cursor: string | undefined) => Promise<Page>): Promis
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
   fx = await reportFixtures(db);
-  branch = (await fx.branch('Asia/Novosibirsk')).id;
+  await fx.branch('Asia/Novosibirsk');
   // BULK профилей ноября со счётом баллов: положительный баланс 100 сотых
   await db.client.query(
     `WITH c AS (
