@@ -132,6 +132,11 @@ export function recordMoney(v: {
   return { id: op.id };
 }
 
+/** Мок мероприятий (K20 §6): команды кассы с теми же проверками и строка журнала по id. */
+export const getFinanceOp = (id: string): Op | undefined => ops.find((o) => o.id === id);
+let commands: { income: (s: Staffish, branchId: string, body: Rec) => Op; expense: (s: Staffish, branchId: string, body: Rec) => Op } | null = null;
+export const financeCommands = () => commands!;
+
 /** Для мока смены (shift.ts): остаток места «наличные» – expected при открытии и закрытии. */
 export const cashBalance = (branchId: string) => bal(branchId, 'cash');
 
@@ -395,6 +400,7 @@ export function registerFinance(app: FastifyInstance, P: string, deps: FinanceMo
       subcategoryId: (body.subcategoryId as string | null | undefined) ?? null, comment: (body.comment as string | undefined) ?? null, occurredAt: body.occurredAt as string, ref, receiptIssued: null });
   }
 
+  commands = { income, expense };
   app.post(`${P}/branches/:branchId/finance/income`, command('income', (s, p, body) => shape(s, income(s, p.branchId!, body))));
   app.post(`${P}/branches/:branchId/finance/expense`, command('expense', (s, p, body) => shape(s, expense(s, p.branchId!, body))));
 
@@ -407,10 +413,15 @@ export function registerFinance(app: FastifyInstance, P: string, deps: FinanceMo
     const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
     if (reason === '') throw new Fail(422, 'COMMENT_REQUIRED', 'Укажите комментарий', { field: 'reason' });
     if (found.kind === 'reversal') throw new Fail(409, 'CANNOT_REVERSE_REVERSAL', 'Сторно нельзя сторнировать');
-    if (found.kind === 'refund') throw new Fail(409, 'USE_PAYMENT_REFUND', 'Возврат не сторнируется: исправление – корректировкой', { operationId: found.id });
+    // возврат refundIncome (K20 §6, ref operation) сторнируется, возврат K10 и K16 – нет
+    if (found.kind === 'refund' && found.ref?.type !== 'operation') throw new Fail(409, 'USE_PAYMENT_REFUND', 'Возврат не сторнируется: исправление – корректировкой', { operationId: found.id });
     if (found.kind === 'income' && found.source === 'session') throw new Fail(409, 'USE_PAYMENT_REFUND', 'Приход по сеансу исправляется возвратом платежа', { operationId: found.id });
     if (found.kind === 'income' && found.source === 'certificate_sale') throw new Fail(409, 'USE_CERTIFICATE_CANCEL', 'Приход от продажи сертификата исправляется отменой продажи', { operationId: found.id });
     if (found.reversedBy) throw new Fail(409, 'ALREADY_REVERSED', 'Операция уже сторнирована', { reversalId: found.reversedBy });
+    if (found.kind === 'income') {
+      const live = ops.filter((o) => o.kind === 'refund' && o.ref?.type === 'operation' && o.ref.id === found.id && !o.reversedBy);
+      if (live.length > 0) throw new Fail(409, 'INCOME_HAS_REFUNDS', 'По поступлению есть возвраты: сначала сторно возвратов', { refundIds: live.map((x) => x.id) });
+    }
     const deltas: Array<[Place, number]> = found.kind === 'place_transfer'
       ? [[found.place, found.amountKop], [found.place === 'cash' ? 'noncash' : 'cash', -found.amountKop]]
       : [[found.place, found.direction === 'in' ? -found.amountKop : found.amountKop]];

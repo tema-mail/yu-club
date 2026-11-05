@@ -13,6 +13,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { randomBytes, randomUUID } from 'node:crypto';
 import { registerBooking, resetBooking } from './mock-booking.ts';
 import { registerCertificates, resetCertificates } from './mock-certificates.ts';
+import { EVENT_ACTIONS, registerEvents, resetEvents } from './mock-events.ts';
 import { registerFinance, resetFinance } from './mock-finance.ts';
 import { registerLoyalty, resetLoyalty } from './mock-loyalty.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
@@ -90,6 +91,8 @@ const ACTIONS: Record<Role, string[]> = {
     'certificate.view', 'certificate.link', 'loyalty.view', 'loyalty.goods.issue',
   ],
 };
+
+for (const r of Object.keys(EVENT_ACTIONS) as Role[]) ACTIONS[r].push(...EVENT_ACTIONS[r]);
 
 type MockStaff = StaffRecord;
 
@@ -703,6 +706,7 @@ export function buildMock() {
     resetLoyalty();
     resetPayments();
     resetShifts();
+    resetEvents(branches);
     return { ok: true };
   });
 
@@ -753,6 +757,8 @@ export function buildMock() {
     staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
     endSessions: (id) => { for (const [t, sid] of sessions) if (sid === id) sessions.delete(t); },
   });
+  resetEvents(branches);
+  registerEvents(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients });
   return app;
 }
 

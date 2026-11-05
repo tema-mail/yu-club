@@ -98,6 +98,26 @@ function syncOps(): void {
     .map((b) => ({ id: b.id, branchId: b.branchId, unitIds: cur(b).unitIds, date: localDate(ms(cur(b).start)), start: localHM(ms(cur(b).start)), end: localHM(ms(cur(b).end)) }));
 }
 
+/** Для мока мероприятий (K6: одна занятость на брони и мероприятия). */
+let externalBusy: (branchId: string, unitIds: string[], s: number, e: number) => boolean = () => false;
+export const setExternalBusy = (f: typeof externalBusy) => {
+  externalBusy = f;
+};
+export const bookingFacts = (id: string) => store.find((b) => b.id === id);
+export const bookingBusy = (branchId: string, unitIds: string[], s: number, e: number) =>
+  store.some((b) => b.branchId === branchId && OCCUPYING.includes(b.status) && ms(cur(b).start) < e && ms(cur(b).end) > s && cur(b).unitIds.some((u) => unitIds.includes(u)));
+/** Бронь подарка (K20 §8.2, №378): служебный ресурс «Подарок: 2 VR», 0 ₽; в моке – на VR1 с единицами обоих шлемов. */
+export function addGiftBooking(v: { branchId: string; clientId: string; start: number; end: number; comment: string | null; unitIds: string[] }): { id: string; number: number; status: string; start: string; end: string } {
+  const b: Bk = {
+    id: randomUUID(), number: nextNumber++, branchId: v.branchId, clientId: v.clientId, status: 'confirmed', source: 'crm', rowVersion: 1, internalComment: v.comment, cancel: null, visit: null,
+    versions: [{ version: 1, resourceId: 'res-vr1', resourceName: 'Подарок: 2 VR', start: iso(v.start), end: iso(v.end), priceKop: 0, createdAt: iso(Date.now()), reason: null, unitIds: v.unitIds }],
+    timeline: [],
+  };
+  store.push(b);
+  syncOps();
+  return { id: b.id, number: b.number, status: b.status, start: iso(v.start), end: iso(v.end) };
+}
+
 export function resetBooking(): void {
   nextNumber = 1001;
   replays = new Map();
@@ -176,6 +196,7 @@ export function registerBooking(app: FastifyInstance, P: string, d: BookingDeps)
     if (db.blocks.some((bl) => bl.status === 'active' && bl.branchId === branchId && cross(bl.unitIds) && ms(bl.start) < e && ms(bl.end) > s)) {
       return d.fail(reply, 409, 'RESOURCE_BLOCKED', 'Место временно недоступно'), null;
     }
+    if (externalBusy(branchId, unitIds, s, e)) return d.fail(reply, 409, 'SLOT_TAKEN', 'Это время уже занято'), null;
     const live = store.filter((b) => b !== self && OCCUPYING.includes(b.status) && ms(cur(b).start) < e && ms(cur(b).end) > s);
     if (live.some((b) => b.branchId === branchId && cross(cur(b).unitIds))) return d.fail(reply, 409, 'SLOT_TAKEN', 'Это время уже занято'), null;
     if (clientId && live.some((b) => b.clientId === clientId && b.status === 'confirmed')) {
