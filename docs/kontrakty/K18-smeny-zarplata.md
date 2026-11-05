@@ -288,6 +288,8 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 
 `REVOKE DELETE` на все таблицы; `journal.*` – только вставка (0001). Удалений нет: отмена = статус + сторно.
 
+Уточнения при реализации (решения D3-S1…D3-S7, `docs/reshenia.md`): в 0306 CHECK ведомости – `(status = 'paid') = (actual_payout_date IS NOT NULL)`, `payout_posting_id` у `paid` может быть пуст (§9: `toPayKop ≤ 0`); `payroll_accruals.ledger_entry_id` пуст при нулевой сумме.
+
 ## 14. API CRM (дополняет K11; номера Э3 – 3xx)
 
 | # | Метод и путь | Право | Успех |
