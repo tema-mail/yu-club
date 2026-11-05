@@ -25,6 +25,7 @@ describe('страницы, которых ещё нет', () => {
     { path: '/news/a/', title: 'Новость', lastmod: '2026-11-01T00:00:00.000Z' },
     { path: '/games/vr/alyx/', title: 'Alyx', lastmod: '2026-11-02T00:00:00.000Z' },
     { path: '/tournaments/cup/', title: 'Кубок', lastmod: null },
+    { path: '/about/', title: 'О клубе', lastmod: '2026-11-02T00:00:00.000Z' },
   ];
 
   it('нет файла страницы – нет адреса: карта не ведёт на 404', () => {
@@ -36,6 +37,10 @@ describe('страницы, которых ещё нет', () => {
     const p = paths({ entries, routes: ['schedule.astro', 'sitemap.astro', 'news/index.astro', 'news/[slug].astro', 'games/index.astro', 'games/[direction]/index.astro', 'games/[direction]/[game].astro', 'tournaments/index.astro', 'tournaments/[slug].astro', 'contacts.astro', 'info/[key].astro'] });
     for (const a of ['/schedule/', '/sitemap/', '/news/', '/news/a/', '/games/', '/games/pc/', '/games/vr/', '/games/playstation/', '/games/vr/alyx/', '/tournaments/', '/tournaments/cup/', '/contacts/', '/about/']) expect(p, a).toContain(a);
     expect(new Set(p).size).toBe(p.length);
+  });
+
+  it('файл страницы есть, а «О клубе» не опубликована – в карте её нет', () => {
+    expect(paths({ routes: ['info/[key].astro'] })).not.toContain('/about/');
   });
 
   it('хаб турниров без материала закрыт; хаб новостей – есть', () => {

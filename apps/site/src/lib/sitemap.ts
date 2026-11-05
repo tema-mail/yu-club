@@ -50,7 +50,8 @@ export function buildSitemap(input: SitemapInput): SitemapSection[] {
   if (exists(routes, 'schedule')) main.push(item(STATIC_PATHS.schedule, 'Расписание и запись'));
   if (exists(routes, 'rooms')) main.push(item(STATIC_PATHS.rooms, 'Комнаты'));
   if (exists(routes, 'birthday')) main.push(item(STATIC_PATHS.birthday, 'День рождения'));
-  if (exists(routes, 'about') || infoPages) main.push(item(STATIC_PATHS.about, 'О клубе'));
+  // Страница из CMS: нет живой версии – «О клубе» отдаёт 404, в карте её быть не должно.
+  if ((exists(routes, 'about') || infoPages) && dates.has(STATIC_PATHS.about)) main.push(item(STATIC_PATHS.about, 'О клубе'));
   if (exists(routes, 'contacts')) main.push(item(STATIC_PATHS.contacts, 'Контакты'));
   main.push(item(STATIC_PATHS.rules, 'Правила клуба'));
   if (exists(routes, 'sitemap')) main.push(item(STATIC_PATHS.sitemap, 'Карта сайта'));
