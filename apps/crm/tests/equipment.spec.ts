@@ -9,7 +9,7 @@ const TOMSK = 'e0000000-0000-4000-8000-000000000007';
 const SHOTS = process.env.CRM_SHOTS;
 
 test.beforeEach(async ({ request }) => {
-  await request.post('http://127.0.0.1:4012/__test/reset');
+  await request.post(`${process.env.MOCK_URL ?? 'http://127.0.0.1:4012'}/__test/reset`);
 });
 async function login(page: Page, email: string) {
   await page.goto('/login');
