@@ -7,6 +7,7 @@
 import Site from '../../layouts/Site.astro';
 import { branchPath } from '../../lib/api.ts';
 import { metaFor } from '../../lib/seo.ts';
+import { breadcrumbLd } from '../../lib/jsonld.ts';
 
 const DOCS: Record<string, { title: string; index: boolean }> = {
   rules: { title: 'Правила клуба', index: true },
@@ -17,7 +18,7 @@ const DOCS: Record<string, { title: string; index: boolean }> = {
 
 const { city: slug = '' } = Astro.params;
 const doc = Object.hasOwn(DOCS, slug) ? DOCS[slug] : undefined;
-const { network } = Astro.locals;
+const { network, origin } = Astro.locals;
 const city = doc ? undefined : network?.find((c) => c.slug === slug);
 
 if (!doc && network && !city) return Astro.rewrite('/404/');
@@ -31,6 +32,7 @@ const meta = city ? metaFor({ page: 'city', city: city.name, branches: city.bran
   title={meta?.title ?? `${title} – Ю-Клуб`}
   description={meta?.description}
   index={city ? { kind: 'city', openBranches: city.branches.length } : doc?.index ? { kind: 'open' } : { kind: 'closed' }}
+  jsonLd={city || doc ? [breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: city?.name ?? doc!.title, path: `/${slug}/` }])] : []}
 >
   {doc ? (
     <>
