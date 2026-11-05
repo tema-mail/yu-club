@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { writeAudit, type AuditRequestMeta, type Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { lockAccounts, post, type EntryInput, type RefType, type Tx } from '../../core/ledger.ts';
-import { assertCan, can, roleAllows, type AccessContext } from '../../core/permissions.ts';
+import { assertCan, roleAllows, type AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { addDays, parseLocalDate, systemClock, type Clock, type LocalDate, type TimeZone } from '../../core/time.ts';
 import { getBranch } from '../network/index.ts';
@@ -498,6 +498,3 @@ export async function postCorrection(tx: Tx, ctx: AccessContext, raw: unknown, m
   );
   return { postingId: posted.postingId, date };
 }
-
-/** Право на просмотр сумм филиала – для маршрутов и отчёта. */
-export const canViewBranch = (ctx: AccessContext, branchId: string): boolean => can(ctx, 'payroll.view', { branchId });

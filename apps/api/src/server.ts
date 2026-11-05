@@ -42,6 +42,7 @@ import type { SenderDeps } from './modules/notifications/sender.ts';
 import { vapidKeys } from './modules/notifications/webpush.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
 import { shiftsCrmRoutes } from './modules/shifts/routes.crm.ts';
+import { payrollCrmRoutes } from './modules/shifts/routes.payroll.ts';
 import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 import { staffAdminRoutes } from './modules/staff/routes.staff.ts';
 
@@ -258,6 +259,16 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(
       async (scope) =>
         shiftsCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    // K18 №311–318: периоды, ведомости, выплата, расход, штрафы, корректировки, отчёт; журнал ПДн зарплаты
+    void app.register(
+      async (scope) =>
+        payrollCrmRoutes(scope, {
           pool: staff.pool,
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
