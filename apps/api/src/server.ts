@@ -1,4 +1,4 @@
-import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
@@ -14,6 +14,7 @@ import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { mediaRoutes } from './modules/content/routes.media.ts';
+import { publicationCrmRoutes } from './modules/content/routes.crm.publications.ts';
 import { contentPublicRoutes } from './modules/content/routes.public.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
@@ -58,7 +59,7 @@ export interface ServerDeps {
   /** Вложения Э3 (K19 №350): адаптер диска с корнем ATTACHMENTS_DIR вне веб-корня. Нет – маршруты не подключаются. */
   attachments?: { store: FileStore };
   /** CMS (K22): медиатека – адаптер диска с корнем MEDIA_DIR и квотой. Нет – маршруты медиа не подключаются. */
-  content?: { mediaStore: FileStore };
+  content?: { mediaStore: FileStore; previewSecret?: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
 }
@@ -235,6 +236,13 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     // K19 №350: закрытые вложения – выдача только через API с правом на объект-владелец
     if (deps.content) {
       const store = deps.content.mediaStore;
+      const contentCrm = {
+        pool: staff.pool,
+        previewSecret: deps.content.previewSecret,
+        ...(staff.clock ? { clock: staff.clock } : {}),
+        authenticate: (request: FastifyRequest, reply: FastifyReply) => authenticate(staff, request, reply),
+      };
+      void app.register(async (scope) => publicationCrmRoutes(scope, contentCrm), { prefix: '/api/crm/v1' });
       void app.register(
         async (scope) =>
           mediaRoutes(scope, {
@@ -325,7 +333,10 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
   if (config.CERT_PEPPER) deps.certificates = { pepper: config.CERT_PEPPER };
   // K19 №350: каталог создаётся при первой записи (mkdir в адаптере); без входа сотрудников маршруты не подключаются
   deps.attachments = { store: createFileStore({ root: config.ATTACHMENTS_DIR }) };
-  deps.content = { mediaStore: createFileStore({ root: config.MEDIA_DIR, quota: { maxBytes: Math.round(config.MEDIA_QUOTA_GB * 1024 ** 3), code: 'MEDIA_QUOTA_EXCEEDED' } }) };
+  deps.content = {
+    mediaStore: createFileStore({ root: config.MEDIA_DIR, quota: { maxBytes: Math.round(config.MEDIA_QUOTA_GB * 1024 ** 3), code: 'MEDIA_QUOTA_EXCEEDED' } }),
+    ...(config.PREVIEW_SECRET ? { previewSecret: config.PREVIEW_SECRET } : {}),
+  };
   if (config.SESSION_PEPPER) {
     deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
     const sms =
