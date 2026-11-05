@@ -431,7 +431,7 @@ export default function PayrollTable({ initialPeriods, branches, today, penaltie
           {can.review && s.status === 'disputed' && <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => void setStatus(s, 'calculated')}>Вернуть в расчёт</button>}
         </div>
         {s.status === 'checked' && !closed && <p class="yc-field__hint">«Готова к выплате» – после закрытия периода: выплачивать по меняющимся итогам нельзя.</p>}
-        <PayoutDialog key={s.id} statement={s} staffName={r.name} branches={branches.map((b) => ({ id: b.id, name: b.name }))} today={today} canPaid={can.paid} canExpense={can.expense} onChange={refresh} />
+        <PayoutDialog key={s.id} statement={s} staffName={r.name} branches={branches.map((b) => ({ id: b.id, name: b.name, timezone: b.timezone }))} today={today} canPaid={can.paid} canExpense={can.expense} onChange={refresh} />
         {penalties}
       </div>
     );

@@ -3,6 +3,7 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { addDays, inZone } from '../src/lib/booking.ts';
+import { financeOperation } from './mock-finance.ts';
 import {
   accrualOf, assertOpen, computeTotals, DATE_RE, dto, entries, expenses, Fail, forbidden, invalid, nextSeq, notFound, penalties, periodOf, periods, rateAt, shifts, statements, TZ, unresolved,
   type Entry, type Penalty, type Period, type Rec, type ShiftsHelpers, type Staffish, type Statement, type StatementStatus,
@@ -156,6 +157,25 @@ export function registerPayroll(app: FastifyInstance, P: string, h: ShiftsHelper
     const operations = list.map((x) => ({ id: randomUUID(), kind: 'expense', branchId: x.branchId, place: b.place, method: b.method, amountKop: x.amountKop, occurredAt: b.occurredAt, comment: (typeof b.comment === 'string' && b.comment.trim()) || 'Выплата зарплаты', ref: { type: 'staff', id: st.staffId } }));
     expenses.set(st.id, operations.map((o) => o.id));
     return { operations };
+  }));
+  /** linkPayoutExpense: ручной расход из кассы; сумма должна совпасть, второго расхода нет, операция – только в одной связи. */
+  app.post(`${P}/payroll/statements/:id/payout-expense/link`, command('payroll.payout_expense.link', 201, (s, p, b) => {
+    if (!Array.isArray(b.operationIds) || b.operationIds.length === 0) throw invalid('Нужен список операций operationIds');
+    const st = readStatement(s, p.id!, 'payroll.payout.expense');
+    if (st.status !== 'paid') throw invalid('Расход создаётся только после отметки «Выплачен»', { reason: 'statement_not_paid', status: st.status });
+    const found = [...new Set(b.operationIds as string[])].map((id) => {
+      const op = financeOperation(id);
+      if (!op) throw notFound();
+      assertCan(s, 'payroll.payout.expense', op.branchId);
+      if (op.kind !== 'expense' || op.reversedBy) throw new Fail(422, 'OPERATION_LINK_INVALID', 'Операция не подходит или сторнирована', { reason: op.reversedBy ? 'reversed' : 'role' });
+      return op;
+    });
+    if (expenses.has(st.id)) throw new Fail(409, 'PAYOUT_EXPENSE_EXISTS', 'Расход по этой выплате уже создан', { operationIds: expenses.get(st.id) });
+    if (found.some((o) => [...expenses.values()].flat().includes(o.id))) throw new Fail(409, 'OPERATION_ALREADY_LINKED', 'Операция уже связана с другим объектом');
+    const sum = found.reduce((a, o) => a + o.amountKop, 0);
+    if (sum !== st.totals.toPayKop) throw new Fail(422, 'PAYOUT_AMOUNT_MISMATCH', 'Сумма расхода не совпадает с выплатой', { toPayKop: st.totals.toPayKop, amountKop: sum });
+    expenses.set(st.id, found.map((o) => o.id));
+    return { operations: found };
   }));
 
   // ---- штрафы, премии, корректировки

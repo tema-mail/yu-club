@@ -78,6 +78,9 @@ let seeding = false;
 let systemCategories: Record<'cash_shortage' | 'cash_surplus', string> = { cash_shortage: '', cash_surplus: '' };
 /** Ворота смены: undefined – смена выключена; null – включена, открытой нет; строка – id открытой смены. */
 let shiftGate: (branchId: string) => string | null | undefined = () => undefined;
+/** Операция кассы для привязки к чужому объекту (finance/links.ts). */
+export const financeOperation = (id: string) => ops.find((o) => o.id === id);
+
 export function setShiftGate(gate: (branchId: string) => string | null | undefined): void {
   shiftGate = gate;
 }
