@@ -12,13 +12,19 @@ const PAGE = `<!doctype html><html><head><base href="http://127.0.0.1:${SITE_POR
 <img src="/nope.png" onerror="parent.document.title = 'ВЗЛОМ'">
 </body></html>`;
 
+/** Токен: для CRM важна только полезная нагрузка, подпись проверяет API. */
+const tokenOf = (staffId: string) => `${Buffer.from(JSON.stringify({ staffId })).toString('base64url')}.signature`;
+const GOOD = tokenOf('s-owner');
+const FOREIGN = tokenOf('s-admin');
+const BAD = tokenOf('s-owner').replace('.signature', '.forged');
+
 let site: Server;
 const seen: Array<{ url: string; secret: string | undefined }> = [];
 
 test.beforeAll(async () => {
   site = createServer((req, res) => {
     seen.push({ url: req.url ?? '', secret: req.headers['x-preview-secret'] as string | undefined });
-    if (req.headers['x-preview-secret'] === PREVIEW_SECRET && req.url === '/preview/good-token/') {
+    if (req.headers['x-preview-secret'] === PREVIEW_SECRET && req.url === `/preview/${GOOD}/`) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(PAGE);
       return;
@@ -42,7 +48,7 @@ async function login(page: Page): Promise<void> {
 
 test('без входа – на страницу входа; сайт не вызывается', async ({ page }) => {
   seen.length = 0;
-  await page.goto('/content/preview/good-token');
+  await page.goto(`/content/preview/${GOOD}`);
   await expect(page).toHaveURL(/\/login/);
   expect(seen).toEqual([]);
 });
@@ -50,11 +56,11 @@ test('без входа – на страницу входа; сайт не вы
 test('в CRM видна плашка «Черновик» в двух ширинах; секрет ушёл на сайт и не попал в HTML; no-store', async ({ page }) => {
   await login(page);
   seen.length = 0;
-  const res = await page.goto('/content/preview/good-token');
+  const res = await page.goto(`/content/preview/${GOOD}`);
   expect(res?.status()).toBe(200);
   expect(res?.headers()['cache-control']).toBe('no-store');
   // страницу берёт сервер CRM с секретом; прочее на этом «сайте» – запросы кадра браузера (картинка через base), секрета у них нет
-  expect(seen.filter((x) => x.url.startsWith('/preview/'))).toEqual([{ url: '/preview/good-token/', secret: PREVIEW_SECRET }]);
+  expect(seen.filter((x) => x.url.startsWith('/preview/'))).toEqual([{ url: `/preview/${GOOD}/`, secret: PREVIEW_SECRET }]);
   expect(seen.filter((x) => !x.url.startsWith('/preview/')).every((x) => x.secret === undefined)).toBe(true);
   expect(await res?.text()).not.toContain(PREVIEW_SECRET);
   const frames = page.locator('iframe');
@@ -71,7 +77,7 @@ test('<script> в черновике не выполняется: sandbox пус
   const messages: string[] = [];
   await page.exposeFunction('reportMessage', (m: string) => messages.push(m));
   await page.addInitScript(() => window.addEventListener('message', (e) => void (window as unknown as { reportMessage: (m: string) => void }).reportMessage(String(e.data))));
-  await page.goto('/content/preview/good-token');
+  await page.goto(`/content/preview/${GOOD}`);
   const frames = page.locator('iframe');
   for (const i of [0, 1]) {
     expect(await frames.nth(i).getAttribute('sandbox')).toBe('');
@@ -85,6 +91,15 @@ test('<script> в черновике не выполняется: sandbox пус
 
 test('неверный токен – 404', async ({ page }) => {
   await login(page);
-  const res = await page.goto('/content/preview/bad-token');
+  const res = await page.goto(`/content/preview/${BAD}`);
   expect(res?.status()).toBe(404);
+  expect((await page.goto('/content/preview/мусор'))?.status()).toBe(404);
+});
+
+test('токен другого сотрудника – 404, сайт не вызывается', async ({ page }) => {
+  await login(page);
+  seen.length = 0;
+  const res = await page.goto(`/content/preview/${FOREIGN}`);
+  expect(res?.status()).toBe(404);
+  expect(seen).toEqual([]);
 });

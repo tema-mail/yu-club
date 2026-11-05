@@ -11,6 +11,18 @@ const secret = process.env.PREVIEW_SECRET;
 const token = Astro.params.token ?? '';
 if (!site || !secret || !token) return notFound();
 
+// Смотрит тот, кому выдан токен: права проверены при выдаче именно ему. Подпись проверит API; подделать здесь свой staffId без неё нельзя.
+function staffIdOf(raw: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(raw.split('.')[0] ?? '', 'base64url').toString());
+    const id = (parsed as { staffId?: unknown } | null)?.staffId;
+    return typeof id === 'string' ? id : null;
+  } catch {
+    return null;
+  }
+}
+if (staffIdOf(token) !== Astro.locals.me.staff.id) return notFound();
+
 let html: string;
 try {
   const res = await fetch(`${site}/preview/${encodeURIComponent(token)}/`, { headers: { 'x-preview-secret': secret }, redirect: 'error' });
