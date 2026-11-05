@@ -136,11 +136,9 @@ describe('сегмент детализации по HTTP', () => {
     }
   });
 
-  it('филиал вне зоны – как обычный фильтр: 404 у чужого директора', async () => {
-    const ctx = fx.director([nsk]);
-    const err = applySegment('bookings', `branch:${msk}`, { period: { from: d('2026-11-02'), to: d('2026-11-03') } });
-    expect(err.branchIds).toEqual([msk]);
-    expect(ctx.branchIds.has(msk)).toBe(false);
+  it('сегмент филиала становится обычным фильтром области; у неизвестного отчёта сегмента нет', () => {
+    const narrowed = applySegment('bookings', `branch:${msk}`, { period: { from: d('2026-11-02'), to: d('2026-11-03') } });
+    expect(narrowed.branchIds).toEqual([msk]);
     expect(() => applySegment('нет-такого', 'day:2026-11-02', { period: { from: d('2026-11-02'), to: d('2026-11-03') } })).toThrow(AppError);
   });
 });

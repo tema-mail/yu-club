@@ -13,6 +13,7 @@ import type { BranchInfo } from '../network/index.ts';
 import { maskClient, resolveBranches, where, windowsOf, withReportTx, type MaskedClient, type ReportsPool } from './framework.ts';
 
 export const SEARCH_TIMEOUT_MS = 2_000;
+const SEARCH_BUDGET_MS = 5_000; // все запросы поиска вместе (D4-22)
 const GROUP_LIMIT = 5;
 const FINANCE_COMMENT_DAYS = 92;
 const PHONE_LIKE_RE = /^[+\d\s().-]+$/;
@@ -144,7 +145,7 @@ async function staffGroup(tx: Tx, ctx: AccessContext, q: string): Promise<Search
 }
 
 export async function globalSearch(
-  deps: { pool: Db & { connect: ReportsPool['connect'] }; clock: Clock },
+  deps: { pool: Db & { connect: ReportsPool['connect'] }; clock: Clock; signal?: AbortSignal | undefined },
   ctx: AccessContext,
   meta: AuditRequestMeta,
   raw: unknown,
@@ -174,7 +175,7 @@ export async function globalSearch(
       else if (roleAllows(ctx.role, 'staff.view')) out.push({ type: 'staff', items: [], more: false });
       return out;
     },
-    { timeoutMs: SEARCH_TIMEOUT_MS },
+    { timeoutMs: SEARCH_TIMEOUT_MS, budgetMs: SEARCH_BUDGET_MS, signal: deps.signal },
   );
   // перебор телефонов виден в журнале: номер – в поле phone, redact маскирует его (K2 PD_KEYS)
   if (phoneLike && digits.length >= 4) {

@@ -6,6 +6,7 @@ export const errors = {
   REPORT_PERIOD_INVALID: 422, // from > to, будущее больше года
   REPORT_PERIOD_TOO_LONG: 422, // интерактивно больше reports.interactive_max_days, details.useExport
   REPORT_FILTER_INVALID: 422, // фильтр не по схеме
+  REPORT_CANCELLED: 409, // клиент закрыл запрос: отвечать некому, в логе не ошибка
   REPORT_TIMEOUT: 504, // statement_timeout пула отчётов: «сузьте период или сформируйте файл»
   EXPORT_TOO_LARGE: 422, // больше 200 000 строк
   EXPORT_NOT_READY: 409, // файл ещё не готов

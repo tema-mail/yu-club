@@ -135,12 +135,21 @@ function assertKnown(report: string, ctx: AccessContext): ReportHandler | null {
 
 const RUNS_LIMIT = 50;
 
+/** Закрытие запроса клиентом (смена фильтра, K24 §9). 'close' у ответа приходит и после нормальной отдачи – тогда отменять нечего. */
+function closedByClient(reply: FastifyReply): AbortSignal {
+  const controller = new AbortController();
+  reply.raw.once('close', () => {
+    if (!reply.raw.writableFinished) controller.abort();
+  });
+  return controller.signal;
+}
+
 export async function reportsCrmRoutes(app: FastifyInstance, deps: ReportsCrmDeps): Promise<void> {
   const clock = deps.clock ?? systemClock;
   const run = async <T>(request: FastifyRequest, reply: FastifyReply, fn: (env: ReportEnv, q: Query) => Promise<T>): Promise<T> => {
     const { access } = await deps.authenticate(request, reply);
     const q = parseQuery(request.query);
-    return withReportTx(deps.reports, (tx) => fn({ tx, main: deps.pool, ctx: access, clock }, q));
+    return withReportTx(deps.reports, (tx) => fn({ tx, main: deps.pool, ctx: access, clock }, q), { signal: closedByClient(reply) });
   };
 
   // №239
@@ -181,7 +190,7 @@ export async function reportsCrmRoutes(app: FastifyInstance, deps: ReportsCrmDep
   // №250: глобальный поиск (права типов и аудит телефонов – в search.ts)
   app.get('/search', async (request, reply) => {
     const { access, meta } = await deps.authenticate(request, reply);
-    return globalSearch({ pool: deps.pool, clock }, access, meta, (request.query as { q?: unknown } | undefined)?.q);
+    return globalSearch({ pool: deps.pool, clock, signal: closedByClient(reply) }, access, meta, (request.query as { q?: unknown } | undefined)?.q);
   });
 
   // №242

@@ -13,6 +13,8 @@ import { BRANCH_COLUMNS, BRANCH_FROM, toBranchInfo, type BranchInfo, type Branch
 export const DAY_RULE = 'Сутки – по времени каждого филиала';
 export const SCREEN_TIMEOUT_MS = 15_000;
 export const EXPORT_TIMEOUT_MS = 300_000;
+/** Бюджет всего отчёта на экране: дашборд – десятки запросов подряд, statement_timeout ограничивает только один (D4-22). */
+export const SCREEN_BUDGET_MS = 30_000;
 const DETAIL_PAGE = 100; // экран – по 100 строк (K24 §9, 17 §4.4)
 const DETAIL_MAX_LIMIT = 500;
 const POOL_WAIT_MS = 15_000; // пул занят отчётами дольше – тот же ответ, что на долгий запрос
@@ -413,6 +415,44 @@ export async function loadMaskedClients(main: Db, ctx: AccessContext, rows: Read
 export interface ReportsPool {
   connect(): Promise<pg.PoolClient>;
   end(): Promise<void>;
+  /** Есть у pg.Pool: отмена идёт отдельным соединением, мимо занятого пула. */
+  options?: { connectionString?: string | undefined };
+}
+
+export interface ReportTxOpts {
+  timeoutMs?: number | undefined;
+  /** Общий бюджет на весь отчёт. По умолчанию: экран – SCREEN_BUDGET_MS, длинные запросы (экспорт) – их timeoutMs. */
+  budgetMs?: number | undefined;
+  /** Клиент закрыл запрос: идущий запрос отменяется в базе (K24 §9). */
+  signal?: AbortSignal | undefined;
+}
+
+const reportTimeout = () => new AppError('REPORT_TIMEOUT', 504, 'Отчёт не уложился – сузьте период или сформируйте файл');
+const reportCancelled = () => new AppError('REPORT_CANCELLED', 409, 'Запрос отчёта отменён');
+
+/** pg_cancel_backend своей роли (K24 §9). Ошибка отмены не важнее ответа: дальше сработает statement_timeout. */
+async function cancelBackend(pool: ReportsPool, pid: number): Promise<void> {
+  const url = pool.options?.connectionString;
+  try {
+    if (url) {
+      const direct = new pg.Client({ connectionString: url });
+      await direct.connect();
+      try {
+        await direct.query('SELECT pg_cancel_backend($1)', [pid]);
+      } finally {
+        await direct.end();
+      }
+      return;
+    }
+    const c = await pool.connect();
+    try {
+      await c.query('SELECT pg_cancel_backend($1)', [pid]);
+    } finally {
+      c.release();
+    }
+  } catch {
+    // см. выше
+  }
 }
 
 /** Отдельный пул под ролью yu_reports: исчерпание не задевает основной (17 §6). */
@@ -420,26 +460,46 @@ export function createReportsPool(url: string, max = 3): pg.Pool {
   return new pg.Pool({ connectionString: url, options: '-c search_path=app', max, connectionTimeoutMillis: POOL_WAIT_MS });
 }
 
-/** Один снимок на отчёт: REPEATABLE READ READ ONLY, statement_timeout (экран 15 с, экспорт 300 с), work_mem 16 МБ. */
-export async function withReportTx<T>(pool: ReportsPool, fn: (tx: Tx) => Promise<T>, opts: { timeoutMs?: number } = {}): Promise<T> {
+/** Один снимок на отчёт: REPEATABLE READ READ ONLY, statement_timeout (экран 15 с, экспорт 300 с), work_mem 16 МБ, общий бюджет времени и отмена по закрытию запроса. */
+export async function withReportTx<T>(pool: ReportsPool, fn: (tx: Tx) => Promise<T>, opts: ReportTxOpts = {}): Promise<T> {
+  if (opts.signal?.aborted) throw reportCancelled();
   const c = await pool.connect().catch((err: unknown) => {
-    if (err instanceof Error && /timeout/i.test(err.message)) throw new AppError('REPORT_TIMEOUT', 504, 'Отчёт не уложился – сузьте период или сформируйте файл');
+    if (err instanceof Error && /timeout/i.test(err.message)) throw reportTimeout();
     throw err;
   });
+  const timeoutMs = opts.timeoutMs ?? SCREEN_TIMEOUT_MS;
+  let stopped: 'budget' | 'abort' | null = opts.signal?.aborted ? 'abort' : null;
+  let cancelling: Promise<void> = Promise.resolve();
+  const interrupt = (why: 'budget' | 'abort') => {
+    if (stopped) return;
+    stopped = why;
+    const pid = (c as unknown as { processID: number | null }).processID;
+    if (pid !== null) cancelling = cancelBackend(pool, pid);
+  };
+  const onAbort = () => interrupt('abort');
+  opts.signal?.addEventListener('abort', onAbort, { once: true });
+  const budget = setTimeout(() => interrupt('budget'), opts.budgetMs ?? Math.max(timeoutMs, SCREEN_BUDGET_MS));
+  const stopError = () => (stopped === 'abort' ? reportCancelled() : reportTimeout());
+  // запрос между двумя запросами отчёта тоже не начнётся: pg_cancel_backend отменяет только идущий
+  const tx: Tx = {
+    query: <R extends pg.QueryResultRow>(text: string, values?: unknown[]) => (stopped ? Promise.reject(stopError()) : c.query<R>(text, values)),
+  };
   try {
-    await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    await c.query(`SET LOCAL statement_timeout = ${Math.trunc(opts.timeoutMs ?? SCREEN_TIMEOUT_MS)}`);
-    await c.query(`SET LOCAL work_mem = '16MB'`);
-    const out = await fn(c);
+    await tx.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await tx.query(`SET LOCAL statement_timeout = ${Math.trunc(timeoutMs)}`);
+    await tx.query(`SET LOCAL work_mem = '16MB'`);
+    const out = await fn(tx);
     await c.query('COMMIT');
     return out;
   } catch (err) {
     await c.query('ROLLBACK').catch(() => {});
-    if ((err as { code?: string }).code === '57014') {
-      throw new AppError('REPORT_TIMEOUT', 504, 'Отчёт не уложился – сузьте период или сформируйте файл');
-    }
+    if (stopped) throw stopError();
+    if ((err as { code?: string }).code === '57014') throw reportTimeout();
     throw err;
   } finally {
+    clearTimeout(budget);
+    opts.signal?.removeEventListener('abort', onAbort);
+    await cancelling; // соединение в пул – только когда отмена дошла: она не должна задеть чужой отчёт
     c.release();
   }
 }
