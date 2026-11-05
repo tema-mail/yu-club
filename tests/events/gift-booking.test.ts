@@ -292,6 +292,18 @@ describe('S3-59: перенос и оплата', () => {
     expect(m.currentVersion).toBe(2);
     expect(await giftStatus(gift.id)).toBe('reserved');
   });
+  it('перенос брони из ЛК раньше обработчика booking.confirmed – запись находится по удержанию', async () => {
+    const { gift, clientId } = await newGift();
+    const h = await hold(gift.id, clientId, noon('2026-07-13'));
+    const done = await tx((c) => confirmHold(c, clientId, h.id, clock));
+    const bookingId = done.bookings[0]!.id;
+    expect((await uses(gift.id))[0].status).toBe('held');
+    const r = await tx((c) => rescheduleBooking(c, bookingId, { ctx: owner, rowVersion: 1, resourceId: ids.gift!, start: noon('2026-07-14'), end: noon('2026-07-14', '05:40'), reason: 'попросили' }, meta(), clock));
+    expect(r.currentVersion).toBe(2);
+    expect((await uses(gift.id))[0]).toMatchObject({ status: 'booked', booking_id: bookingId });
+    await deliver(GIFT_HANDLERS.bookingConfirmed, await eventId('booking.confirmed', 'bookingId', bookingId));
+    expect((await uses(gift.id))[0].status).toBe('booked');
+  });
   it('перенос на обычный ресурс → запись освобождена, подарок снова issued', async () => {
     const { gift } = await newGift();
     const bookingId = await book(gift.id, noon('2026-07-08'));

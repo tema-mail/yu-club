@@ -61,9 +61,25 @@ async function liveUse(tx: AuditTx, by: { giftId?: string; bookingId?: string | 
   return r.rows[0] ?? null;
 }
 
+/** Удержание уже стало бронью, а обработчик ещё не дошёл: запись held этого клиента переходит на бронь (booked). Идемпотентно. */
+async function bindHeldUse(tx: AuditTx, bookingId: string, clientId: string, now: Date): Promise<void> {
+  if (await liveUse(tx, { bookingId })) return;
+  const held = await tx.query<{ id: string; hold_id: string }>(
+    `SELECT u.id, u.hold_id FROM app.gift_uses u JOIN app.birthday_gifts g ON g.id = u.gift_id WHERE g.client_id = $1 AND u.status = 'held' ORDER BY u.id`,
+    [clientId],
+  );
+  for (const h of held.rows) {
+    const bookings = await paymentBookingProvider.holdBookings(tx, h.hold_id);
+    if (!bookings.some((b) => b.bookingId === bookingId)) continue;
+    await tx.query(`UPDATE app.gift_uses SET booking_id = $2, status = 'booked', changed_at = $3 WHERE id = $1 AND status = 'held'`, [h.id, bookingId, now]);
+    return;
+  }
+}
+
 /** Валидатор гранта gift_vr: вызывает booking в транзакции команды, до occupy. Ошибки проходят как есть. */
 async function checkGiftGrant(tx: AuditTx, c: GrantCheck): Promise<void> {
   if (c.phase === 'add_item') throw compositionInvalid('extra_item'); // PS4 и всё прочее в удержании подарка (K20 §8.2 п.5)
+  if (c.phase === 'reschedule' && c.bookingId && c.clientId) await bindHeldUse(tx, c.bookingId, c.clientId, c.now); // перенос раньше обработчика booking.confirmed
   const use = c.grant ? null : await liveUse(tx, c.phase === 'reschedule' ? { bookingId: c.bookingId } : { holdId: c.holdId });
   const giftId = c.grant?.id ?? use?.gift_id;
   const gift = giftId ? await getGiftRow(tx, giftId, { forUpdate: true }) : null;
@@ -215,20 +231,8 @@ export async function releaseByHold(tx: AuditTx, holdId: string, now: Date, meta
 async function syncBooking(tx: AuditTx, bookingId: string, clientId: string | null, now: Date, clock: Clock): Promise<void> {
   const booking = await paymentBookingProvider.payableBooking(tx, bookingId); // бронь FOR SHARE – раньше подарка
   if (!booking) return;
-  let use = await liveUse(tx, { bookingId });
-  if (!use && clientId) {
-    const held = await tx.query<{ id: string; gift_id: string; hold_id: string }>(
-      `SELECT u.id, u.gift_id, u.hold_id FROM app.gift_uses u JOIN app.birthday_gifts g ON g.id = u.gift_id WHERE g.client_id = $1 AND u.status = 'held' ORDER BY u.id`,
-      [clientId],
-    );
-    for (const h of held.rows) {
-      const bookings = await paymentBookingProvider.holdBookings(tx, h.hold_id);
-      if (!bookings.some((b) => b.bookingId === bookingId)) continue;
-      await tx.query(`UPDATE app.gift_uses SET booking_id = $2, status = 'booked', changed_at = $3 WHERE id = $1 AND status = 'held'`, [h.id, bookingId, now]);
-      use = await liveUse(tx, { bookingId });
-      break;
-    }
-  }
+  if (clientId) await bindHeldUse(tx, bookingId, clientId, now);
+  const use = await liveUse(tx, { bookingId });
   if (!use) {
     if (booking.status === 'confirmed' && booking.resourceType === GIFT_RESOURCE_TYPE) await reviveAfterNoShow(tx, bookingId, now, clock);
     return;
