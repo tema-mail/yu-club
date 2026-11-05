@@ -1,7 +1,7 @@
 // S3-94: вложения в бэкапе. Настоящие backup.sh и restore-check.sh на подмене docker (база не нужна: проверяется логика файлов):
 // снимок каталога в том же запуске, что дамп; живой storage_key без файла или с другим размером – ОШИБКА; недействительная версия файла не требует.
 // Статически: каталог смонтирован только в api, общий Caddy его не видит, адреса вложений – 404 на обоих доменах.
-// Живая проверка на стенде – docs/TEHDOLG-zapusk.md 2.4.
+// Живая проверка на стенде – docs/TEHDOLG-zapusk.md 2.6.
 import { execFile } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
