@@ -50,7 +50,7 @@ if [ "$RESET" = 1 ]; then
 fi
 
 # 1. код
-git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/backups $ROOT/attachments; chmod 700 $ROOT/backups $ROOT/attachments; chown 1000:1000 $ROOT/attachments; rm -rf $ROOT/src.new; mkdir $ROOT/src.new; tar -x -C $ROOT/src.new; rm -rf $ROOT/src.old; [ -d $ROOT/src ] && mv $ROOT/src $ROOT/src.old; mv $ROOT/src.new $ROOT/src; echo $REV > $ROOT/src/REVISION"
+git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/backups $ROOT/attachments $ROOT/media $ROOT/exports; chmod 700 $ROOT/backups $ROOT/attachments $ROOT/exports; chmod 750 $ROOT/media; chown 1000:1000 $ROOT/attachments $ROOT/media $ROOT/exports; rm -rf $ROOT/src.new; mkdir $ROOT/src.new; tar -x -C $ROOT/src.new; rm -rf $ROOT/src.old; [ -d $ROOT/src ] && mv $ROOT/src $ROOT/src.old; mv $ROOT/src.new $ROOT/src; echo $REV > $ROOT/src/REVISION"
 # CRM и сайт собираются здесь (дерево чистое = HEAD): на стенде astro build не помещается в память
 for app in crm site; do
   PATH="$HOME/.local/node/bin:$PATH" npm run -s build -w "@yu/$app" >/dev/null

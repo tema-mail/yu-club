@@ -21,6 +21,12 @@ const schema = z.object({
   // Закрытые вложения Э3 (K19 №350, core/files.ts): каталог вне веб-корня – Caddy его не раздаёт, файлы отдаёт только API
   // с проверкой права на объект-владелец. В контейнере – том deploy/compose.yml; входит в бэкап (S3-94).
   ATTACHMENTS_DIR: z.string().min(1).refine((p) => p.startsWith('/'), 'абсолютный путь').default('/data/attachments'),
+  // Медиатека CMS (K22 §8, S4-06): в контейнере – том deploy/compose.yml (на сервере /opt/yu-club/media), отдаёт Caddy, входит в бэкап.
+  MEDIA_DIR: z.string().min(1).refine((p) => p.startsWith('/'), 'абсолютный путь').default('/data/media'),
+  // Квота медиатеки, ГБ: сверх неё загрузка – MEDIA_QUOTA_EXCEEDED (K22 §8).
+  MEDIA_QUOTA_GB: z.coerce.number().positive().default(5),
+  // Файлы экспортов отчётов (K24 §7): вне веб-корня, выдача – только через API; живут 24 ч.
+  EXPORT_DIR: z.string().min(1).refine((p) => p.startsWith('/'), 'абсолютный путь').default('/data/exports'),
   // Прокси, чьему X-Forwarded-For верим (адреса и IPv4-CIDR через запятую) – как TRUSTED_PROXIES в CRM.
   // От остальных XFF игнорируется: request.ip – адрес соединения. Нужен лимиту входа K12 по IP.
   TRUSTED_PROXIES: z
