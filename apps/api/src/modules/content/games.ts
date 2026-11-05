@@ -59,10 +59,10 @@ export const gameDef: EntityDef<GameDraft> = {
     await withSlugConflict(tx, slug ?? '', () =>
       tx.query(`UPDATE app.content_games SET slug = $2, has_full = $3, cover_media_id = $4, sort_order = $5 WHERE id = $1`, [row.id, slug, Boolean(d.full?.trim()), d.coverMediaId ?? null, d.sortOrder ?? 0]),
     );
-    if (!slug) return; // без полного описания страницы нет: старый адрес отдаёт 404
+    // Слаг снят (плитка без страницы): старый адрес всё равно в историю – сейчас 404, а при новой странице с другим слагом 301 на неё.
     const parentKey = String(row.direction);
-    if (typeof row.slug === 'string') await recordSlugChange(tx, { entityType: 'game', entityId: row.id, parentKey, oldSlug: row.slug, newSlug: slug }, { now: () => ctx.at });
-    else await releaseSlug(tx, 'game', parentKey, slug); // новый объект занял слаг из истории (K23 §5)
+    if (typeof row.slug === 'string') await recordSlugChange(tx, { entityType: 'game', entityId: row.id, parentKey, oldSlug: row.slug, newSlug: slug ?? '' }, { now: () => ctx.at });
+    else if (slug) await releaseSlug(tx, 'game', parentKey, slug); // новый объект занял слаг из истории (K23 §5)
   },
 };
 

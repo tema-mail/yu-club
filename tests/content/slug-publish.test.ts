@@ -104,4 +104,18 @@ describe('игры', () => {
     await republish(gameDef, row, { title: 'Игра', short: 'Коротко', coverMediaId: cover });
     expect(await resolve('/games/pc/game-b/')).toBeNull();
   });
+
+  it('A → без страницы → B: пока страницы нет – 404, с новой страницей старый адрес ведёт на неё', async () => {
+    let row = await live(gameDef, await make(gameDef, { direction: 'vr' }, game('tile-a')));
+    row = await republish(gameDef, row, { title: 'Игра', short: 'Коротко', coverMediaId: cover });
+    expect(row.slug).toBeNull();
+    expect(await resolve('/games/vr/tile-a/')).toBeNull();
+    row = await republish(gameDef, row, game('tile-b'));
+    expect(await resolve('/games/vr/tile-a/')).toBe('/games/vr/tile-b/');
+    expect(await resolve('/games/vr/tile-b/')).toBeNull();
+    // Возврат к первому слагу снимает его из истории.
+    await republish(gameDef, row, game('tile-a'));
+    expect(await resolve('/games/vr/tile-a/')).toBeNull();
+    expect(await resolve('/games/vr/tile-b/')).toBe('/games/vr/tile-a/');
+  });
 });
