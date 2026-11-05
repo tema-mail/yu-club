@@ -45,7 +45,7 @@ export interface SenderDeps {
   unsubscribeSecret?: string | null;
 }
 
-export type SendResult = 'sent_to_provider' | 'no_channel' | 'skipped_by_prefs' | 'skipped_by_frequency' | 'skipped_booking_changed' | 'error' | 'retry' | 'rescheduled' | 'not_queued';
+export type SendResult = 'sent_to_provider' | 'no_channel' | 'skipped_by_prefs' | 'skipped_by_frequency' | 'skipped_booking_changed' | 'error' | 'retry' | 'rescheduled' | 'cancelled' | 'not_queued';
 
 /** Задержки повторов после временной ошибки (K14): 1, 5, 15 мин. */
 export const RETRY_DELAYS_MIN = [1, 5, 15] as const;
@@ -63,6 +63,7 @@ interface Row {
   branch_id: string | null;
   branch_timezone: string | null;
   campaign_id: string | null;
+  campaign_cancelled: boolean;
   category: Category;
   kind: string;
   booking_id: string | null;
@@ -102,12 +103,17 @@ export async function claimDue(pool: Pool, now: Date, limit = 200): Promise<stri
   return [...first, ...(await claim(`category = 'marketing'`, Math.min(MARKETING_DISPATCH_LIMIT, limit - first.length)))];
 }
 
+/** Строка отменённой кампании. Ручной повтор (retry_of) – отдельное решение сотрудника после отмены, его не гасим. */
+const CAMPAIGN_CANCELLED_SQL = `(n.retry_of IS NULL AND EXISTS (SELECT 1 FROM app.notification_campaigns c WHERE c.id = n.campaign_id AND c.status = 'cancelled'))`;
+
 type Verdict =
-  | { status: 'skipped_by_prefs' | 'skipped_by_frequency' | 'skipped_booking_changed' | 'no_channel' | 'error'; reason: string }
+  | { status: 'skipped_by_prefs' | 'skipped_by_frequency' | 'skipped_booking_changed' | 'no_channel' | 'error' | 'cancelled'; reason: string }
   | { status: 'send'; subs: Sub[] }
   | { status: 'reschedule'; at: Date };
 
 async function preCheck(tx: pg.ClientBase, row: Row, now: Date, deps: SenderDeps): Promise<Verdict> {
+  // K21 §6: остаток отменённой кампании не уходит, в том числе строка, бывшая 'sending' при отмене и вернувшаяся на повтор
+  if (row.campaign_cancelled) return { status: 'cancelled', reason: 'campaign_cancelled' };
   if (row.not_after && row.not_after.getTime() <= now.getTime()) return { status: 'skipped_booking_changed', reason: 'expired' }; // 3
   if (row.booking_id && deps.bookings) {
     const b = await deps.bookings.snapshot(tx, row.booking_id);
@@ -159,7 +165,7 @@ export async function sendNotification(deps: SenderDeps, id: string): Promise<Se
     const head = await tx.query<{ client_id: string; category: string }>('SELECT client_id, category FROM app.notifications WHERE id = $1', [id]);
     if (head.rows[0]?.category === 'marketing') await lockMarketingFrequency(tx, head.rows[0].client_id);
     const r = await tx.query<Row>(
-      `SELECT n.id, n.client_id, n.branch_id, b.timezone AS branch_timezone, n.campaign_id, n.category, n.kind, n.booking_id, n.booking_version, n.title, n.body, n.url, n.not_after, n.status, n.attempts, n.dedupe_key
+      `SELECT n.id, n.client_id, n.branch_id, b.timezone AS branch_timezone, n.campaign_id, ${CAMPAIGN_CANCELLED_SQL} AS campaign_cancelled, n.category, n.kind, n.booking_id, n.booking_version, n.title, n.body, n.url, n.not_after, n.status, n.attempts, n.dedupe_key
        FROM app.notifications n LEFT JOIN app.branches b ON b.id = n.branch_id WHERE n.id = $1 FOR UPDATE OF n`,
       [id],
     );
@@ -281,12 +287,17 @@ export async function runDue(deps: SenderDeps, limit = 200): Promise<Partial<Rec
 }
 
 /**
- * Возврат «зависших»: 'queued'/'sending' дольше staleMs (процесс упал между транзакциями) → снова 'planned'.
+ * Возврат «зависших»: 'queued'/'sending' дольше staleMs (процесс упал между транзакциями) → снова 'planned',
+ * строка отменённой кампании – 'cancelled' (K21 §6).
  * Повтор допустим: Topic схлопывает дубль на устройстве (K14, ADR 0004 §2).
  */
 export async function requeueStale(pool: Pool, now: Date, staleMs = 10 * 60_000): Promise<number> {
   const r = await pool.query(
-    `UPDATE app.notifications SET status = 'planned', updated_at = $1 WHERE status IN ('queued','sending') AND updated_at < $2`,
+    `UPDATE app.notifications n SET
+       status = CASE WHEN ${CAMPAIGN_CANCELLED_SQL} THEN 'cancelled' ELSE 'planned' END,
+       skip_reason = CASE WHEN ${CAMPAIGN_CANCELLED_SQL} THEN 'campaign_cancelled' ELSE n.skip_reason END,
+       updated_at = $1
+     WHERE n.status IN ('queued','sending') AND n.updated_at < $2`,
     [now, new Date(now.getTime() - staleMs)],
   );
   return r.rowCount ?? 0;

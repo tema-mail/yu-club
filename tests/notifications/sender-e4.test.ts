@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
-import { claimDue, MARKETING_DISPATCH_LIMIT, sendNotification, type SenderDeps } from '../../apps/api/src/modules/notifications/sender.ts';
+import { claimDue, MARKETING_DISPATCH_LIMIT, requeueStale, sendNotification, type SenderDeps } from '../../apps/api/src/modules/notifications/sender.ts';
 import { verifyUnsubscribeToken } from '../../apps/api/src/modules/notifications/unsubscribe.ts';
 import { generateVapidKeys, vapidKeys } from '../../apps/api/src/modules/notifications/webpush.ts';
 import { createTestBranch } from '../helpers/network.ts';
@@ -165,6 +165,63 @@ describe('частота', () => {
     }
     expect(rx.received).toHaveLength(100);
   }, 120_000);
+});
+
+describe('отмена кампании во время отправки (K21 §6)', () => {
+  async function campaign(status: string): Promise<string> {
+    const staff = (await db.client.query<{ id: string }>(`INSERT INTO app.staff (first_name, last_name, email, role, password_hash) VALUES ('Д', 'Р', $1, 'director', 'x') RETURNING id`, [`d-${randomUUID()}@yu.test`])).rows[0]!.id;
+    return (await db.client.query<{ id: string }>(
+      `INSERT INTO app.notification_campaigns (status, category, title, body, audience, area_type, area_ids, created_by, confirmed_at, cancelled_reason)
+       VALUES ($1, 'marketing', 'т', 'б', '{"kind":"segment"}', 'branch', ARRAY[$2::uuid], $3, now(), CASE WHEN $1 = 'cancelled' THEN 'отмена' END) RETURNING id`,
+      [status, branchId, staff],
+    )).rows[0]!.id;
+  }
+  const attach = (id: string, campaignId: string) => db.client.query('UPDATE app.notifications SET campaign_id = $2 WHERE id = $1', [id, campaignId]);
+  const cancel = (campaignId: string) => db.client.query(`UPDATE app.notification_campaigns SET status = 'cancelled', cancelled_reason = 'отмена' WHERE id = $1`, [campaignId]);
+
+  it('отмена пока строка sending, провайдер 503 → повтор при следующем проходе не уходит, строка cancelled', async () => {
+    const c = await client();
+    const camp = await campaign('sending');
+    const id = await row(c.id);
+    await attach(id, camp);
+    const path = new URL((await db.client.query<{ endpoint: string }>('SELECT endpoint FROM app.push_subscriptions WHERE client_id = $1', [c.id])).rows[0]!.endpoint).pathname;
+    rx.respond.set(path, 503);
+    expect(await sendNotification(deps, id)).toBe('retry');
+    expect((await state(id)).status).toBe('planned');
+    await cancel(camp); // cancelCampaign гасит только planned/queued: на момент отмены строка была sending
+    rx.respond.clear();
+    rx.received.length = 0;
+    const later = fixedClock('2026-11-20T06:10:00Z');
+    expect(await claimDue(pool, later.now())).toContain(id);
+    expect(await sendNotification({ ...deps, clock: later }, id)).toBe('cancelled');
+    expect(await state(id)).toMatchObject({ status: 'cancelled', skip_reason: 'campaign_cancelled' });
+    expect(rx.received).toHaveLength(0);
+    // ручной повтор сотрудника после отмены – его решение, не гасится
+    const retry = await row(c.id, { category: 'service', kind: 'personal', bookingId: randomUUID() });
+    await db.client.query('UPDATE app.notifications SET campaign_id = $2, retry_of = $3 WHERE id = $1', [retry, camp, id]);
+    expect(await sendNotification({ ...deps, clock: later }, retry)).toBe('sent_to_provider');
+  });
+
+  it('зависшие sending/queued: отменённая кампания → cancelled, живая и без кампании → снова planned', async () => {
+    const c = await client();
+    const dead = await campaign('cancelled');
+    const live = await campaign('sending');
+    const old = new Date(noon.now().getTime() - 3600_000);
+    const stale = async (status: string, campaignId: string | null) => {
+      const id = await row(c.id, { status: 'queued' });
+      await db.client.query('UPDATE app.notifications SET status = $2, campaign_id = $3, updated_at = $4 WHERE id = $1', [id, status, campaignId, old]);
+      return id;
+    };
+    const a = await stale('sending', dead);
+    const b = await stale('queued', dead);
+    const d = await stale('sending', live);
+    const e = await stale('sending', null);
+    await requeueStale(pool, noon.now());
+    expect(await state(a)).toMatchObject({ status: 'cancelled', skip_reason: 'campaign_cancelled' });
+    expect((await state(b)).status).toBe('cancelled');
+    expect((await state(d)).status).toBe('planned');
+    expect((await state(e)).status).toBe('planned');
+  });
 });
 
 describe('две очереди диспетчера', () => {
