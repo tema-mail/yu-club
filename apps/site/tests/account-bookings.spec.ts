@@ -1,7 +1,7 @@
 // e2e «Мои записи» в ЛК (S1-17) на моке tests/mock-api.ts: ответы мока проходят схемы packages/contracts (K9),
 // клиент видит только свои записи, идущий сеанс – в «будущих» без кнопки отмены, отмена через окно подтверждения
 // («предоплаты нет, отмена бесплатна»), пустые состояния, история посещений, блок «Уведомления» на месте, 390 без прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MyBookingsPage, MyVisitsPage } from '../../../packages/contracts/src/booking.ts';
 import { MOCK_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { MOCK_CODE } from './mock-api.ts';

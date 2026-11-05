@@ -1,7 +1,7 @@
 // Сертификаты (S2-67) на моке mock-certificates.ts: список с фильтрами и «истекающими», карточка с 8 разделами
 // и крупными номером/статусом/остатком/сроком; Владелец корректирует остаток и отменяет продажу окном с причиной
 // (возврат – в журнале кассы); у использованного отмены нет; Директор – своя зона; Администратор – без кнопок; 1440 и 390.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

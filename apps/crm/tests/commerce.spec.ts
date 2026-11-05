@@ -6,7 +6,7 @@
 //   карточка «Истёк, остаток сгорел» (код засеянного сертификата мок не выдаёт – отказ оплаты истёкшим проверяет API);
 //   п.5 частичное погашение; п.6 продажа и погашение – одно поступление; п.8 −50 и блок записи; п.9 возврат баллов;
 //   п.10 возврат не стирает первичный платёж и операцию кассы.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

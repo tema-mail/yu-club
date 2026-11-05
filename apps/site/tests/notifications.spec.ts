@@ -1,7 +1,7 @@
 // e2e блока «Уведомления» в ЛК (K9 /me/notification-settings, /me/push-subscriptions) на моке tests/mock-api.ts.
 // Настоящей подписки в headless Chromium нет (нет push-сервиса): PushManager и Notification подменяются до загрузки страницы;
 // service worker /sw.js регистрируется по-настоящему.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { MOCK_CODE } from './mock-api.ts';
 

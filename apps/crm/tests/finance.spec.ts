@@ -1,7 +1,7 @@
 // «Финансы» (S2-60) на моке mock-finance.ts: Владелец – сводка сети и касса филиала с остатками и журналом (06 §10),
 // сторно через окно внутри записи с обязательной причиной, у сеанса/сертификата/возврата кнопок нет, закрытие месяца;
 // Директор – только своя зона; Администратор – сутки без остатков и без предпросмотра; пустое состояние; 1440 и 390 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

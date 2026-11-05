@@ -1,7 +1,7 @@
 // e2e ЛК «Мои сертификаты» (S2-71) на моке tests/mock-commerce.ts (K16 §8, 08 §10): остаток и срок у действующего,
 // номинал / использовано / сгорело у истёкшего, история погашений с филиалом и датой, чужой сертификат не виден
 // (и его история – 404), пустое состояние, 390 px без горизонтальной прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { STAGE_PORT } from '../playwright.config.ts';
 import { MOCK_CODE } from './mock-api.ts';
 

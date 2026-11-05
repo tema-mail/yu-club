@@ -1,6 +1,6 @@
 // Карточка смены (S3-73) на моке: план/факт, ручные минуты – без комментария кнопка неактивна, сервер всё равно COMMENT_REQUIRED; невыход и отмена окном с причиной;
 // история; Администратор без сумм и без исправлений (маска в истории), чужой филиал – 404; закрытый период – понятный отказ. 1440 и 390 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

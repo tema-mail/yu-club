@@ -1,7 +1,7 @@
 // Товары за баллы (S2-66) на моке mock-loyalty.ts: каталог филиала с ценами в ₽ и баллах раздельно и архивом;
 // Директор создаёт, меняет и убирает в архив (окном внутри записи); Администратор только смотрит – кнопок нет,
 // сервер правку не принимает; нехватка (баллов или остатка) – выдача в карточке клиента недоступна; 390 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

@@ -1,6 +1,6 @@
 // e2e каркаса сайта (S1-18) на моке публичного API: ширины 390/1440, выбор клуба в куке, 404, 301 города,
 // noindex на стенде и индексация на бою. Скриншоты – test-results/screens/ (их смотрит человек, не сравнение).
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { PROD_PORT } from '../playwright.config.ts';
 
 const PROD = `http://127.0.0.1:${PROD_PORT}`;

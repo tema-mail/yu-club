@@ -3,7 +3,7 @@
 // сертификат: неверный код – понятный отказ, 5-й – блок, 6-я попытка – тоже блок; при выключенной доплате второй
 // строки нет (TC-07), при включённой – весь остаток + карта; возврат частичный и полный с причиной; после полного
 // возврата – повторная оплата баллами, где резерв этой брони учитывается сервером. 1440 и 390 px.
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

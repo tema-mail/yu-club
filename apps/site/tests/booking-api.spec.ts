@@ -2,7 +2,7 @@
 // от серверного времени, добавление перезапускает его, чужой видит «удерживается», подтверждение без входа – AUTH_REQUIRED,
 // повтор с тем же ключом – тот же ответ. Мок – tests/mock-api.ts по apps/api/src/modules/booking/routes.public.ts.
 // Запросы – из браузера на localhost: куки yu_visitor / yu_client с Secure браузер принимает по http только там.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { resourceId } from './mock-api.ts';
 

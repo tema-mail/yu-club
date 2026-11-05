@@ -1,5 +1,5 @@
 // Чистые функции безопасности CRM: возврат после входа (open redirect) и адрес посетителя для лимита входа.
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { safeNext } from '../src/lib/api.ts';
 import { clientIp, parseTrusted } from '../src/lib/client-ip.ts';
 

@@ -1,6 +1,6 @@
 // Проверка S1-24 (план 6.2), блокировки ресурсов: создание со списком затронутых броней (брони не удаляются),
 // обязательный комментарий для причины «Другое», снятие через окно; Администратор – в своём филиале; чужой – 404.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

@@ -1,7 +1,7 @@
 // S4-43: предпросмотр в CRM (K22 §11). Фальшивый «сайт» внутренней сети – сервер в этом файле: отдаёт страницу со <script> (обход очистки на сайте).
 // В CRM видна плашка «Черновик»; iframe sandbox без allow-scripts и allow-same-origin; скрипт не исполняется и не видит куку и API CRM;
 // без входа – на логин; неверный токен – 404; X-Preview-Secret доходит до сайта, браузер его не видит.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { createServer, type Server } from 'node:http';
 import { PREVIEW_SECRET, SITE_PORT } from '../playwright.config.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';

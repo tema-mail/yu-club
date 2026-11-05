@@ -2,7 +2,7 @@
 // есть (время по зоне филиала, браузер – в Москве), после оплаты в карточке и возврата «Назад» – исчезает, после полного
 // возврата – снова в списке с пометкой; в ленте календаря у пришедшего – «к оплате», после оплаты – «оплачено»;
 // 390 px без горизонтальной прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

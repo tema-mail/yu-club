@@ -2,7 +2,7 @@
 // таймер удержания от серверного времени (часы браузера подменены – отсчёт не меняется), добавление слота
 // перезапускает таймер, истечение – фраза и сброс; 390 и 1440 без прокрутки страницы, сетка листается внутри блока.
 // Адрес – localhost: куки yu_visitor / yu_client с Secure браузер принимает по http только там.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { UI_STATES } from '../src/lib/booking.ts';
 
@@ -21,7 +21,7 @@ async function settle(page: Page, check: () => Promise<void>) {
   await expect(async () => {
     await page.clock.runFor(100);
     await check();
-  }).toPass({ timeout: 5000, intervals: [100] });
+  }).toPass({ timeout: 20_000, intervals: [100] });
 }
 
 async function openTomorrow(page: Page) {
@@ -65,6 +65,7 @@ test('сетка: 6 состояний, шаг VR 15 / ПК 30, фильтр з�
 });
 
 test('таймер – от серверного времени: перевод часов браузера его не меняет, добавление слота перезапускает, истечение сбрасывает', async ({ page }) => {
+  test.slow(); // прокрутка 20 минут часов идёт больше 25 с и под нагрузкой не укладывается в 30 с
   await page.clock.install();
   await openTomorrow(page);
   await slot(page, 'ПК 4, 10:00–10:30, свободно').click();
@@ -86,7 +87,7 @@ test('таймер – от серверного времени: перевод 
   // Второй слот: сервер продлил удержание – таймер снова 15 минут.
   await slot(page, 'ПК 4, 10:30–11:00, свободно').click();
   await settle(page, () => expect(page.getByTestId('hold-total')).toHaveText('300 ₽', { timeout: 100 }));
-  expect(await seconds(page)).toBeGreaterThanOrEqual(15 * 60 - 3);
+  await settle(page, async () => expect(await seconds(page)).toBeGreaterThanOrEqual(15 * 60 - 3)); // таймер перерисуется тиком после суммы
 
   await page.clock.runFor(13 * 60_000 + 10_000);
   await settle(page, () => expect(status(page)).toHaveText(UI_STATES.expiring, { timeout: 100 }));
