@@ -63,10 +63,12 @@ export type EntryType =
   | 'loyalty.accrual' | 'loyalty.penalty' | 'loyalty.spend_time' | 'loyalty.spend_goods'
   | 'loyalty.return' | 'loyalty.expire' | 'loyalty.manual'
   | 'certificate.issue' | 'certificate.redeem' | 'certificate.expire' | 'certificate.correction'
-  | 'payroll.accrual' | 'payroll.penalty' | 'payroll.payout' | 'payroll.correction'
+  | 'payroll.accrual' | 'payroll.penalty' | 'payroll.bonus' | 'payroll.payout' | 'payroll.correction'
   | 'reversal';
 
-export type RefType = 'booking' | 'visit' | 'no_show' | 'event' | 'repair' | 'certificate' | 'shift' | 'goods_order' | 'payment';
+export type RefType =
+  | 'booking' | 'visit' | 'no_show' | 'event' | 'repair' | 'certificate' | 'shift' | 'goods_order' | 'payment'
+  | 'payroll_penalty' | 'payroll_bonus' | 'payroll_statement' | 'staff'; // Э3, K18 §6, §9
 
 export interface EntryInput {
   account: AccountRef;
