@@ -17,7 +17,7 @@
 | `rpt_no_shows` | `booking` | 0406 | живая неявка | `no_show_id, booking_id, branch_id, client_id, planned_start, marked_at, reason_code` |
 | `rpt_unit_booked` | `booking` | 0406 | строка занятости активной брони по единице | `unit_id, resource_id, room_id, branch_id, booking_id, period, whole_room boolean` (бронь составной конфигурации «комната целиком» – `true`) |
 | `rpt_unit_blocks` | `booking` | 0406 | блокировка по единице | `unit_id, branch_id, block_id, period, reason_code, kind ('repair'\|'maintenance'\|'admin'\|'closure')` |
-| `rpt_units` | `resources` | 0406 | единица занятости | `unit_id, resource_id, room_id, branch_id, resource_type, self_bookable, unit_name, status` |
+| `rpt_units` | `resources` | 0406 | единица занятости и каждый её «свой» состав (закрытые и архивные – тоже, D4-20) | `unit_id, resource_id, room_id, branch_id, resource_type, self_bookable, unit_name, status, valid_period tstzmultirange` (когда состав ресурса – ровно эта единица; нет своего ресурса – `NULL`) |
 | `rpt_clients` | `clients` | 0406 | клиент | `client_id, status, created_at, registered_at, registration_source` (без телефона и имени; имя и телефон для детализации – через `clients/index.ts` с маской §6) |
 | `rpt_finance_operations` | `finance` | 0407 | операция кассы (с учётом сторно) | `operation_id, number, branch_id, kind, place, method, direction, amount_kop, signed_kop, source, category_id, subcategory_id, ref_type, ref_id, occurred_at, author_id, is_reversed, reversal_of, original_kind` |
 | `rpt_payments` | `finance` | 0407 | строка платежа | `payment_id, booking_id, branch_id, method ('cash'\|'card'\|'transfer'\|'points'\|'certificate'\|'none'), amount_kop, points_centi, paid_at, refunded_kop, status` |
@@ -84,14 +84,15 @@ type Metric =
 
 | Показатель | Формула (на единицу, затем сумма по выбранным) |
 |---|---|
-| плановое доступное время `A` | `Σ` открытых интервалов `network.openIntervalsRange` за период (по каждому дню – та же `resolveDay`; закрытия и исключения уже вычтены) для ресурса единицы, пересечённых с `P`; один вызов на филиал, не на день – иначе месяц × 20 филиалов даёт сотни запросов к календарю |
+| плановое доступное время `A` | `Σ` открытых интервалов `network.openIntervalsRange` за период (по каждому дню – та же `resolveDay`; закрытия и исключения уже вычтены) для ресурса единицы, пересечённых с `P` и с `valid_period` состава (единицы и составы – действовавшие в периоде, D4-20); один вызов на филиал, не на день – иначе месяц × 20 филиалов даёт сотни запросов к календарю |
+| прошедшее доступное `Ae` | часть `A` до текущего момента; у завершённого периода `Ae = A` |
 | время блокировок `L` | `range_agg(rpt_unit_blocks.period) * A` – только внутри доступного времени (приёмка 6 «без двойного вычета») |
 | технический простой | часть `L` с `kind ∈ (repair, maintenance)` |
 | забронированное `Bk` | `range_agg(rpt_unit_booked.period) * A` |
-| фактически использованное `F` | `range_agg(period броней с живым посещением) * A` (неявка – не использование, 14 §6.2) |
+| фактически использованное `F` | `range_agg(period броней с живым посещением) * Ae` (неявка – не использование, 14 §6.2; идущее посещение – до текущего момента) |
 | свободное | `A − (Bk + L)` в мультидиапазонах: `A − range_agg(Bk ∪ L)` |
-| фактическая загрузка | `F / A × 100%`; `A = 0` → `unavailable/missing_input` |
-| коммерческая занятость | `Bk / A × 100%` – отдельной колонкой с подписью «не равна фактической: бронь может закончиться неявкой» |
+| фактическая загрузка | `F / Ae × 100%` (решение техлида D4-20, Q-158); `Ae = 0` → `unavailable/missing_input` |
+| коммерческая занятость | `Bk / A × 100%` по всему периоду, с будущими бронями – отдельной колонкой с подписью «не равна фактической: бронь может закончиться неявкой» |
 
 Решение: блокировки вычитаются из числителя «свободного», а не из `A`: 14 §6.2 определяет `A` по расписанию филиала без блокировок, иначе ремонт поднимал бы загрузку.
 

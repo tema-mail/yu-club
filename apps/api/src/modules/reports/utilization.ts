@@ -3,6 +3,9 @@
 // склеивает пересечения, поэтому двойного счёта нет. Блокировка учитывается только внутри A и из A не вычитается (иначе ремонт
 // поднимал бы загрузку, решение K24). VR1 и VR2 – отдельными строками, PS4 (нет своего ресурса, self_bookable = false) не входит;
 // аренда комнаты целиком занимает обе единицы и показывается дополнительной строкой без сложения с ними.
+// Единицы и составы – действовавшие в периоде (rpt_units.valid_period): архивация и смена состава историю не переписывают, A считается
+// только в границах состава. Фактическая загрузка – F / A по прошедшему времени (факт обрезан текущим моментом), коммерческая – Bk / A
+// по всему периоду (D4-20, Q-158).
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { can } from '../../core/permissions.ts';
@@ -26,6 +29,7 @@ export interface UnitRow {
   branchId: string;
   branchName: string;
   availableMin: number;
+  availableElapsedMin: number; // часть A до текущего момента: база фактической загрузки
   blockedMin: number;
   technicalMin: number;
   bookedMin: number;
@@ -33,46 +37,87 @@ export interface UnitRow {
   freeMin: number;
 }
 
-export type UtilizationMetric = 'available' | 'blocked' | 'technical' | 'booked' | 'used' | 'free' | 'actualLoad' | 'commercialLoad';
+export type UtilizationMetric = 'available' | 'availableElapsed' | 'blocked' | 'technical' | 'booked' | 'used' | 'free' | 'actualLoad' | 'commercialLoad';
 export const UTILIZATION_MINUTES: Record<Exclude<UtilizationMetric, 'actualLoad' | 'commercialLoad'>, keyof UnitRow> = {
-  available: 'availableMin', blocked: 'blockedMin', technical: 'technicalMin', booked: 'bookedMin', used: 'usedMin', free: 'freeMin',
+  available: 'availableMin', availableElapsed: 'availableElapsedMin', blocked: 'blockedMin', technical: 'technicalMin', booked: 'bookedMin', used: 'usedMin', free: 'freeMin',
 };
+
+/** Состав, действовавший в периоде: ресурс и отрезок, когда он был «своим» для единицы (null – без границы). */
+interface UnitPart {
+  resourceId: string;
+  start: Date | null;
+  end: Date | null;
+}
 
 interface UnitInfo {
   unit_id: string;
   unit_name: string;
-  resource_id: string;
+  resource_id: string; // последний состав периода – для строки отчёта
   resource_type: string;
   room_id: string | null;
   branch_id: string;
+  parts: UnitPart[];
 }
 
-async function unitsOf(tx: Tx, branches: readonly BranchInfo[], p: UtilizationParams): Promise<UnitInfo[]> {
+/** Единицы с составами, действовавшими в периоде. onlyUnit – календарь одной единицы (там и не сам-бронируемая). */
+async function unitsOf(tx: Tx, branches: readonly BranchInfo[], p: { resourceType?: string[] | undefined }, period: Period, onlyUnit?: string): Promise<UnitInfo[]> {
   if (branches.length === 0) return [];
-  const r = await tx.query<UnitInfo>(
-    `SELECT unit_id, unit_name, resource_id, resource_type, room_id, branch_id FROM app.rpt_units
-     WHERE branch_id = ANY($1::uuid[]) AND self_bookable AND resource_id IS NOT NULL AND status = 'active'
-       AND ($2::text[] IS NULL OR resource_type = ANY($2::text[]))
-     ORDER BY branch_id, unit_name`,
-    [branches.map((b) => b.id), p.resourceType?.length ? p.resourceType : null],
+  const w = windowsOf(branches, period);
+  const r = await tx.query<Omit<UnitInfo, 'parts'> & { vs: Date | null; ve: Date | null }>(
+    `SELECT u.unit_id, u.unit_name, u.resource_id, u.resource_type, u.room_id, u.branch_id, lower(v) AS vs, upper(v) AS ve
+     FROM app.rpt_units u
+     JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS x(branch_id, s, e) ON x.branch_id = u.branch_id
+     CROSS JOIN LATERAL unnest(u.valid_period) AS v
+     WHERE u.resource_id IS NOT NULL AND v && tstzrange(x.s, x.e, '[)')
+       AND ($4::text[] IS NULL OR u.resource_type = ANY($4::text[]))
+       AND (CASE WHEN $5::uuid IS NULL THEN u.self_bookable ELSE u.unit_id = $5::uuid END)
+     ORDER BY u.branch_id, u.unit_name, u.unit_id, lower(v) NULLS FIRST`,
+    [w.map((x) => x.branchId), w.map((x) => x.start), w.map((x) => x.end), p.resourceType?.length ? p.resourceType : null, onlyUnit ?? null],
   );
-  return r.rows;
+  const out = new Map<string, UnitInfo>();
+  for (const row of r.rows) {
+    const { vs, ve, ...info } = row;
+    const part: UnitPart = { resourceId: row.resource_id, start: vs, end: ve };
+    const prev = out.get(row.unit_id);
+    out.set(row.unit_id, { ...info, parts: [...(prev?.parts ?? []), part] });
+  }
+  return [...out.values()];
 }
 
-/** Открытые интервалы единиц периода: один вызов openIntervalsRange на филиал (K24 §3.3). */
+function clip(list: readonly Interval[], part: UnitPart): Interval[] {
+  const lo = part.start?.getTime() ?? -Infinity;
+  const hi = part.end?.getTime() ?? Infinity;
+  return list.flatMap((i) => {
+    const start = Math.max(i.start.getTime(), lo);
+    const end = Math.min(i.end.getTime(), hi);
+    return start < end ? [{ start: new Date(start), end: new Date(end) }] : [];
+  });
+}
+
+/** Склейка пересечений: две строки состава одного времени не удваивают минуты графика. */
+function mergeIntervals(list: readonly Interval[]): Interval[] {
+  const out: Interval[] = [];
+  for (const i of [...list].sort((a, b) => a.start.getTime() - b.start.getTime())) {
+    const last = out[out.length - 1];
+    if (last && i.start.getTime() <= last.end.getTime()) {
+      if (i.end > last.end) last.end = i.end;
+    } else out.push({ start: i.start, end: i.end });
+  }
+  return out;
+}
+
+/** Открытые интервалы единиц периода: один вызов openIntervalsRange на филиал (K24 §3.3), затем обрезка составом. */
 async function openOfUnits(tx: Tx, branches: readonly BranchInfo[], units: readonly UnitInfo[], period: Period): Promise<Map<string, Interval[]>> {
   const out = new Map<string, Interval[]>();
   for (const b of branches) {
     const mine = units.filter((u) => u.branch_id === b.id);
     if (mine.length === 0) continue;
-    const range = await openIntervalsRange(tx, {
-      branchId: b.id, from: period.from, to: period.to,
-      resources: mine.map((u) => ({ resourceId: u.resource_id, roomId: u.room_id })),
-    });
+    const resources = new Map(mine.flatMap((u) => u.parts.map((part) => [part.resourceId, { resourceId: part.resourceId, roomId: u.room_id }] as const)));
+    const range = await openIntervalsRange(tx, { branchId: b.id, from: period.from, to: period.to, resources: [...resources.values()] });
     for (const u of mine) {
       const list: Interval[] = [];
-      for (const day of range.values()) list.push(...(day.get(u.resource_id) ?? []));
-      out.set(u.unit_id, list);
+      for (const day of range.values()) for (const part of u.parts) list.push(...clip(day.get(part.resourceId) ?? [], part));
+      out.set(u.unit_id, mergeIntervals(list));
     }
   }
   return out;
@@ -99,12 +144,15 @@ const OPEN_CTE = `a AS (SELECT x.unit_id, range_agg(tstzrange(x.s, x.e, '[)')) A
                         FROM unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS x(unit_id, s, e) GROUP BY x.unit_id),
   hull AS (SELECT min(s) AS s, max(e) AS e FROM unnest($2::timestamptz[], $3::timestamptz[]) AS y(s, e))`;
 
-async function unitRows(tx: Tx, branches: readonly BranchInfo[], units: readonly UnitInfo[], period: Period): Promise<UnitRow[]> {
+/** До текущего момента ($4): база фактической загрузки и сам факт – идущее посещение не считается наперёд. */
+const ELAPSED = `tstzmultirange(tstzrange(NULL, $4::timestamptz, '[)'))`;
+
+async function unitRows(tx: Tx, branches: readonly BranchInfo[], units: readonly UnitInfo[], period: Period, now: Date): Promise<UnitRow[]> {
   const open = await openOfUnits(tx, branches, units, period);
   const [ids, starts, ends] = openArrays(open);
-  const byUnit = new Map<string, { a: string; l: string; t: string; bk: string; f: string; free: string }>();
+  const byUnit = new Map<string, { a: string; ae: string; l: string; t: string; bk: string; f: string; free: string }>();
   if (ids.length > 0) {
-    const r = await tx.query<{ unit_id: string; a: string; l: string; t: string; bk: string; f: string; free: string }>(
+    const r = await tx.query<{ unit_id: string; a: string; ae: string; l: string; t: string; bk: string; f: string; free: string }>(
       `WITH ${OPEN_CTE},
        booked AS (SELECT u.unit_id, u.period, u.booking_id FROM app.rpt_unit_booked u, hull
                   WHERE u.unit_id = ANY($1::uuid[]) AND u.period && tstzrange(hull.s, hull.e, '[)')),
@@ -115,14 +163,15 @@ async function unitRows(tx: Tx, branches: readonly BranchInfo[], units: readonly
        l AS (SELECT unit_id, range_agg(period) AS m FROM blocks GROUP BY unit_id),
        t AS (SELECT unit_id, range_agg(period) AS m FROM blocks WHERE kind IN ('repair', 'maintenance') GROUP BY unit_id)
        SELECT a.unit_id, ${MINUTES('a.m')} AS a,
+              ${MINUTES(`a.m * ${ELAPSED}`)} AS ae,
               ${MINUTES(`coalesce(l.m, '{}'::tstzmultirange) * a.m`)} AS l,
               ${MINUTES(`coalesce(t.m, '{}'::tstzmultirange) * a.m`)} AS t,
               ${MINUTES(`coalesce(bk.m, '{}'::tstzmultirange) * a.m`)} AS bk,
-              ${MINUTES(`coalesce(f.m, '{}'::tstzmultirange) * a.m`)} AS f,
+              ${MINUTES(`coalesce(f.m, '{}'::tstzmultirange) * a.m * ${ELAPSED}`)} AS f,
               ${MINUTES(`a.m - (coalesce(bk.m, '{}'::tstzmultirange) + coalesce(l.m, '{}'::tstzmultirange))`)} AS free
        FROM a LEFT JOIN l ON l.unit_id = a.unit_id LEFT JOIN t ON t.unit_id = a.unit_id
               LEFT JOIN bk ON bk.unit_id = a.unit_id LEFT JOIN f ON f.unit_id = a.unit_id`,
-      [ids, starts, ends],
+      [ids, starts, ends, now],
     );
     for (const row of r.rows) byUnit.set(row.unit_id, row);
   }
@@ -132,7 +181,7 @@ async function unitRows(tx: Tx, branches: readonly BranchInfo[], units: readonly
     return {
       unitId: u.unit_id, unitName: u.unit_name, resourceId: u.resource_id, resourceType: u.resource_type, roomId: u.room_id,
       branchId: u.branch_id, branchName: names.get(u.branch_id) ?? '',
-      availableMin: Number(v?.a ?? 0), blockedMin: Number(v?.l ?? 0), technicalMin: Number(v?.t ?? 0),
+      availableMin: Number(v?.a ?? 0), availableElapsedMin: Number(v?.ae ?? 0), blockedMin: Number(v?.l ?? 0), technicalMin: Number(v?.t ?? 0),
       bookedMin: Number(v?.bk ?? 0), usedMin: Number(v?.f ?? 0), freeMin: Number(v?.free ?? 0),
     };
   });
@@ -141,18 +190,18 @@ async function unitRows(tx: Tx, branches: readonly BranchInfo[], units: readonly
 const sum = (rows: readonly UnitRow[], key: keyof UnitRow): number => rows.reduce((s, r) => s + (r[key] as number), 0);
 
 function metricsOf(rows: readonly UnitRow[], prev: readonly UnitRow[]): Record<UtilizationMetric, Metric> {
-  if (rows.length === 0) return Object.fromEntries((['available', 'blocked', 'technical', 'booked', 'used', 'free', 'actualLoad', 'commercialLoad'] as const).map((k) => [k, noData])) as Record<UtilizationMetric, Metric>;
-  const A = sum(rows, 'availableMin');
-  const pA = prev.length ? sum(prev, 'availableMin') : 0;
+  if (rows.length === 0) return Object.fromEntries((['available', 'availableElapsed', 'blocked', 'technical', 'booked', 'used', 'free', 'actualLoad', 'commercialLoad'] as const).map((k) => [k, noData])) as Record<UtilizationMetric, Metric>;
   const minutes = (key: keyof UnitRow): Metric => okMetric(sum(rows, key), 'minutes', prev.length ? sum(prev, key) : null);
-  const pct = (key: keyof UnitRow): Metric => {
+  const pct = (key: keyof UnitRow, base: keyof UnitRow): Metric => {
+    const A = sum(rows, base);
+    const pA = prev.length ? sum(prev, base) : 0;
     if (A === 0) return unavailable('missing_input'); // A = 0: загрузка не определена, а не 0%
     return okMetric((sum(rows, key) / A) * 100, 'pct', pA > 0 ? (sum(prev, key) / pA) * 100 : null);
   };
   return {
-    available: minutes('availableMin'), blocked: minutes('blockedMin'), technical: minutes('technicalMin'),
+    available: minutes('availableMin'), availableElapsed: minutes('availableElapsedMin'), blocked: minutes('blockedMin'), technical: minutes('technicalMin'),
     booked: minutes('bookedMin'), used: minutes('usedMin'), free: minutes('freeMin'),
-    actualLoad: pct('usedMin'), commercialLoad: pct('bookedMin'),
+    actualLoad: pct('usedMin', 'availableElapsedMin'), commercialLoad: pct('bookedMin', 'availableMin'),
   };
 }
 
@@ -190,7 +239,7 @@ export interface UtilizationResult {
   metrics: Record<UtilizationMetric, Metric>;
   rows: UnitRow[];
   groups: { byBranch: UtilizationGroup[]; byResourceType: UtilizationGroup[]; wholeRoom: WholeRoomRow[] };
-  labels: { commercialLoad: string; unit: string };
+  labels: { actualLoad: string; commercialLoad: string; unit: string };
   period: Period;
   prevPeriod: Period;
   computedAt: string;
@@ -205,15 +254,15 @@ function groupBy(rows: readonly UnitRow[], prev: readonly UnitRow[], key: 'branc
 
 export async function utilizationReport(env: ReportEnv, p: UtilizationParams): Promise<UtilizationResult> {
   const branches = await resolveBranches(env.tx, env.ctx, UTILIZATION_ACTION, p);
-  const units = await unitsOf(env.tx, branches, p);
   const prevP = prevPeriod(p.period);
-  const rows = await unitRows(env.tx, branches, units, p.period);
-  const prev = await unitRows(env.tx, branches, units, prevP);
+  const now = env.clock.now();
+  const rows = await unitRows(env.tx, branches, await unitsOf(env.tx, branches, p, p.period), p.period, now);
+  const prev = await unitRows(env.tx, branches, await unitsOf(env.tx, branches, p, prevP), prevP, now);
   return {
     metrics: metricsOf(rows, prev),
     rows,
     groups: { byBranch: groupBy(rows, prev, 'branchId'), byResourceType: groupBy(rows, prev, 'resourceType'), wholeRoom: await wholeRoomRows(env.tx, branches, p.period) },
-    labels: { commercialLoad: 'не равна фактической: бронь может закончиться неявкой', unit: 'единица = место' },
+    labels: { actualLoad: 'к прошедшему времени периода', commercialLoad: 'ко всему периоду; не равна фактической: бронь может закончиться неявкой', unit: 'единица = место' },
     period: p.period,
     prevPeriod: prevP,
     computedAt: env.clock.now().toISOString(),
@@ -230,7 +279,8 @@ export async function utilizationDetail(env: ReportEnv, p: UtilizationParams, me
   const rows = r.rows.map((row) => {
     if (key === 'actualLoad' || key === 'commercialLoad') {
       const top = key === 'actualLoad' ? row.usedMin : row.bookedMin;
-      return { ...row, value: row.availableMin > 0 ? (top / row.availableMin) * 100 : null };
+      const base = key === 'actualLoad' ? row.availableElapsedMin : row.availableMin;
+      return { ...row, value: base > 0 ? (top / base) * 100 : null };
     }
     return { ...row, value: row[UTILIZATION_MINUTES[key]] as number };
   });
@@ -269,7 +319,7 @@ function addToHours(target: Map<string, number>, iv: Interval, tz: TimeZone): vo
 }
 
 /** Интервалы мультидиапазона пересечения (строки «единица – интервал») для разбиения по ячейкам в зоне филиала. */
-async function partsOf(tx: Tx, ids: string[], starts: Date[], ends: Date[]): Promise<Array<{ unit_id: string; kind: 'used' | 'booked'; s: Date; e: Date }>> {
+async function partsOf(tx: Tx, ids: string[], starts: Date[], ends: Date[], now: Date): Promise<Array<{ unit_id: string; kind: 'used' | 'booked'; s: Date; e: Date }>> {
   const r = await tx.query<{ unit_id: string; kind: 'used' | 'booked'; s: Date; e: Date }>(
     `WITH ${OPEN_CTE},
      booked AS (SELECT u.unit_id, u.period, u.booking_id FROM app.rpt_unit_booked u, hull
@@ -278,8 +328,8 @@ async function partsOf(tx: Tx, ids: string[], starts: Date[], ends: Date[]): Pro
      f AS (SELECT b.unit_id, range_agg(b.period) AS m FROM booked b JOIN app.rpt_visits v ON v.booking_id = b.booking_id GROUP BY b.unit_id)
      SELECT a.unit_id, 'booked' AS kind, lower(r) AS s, upper(r) AS e FROM a JOIN bk ON bk.unit_id = a.unit_id, unnest(bk.m * a.m) AS r
      UNION ALL
-     SELECT a.unit_id, 'used', lower(r), upper(r) FROM a JOIN f ON f.unit_id = a.unit_id, unnest(f.m * a.m) AS r`,
-    [ids, starts, ends],
+     SELECT a.unit_id, 'used', lower(r), upper(r) FROM a JOIN f ON f.unit_id = a.unit_id, unnest(f.m * a.m * ${ELAPSED}) AS r`,
+    [ids, starts, ends, now],
   );
   return r.rows;
 }
@@ -287,7 +337,7 @@ async function partsOf(tx: Tx, ids: string[], starts: Date[], ends: Date[]): Pro
 /** Сеть по часам – только при одной зоне в выборке, иначе подпись «по местному времени каждого филиала» (Q-83). */
 export async function utilizationSeries(env: ReportEnv, p: UtilizationParams, by: 'day' | 'hour'): Promise<{ points: SeriesPoint[]; zoneNote: string | null }> {
   const branches = await resolveBranches(env.tx, env.ctx, UTILIZATION_ACTION, p);
-  const units = await unitsOf(env.tx, branches, p);
+  const units = await unitsOf(env.tx, branches, p, p.period);
   const open = await openOfUnits(env.tx, branches, units, p.period);
   const [ids, starts, ends] = openArrays(open);
   const tzOf = new Map(units.map((u) => [u.unit_id, branches.find((b) => b.id === u.branch_id)!.timezone]));
@@ -297,7 +347,7 @@ export async function utilizationSeries(env: ReportEnv, p: UtilizationParams, by
   const booked = new Map<string, number>();
   for (const [unit, list] of open) for (const iv of list) add(available, iv, tzOf.get(unit)!);
   if (ids.length > 0) {
-    for (const part of await partsOf(env.tx, ids, starts, ends)) add(part.kind === 'used' ? used : booked, { start: part.s, end: part.e }, tzOf.get(part.unit_id)!);
+    for (const part of await partsOf(env.tx, ids, starts, ends, env.clock.now())) add(part.kind === 'used' ? used : booked, { start: part.s, end: part.e }, tzOf.get(part.unit_id)!);
   }
   const points = [...new Set([...available.keys(), ...booked.keys(), ...used.keys()])].sort().map((bucket) => ({
     bucket, availableMin: Math.round(available.get(bucket) ?? 0), usedMin: Math.round(used.get(bucket) ?? 0), bookedMin: Math.round(booked.get(bucket) ?? 0),
@@ -328,12 +378,15 @@ export async function utilizationCalendar(env: ReportEnv, input: { unitId: unkno
   } catch {
     throw new AppError('REPORT_FILTER_INVALID', 422, 'Неверная дата', { field: 'date' });
   }
-  const u = (await env.tx.query<UnitInfo>(`SELECT unit_id, unit_name, resource_id, resource_type, room_id, branch_id FROM app.rpt_units WHERE unit_id = $1 AND resource_id IS NOT NULL`, [input.unitId])).rows[0];
-  if (!u || !can(env.ctx, UTILIZATION_ACTION, { branchId: u.branch_id })) throw notFound();
-  const branches = await resolveBranches(env.tx, env.ctx, UTILIZATION_ACTION, { branchIds: [u.branch_id] });
+  const found = (await env.tx.query<{ branch_id: string }>(`SELECT branch_id FROM app.rpt_units WHERE unit_id = $1 AND resource_id IS NOT NULL LIMIT 1`, [input.unitId])).rows[0];
+  if (!found || !can(env.ctx, UTILIZATION_ACTION, { branchId: found.branch_id })) throw notFound();
+  const branches = await resolveBranches(env.tx, env.ctx, UTILIZATION_ACTION, { branchIds: [found.branch_id] });
+  const empty: UnitCalendar = { unitId: input.unitId, date, open: [], booked: [], blocked: [], free: [] };
+  // состав этой даты: до создания и после архивации единицы календарь пуст
+  const u = (await unitsOf(env.tx, branches, {}, { from: date, to: date }, input.unitId))[0];
+  if (!u) return empty;
   const open = await openOfUnits(env.tx, branches, [u], { from: date, to: date });
   const list = open.get(u.unit_id) ?? [];
-  const empty: UnitCalendar = { unitId: u.unit_id, date, open: [], booked: [], blocked: [], free: [] };
   if (list.length === 0) return empty;
   const [ids, starts, ends] = openArrays(open);
   const r = await env.tx.query<{ kind: 'open' | 'booked' | 'blocked' | 'free'; s: Date; e: Date }>(

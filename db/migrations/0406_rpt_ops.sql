@@ -8,8 +8,10 @@
 --   app.rpt_unit_booked         – booking: активная строка занятости брони по единице; whole_room – бронь составной
 --                                 конфигурации (больше одной единицы в текущей версии, «комната целиком»);
 --   app.rpt_unit_blocks         – booking: активная блокировка по единице, kind – по коду причины;
---   app.rpt_units               – resources: единица занятости и её «собственный» ресурс (состав ровно из этой единицы);
---                                 единица без своего ресурса (PS4 в VR-комнате) – resource_id NULL, self_bookable = false;
+--   app.rpt_units               – resources: единица занятости и её «собственный» ресурс (состав ровно из этой единицы) с
+--                                 периодом действия valid_period: строка на каждый состав, включая закрытые и архивные
+--                                 (история не переписывается, D4-20); единица без своего ресурса (PS4 в VR-комнате) –
+--                                 resource_id NULL, valid_period NULL, self_bookable = false;
 --   app.rpt_clients             – clients: клиент без телефона и имени (ПДн – только через clients/index.ts с маской K24 §6).
 -- Колонки начала и конца брони – start_at/end_at (end – зарезервированное слово SQL; в K24 §1 – start, end).
 -- Роль yu_reports (пул отчётов K24 §9) создаёт скрипт кластера (deploy/initdb/01-roles.sh, deploy.sh; в тестах – globalSetup)
@@ -101,17 +103,21 @@ WHERE bu.active AND bl.status = 'active';
 
 CREATE VIEW app.rpt_units AS
 SELECT u.id AS unit_id, own.resource_id, u.room_id, u.branch_id, own.resource_type,
-       coalesce(own.self_bookable, false) AS self_bookable, u.name AS unit_name, u.status
+       coalesce(own.self_bookable, false) AS self_bookable, u.name AS unit_name, u.status, own.valid_period
 FROM app.occupancy_units u
 LEFT JOIN LATERAL (
-  SELECT r.id AS resource_id, r.resource_type, r.self_bookable
-  FROM app.resource_units ru
-  JOIN app.resources r ON r.id = ru.resource_id
-  WHERE ru.unit_id = u.id AND ru.valid_to IS NULL AND r.status <> 'archived'
-    AND NOT EXISTS (SELECT 1 FROM app.resource_units o
-                    WHERE o.resource_id = ru.resource_id AND o.unit_id <> u.id AND o.valid_to IS NULL)
-  ORDER BY r.sort_order, r.id
-  LIMIT 1
+  -- период, когда состав ресурса – ровно эта единица: период строки состава, до архивации ресурса, минус время с другими единицами
+  SELECT x.resource_id, x.resource_type, x.self_bookable, x.valid_period
+  FROM (
+    SELECT r.id AS resource_id, r.resource_type, r.self_bookable,
+           (tstzmultirange(tstzrange(ru.valid_from, ru.valid_to, '[)')) * tstzmultirange(tstzrange(NULL, r.archived_at, '[)')))
+             - coalesce((SELECT range_agg(tstzrange(o.valid_from, o.valid_to, '[)')) FROM app.resource_units o
+                         WHERE o.resource_id = ru.resource_id AND o.unit_id <> u.id), '{}'::tstzmultirange) AS valid_period
+    FROM app.resource_units ru
+    JOIN app.resources r ON r.id = ru.resource_id
+    WHERE ru.unit_id = u.id
+  ) x
+  WHERE NOT isempty(x.valid_period)
 ) own ON true;
 
 CREATE VIEW app.rpt_clients AS
