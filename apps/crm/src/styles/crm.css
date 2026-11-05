@@ -457,6 +457,18 @@
 .yc-sh-banner{ display:grid; gap:var(--yc-sp-2xs); padding:var(--yc-sp-xs); border:1px solid var(--yc-warn); border-radius:var(--yc-r-s); background:var(--yc-warn-bg); color:var(--yc-text); }
 .yc-sh-banner__row{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--yc-sp-2xs); overflow-wrap:anywhere; }
 .yc-sh-banner__row > *{ min-width:0; }
+/* ── Зарплата (S3-74, S3-75) ─────────────────────────── */
+.yc-sh-note{ background:var(--yc-surface-2); color:var(--yc-text); }
+.yc-pay-tiles{ display:grid; gap:var(--yc-sp-2xs); grid-template-columns:repeat(auto-fit, minmax(10.5rem, 1fr)); }
+.yc-pay-tiles > *{ min-width:0; }
+.yc-pay-tile{ display:grid; gap:var(--yc-sp-3xs); align-content:start; padding:var(--yc-sp-xs); border:1px solid var(--yc-line); border-radius:var(--yc-r-s); background:var(--yc-surface); overflow-wrap:anywhere; }
+.yc-pay-tile--forecast{ border-style:dashed; background:var(--yc-surface-2); }
+.yc-pay-forecast{ color:var(--yc-muted); font-style:italic; }
+.yc-pay-scroll{ overflow-x:auto; }
+.yc-pay-detail,.yc-pay-statement{ display:grid; gap:var(--yc-sp-2xs); min-width:0; }
+.yc-pay-detail > *,.yc-pay-statement > *{ min-width:0; }
+.yc-pay-detail{ padding:var(--yc-sp-xs); border-radius:var(--yc-r-s); background:var(--yc-surface-2); font-size:var(--yc-fs-s); }
+.yc-pay-statement{ padding-top:var(--yc-sp-2xs); border-top:1px solid var(--yc-line); }
 @media (min-width:1100px){
   .yc-sh-week{ grid-template-columns:repeat(auto-fit, minmax(13rem, 1fr)); }
 }
