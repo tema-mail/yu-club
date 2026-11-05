@@ -13,6 +13,7 @@ import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from '.
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { createReportsPool } from './modules/reports/framework.ts';
+import { reportsCrmRoutes } from './modules/reports/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
@@ -227,6 +228,20 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
     );
+    // K24 §10: отчёты – только с пулом yu_reports (REPORTS_DATABASE_URL)
+    if (deps.reports) {
+      const reports = deps.reports.pool;
+      void app.register(
+        async (scope) =>
+          reportsCrmRoutes(scope, {
+            pool: staff.pool,
+            reports,
+            ...(staff.clock ? { clock: staff.clock } : {}),
+            authenticate: (request, reply) => authenticate(staff, request, reply),
+          }),
+        { prefix: '/api/crm/v1' },
+      );
+    }
     // K15 №24–28: бонусный счёт и товары за баллы; зона клиента – через брони (clientBranchLinks)
     void app.register(
       async (scope) =>
