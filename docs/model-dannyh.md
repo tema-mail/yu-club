@@ -1384,7 +1384,7 @@ ALTER TABLE app.notifications DROP CONSTRAINT notifications_status_check,
   ADD CONSTRAINT notifications_status_check CHECK (status IN ('planned','queued','sending','sent_to_provider','delivered','error',
     'cancelled','skipped_by_prefs','skipped_booking_changed','no_channel','skipped_by_frequency','inbox_only'));
 ALTER TABLE app.notifications ADD CONSTRAINT notifications_push_or_inbox CHECK (push OR status IN ('inbox_only','cancelled'));
-ALTER TABLE app.notifications ADD CONSTRAINT notifications_booking_fk FOREIGN KEY (booking_id) REFERENCES app.bookings(id);
+-- FK notifications_booking_fk (booking_id → app.bookings) вынесен в 0412_notifications_booking_fk.sql (D4-12)
 CREATE INDEX notifications_inbox_idx ON app.notifications (client_id, (coalesce(sent_at, planned_at)) DESC)
   WHERE status IN ('sent_to_provider','no_channel','error','inbox_only');
 CREATE INDEX notifications_marketing_recent_idx ON app.notifications (client_id, sent_at DESC)

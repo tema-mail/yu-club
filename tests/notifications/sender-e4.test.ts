@@ -7,6 +7,7 @@ import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { claimDue, MARKETING_DISPATCH_LIMIT, requeueStale, sendNotification, type SenderDeps } from '../../apps/api/src/modules/notifications/sender.ts';
 import { verifyUnsubscribeToken } from '../../apps/api/src/modules/notifications/unsubscribe.ts';
 import { generateVapidKeys, vapidKeys } from '../../apps/api/src/modules/notifications/webpush.ts';
+import { createTestBooking } from '../helpers/booking.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 import { decryptAes128gcm, fakeBrowser, startPushReceiver, type FakeBrowser, type PushReceiver } from '../helpers/push-receiver.ts';
@@ -83,8 +84,8 @@ describe('решение в send', () => {
 
   it('личное по брони: отмена → skipped_booking_changed, перенос (другая версия) → уходит; TTL 24 ч', async () => {
     const c = await client();
-    const cancelled = randomUUID();
-    const moved = randomUUID();
+    const cancelled = await createTestBooking(db.client, { clientId: c.id, branchId });
+    const moved = await createTestBooking(db.client, { clientId: c.id, branchId });
     const d: SenderDeps = {
       ...deps,
       bookings: {
@@ -118,7 +119,7 @@ describe('payload рекламы', () => {
     expect(verifyUnsubscribeToken(SECRET, msg.unsubscribeUrl.split('t=')[1], noon.now()).clientId).toBe(c.id);
 
     const s = await client();
-    const sid = await row(s.id, { category: 'service', kind: 'personal', bookingId: randomUUID() });
+    const sid = await row(s.id, { category: 'service', kind: 'personal', bookingId: await createTestBooking(db.client, { clientId: s.id, branchId }) });
     expect(await sendNotification(deps, sid)).toBe('sent_to_provider');
     const smsg = JSON.parse(decryptAes128gcm(rx.received[1]!.body, s.ua).plaintext.toString());
     expect(smsg.actions).toBeUndefined();
@@ -139,7 +140,7 @@ describe('тихие часы', () => {
     const morning = fixedClock('2026-11-21T03:00:00Z');
     expect(await claimDue(pool, morning.now())).toContain(id);
     expect(await sendNotification({ ...deps, clock: morning }, id)).toBe('sent_to_provider');
-    const s = await row(c.id, { category: 'service', kind: 'personal', bookingId: randomUUID() });
+    const s = await row(c.id, { category: 'service', kind: 'personal', bookingId: await createTestBooking(db.client, { clientId: c.id, branchId }) });
     expect(await sendNotification({ ...deps, clock: night }, s)).toBe('sent_to_provider');
   });
 });
@@ -197,7 +198,7 @@ describe('отмена кампании во время отправки (K21 §
     expect(await state(id)).toMatchObject({ status: 'cancelled', skip_reason: 'campaign_cancelled' });
     expect(rx.received).toHaveLength(0);
     // ручной повтор сотрудника после отмены – его решение, не гасится
-    const retry = await row(c.id, { category: 'service', kind: 'personal', bookingId: randomUUID() });
+    const retry = await row(c.id, { category: 'service', kind: 'personal', bookingId: await createTestBooking(db.client, { clientId: c.id, branchId }) });
     await db.client.query('UPDATE app.notifications SET campaign_id = $2, retry_of = $3 WHERE id = $1', [retry, camp, id]);
     expect(await sendNotification({ ...deps, clock: later }, retry)).toBe('sent_to_provider');
   });
@@ -233,7 +234,7 @@ describe('две очереди диспетчера', () => {
        SELECT $1, $2, 'marketing', 'campaign', 'staff', 'т', 'б', $3, 'bulk:' || g FROM generate_series(1, 1000) g`,
       [c.id, branchId, earlier],
     );
-    const reminder = await row(c.id, { category: 'reminder', kind: 'reminder_before_start', bookingId: randomUUID(), version: 1, status: 'planned' });
+    const reminder = await row(c.id, { category: 'reminder', kind: 'reminder_before_start', bookingId: await createTestBooking(db.client, { clientId: c.id, branchId }), version: 1, status: 'planned' });
     const ids = await claimDue(pool, noon.now());
     expect(ids[0]).toBe(reminder);
     expect(ids).toHaveLength(1 + MARKETING_DISPATCH_LIMIT);

@@ -15,6 +15,8 @@ import {
   updateNotificationSettings,
   validateSubscription,
 } from '../../apps/api/src/modules/notifications/index.ts';
+import { createTestBooking } from '../helpers/booking.ts';
+import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 import { fakeBrowser } from '../helpers/push-receiver.ts';
 
@@ -170,7 +172,7 @@ describe('настройки уведомлений', () => {
       `INSERT INTO app.notifications (client_id, category, kind, booking_id, booking_version, source, title, body, planned_at, dedupe_key)
        VALUES ($1, 'reminder', 'reminder_day_before', $2, 1, 'system', 't', 'b', now() + interval '1 day', $3),
               ($1, 'service', 'booking_confirmed', $2, 1, 'system', 't', 'b', now(), $4)`,
-      [c.id, randomUUID(), `r:${randomUUID()}`, `s:${randomUUID()}`],
+      [c.id, await createTestBooking(db.client, { clientId: c.id, branchId: (await createTestBranch(db.client)).id }), `r:${randomUUID()}`, `s:${randomUUID()}`],
     );
     const key = randomUUID();
     const input = { remindersEnabled: false, marketingEnabled: true };

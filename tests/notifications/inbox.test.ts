@@ -5,6 +5,7 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrateDown, migrateUp } from '../../db/migrate.ts';
 import { listInbox, markAllRead, markRead, unreadCount, type InboxBookingLookup } from '../../apps/api/src/modules/notifications/inbox.ts';
+import { createTestBooking } from '../helpers/booking.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -37,7 +38,7 @@ async function row(clientId: string, over: { category?: string; kind?: string; s
       branchId,
       over.category ?? 'service',
       over.kind ?? 'booking_confirmed',
-      over.bookingId === undefined ? randomUUID() : over.bookingId,
+      over.bookingId === undefined ? await createTestBooking(db.client, { clientId, branchId }) : over.bookingId,
       at,
       status,
       status === 'sent_to_provider' ? at : null,
@@ -74,6 +75,7 @@ describe('миграция 0401', () => {
     const c = await client();
     await expect(row(c, { category: 'personal', kind: 'personal' })).rejects.toMatchObject({ code: '23514' });
     await expect(row(c, { status: 'planned', push: false })).rejects.toMatchObject({ code: '23514' }); // push=false – только inbox_only
+    await expect(row(c, { bookingId: randomUUID() })).rejects.toMatchObject({ code: '23503' }); // 0412: бронь должна существовать
   });
 
   it('согласие на рекламу без версии документа → 23514; отказ и согласие с версией – проходят', async () => {
@@ -148,7 +150,8 @@ describe('центр уведомлений K21 §3', () => {
     const c = await client();
     const other = randomUUID();
     const states: Record<string, { clientId: string; state: 'active' | 'cancelled' | 'finished' }> = {};
-    const bk = { active: randomUUID(), cancelled: randomUUID(), finished: randomUUID(), missing: randomUUID(), foreign: randomUUID() };
+    const booking = () => createTestBooking(db.client, { clientId: c, branchId });
+    const bk = { active: await booking(), cancelled: await booking(), finished: await booking(), missing: await booking(), foreign: await booking() };
     states[bk.active] = { clientId: c, state: 'active' };
     states[bk.cancelled] = { clientId: c, state: 'cancelled' };
     states[bk.finished] = { clientId: c, state: 'finished' };

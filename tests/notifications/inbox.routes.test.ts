@@ -7,6 +7,8 @@ import { loadConfig } from '../../apps/api/src/config.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { clientAuthConfig, createDevSmsSender } from '../../apps/api/src/modules/clients/otp.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
+import { createTestBooking } from '../helpers/booking.ts';
+import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const BASE = '/api/public/v1';
@@ -63,9 +65,9 @@ describe('центр уведомлений ЛК №201–204', () => {
     }
   });
 
-  it('список и unread-count: свои строки, no-store; брони нет в базе – «недоступна»', async () => {
+  it('список и unread-count: свои строки, no-store; бронь другого клиента – «недоступна»', async () => {
     const { cookie, clientId } = sessions.a!;
-    const n1 = await notify(clientId, 30, randomUUID());
+    const n1 = await notify(clientId, 30, await createTestBooking(db.client, { clientId: sessions.b!.clientId, branchId: (await createTestBranch(db.client)).id }));
     const n2 = await notify(clientId, 10);
     await notify(sessions.b!.clientId, 5);
     const count = await app.inject({ method: 'GET', url: `${BASE}/me/notifications/unread-count`, headers: { cookie } });
