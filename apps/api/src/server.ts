@@ -13,6 +13,7 @@ import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from '.
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
+import { registerEventSummaries } from './modules/equipment/items.ts';
 import { equipmentCrmRoutes } from './modules/equipment/routes.crm.ts';
 import { registerEquipmentAttachmentOwners, repairCrmRoutes } from './modules/equipment/routes.repairs.ts';
 import { mediaRoutes } from './modules/content/routes.media.ts';
@@ -26,6 +27,7 @@ import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvi
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { eventSummaries } from './modules/events/events.ts';
 import { registerGiftGrant } from './modules/events/gift-booking.ts';
 import { ensureGiftResource } from './modules/events/gift-resource.ts';
 import { registerEventSources } from './modules/events/resources.ts';
@@ -86,6 +88,7 @@ function registerModuleHooks(): void {
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
   registerEquipmentAttachmentOwners(); // K19 §9: вложения оборудования и ремонта
   registerEventSources(); // K6, K20 §4: блокировка видит мероприятие по строке занятости (S3-52)
+  registerEventSummaries(eventSummaries); // K19 §18: номер, статус и время затронутого мероприятия в предложении блокировки
   registerGiftGrant(); // K5, K20 §8.2: подарочный ресурс открывается только правом подарка
   hooksRegistered = true;
 }

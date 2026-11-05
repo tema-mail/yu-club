@@ -328,6 +328,22 @@ export async function createEvent(tx: Tx, ctx: AccessContext, raw: unknown, meta
   return toEventDto(row);
 }
 
+/** Сводка для K19 affectedEvents: порядок входа; неизвестный id (занятие без строки мероприятия) – только eventId. */
+export const eventSummaries = {
+  async summaries(db: Db, eventIds: string[]): Promise<Array<{ eventId: string; number: string | null; status: string | null; start: string | null; end: string | null }>> {
+    if (eventIds.length === 0) return [];
+    const r = await db.query<{ id: string; number: string; status: string; planned_start: Date | null; planned_end: Date | null }>(
+      'SELECT id, number, status, planned_start, planned_end FROM app.events WHERE id = ANY($1::uuid[])',
+      [eventIds],
+    );
+    const byId = new Map(r.rows.map((x) => [x.id, x]));
+    return eventIds.map((eventId) => {
+      const x = byId.get(eventId);
+      return { eventId, number: x?.number ?? null, status: x?.status ?? null, start: x?.planned_start?.toISOString() ?? null, end: x?.planned_end?.toISOString() ?? null };
+    });
+  },
+};
+
 async function activeResourceCount(db: Db, eventId: string): Promise<number> {
   const r = await db.query<{ n: number }>(`SELECT count(*)::int n FROM app.event_resources WHERE event_id = $1 AND status = 'active'`, [eventId]);
   return r.rows[0]!.n;

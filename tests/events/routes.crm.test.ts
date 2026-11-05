@@ -6,7 +6,8 @@ import type { FastifyInstance } from 'fastify';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config.ts';
-import { fixedClock } from '../../apps/api/src/core/time.ts';
+import { fixedClock, interval } from '../../apps/api/src/core/time.ts';
+import { buildProposal } from '../../apps/api/src/modules/equipment/items.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -265,6 +266,13 @@ describe('S3-55: команды', () => {
     expect(m.statusCode).toBe(200);
     const rel = await req('owner', 'POST', `/events/${e.id}/resources/${rid}/release`, { reason: 'не нужно' });
     expect(rel.json()).toEqual({ released: true });
+  });
+  it('ревизия: предложение блокировки K19 показывает номер, статус и время мероприятия; сводку подключает сервер', async () => {
+    const e = await newEvent({ typeId: types.group_visit });
+    await req('owner', 'POST', `/events/${e.id}/resources`, { resourceId: ids.whole, start: '2026-11-23T05:00:00Z', end: '2026-11-23T06:00:00Z' });
+    const proposal = await buildProposal(pool, { branchId: ids.b1!, target: { type: 'unit', ids: [ids.u1!] }, period: interval(new Date('2026-11-23T04:00:00Z'), new Date('2026-11-23T07:00:00Z')) }, clock);
+    expect(proposal.affectedEvents).toEqual([{ eventId: e.id, number: e.number, status: 'new_request', start: '2026-11-23T05:00:00.000Z', end: '2026-11-23T06:00:00.000Z' }]);
+    await req('owner', 'POST', `/events/${e.id}/status`, { rowVersion: (await req('owner', 'GET', `/events/${e.id}`)).json().rowVersion, to: 'cancelled', reason: 'тест' });
   });
   it('справочники №370: чтение всем в зоне, правка – Владелец', async () => {
     const created = await req('owner', 'POST', '/event-packages', { typeId: types.other, name: 'Стандарт', lines: [{ kind: 'service', name: 'x', quantity: 1, unit: 'шт', priceKop: 100 }] });
