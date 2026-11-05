@@ -1,6 +1,6 @@
 // HTTP /api/crm/v1 (K21 §11, K11 №201–212): кампании, журнал отправок, ручной повтор, шаблоны, сводка клиента. Тонкий слой (ADR 0002 п.7):
 // Zod-разбор → функции модуля → AppError в ответ. Вход сотрудника (authenticate) передаёт server.ts.
-// Изменяющие – с Idempotency-Key; PATCH кампании дополнительно держит row_version (K21 §6). Предпросмотр по контракту – чтение.
+// Изменяющие – с Idempotency-Key; PATCH кампании – без ключа, повтор останавливает row_version (K21 §6, K11). Предпросмотр по контракту – чтение.
 // Отказ по правам (403) пишется в аудит отдельной транзакцией (ADR 0005 п.8). Чужой объект – 404 внутри функций модуля (K1).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -148,7 +148,6 @@ export async function notificationCrmRoutes(app: FastifyInstance, deps: Notifica
   // №204
   app.patch('/notifications/campaigns/:id', async (request, reply) => {
     const { access, meta } = await deps.authenticate(request, reply);
-    requireIdempotencyKey(request.headers['idempotency-key']);
     const id = idOf(request);
     const body = parse(patchBody, request.body) as Partial<CampaignInput> & { rowVersion: number };
     return denied(meta, 'notification.campaign_updated', { type: 'notification_campaign', id }, () => updateCampaign(campaign, access, meta, id, body));

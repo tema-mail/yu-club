@@ -160,11 +160,10 @@ describe('предпросмотр и ПДн (K21 §5)', () => {
 });
 
 describe('Idempotency-Key', () => {
-  it('все изменяющие без ключа → 400; создание и подтверждение с ключом – повтор отдаёт то же', async () => {
+  it('все изменяющие, кроме PATCH кампании, без ключа → 400; создание и подтверждение с ключом – повтор отдаёт то же', async () => {
     const id = randomUUID();
     for (const [m, u, p] of [
       ['POST', '/notifications/campaigns', marketing(b1)],
-      ['PATCH', `/notifications/campaigns/${id}`, { rowVersion: 1 }],
       ['POST', `/notifications/campaigns/${id}/confirm`, { rowVersion: 1 }],
       ['POST', `/notifications/campaigns/${id}/cancel`, { reason: 'x' }],
       ['POST', `/notifications/${id}/retry`, { reason: 'x' }],
@@ -173,6 +172,11 @@ describe('Idempotency-Key', () => {
     ] as Array<[Method, string, object]>) {
       expect([u, ...code(await req('owner', m, u, p, null))]).toEqual([u, 400, 'IDEMPOTENCY_KEY_REQUIRED']);
     }
+    // PATCH кампании – без ключа: защита от повтора – row_version (K21 §6, K11)
+    const draft = (await req('owner', 'POST', '/notifications/campaigns', marketing(b1))).json();
+    const first = await req('owner', 'PATCH', `/notifications/campaigns/${draft.id}`, { rowVersion: 1, title: 'Новое' }, null);
+    expect([first.statusCode, first.json().rowVersion]).toEqual([200, 2]);
+    expect(code(await req('owner', 'PATCH', `/notifications/campaigns/${draft.id}`, { rowVersion: 1, title: 'Новое' }, null))).toEqual([409, 'VERSION_CONFLICT']);
     const key = randomUUID();
     const a = await req('owner', 'POST', '/notifications/campaigns', marketing(b1), key);
     const b = await req('owner', 'POST', '/notifications/campaigns', marketing(b1), key);
