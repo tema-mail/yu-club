@@ -6,8 +6,8 @@ import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const DIR = join(import.meta.dirname, '../../apps/api/src/modules/reports');
 const files = readdirSync(DIR).filter((f) => f.endsWith('.ts')).map((f) => ({ name: f, text: readFileSync(join(DIR, f), 'utf8') }));
-// свои таблицы reports (K24 шапка): журнал сверки
-const OWN = new Set(['app.reconcile_runs', 'journal.reconcile_discrepancies']);
+// свои таблицы reports (K24 шапка): журнал сверки и задачи экспорта
+const OWN = new Set(['app.reconcile_runs', 'journal.reconcile_discrepancies', 'app.report_exports']);
 
 let db: TestDatabase;
 beforeAll(async () => {
