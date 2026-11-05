@@ -8,6 +8,7 @@ import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { branchScopeSql, can, roleAllows, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { addDays, interval, localToInstant, parseLocalDate, parseLocalTime, systemClock, type Clock, type Interval } from '../../core/time.ts';
+import { createBlockFor } from '../booking/providers.ts';
 import { linksOf } from '../finance/links.ts';
 import { getBranch } from '../network/index.ts';
 import { unitsOfTarget } from '../resources/index.ts';
@@ -245,6 +246,27 @@ export async function repairProposal(db: Db | Tx, row: RepairRow, input: { targe
   return buildProposal(db, { branchId: row.branch_id, target, period, otherOpenRepairs: await otherOpenRepairsOn(db, row.branch_id, units, row.id) }, clock);
 }
 
+/** Причина блокировки «Ремонт» из справочника (0010). */
+export async function repairReasonId(db: Db | Tx): Promise<string> {
+  const r = await db.query<{ id: string }>(`SELECT id FROM app.dict_reasons WHERE domain = 'resource_block' AND code = 'repair'`);
+  if (!r.rows[0]) throw new Error('Нет причины блокировки repair в dict_reasons');
+  return r.rows[0].id;
+}
+
+/** Связь блокировки с ремонтом (K19 §8): block_id UNIQUE; повтор для того же ремонта – без изменений, чужая – отказ. */
+export async function linkRepairBlock(tx: Tx, ctx: AccessContext, row: RepairRow, blockId: string, opts: { existing: boolean; auto?: boolean }, meta: AuditRequestMeta, clock: Clock): Promise<void> {
+  const r = await tx.query(
+    `INSERT INTO app.repair_blocks (repair_id, block_id, linked_at, linked_by) VALUES ($1, $2, $3, $4) ON CONFLICT (block_id) DO NOTHING RETURNING block_id`,
+    [row.id, blockId, clock.now(), ctx.actor.staffId],
+  );
+  if (!r.rowCount) {
+    const owner = await tx.query<{ repair_id: string }>('SELECT repair_id FROM app.repair_blocks WHERE block_id = $1', [blockId]);
+    if (owner.rows[0]?.repair_id === row.id) return;
+    throw new AppError('VALIDATION_FAILED', 400, 'Блокировка уже связана с другим ремонтом', { field: 'blockId', repairId: owner.rows[0]?.repair_id });
+  }
+  await writeAudit(tx, meta, { action: 'repair.block_linked', object: { type: 'repair', id: row.id }, branchId: row.branch_id, after: { blockId, existing: opts.existing, auto: opts.auto ?? false } }, clock);
+}
+
 // ---- регистрация
 
 const uuid = z.string().regex(UUID_RE);
@@ -357,6 +379,21 @@ export async function registerRepair(
     { action: 'repair.registered', object: { type: 'repair', id }, branchId: row.branch_id, after: { number: row.number, equipmentId: row.equipment_id, priority: row.priority, impact: row.impact, detectedAt: detectedAt.toISOString(), brokenAt: brokenAt?.toISOString() ?? null } },
     clock,
   );
+  // Критическая автоблокировка – только за флагом (K19 §1, Q-111, по умолчанию выключена): в той же транзакции, брони целы.
+  const target = targetOfPlacement({ roomId: row.room_id, unitId: row.unit_id });
+  let autoBlock: { blockId: string; affectedBookingIds: string[]; affectedEventIds: string[] } | null = null;
+  if (row.priority === 'critical' && target && (await resolveSetting(tx, 'equipment.critical_auto_block', { network: true }, now)).value) {
+    const hours = (await resolveSetting(tx, 'equipment.critical_block_hours', { network: true }, now)).value;
+    const created = await createBlockFor(
+      tx,
+      ctx,
+      { branchId: row.branch_id, target, period: interval(detectedAt, new Date(detectedAt.getTime() + hours * 3_600_000)), reasonId: await repairReasonId(tx), comment: `Ремонт ${row.number}` },
+      meta,
+      clock,
+    );
+    await linkRepairBlock(tx, ctx, row, created.blockId, { existing: false, auto: true }, meta, clock);
+    autoBlock = { blockId: created.blockId, affectedBookingIds: created.affectedBookingIds, affectedEventIds: created.affectedEventIds };
+  }
   await publish(tx as OutboxTx, {
     type: 'repair.registered',
     aggregateType: 'repair',
@@ -364,11 +401,11 @@ export async function registerRepair(
     aggregateVersion: 1,
     branchId: row.branch_id,
     occurredAt: now,
-    payload: { repairId: id, number: row.number, equipmentId: row.equipment_id, branchId: row.branch_id, priority: row.priority, impact: row.impact, autoBlockId: null },
+    payload: { repairId: id, number: row.number, equipmentId: row.equipment_id, branchId: row.branch_id, priority: row.priority, impact: row.impact, autoBlockId: autoBlock?.blockId ?? null },
   });
-  const blockProposal = row.impact === 'none' ? null : await repairProposal(tx, row, {}, clock);
+  const blockProposal = row.impact === 'none' || autoBlock ? null : await repairProposal(tx, row, {}, clock);
   const details = await repairHistory(tx, row.equipment_id, id, now.toISOString().slice(0, 10));
-  return { repair: await toRepairDto(tx, row), blockProposal, autoBlock: null, details };
+  return { repair: await toRepairDto(tx, row), blockProposal, autoBlock, details };
 }
 
 // ---- правка
