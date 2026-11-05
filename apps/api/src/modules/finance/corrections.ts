@@ -71,6 +71,13 @@ function reversalDeltas(op: FinanceOperationDto): Array<{ place: MoneyPlace; del
   return [{ place: op.place, delta: op.direction === 'in' ? -op.amountKop : op.amountKop }];
 }
 
+/** Возврат refundIncome (K20 §6, K17 §14): ссылка на поступление мероприятия, доп. услуги или прочее – не K10 и не K16. */
+async function isIncomeRefund(tx: Tx, op: FinanceOperationDto): Promise<boolean> {
+  if (op.ref?.type !== 'operation') return false;
+  const income = await getOperation(tx, op.ref.id);
+  return income?.kind === 'income' && (income.source === 'event' || income.source === 'extra_service' || income.source === 'other');
+}
+
 /** Общая часть сторно и исправления: права, запреты по источнику, блокировка, перечитывание, проводка, аудит. */
 async function reverseCore(
   tx: Tx,
@@ -88,8 +95,9 @@ async function reverseCore(
   const branch = await guardFinance(tx, ctx, found.branchId, 'finance.correct', { action: opts.auditAction, operationId: found.id });
   const reason = requireComment(input.reason, 'reason');
   if (found.kind === 'reversal') throw new AppError('CANNOT_REVERSE_REVERSAL', 409, 'Сторно нельзя сторнировать');
-  if (found.kind === 'refund') {
-    // возврат привязан к платежу K10 – исправление корректировкой, не сторно (решение 02.11 внизу K17)
+  if (found.kind === 'refund' && !(await isIncomeRefund(tx, found))) {
+    // возврат привязан к платежу K10 или продаже K16 – исправление корректировкой, не сторно (решение 02.11 внизу K17).
+    // Возврат refundIncome (K20 §6) сторнируется: иначе поступление с возвратом осталось бы без сторно навсегда.
     throw new AppError('USE_PAYMENT_REFUND', 409, 'Возврат не сторнируется: исправление – корректировкой', { operationId: found.id });
   }
   if (found.kind === 'income' && found.source === 'session') {
@@ -113,6 +121,15 @@ async function reverseCore(
   }
   const original = (await getOperation(tx, found.id))!;
   if (original.reversedBy) throw new AppError('ALREADY_REVERSED', 409, 'Операция уже сторнирована', { reversalId: original.reversedBy });
+  // K20 §6: возврат не повисает без основания – сначала сторно возвратов. Проверка под lockPlaces: возврат берёт те же замки.
+  if (original.kind === 'income') {
+    const live = await tx.query<{ id: string }>(
+      `SELECT fo.id FROM journal.finance_operations fo WHERE fo.kind = 'refund' AND fo.ref_type = 'operation' AND fo.ref_id = $1
+         AND NOT EXISTS (SELECT 1 FROM journal.finance_operations r WHERE r.reversal_of = fo.id) ORDER BY fo.number`,
+      [original.id],
+    );
+    if (live.rows.length > 0) throw new AppError('INCOME_HAS_REFUNDS', 409, 'По поступлению есть возвраты: сначала сторно возвратов', { refundIds: live.rows.map((x) => x.id) });
+  }
 
   const now = clock.now();
   await assertPeriodOpen(tx, branch, now);
