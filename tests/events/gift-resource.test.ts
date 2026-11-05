@@ -1,6 +1,9 @@
 // S3-62: подарочный ресурс в бою на настоящей Postgres. Повтор – без дублей (и параллельно); филиал без VR-комнаты – ресурса нет;
 // создан тариф 0 ₽, состав VR1+VR2 без PS4, закрыт для обычной записи; после него TC-14 проходит в филиале.
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
@@ -13,6 +16,7 @@ import { holdGift, registerGiftGrant } from '../../apps/api/src/modules/events/g
 import { ensureGiftResource, GIFT_RESOURCE_NAME } from '../../apps/api/src/modules/events/gift-resource.ts';
 import { issueGift } from '../../apps/api/src/modules/events/gifts.ts';
 import { AppError } from '../../apps/api/src/core/errors.ts';
+import { ensureAllGiftResources } from '../../db/seed/gift-resources.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const clock = fixedClock('2026-06-01T05:00:00Z');
@@ -113,5 +117,34 @@ describe('S3-62: ensureGiftResource', () => {
     expect(done.bookings[0]).toMatchObject({ priceKop: 0, durationMinutes: 40 });
     const resourceId = (await giftsIn(b)).rows[0].id;
     await expect(tx((c) => createHold(c, { clientId, visitorId: null }, { branchId: b, items: [{ resourceId, start: new Date('2026-06-04T05:00:00Z'), end: new Date('2026-06-04T05:40:00Z') }] }, clock))).rejects.toBeInstanceOf(AppError);
+  });
+});
+
+describe('S3-62: боевая процедура gift:ensure', () => {
+  it('все филиалы: создаёт где есть VR-комната, повтор ничего не добавляет', async () => {
+    await db.client.query(`UPDATE app.branches SET status = 'archived', archived_at = now() WHERE status <> 'archived'`);
+    const withRoom = await branch(2);
+    const without = await branch(0);
+    const first = await ensureAllGiftResources(pool, clock);
+    expect(first).toMatchObject({ created: 1, noVrRoom: 1, tariffsCreated: 1 });
+    expect((await giftsIn(withRoom)).rowCount).toBe(1);
+    expect((await giftsIn(without)).rowCount).toBe(0);
+    const second = await ensureAllGiftResources(pool, clock);
+    expect(second).toMatchObject({ created: 0, tariffsCreated: 0 });
+    expect(second.existed).toBeGreaterThanOrEqual(1);
+    expect((await giftsIn(withRoom)).rowCount).toBe(1);
+  });
+  it('запуск с APP_ENV=prod как в бою: без демо-флага; npm-скрипт указывает на эту процедуру; нет Владельца – понятная ошибка', async () => {
+    const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { scripts: Record<string, string> };
+    expect(pkg.scripts['gift:ensure']).toBe('node db/seed/gift-resources.ts');
+    const b = await branch(2);
+    const run = promisify(execFile);
+    const script = new URL('../../db/seed/gift-resources.ts', import.meta.url).pathname;
+    const out = await run(process.execPath, [script], { env: { PATH: process.env.PATH ?? '', APP_ENV: 'prod', DATABASE_URL: db.url } });
+    expect(JSON.parse(out.stdout)).toMatchObject({ created: 1 });
+    expect((await giftsIn(b)).rowCount).toBe(1);
+    expect(await readFile(script, 'utf8')).not.toContain('assertNotProduction');
+    await db.client.query(`UPDATE app.staff SET status = 'blocked' WHERE role = 'owner'`);
+    await expect(run(process.execPath, [script], { env: { PATH: process.env.PATH ?? '', DATABASE_URL: db.url } })).rejects.toThrow(/Владельца/);
   });
 });
