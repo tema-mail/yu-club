@@ -1,6 +1,6 @@
 // Производительность отчётов (17 §4.1, K24 §9): засев на объём сети – 3 филиала × 92 дня броней, прямым SQL.
 // Каждый отчёт по HTTP за весь период ≤ 5 с, поиск ≤ 2 с, сумма детализации = итог для каждого отчёта на том же объёме.
-// Полная нагрузка Q-93 (20 филиалов × 12 месяцев) – отдельный прогон S4-131. Замеры печатаются в журнал теста.
+// Запуск – npm run test:perf, отдельно от общего набора (vitest.perf.config.ts). Полная нагрузка Q-93 (20 филиалов × 12 месяцев) – S4-131.
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import pg from 'pg';
@@ -151,17 +151,6 @@ const timed = async (url: string, who = cookie) => {
   return { r, ms: Math.round(performance.now() - started) };
 };
 
-/** Весь набор тестов гоняется параллельно на одном кластере: один замер меряет соседей, а не отчёт (5,1 с при 1,1 с в одиночку).
- *  Повтор – только при превышении, не больше 3 раз, берётся лучший; p95 под нагрузкой меряет отдельный прогон S4-131. */
-const timedBest = async (url: string, limit: number, who = cookie) => {
-  let best = await timed(url, who);
-  for (let i = 0; i < 2 && best.ms > limit; i++) {
-    const next = await timed(url, who);
-    if (next.ms < best.ms) best = next;
-  }
-  return best;
-};
-
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 6 });
@@ -219,7 +208,7 @@ describe('производительность на объёме сети: 3 ф�
 
   for (const report of ['dashboard', 'bookings', 'utilization', 'finance', 'clients', 'loyalty', 'certificates']) {
     it(`${report}: вся сеть за 92 дня ≤ 5 с`, async () => {
-      const { r, ms } = await timedBest(`/reports/${report}?${QS}`, LIMIT_MS);
+      const { r, ms } = await timed(`/reports/${report}?${QS}`);
       console.info(`отчёт ${report}: ${ms} мс`);
       expect(r.statusCode, r.body.slice(0, 300)).toBe(200);
       expect(ms).toBeLessThanOrEqual(LIMIT_MS);
@@ -227,14 +216,14 @@ describe('производительность на объёме сети: 3 ф�
   }
 
   it('Директор зоны: дашборд своего филиала ≤ 5 с и меньше сети; утилизация по часам ≤ 5 с', async () => {
-    const dash = await timedBest(`/reports/dashboard?${QS}`, LIMIT_MS, directorCookie);
+    const dash = await timed(`/reports/dashboard?${QS}`, directorCookie);
     const net = await timed(`/reports/bookings?${QS}`);
     const own = await timed(`/reports/bookings?${QS}`, directorCookie);
     console.info(`директор: дашборд ${dash.ms} мс`);
     expect(dash.ms).toBeLessThanOrEqual(LIMIT_MS);
     expect(own.r.json().metrics.visited.value).toBeLessThan(net.r.json().metrics.visited.value);
     expect(own.r.json().metrics.visited.value).toBeGreaterThan(0);
-    const hours = await timedBest(`/reports/utilization?${QS}&branchIds=${branches[0]}&series=hour`, LIMIT_MS);
+    const hours = await timed(`/reports/utilization?${QS}&branchIds=${branches[0]}&series=hour`);
     console.info(`график по часам, один филиал: ${hours.ms} мс`);
     expect(hours.r.statusCode).toBe(200);
     expect(hours.ms).toBeLessThanOrEqual(LIMIT_MS);
@@ -243,7 +232,7 @@ describe('производительность на объёме сети: 3 ф�
   it('поиск ≤ 2 с: имя, телефон, номер брони, дата; по HTTP', async () => {
     const expected: Record<string, string> = { 'Фамилия12': 'client', '+79132000500': 'client', '0500': 'client', '150': 'booking', '2026-09-10': 'booking', 'расход 2026-09': 'finance_operation' };
     for (const text of Object.keys(expected)) {
-      const { r, ms } = await timedBest(`/search?q=${encodeURIComponent(text)}`, SEARCH_LIMIT_MS);
+      const { r, ms } = await timed(`/search?q=${encodeURIComponent(text)}`);
       console.info(`поиск «${text}»: ${ms} мс`);
       expect(r.statusCode, r.body.slice(0, 300)).toBe(200);
       expect(r.json().groups.length).toBeGreaterThan(0);

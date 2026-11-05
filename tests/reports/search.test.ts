@@ -1,5 +1,5 @@
 // S4-75: глобальный поиск (K24 §5, K11 №250). Клиент вне зоны не находится по точному телефону; тип без права отсутствует в ответе;
-// поиск по телефону – в аудите маской; короткая строка – ошибка; ≤ 2 с проверяет tests/reports/perf.test.ts на объёме сети.
+// поиск по телефону – в аудите маской; короткая строка – ошибка; ≤ 2 с проверяет tests/perf/reports.perf.ts на объёме сети.
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
