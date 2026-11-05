@@ -46,9 +46,30 @@ function toDto(b: (typeof branches)[number]) {
 
 
 
+// История адресов K23 §5: что вернул бы resolveLegacyPath (тот же разбор проверен на настоящем API, tests/content/paths.test.ts).
+const LEGACY: Record<string, string> = {
+  '/old-nsk/': '/novosibirsk/',
+  '/old-nsk/krasny-prospekt/': '/novosibirsk/krasny-prospekt/',
+  '/old-nsk/krasny-prospekt/rooms/': '/novosibirsk/krasny-prospekt/#rooms',
+  '/tomsk/old-lenina/': '/tomsk/lenina/',
+  '/old-tomsk/': '/tomsk/lenina/',
+  '/novosibirsk/closed-club/': '/novosibirsk/',
+  '/tomsk/closed-club/': '/contacts/',
+  '/tomsk/lenina/rooms/hidden-room/': '/tomsk/lenina/',
+};
+
 export function buildMock() {
   const app = Fastify({ logger: false });
   const P = '/api/public/v1';
+
+  app.get(`${P}/redirects/resolve`, async (request, reply) => {
+    const { path } = request.query as { path?: string };
+    if (path === '/api-down/' || path === '/api-down/x/') return reply.code(500).send({ error: { code: 'INTERNAL', message: 'сбой' } });
+    const location = path ? LEGACY[path] : undefined;
+    reply.header('cache-control', 'public, max-age=60');
+    if (!location) return fail(reply, 404, 'NOT_FOUND', 'Не найдено');
+    return { location };
+  });
 
   // Черновик для предпросмотра (K22 §11, S4-43): только с секретом и токеном; в тексте – атака, очистка на стороне сайта.
   app.get('/api/internal/v1/content/preview/:token', async (request, reply) => {

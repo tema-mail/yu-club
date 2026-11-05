@@ -3,8 +3,11 @@
 // Стенд (APP_ENV ≠ prod): X-Robots-Tag noindex на всём, включая robots.txt, sitemap.xml и 404.
 // Клиент (K9): /account/ целиком за входом (без сессии – 302 на /login/?next=), /login/ с живой сессией – сразу дальше;
 // обе всегда noindex и no-store. Прокси /api/* идёт мимо: ему не нужны ни сеть, ни сессия.
+// Адреса (K23 §1, §5, S4-53): ненормальный адрес (регистр, нет слеша) и старый адрес из истории – 301 одним переходом, параметры сохраняются;
+// сначала страница строится по текущим данным, 404 – спрашиваем GET /redirects/resolve (K5 №216); ответа API нет – 503, а не ложный 404 для поисковика.
 import { defineMiddleware } from 'astro:middleware';
-import { BRANCH_COOKIE, findBranch, isIndexable, loadNetwork, parseBranchCookie, siteUrl, type CityWithBranches } from './lib/api.ts';
+import { normalizePath, parsePath } from '../../../packages/contracts/src/paths.ts';
+import { API_PREFIX, BRANCH_COOKIE, apiBase, findBranch, isIndexable, loadNetwork, parseBranchCookie, siteUrl, type CityWithBranches } from './lib/api.ts';
 import { CLIENT_COOKIE, safeNext, serverMe, type Me } from './lib/client.ts';
 
 declare global {
@@ -43,9 +46,40 @@ const unavailable = () =>
     { status: 503, headers: { 'content-type': 'text/html; charset=utf-8', 'retry-after': '30' } },
   );
 
+/** Адреса вне реестра страниц: токены чувствительны к регистру, файлы отдаёт сервер; /404/ – внутренняя подмена страниц. */
+const OUTSIDE_REGISTRY = /^\/(api|_astro|media|preview|unsubscribe)(\/|$)|^\/404\/?$|\.[a-z0-9]+\/?$/i;
+
+/** K5 №216: текущий адрес старого пути или null. Сбой API – исключение. */
+async function resolveLegacy(path: string): Promise<string | null> {
+  const res = await fetch(`${apiBase()}${API_PREFIX}/redirects/resolve?path=${encodeURIComponent(path)}`, { headers: { accept: 'application/json' }, redirect: 'manual' });
+  if (res.status === 404 || res.status === 400) return null;
+  if (!res.ok) throw new Error(`redirects/resolve: ${res.status}`);
+  return ((await res.json()) as { location: string }).location;
+}
+
+/** 301 с параметрами исходного запроса; доля адреса (#rooms) остаётся в конце. */
+function moved(location: string, search: string): Response {
+  const [path = '', hash] = location.split('#');
+  return new Response(null, { status: 301, headers: { location: `${path}${search}${hash ? `#${hash}` : ''}` } });
+}
+
 export const onRequest = defineMiddleware(async (context, next) => {
   const { pathname, search } = context.url;
   if (pathname.startsWith('/api/')) return next();
+
+  const isRead = context.request.method === 'GET' || context.request.method === 'HEAD';
+  const inRegistry = isRead && !OUTSIDE_REGISTRY.test(pathname);
+  if (inRegistry && normalizePath(pathname) !== pathname) {
+    const normal = normalizePath(pathname);
+    // Один переход и для старого адреса в ненормальном виде: сразу на текущий, без промежуточного нормального.
+    let target = normal;
+    try {
+      target = (await resolveLegacy(normal)) ?? normal;
+    } catch (e) {
+      console.error('site: redirects/resolve не ответил', e);
+    }
+    return moved(target, search);
+  }
 
   const isAccount = pathname === '/account/' || pathname.startsWith('/account/');
   const isLogin = pathname === '/login/';
@@ -88,7 +122,20 @@ export const onRequest = defineMiddleware(async (context, next) => {
   context.locals.indexable = isIndexable();
   context.locals.origin = siteUrl(context.url.origin);
 
-  const res = await next();
+  // /{city}/{branch}/rooms/ страница переводит на раздел #rooms; у несуществующего филиала сразу 404 – иначе старый адрес дал бы два перехода.
+  const match = inRegistry ? parsePath(pathname) : null;
+  const noBranch = match?.kind === 'branchRooms' && network !== null && !findBranch(network, match.city, match.branch);
+  const res = noBranch ? await context.rewrite('/404/') : await next();
+  if (inRegistry && res.status === 404) {
+    let location: string | null;
+    try {
+      location = await resolveLegacy(pathname);
+    } catch (e) {
+      console.error('site: redirects/resolve не ответил', e);
+      return withHeaders(new Response('Сервис временно недоступен', { status: 503, headers: { 'retry-after': '60' } }), context.locals.indexable ? {} : { 'x-robots-tag': 'noindex, nofollow' });
+    }
+    if (location) return context.locals.indexable ? moved(location, search) : withHeaders(moved(location, search), { 'x-robots-tag': 'noindex, nofollow' });
+  }
   if (isAccount || isLogin) return withHeaders(res, privateHeaders);
   return context.locals.indexable ? res : withHeaders(res, { 'x-robots-tag': 'noindex, nofollow' });
 });
