@@ -44,6 +44,8 @@ export interface BranchDto {
 /** K5 №3 + расширение: часы сегодня, 'HH:mm' по зоне филиала. */
 export interface BranchDetailDto extends BranchDto {
   hoursToday: Array<{ start: string; end: string }>;
+  /** Действующий недельный график без исключений календаря – только для разметки openingHoursSpecification (K23 §6). Выходных дней в списке нет. */
+  weeklyHours: Array<{ weekday: number; open: string; close: string }>;
 }
 
 export interface ResourceDto {
@@ -146,10 +148,17 @@ export async function networkPublicRoutes(app: FastifyInstance, deps: NetworkPub
     const info = toBranchInfo(row);
     const closedNow =
       info.tempClosed !== null && info.tempClosed.from <= now && (info.tempClosed.to === null || now < info.tempClosed.to);
-    const intervals = closedNow ? [] : await openIntervals(deps.pool, { branchId: row.id, date: todayIn(clock, info.timezone) });
+    const today = todayIn(clock, info.timezone);
+    const intervals = closedNow ? [] : await openIntervals(deps.pool, { branchId: row.id, date: today });
+    const weekly = await deps.pool.query<{ weekday: number; open: string; close: string }>(
+      `SELECT weekday, to_char(open_time, 'HH24:MI') AS open, to_char(close_time, 'HH24:MI') AS close FROM app.branch_weekly_hours
+        WHERE branch_id = $1 AND NOT is_closed AND valid_from <= $2::date AND (valid_to IS NULL OR valid_to >= $2::date) ORDER BY weekday`,
+      [row.id, today],
+    );
     const out: BranchDetailDto = {
       ...dto,
       hoursToday: intervals.map((i) => ({ start: instantToLocal(i.start, info.timezone).time, end: instantToLocal(i.end, info.timezone).time })),
+      weeklyHours: weekly.rows,
     };
     cached(reply);
     return out;

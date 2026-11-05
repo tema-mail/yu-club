@@ -26,7 +26,11 @@ export const BranchDto = z.strictObject({
   bookingWindow: z.strictObject({ defaultDays: z.int(), maxDays: z.int() }),
   holdMinutes: z.int(),
 });
-export const BranchDetailDto = BranchDto.extend({ hoursToday: z.array(z.strictObject({ start: z.string(), end: z.string() })) });
+export const BranchDetailDto = BranchDto.extend({
+  hoursToday: z.array(z.strictObject({ start: z.string(), end: z.string() })),
+  // K23 §6: действующий недельный график для openingHoursSpecification; исключения календаря не входят, выходных в списке нет
+  weeklyHours: z.array(z.strictObject({ weekday: z.number().int().min(1).max(7), open: z.string(), close: z.string() })),
+});
 export const Zone = z.enum(['pc', 'vr', 'ps']);
 export const ResourceDto = z.strictObject({
   id: Uuid,
