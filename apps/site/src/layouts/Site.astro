@@ -4,20 +4,27 @@
 // В меню – только разделы, у которых уже есть страница; запись добавит свой шаг (S1-19…S1-21). «Войти / Кабинет» – по куке сессии.
 import '../styles/site.css';
 import BranchPicker, { type PickerCity } from '../islands/BranchPicker.tsx';
+import { robotsFor, type IndexInput } from '../lib/seo.ts';
 
 interface Props {
   title: string;
   description?: string;
   /** Страница закрыта от поиска и на бою (404, юридические – карта сайта 3.4, 3.5). */
   noindex?: boolean;
+  /** Единое решение индексации K23 §2 (lib/seo.ts): важнее noindex; без него – закрыто только то, что закрыто флагом. */
+  index?: IndexInput;
+  /** OpenGraph K23 §4: картинка – JPEG из CMS; нет – тега нет, общий логотип появится с макетом заказчика (TEHDOLG). */
+  ogImage?: string | null;
+  ogType?: 'website' | 'article';
 }
 
-const { title, description, noindex = false } = Astro.props;
+const { title, description, noindex = false, index, ogImage = null, ogType = 'website' } = Astro.props;
 const { network, choice, indexable, origin, hasSession } = Astro.locals;
 const path = Astro.url.pathname;
 // canonical – адрес без параметров (карта сайта п.2.10).
 const canonical = `${origin}${path}`;
-const robots = indexable && !noindex ? 'index, follow' : 'noindex, nofollow';
+const robots = robotsFor(index ?? (noindex ? { kind: 'closed' } : { kind: 'open' }), indexable) === 'index' ? 'index, follow' : 'noindex, nofollow';
+const ogImageUrl = ogImage ? new URL(ogImage, origin).href : null;
 
 const pickerCities: PickerCity[] = (network ?? []).map((c) => ({
   slug: c.slug,
@@ -42,6 +49,12 @@ const year = new Date().getFullYear();
     <link rel="canonical" href={canonical} />
     <title>{title}</title>
     {description && <meta name="description" content={description} />}
+    <meta property="og:title" content={title} />
+    {description && <meta property="og:description" content={description} />}
+    <meta property="og:url" content={canonical} />
+    <meta property="og:type" content={ogType} />
+    <meta property="og:site_name" content="Ю-Клуб" />
+    {ogImageUrl && <meta property="og:image" content={ogImageUrl} />}
     <meta name="theme-color" content="#0b0d12" />
   </head>
   <body>
