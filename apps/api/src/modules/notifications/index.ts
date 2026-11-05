@@ -2,7 +2,8 @@
 // Подписка Web Push: endpoint – персональные данные (адрес браузера), в аудит идёт только хост; ключи – никогда.
 // Endpoint принимается только от известных push-сервисов: иначе сервер слал бы POST на любой адрес (SSRF).
 // Настройки «Напоминания»/«Реклама» (09 §5): таблица client_notification_prefs и журнал согласий – из 0105;
-// включение рекламы = согласие с версией текста (09 §5.1); сервисные сообщения не выключаются (09 §5.3).
+// включение рекламы = согласие с живой версией advertising-consent (09 §5.1, K22 §7, S4-20): клиент версию не задаёт, страницы нет – рекламы нет;
+// сервисные сообщения не выключаются (09 §5.3).
 import type pg from 'pg';
 import { writeAudit, type AuditRequestMeta, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
@@ -11,6 +12,7 @@ import { publish } from '../../core/outbox.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { type Clock } from '../../core/time.ts';
 import { getNotificationPrefs, withTx, type Pool } from '../clients/index.ts';
+import { legalVersions } from '../content/index.ts';
 import { skipRemindersForClient } from './reminders.ts';
 import { fromB64url, maskEndpoint } from './webpush.ts';
 
@@ -31,7 +33,6 @@ export const DEFAULT_PUSH_HOSTS: readonly string[] = [
 
 /** Активных подписок у клиента не больше – лишние (старые) гасятся: каждое сообщение уходит на все. */
 export const MAX_ACTIVE_SUBSCRIPTIONS = 10;
-export const MARKETING_DOCUMENT_VERSION = 'marketing-2026-11';
 
 export interface PushSubscriptionInput {
   endpoint: string;
@@ -194,6 +195,13 @@ export async function getNotificationSettings(db: Tx, clientId: string): Promise
 
 export const SETTINGS_ROUTE = 'PUT /api/public/v1/me/notification-settings';
 
+/** Живая версия текста согласия на рекламу. Выключить рекламу можно всегда, включить без опубликованного текста – нет (K22 §7, K21 §4). */
+async function liveAdvertisingVersion(tx: Tx): Promise<string> {
+  const version = (await legalVersions(tx)).advertisingConsent;
+  if (!version) throw new AppError('MARKETING_DOCUMENT_MISSING', 409, 'Текст согласия на рекламу ещё не опубликован');
+  return version;
+}
+
 /**
  * PUT настроек (Idempotency-Key). Изменённая настройка → строка journal.client_consents (kind reminders / marketing),
  * аудит client.notification_prefs_changed, событие K4. Выключение напоминаний сразу гасит запланированные (09 §5.4).
@@ -225,7 +233,7 @@ export async function updateNotificationSettings(
         if (before.remindersEnabled !== after.remindersEnabled) changes.push(['reminders', after.remindersEnabled]);
         if (before.marketingEnabled !== after.marketingEnabled) changes.push(['marketing', after.marketingEnabled]);
         for (const [kind, granted] of changes) {
-          const version = kind === 'marketing' && granted ? (input.documentVersion ?? MARKETING_DOCUMENT_VERSION).slice(0, 64) : null;
+          const version = kind === 'marketing' && granted ? await liveAdvertisingVersion(tx) : null;
           await tx.query(
             `INSERT INTO journal.client_consents (client_id, kind, granted, document_version, source, at, actor_type, actor_id)
              VALUES ($1, $2, $3, $4, 'account', $5, 'client', $1)`,

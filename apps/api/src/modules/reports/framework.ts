@@ -6,7 +6,7 @@ import pg from 'pg';
 import type { Db, Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { can, roleAllows, scopeFilter, type AccessContext } from '../../core/permissions.ts';
-import { addDays, branchDay, parseLocalDate, type Clock, type LocalDate } from '../../core/time.ts';
+import { addDays, branchDay, formatLocal, instantToLocal, parseLocalDate, type Clock, type LocalDate, type TimeZone } from '../../core/time.ts';
 import { getClientPhones, getClientRefs, type ClientRef } from '../clients/index.ts';
 import { BRANCH_COLUMNS, BRANCH_FROM, toBranchInfo, type BranchInfo, type BranchRow } from '../network/index.ts';
 
@@ -340,6 +340,15 @@ export interface ReportEnv {
   main: Db;
   ctx: AccessContext;
   clock: Clock;
+  /** Экспорт: даты строк – 'ГГГГ-ММ-ДД ЧЧ:ММ' в зоне филиала (в файле это дата, а не текст), на экране – '15 ноября, 14:00'. */
+  fileDates?: boolean | undefined;
+}
+
+/** Момент строки детализации в зоне филиала: подпись для экрана или дата для файла (K24 §7). */
+export function localAt(env: Pick<ReportEnv, 'fileDates'>, at: Date, tz: TimeZone): string {
+  if (!env.fileDates) return formatLocal(at, tz, 'datetime');
+  const l = instantToLocal(at, tz);
+  return `${l.date} ${l.time}`;
 }
 
 export interface ReportParams extends ReportFilter {

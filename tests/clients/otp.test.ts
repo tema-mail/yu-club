@@ -141,6 +141,12 @@ describe('проверка кода', () => {
     const { challengeId, code } = await askOk('+79132000001');
     await expect(verify({ challengeId, code })).rejects.toMatchObject({ code: 'CONSENT_REQUIRED', httpStatus: 422 });
     await expect(verify({ challengeId, code, consents: { pdProcessing: false } })).rejects.toMatchObject({ code: 'CONSENT_REQUIRED' });
+    // K9, K22 §7: страница согласия на рекламу не опубликована – галочка рекламы не принимается, код не гасится
+    await expect(verify({ challengeId, code, consents: { pdProcessing: true, marketing: true }, documentVersion: 'pd-v7' })).rejects.toMatchObject({ code: 'MARKETING_DOCUMENT_MISSING', httpStatus: 409 });
+    await db.client.query(
+      `INSERT INTO app.content_pages (key, document_version, status, draft, draft_updated_at, draft_updated_by, created_by, created_at)
+       VALUES ('advertising-consent', 'advertising-consent-2026-11-01', 'published', '{}', now(), gen_random_uuid(), gen_random_uuid(), now())`,
+    );
     const r = await verify({ challengeId, code, consents: { pdProcessing: true, marketing: true }, documentVersion: 'pd-v7' });
     expect(r.isNew).toBe(true);
     expect(r.client).toMatchObject({ status: 'active', phoneMasked: '+7 ••• ••• ••-01', notifications: { remindersEnabled: true, marketingEnabled: true } });
@@ -150,7 +156,7 @@ describe('проверка кода', () => {
     );
     expect(c.rows).toEqual([
       { kind: 'pd_processing', granted: true, document_version: 'pd-v7', source: 'site', at: clock.now() },
-      { kind: 'marketing', granted: true, document_version: 'pd-v7', source: 'site', at: clock.now() },
+      { kind: 'marketing', granted: true, document_version: 'advertising-consent-2026-11-01', source: 'site', at: clock.now() },
     ]);
     // код погашен
     await expect(verify({ challengeId, code, consents: consent })).rejects.toMatchObject({ code: 'OTP_EXPIRED', httpStatus: 410 });

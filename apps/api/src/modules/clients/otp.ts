@@ -14,6 +14,7 @@ import { writeAudit, type AuditRequestMeta, type Db, type Tx } from '../../core/
 import { AppError } from '../../core/errors.ts';
 import { claimKey, idempotencyScope, requestHash, saveResponse, type IdempotentResult } from '../../core/idempotency.ts';
 import type { Clock } from '../../core/time.ts';
+import { legalVersions } from '../content/index.ts';
 import { getNotificationPrefs, maskPhone, normalizePhone, withTx, type ClientStatus, type Pool } from './index.ts';
 import { revokeSessionSubscriptions } from '../notifications/index.ts';
 
@@ -398,7 +399,12 @@ export async function verifyOtp(
     if (needsConsent) await addConsent(tx, clock, meta, clientId, 'pd_processing', documentVersion);
     if (isNew) {
       const marketing = input.consents?.marketing === true;
-      if (marketing) await addConsent(tx, clock, meta, clientId, 'marketing', documentVersion);
+      if (marketing) {
+        // версия согласия на рекламу – живая версия страницы, а не присланная сайтом (K9, K22 §7); текста нет – рекламы нет
+        const live = (await legalVersions(tx)).advertisingConsent;
+        if (!live) throw new AppError('MARKETING_DOCUMENT_MISSING', 409, 'Текст согласия на рекламу ещё не опубликован');
+        await addConsent(tx, clock, meta, clientId, 'marketing', live);
+      }
       await tx.query(
         `INSERT INTO app.client_notification_prefs (client_id, marketing_enabled, updated_at) VALUES ($1, $2, $3)
          ON CONFLICT (client_id) DO NOTHING`,
