@@ -168,6 +168,7 @@ function endOfCentral(count: number, size: number, offset: number): Buffer {
   return b;
 }
 
+const DEFLATE_BATCH = 64 * 1024;
 const zipTooLarge = () => new AppError('EXPORT_TOO_LARGE', 422, 'Файл слишком большой – сузьте период');
 
 /** Сжатие одной части потоком: сжатое отдаётся по готовности, в памяти – только окно deflate. */
@@ -200,22 +201,52 @@ async function* deflateEntry(entry: ZipEntry, source: AsyncIterable<string | Buf
       yield c;
     }
   };
-  for await (const part of source) {
-    const chunk = typeof part === 'string' ? Buffer.from(part) : part;
+  // в zlib – пачками: запись на каждую строку листа – это задача пула потоков на строку, 200 000 строк занимали минуты
+  let batch: Buffer[] = [];
+  let batched = 0;
+  const flush = async (): Promise<void> => {
+    if (batched === 0) return;
+    const chunk = Buffer.concat(batch, batched);
+    batch = [];
+    batched = 0;
     entry.crc = crc32(chunk, entry.crc);
     entry.size += chunk.length;
     if (entry.size > ZIP_LIMIT) throw zipTooLarge();
-    if (!deflate.write(chunk)) await new Promise<void>((resolve) => deflate.once('drain', () => resolve()));
+    if (!deflate.write(chunk)) {
+      await new Promise<void>((resolve) => {
+        const done2 = () => {
+          deflate.off('drain', done2);
+          deflate.off('close', done2);
+          resolve();
+        };
+        deflate.once('drain', done2);
+        deflate.once('close', done2); // ошибка закрывает поток: drain уже не придёт, ожидание не должно висеть
+      });
+    }
+  };
+  try {
+    for await (const part of source) {
+      const chunk = typeof part === 'string' ? Buffer.from(part) : part;
+      batch.push(chunk);
+      batched += chunk.length;
+      if (batched >= DEFLATE_BATCH) {
+        await flush();
+        if (failure) throw failure;
+        yield* drain();
+      }
+    }
+    await flush();
+    deflate.end();
+    while (!done) {
+      if (failure) throw failure;
+      if (pending.length === 0) await new Promise<void>((resolve) => (wake = resolve));
+      yield* drain();
+    }
     yield* drain();
-  }
-  deflate.end();
-  while (!done) {
     if (failure) throw failure;
-    if (pending.length === 0) await new Promise<void>((resolve) => (wake = resolve));
-    yield* drain();
+  } finally {
+    deflate.destroy(); // обрыв источника (лимит строк, отмена) не оставляет открытый поток zlib
   }
-  yield* drain();
-  if (failure) throw failure;
 }
 
 async function* zipStream(parts: ReadonlyArray<{ name: string; data: AsyncIterable<string | Buffer> }>, now: Date): AsyncGenerator<Uint8Array> {
