@@ -416,6 +416,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
 export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void>; sender?: SenderDeps } {
   if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
+  // без обработчика ошибка простаивающего соединения роняет процесс API (как в worker.ts)
+  pool.on('error', (err) => console.error('пул yu_app: ошибка простаивающего соединения', err.message));
   const deps: ServerDeps = { network: { pool } };
   // Пара VAPID проверяется здесь: несовпадение ключей – ошибка запуска, а не тихий отказ всех отправок.
   const vapid =

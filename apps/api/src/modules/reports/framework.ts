@@ -457,7 +457,10 @@ async function cancelBackend(pool: ReportsPool, pid: number): Promise<void> {
 
 /** Отдельный пул под ролью yu_reports: исчерпание не задевает основной (17 §6). */
 export function createReportsPool(url: string, max = 3): pg.Pool {
-  return new pg.Pool({ connectionString: url, options: '-c search_path=app', max, connectionTimeoutMillis: POOL_WAIT_MS });
+  const pool = new pg.Pool({ connectionString: url, options: '-c search_path=app', max, connectionTimeoutMillis: POOL_WAIT_MS });
+  // без обработчика ошибка простаивающего соединения роняет процесс API (как в worker.ts)
+  pool.on('error', (err) => console.error('пул yu_reports: ошибка простаивающего соединения', err.message));
+  return pool;
 }
 
 /** Один снимок на отчёт: REPEATABLE READ READ ONLY, statement_timeout (экран 15 с, экспорт 300 с), work_mem 16 МБ, общий бюджет времени и отмена по закрытию запроса. */
