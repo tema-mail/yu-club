@@ -76,6 +76,16 @@ export const AUDIT_OBJECT_TYPES = [
   'gift',
   'holiday',
   'staff_grant',
+  // Э4 (K2 «Типы объектов Э4»; K21 §14, K22 §16)
+  'notification_campaign',
+  'notification_template',
+  'publication',
+  'game',
+  'room_page',
+  'branch_page',
+  'content_page',
+  'home_block',
+  'media',
 ] as const;
 export type AuditObjectType = (typeof AUDIT_OBJECT_TYPES)[number];
 

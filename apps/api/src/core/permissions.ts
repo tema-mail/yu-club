@@ -125,6 +125,36 @@ const MATRIX = {
   'gift.cancel': O,
   'gift.book': ODA,
   'holiday.manage': O,
+  // ---- Э4 (K1 «Действия Э4»; K21 §10, K22 §10, K24 §8). Умолчания Q-39, Q-80, Q-134, Q-151, Q-152 – правкой строк.
+  // Цель «роль» (D4-02): content.media.upload/archive, search.global, чтение сетевого контента – только roleAllows.
+  'notifications.send.service': ODA,
+  'notifications.send.marketing': OD,
+  'notifications.send.mass': OD,
+  'notifications.retry': OD,
+  'notifications.templates.manage': O,
+  'content.view': ODA,
+  'content.draft.edit': ODA,
+  'content.publish': OD,
+  'content.network.manage': O,
+  'content.catalog.availability': OD,
+  'content.legal.publish': O,
+  'content.media.upload': ODA,
+  'content.media.archive': OD,
+  'content.media.purge': O,
+  'content.preview': ODA,
+  'reports.ops.view': ODA,
+  'reports.finance.view': OD,
+  'reports.clients.view': OD,
+  'reports.loyalty.view': OD,
+  'reports.events.view': OD,
+  'reports.staff.view': OD,
+  'reports.payroll.view': OD, // Директор – суммы своей зоны (решение техлида 04.11, Q-151)
+  'reports.equipment.view': ODA,
+  'reports.comms.view': OD,
+  'reports.export': OD,
+  'reports.export.detail': OD,
+  'reports.export.payroll': O,
+  'search.global': ODA,
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type Action = keyof typeof MATRIX;

@@ -67,7 +67,7 @@ describe('реестр K7', () => {
     expect(SETTINGS['booking.max_anonymous_holds_per_branch'].levels).toEqual(['network', 'branch']);
     expect(SETTINGS['visit.arrive_early_min'].systemDefault).toBe(30); // Q-101
     expect(SETTINGS['visit.arrive_early_min'].levels).toEqual(['network', 'city', 'branch']);
-    expect(Object.keys(SETTINGS)).toHaveLength(59); // 21 ключ Э0–Э1 + 12 Э2 + 26 Э3 (K7)
+    expect(Object.keys(SETTINGS)).toHaveLength(71); // 21 ключ Э0–Э1 + 12 Э2 + 26 Э3 + 12 Э4 (K7)
   });
 
   it('системное значение каждого ключа проходит его же схему', () => {

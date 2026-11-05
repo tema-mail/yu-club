@@ -1,6 +1,6 @@
 # K22. CMS: контент сайта, уровни сеть/город/филиал, черновик, публикация, версии, медиа, предпросмотр, кэш
 
-Статус: контракт Э4 (04.11.2026), до ревью `architecture-reviewer` (шаг S4-00). Модуль-владелец: `content` – **новый** (`apps/api/src/modules/content/*`: `errors.ts`, `audit.ts`, `media.ts`, `versions.ts`, `publications.ts`, `games.ts`, `pages.ts`, `blocks.ts`, `preview.ts`, `paths.ts` (K23), `routes.public.ts`, `routes.crm.publications.ts`, `routes.crm.catalog.ts`, `routes.media.ts`, `index.ts`). Таблицы – миграции 0403 (медиа) и 0404 (контент). Файлы – `core/files.ts` (новый, общий с экспортом K24).
+Статус: контракт Э4 (04.11.2026), ревью архитектуры 04.11 учтено (коммит 2aee09b), уточнения S4-00 – в K1, K2, K7 «Э4», `model-dannyh.md` «Этап 4» и `reshenia.md` D4-01…D4-11. Модуль-владелец: `content` – **новый** (`apps/api/src/modules/content/*`: `errors.ts`, `audit.ts`, `media.ts`, `versions.ts`, `publications.ts`, `games.ts`, `pages.ts`, `blocks.ts`, `preview.ts`, `paths.ts` (K23), `routes.public.ts`, `routes.crm.publications.ts`, `routes.crm.catalog.ts`, `routes.media.ts`, `index.ts`). Таблицы – миграции 0403 (медиа) и 0404 (контент). Файлы – `core/files.ts` (новый, общий с экспортом K24).
 Основа: 12 §3–§15, §17, §18; 19 §3, §4; 13 §12.6; 02 §7.4; 17 §8.5; 18 §8.2 п.9–10; карта сайта `docs/karta-sayta.md`; K1, K2, K7, K13 (network/resources), ADR 0002.
 
 Пометки: «по умолчанию, ждёт заказчика (Q-xx)»; «решение» – вывод архитектора.

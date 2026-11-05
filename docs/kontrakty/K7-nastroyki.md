@@ -137,6 +137,28 @@ export function settingHistory(db: Db, key: SettingKey, scope: SettingScope): Pr
 
 Новый ключ = строка этой таблицы + `SettingDef` в коде.
 
+## Реестр ключей Э4 (S4-01; основание – K21 §13, K22 §15, K24 §11; внесено S4-00 04.11.2026)
+
+Все – уровня `network`, меняет только Владелец (`settings.network.manage`, D2-02). `affectsExisting: false`: подтверждённая кампания не пересчитывается от смены префикса или окна (её строки проверяются при отправке по действующим значениям – K21 §7, это не «пересчёт истории»).
+
+| Ключ | Тип, пределы (`schema`) | `systemDefault` | Уровни | Право (K1) | Основание |
+|---|---|---|---|---|---|
+| `notifications.marketing_min_interval_hours` | int 0..720 | 168 | network | `settings.network.manage` | K21 §4, Q-39 |
+| `notifications.marketing_window_from` | `HH:mm` | `"10:00"` | network | `settings.network.manage` | K21 §4, Q-39 |
+| `notifications.marketing_window_to` | `HH:mm` | `"21:00"` | network | `settings.network.manage` | K21 §4, Q-39 |
+| `notifications.inbox_retention_days` | int 30..1095 | 365 | network | `settings.network.manage` | K21 §3, Q-132 |
+| `notifications.campaign_max_plan_days` | int 0..90 | 30 | network | `settings.network.manage` | K21 §6, Q-133 |
+| `notifications.marketing_title_prefix` | текст 0..20 знаков | `"Реклама."` | network | `settings.network.manage` | K21 §4, Q-130 |
+| `notifications.marketing_require_erid` | boolean | true | network | `settings.network.manage` | K21 §4, Q-130, Q-148 |
+| `content.ended_promotion_mode` | `'banner_noindex'` \| `'not_found'` | `'banner_noindex'` | network | `settings.network.manage` | K22 §3, вопрос карты сайта 9 |
+| `reports.interactive_max_days` | int 7..366 | 92 | network | `settings.network.manage` | K24 §9 |
+| `reports.export_ttl_hours` | int 1..168 | 24 | network | `settings.network.manage` | K24 §7, Q-145 |
+| `reports.loyalty_threshold_warn_centi` | int −1 000 000..0 (сотые балла) | −4500 | network | `settings.network.manage` | K24 §3.7, Q-80 (пределы – решение S4-00: K24 §11 пределов не задаёт; предупреждение не выше нуля и не глубже −10 000 баллов) |
+| `reports.repeat_breakdown_days` | int 7..365 | 90 | network | `settings.network.manage` | K24 §3.10 |
+
+- Сверка `marketing_window_from < marketing_window_to` – в модуле-потребителе при чтении (`notifications`, S4-16), как пара сертификатов Э2: схема ключа не видит второго ключа.
+- Окружение Э4 (не настройки): `UNSUBSCRIBE_SECRET`, `MEDIA_DIR`, `MEDIA_QUOTA_GB`, `MEDIA_PUBLIC_BASE`, `PREVIEW_SECRET`, `SITE_INTERNAL_URL`, `CONTENT_CACHE_TTL_SECONDS`, `EXPORT_DIR`, `REPORTS_POOL_MAX`, `REPORTS_DATABASE_URL` (K21 §13, K22 §15, K24 §11).
+
 ## HTTP CRM (внесено 02.11.2026; `apps/api/src/modules/settings/routes.crm.ts`)
 
 Область – в запросе всех четырёх маршрутов: `?scope=network|city|branch&id=<uuid>` (у сети id нет). Смотреть – право `settings.branch.manage` в зоне области (Владелец; Директор – своя зона, сеть ему `403`); Администратор – `403`; чужой или несуществующий город/филиал – `404` с одинаковым телом. Менять – `editAction` ключа в этой области (K1): ключи Э2 и сетевые – только Владелец (D2-02), операционные ключи филиала (`settings.branch.manage`) – и Директор своего филиала.

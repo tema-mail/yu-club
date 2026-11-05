@@ -8,6 +8,8 @@ import { auditActions as bookingAudit } from '../modules/booking/audit.ts';
 import { errors as bookingErrors } from '../modules/booking/errors.ts';
 import { auditActions as clientsAudit } from '../modules/clients/audit.ts';
 import { errors as clientsErrors } from '../modules/clients/errors.ts';
+import { auditActions as contentAudit } from '../modules/content/audit.ts';
+import { errors as contentErrors } from '../modules/content/errors.ts';
 import { auditActions as financeAudit } from '../modules/finance/audit.ts';
 import { errors as financeErrors } from '../modules/finance/errors.ts';
 import { auditActions as loyaltyAudit } from '../modules/loyalty/audit.ts';
@@ -26,6 +28,8 @@ import { auditActions as notificationsAudit } from '../modules/notifications/aud
 import { errors as notificationsErrors } from '../modules/notifications/errors.ts';
 import { auditActions as pricingAudit } from '../modules/pricing/audit.ts';
 import { errors as pricingErrors } from '../modules/pricing/errors.ts';
+import { auditActions as reportsAudit } from '../modules/reports/audit.ts';
+import { errors as reportsErrors } from '../modules/reports/errors.ts';
 import { auditActions as resourcesAudit } from '../modules/resources/audit.ts';
 import { errors as resourcesErrors } from '../modules/resources/errors.ts';
 import { auditActions as shiftsAudit } from '../modules/shifts/audit.ts';
@@ -58,6 +62,8 @@ const moduleErrors = {
     OPERATION_REVERSED: 409, // возврат по сторнированному поступлению
     INCOME_HAS_REFUNDS: 409, // сторно поступления с живыми возвратами (S3-54)
   },
+  content: contentErrors,
+  reports: reportsErrors,
 } as const;
 const moduleAudit = {
   settings: settingsAudit,
@@ -78,6 +84,8 @@ const moduleAudit = {
   equipment: equipmentAudit, // Э3, K19 §17
   events: eventsAudit, // Э3, K20 §18
   finance_links: ['finance.operation.linked', 'finance.operation.unlinked'] as const, // K17 §14, решение D3-04
+  content: contentAudit,
+  reports: reportsAudit,
 } as const;
 
 type ModuleErrors = typeof moduleErrors;

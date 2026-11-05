@@ -144,7 +144,7 @@ export interface EventMoneySummary {          // 11 §11.3 – отдельны�
 
 - `changeEventStatus(to: 'cancelled' | 'not_held', reason)`: причина обязательна, инициатор и время – в событии. В той же транзакции освобождаются **свои** строки занятости (`event_resources` → K6 `release('cancelled')`). Связанные обычные брони, выданные подарки и остаток денег возвращаются в ответе списком «требуют решения» (`details.bookingIds`, `giftIds`, `dueKop`, `receivedKop`) – система их не трогает (11 §10 «обрабатываются по правилам…», «выданный подарок – по отдельным правилам»).
 - Финансовые операции не удаляются; понесённые расходы остаются в факте себестоимости (11 §10, приёмка 12).
-- Уведомление заказчику – событие `event.cancelled` / `event.rescheduled` (§12); отправка – Э4 (категория `event_cancel` уже есть в `notifications`, 0111). Заказчику без профиля система ничего не отправляет – по умолчанию, ждёт заказчика (Q-116, 11 §17 п.18).
+- Уведомление заказчику – событие `event.cancelled` / `event.rescheduled` (§12); отправка – Э4: обработчик `notifications` (S4-29) пишет категорию `service`, вид `event_cancelled` / `event_rescheduled` (K21 §2; категория `event_cancel` из 0111 снимается в 0401 – K20 строк `notifications` не пишет, поэтому снятие ничего не ломает; правка S4-00). Заказчику без профиля система ничего не отправляет – по умолчанию, ждёт заказчика (Q-116, 11 §17 п.18).
 
 ## 8. Подарок имениннику (11 §9; 20 §4.10; 16 §8.4)
 
@@ -280,7 +280,7 @@ export function refundIncome(tx, ctx, input: { incomeOperationId; amountKop; pla
 |---|---|---|---|---|
 | `event.confirmed` @1 | переход в `confirmed` | `row_version` | `{ eventId, number, branchId, branchTimezone, customerClientId \| null, plannedStart, plannedEnd }` | Э4: подтверждение заказчику с профилем |
 | `event.rescheduled` @1 | `moveEvent` | `row_version` | `{ eventId, branchId, customerClientId \| null, previous: { start, end }, current: { start, end } }` | Э4 |
-| `event.cancelled` @1 | `cancelled` / `not_held` | `'cancelled'` | `{ eventId, branchId, customerClientId \| null, reason, linkedBookingIds, giftIds }` | Э4 (категория `event_cancel`) |
+| `event.cancelled` @1 | `cancelled` / `not_held` | `'cancelled'` | `{ eventId, branchId, customerClientId \| null, reason, linkedBookingIds, giftIds }` | Э4: сервисное заказчику с профилем (K21 §2, S4-29) |
 | `gift.issued` @1 | `issueGift` | `1` | `{ giftId, clientId, validUntil, issueBranchId }` | Э4: «вам подарок» в центре уведомлений ЛК |
 
 Типы агрегатов – `event`, `gift` (S3-08). Подарок слушает `hold.expired`, `booking.confirmed`, `booking.cancelled`, `booking.rescheduled`, `visit.confirmed`, `visit.reverted`, `no_show.marked` (обработчики `events.gift.*`, worker).

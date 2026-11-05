@@ -19,6 +19,26 @@ yu-club.168.113.179.49.nip.io {
 	handle /health {
 		reverse_proxy yu-club-api:3000
 	}
+	# Предпросмотр черновиков и внутренний API – только по внутренней сети (CRM → сайт → API, K22 §11, S4-07):
+	# на публичном домене их нет. Токен предпросмотра по ссылке бесполезен.
+	@internal path /preview /preview/* /api/internal/*
+	handle @internal {
+		respond 404
+	}
+	# Медиа CMS (K22 §8, S4-07): файлы с диска, API на /media/ не ходит. Адрес /media/<storage_key> = MEDIA_DIR/<storage_key>.
+	# Имя файла – по хешу содержимого, поэтому кэш на год и immutable. Листинга нет (file_server без browse:
+	# /media/ и любой каталог – 404). nosniff – общий заголовок домена выше.
+	# Условие выкладки: MEDIA_DIR (/opt/yu-club/media) смонтирован в контейнер общего Caddy только для чтения
+	# как /srv/yu-club/media – том в compose общего Caddy (/opt/caddy), не в репозитории yu-club.
+	handle_path /media/* {
+		root * /srv/yu-club/media
+		header Cache-Control "public, max-age=31536000, immutable"
+		# PDF правил розыгрыша (purpose = document): не исполняется в контексте сайта – скачивание и sandbox
+		@pdf path *.pdf
+		header @pdf Content-Disposition "attachment"
+		header @pdf Content-Security-Policy "sandbox"
+		file_server
+	}
 	handle {
 		reverse_proxy yu-club-site:4341
 	}
@@ -38,10 +58,24 @@ yu-crm.168.113.179.49.nip.io {
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 	}
-	request_body {
-		max_size 2MB
+	# Тело запроса – 2 МБ на всё, кроме загрузки файлов (S4-09): медиа CMS (K11 №224) и вложения Э3 (№350) – 11 МБ
+	# (лимит части 10 МБ режет API, Q-96). Прокси CRM передаёт тело в API потоком.
+	@upload {
+		method POST
+		path /api/crm/v1/content/media /api/crm/v1/attachments
 	}
-	reverse_proxy yu-club-crm:4321
+	handle @upload {
+		request_body {
+			max_size 11MB
+		}
+		reverse_proxy yu-club-crm:4321
+	}
+	handle {
+		request_body {
+			max_size 2MB
+		}
+		reverse_proxy yu-club-crm:4321
+	}
 	log {
 		output stdout
 		format console

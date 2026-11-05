@@ -97,6 +97,13 @@ export function objectTimeline(db: Db, ctx: AccessContext, object: { type: Audit
 | Делегирование (Э3, S3-89; K1 «Делегирование») | `staff.grant.created`, `staff.grant.revoked` | `staff_grant` |
 
 Типы объектов Э3 (`AUDIT_OBJECT_TYPES`, `core/audit.ts`, шаг S3-01b): `shift`, `staff_rate`, `payroll_period`, `payroll_statement`, `payroll_penalty`, `equipment`, `equipment_account`, `equipment_category`, `repair`, `repair_executor`, `warranty`, `attachment`, `event`, `event_type`, `event_package`, `gift`, `holiday`, `staff_grant`.
+| Уведомления Э4 (S4-05; K21 §14) | `notification.campaign_created`, `notification.campaign_updated`, `notification.campaign_confirmed` (`after`: категория, текст шаблона без подстановки, описание аудитории, `total`), `notification.campaign_cancelled` (причина), `notification.retried`, `notification.template_created`, `notification.template_updated`, `notification.template_archived` | `notification_campaign` / `notification` / `notification_template` |
+| Уведомления Э4 (S4-05; K21 §11 №206) | `notification.unsubscribed` – отписка по ссылке без входа: актор `client` (из токена), `source = 'site'`, `after.via = 'unsubscribe_link'` (решение S4-00: отдельного значения `AuditSource` не вводим – CHECK и тип источника Э0 не меняются) | `client` |
+| Контент Э4 (S4-03; K22 §16) | `content.draft_saved` (только список изменённых полей), `content.published` (`after`: номер версии), `content.unpublished` (причина), `content.archived`, `content.rolled_back` (из какой версии), `content.availability_changed` | `publication` / `game` / `room_page` / `branch_page` / `content_page` / `home_block` |
+| Медиа Э4 (S4-03; K22 §8, §16) | `media.uploaded`, `media.updated`, `media.archived`, `media.purged` (основание, затронутые сущности), `media.deleted` (физическое удаление неиспользованного, K11 №227 – добавлено S4-00: команда без аудита не проходит правило 1) | `media` |
+| Отчёты Э4 (S4-04; K24 §5, §7) | `export.requested` (отчёт, фильтры, формат, `detail`, маска да/нет), `export.downloaded`, `export.failed`, `export.cancelled` (K11 №247 – добавлено S4-00), `client.searched` (поиск CRM по телефону; номер – в поле `phone`, маскируется `redact` по `PD_KEYS`) | `export` / `client` |
+
+Типы объектов Э4 (`AUDIT_OBJECT_TYPES`, S4-02): `notification_campaign`, `notification_template`, `publication`, `game`, `room_page`, `branch_page`, `content_page`, `home_block`, `media`. Коды Э4 регистрируют модули-владельцы: `notifications/audit.ts`, `content/audit.ts`, `reports/audit.ts` (в том числе `client.searched` – его пишет `reports/search.ts`).
 
 Новый код действия добавляется только правкой этого реестра.
 

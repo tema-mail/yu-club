@@ -2,7 +2,8 @@
 // в modules/<x>/errors.ts, собираются в core/registry.ts (там же проверка на дубли).
 import type { ModuleErrorCode } from './registry.ts';
 
-export type HttpStatus = 400 | 401 | 403 | 404 | 409 | 410 | 413 | 415 | 422 | 429 | 500 | 503; // 413/415 – вложения Э3 (K19 §15)
+// 413, 415, 507 – медиа K22 §14; 504 – REPORT_TIMEOUT K24 §10 (D4-07).
+export type HttpStatus = 400 | 401 | 403 | 404 | 409 | 410 | 413 | 415 | 422 | 429 | 500 | 503 | 504 | 507;
 
 export const coreErrors = {
   VALIDATION_FAILED: 400,

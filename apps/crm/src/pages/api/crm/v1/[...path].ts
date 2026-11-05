@@ -24,12 +24,14 @@ export const ALL: APIRoute = async ({ request, params, clientAddress }) => {
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
   let upstream: Response;
   try {
-    upstream = await fetch(`${apiBase()}${API_PREFIX}/${path}${url.search}`, {
-      method: request.method,
-      headers,
-      body: hasBody ? await request.arrayBuffer() : undefined,
-      redirect: 'manual',
-    });
+    // Тело – потоком (S4-09, K22 §8): загрузка медиа и вложений до 10 МБ не копится в памяти CRM.
+    // Размер режет Caddy домена CRM: 2 МБ везде, 11 МБ – только на маршрутах загрузки (deploy/Caddyfile.yu-club).
+    const init: RequestInit & { duplex?: 'half' } = { method: request.method, headers, redirect: 'manual' };
+    if (hasBody && request.body) {
+      init.body = request.body;
+      init.duplex = 'half';
+    }
+    upstream = await fetch(`${apiBase()}${API_PREFIX}/${path}${url.search}`, init);
   } catch {
     return Response.json(
       { error: { code: 'SERVICE_UNAVAILABLE', message: 'Сервер CRM не отвечает. Повторите через минуту.' } },
