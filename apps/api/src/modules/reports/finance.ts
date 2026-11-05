@@ -57,8 +57,9 @@ export function financeDefs(p: FinanceParams): Record<FinanceMetric, MetricDef> 
     corrections: money([{ sql: `t.original_kind = 'correction'` }], 'delta_kop'),
     // движение места: приход +, возврат и расход −, сторно – обратным знаком; значит Σ delta_kop = Поступления − Возвраты − Расходы
     netMovement: money([{ sql: `t.original_kind IN ('income', 'refund', 'expense')` }], 'delta_kop'),
-    nonMoneyPoints: nonMoney('points', 'points_centi', 'centi'),
-    nonMoneyCertificate: nonMoney('certificate', 'amount_kop', 'kop'),
+    // частичный возврат (partially_refunded): считается за вычетом возвращённого по строке
+    nonMoneyPoints: nonMoney('points', 'net_points_centi', 'centi'),
+    nonMoneyCertificate: nonMoney('certificate', 'net_kop', 'kop'),
   };
 }
 

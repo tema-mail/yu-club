@@ -43,7 +43,8 @@ async function endRows(tx: Tx, windows: readonly BranchWindow[]): Promise<EndRow
   if (windows.length === 0) return [];
   const r = await tx.query<EndRow>(
     `SELECT DISTINCT ON (o.certificate_id) o.certificate_id, o.number, o.sale_branch_id, o.balance_after_kop,
-            EXISTS (SELECT 1 FROM app.rpt_certificate_ops x WHERE x.certificate_id = o.certificate_id AND x.op = 'redeem' AND x.at < w.e) AS has_redeem
+            (SELECT coalesce(sum(CASE x.op WHEN 'redeem' THEN x.amount_kop ELSE -x.amount_kop END), 0) > 0 FROM app.rpt_certificate_ops x
+             WHERE x.certificate_id = o.certificate_id AND x.op IN ('redeem', 'redeem_return') AND x.at < w.e) AS has_redeem -- погашение, возвращённое целиком, не считается
      FROM app.rpt_certificate_ops o
      JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON w.branch_id = o.sale_branch_id AND o.at < w.e
      ORDER BY o.certificate_id, o.at DESC, o.entry_id DESC`,

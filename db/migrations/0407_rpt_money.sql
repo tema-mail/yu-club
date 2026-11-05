@@ -6,6 +6,7 @@
 --                                перевод между местами (и его сторно) двигает и второе место: counter_place, −delta_kop;
 --   app.rpt_finance_categories – finance (K17): справочник статей кассы (название и родитель, без денег);
 --   app.rpt_payments           – finance (K10): строка платежа сеанса (деньги, баллы, сертификат) и возвращённое по ней;
+--                                net_kop, net_points_centi – за вычетом возвращённого (возврат с not_restored не вычитается);
 --   app.rpt_loyalty_moves      – loyalty (K15, K3): запись бонусного счёта клиента; entry_type – вид K24 §3.7
 --                                (accrual, penalty, spend, return, adjust, expire, reversal), original_type – вид исходной
 --                                записи для сторно; amount_centi – со знаком журнала K3 (сторно противоположно исходной);
@@ -38,12 +39,15 @@ SELECT c.id AS category_id, c.parent_id, c.name FROM app.finance_categories c;
 CREATE VIEW app.rpt_payments AS
 SELECT p.id AS payment_id, l.line_no, s.booking_id, s.branch_id, s.client_id, l.method, l.amount_kop, l.points_centi,
        l.certificate_id, p.recorded_at AS paid_at, p.recorded_by,
-       coalesce((SELECT sum(r.amount_kop) FROM app.payment_refunds r
-                 WHERE r.payment_id = p.id AND r.line_no = l.line_no AND r.outcome = 'returned'), 0)::bigint AS refunded_kop,
+       ret.kop AS refunded_kop, l.amount_kop - ret.kop AS net_kop, l.points_centi - ret.points AS net_points_centi,
        p.status
 FROM app.payments p
 JOIN app.payment_lines l ON l.payment_id = p.id
-JOIN app.payment_sessions s ON s.booking_id = p.session_id;
+JOIN app.payment_sessions s ON s.booking_id = p.session_id
+CROSS JOIN LATERAL (
+  SELECT coalesce(sum(r.amount_kop), 0)::bigint AS kop, coalesce(sum(r.points_centi), 0)::bigint AS points
+  FROM app.payment_refunds r WHERE r.payment_id = p.id AND r.line_no = l.line_no AND r.outcome = 'returned'
+) ret;
 
 CREATE VIEW app.rpt_loyalty_moves AS
 WITH t AS (

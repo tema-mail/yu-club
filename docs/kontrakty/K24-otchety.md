@@ -21,7 +21,7 @@
 | `rpt_clients` | `clients` | 0406 | клиент | `client_id, status, created_at, registered_at, registration_source` (без телефона и имени; имя и телефон для детализации – через `clients/index.ts` с маской §6) |
 | `rpt_finance_operations` | `finance` | 0407 | операция кассы (с учётом сторно) | `operation_id, number, branch_id, kind, place, method, direction, amount_kop, signed_kop, source, category_id, subcategory_id, ref_type, ref_id, occurred_at, author_id, is_reversed, reversal_of, original_kind` |
 | `rpt_finance_categories` | `finance` | 0407 | статья кассы | `category_id, parent_id, name` (названия статей для 3.4; таблицу справочника `yu_reports` не видит) |
-| `rpt_payments` | `finance` | 0407 | строка платежа | `payment_id, booking_id, branch_id, method ('cash'\|'card'\|'transfer'\|'points'\|'certificate'\|'none'), amount_kop, points_centi, paid_at, refunded_kop, status` |
+| `rpt_payments` | `finance` | 0407 | строка платежа | `payment_id, booking_id, branch_id, method ('cash'\|'card'\|'transfer'\|'points'\|'certificate'\|'none'), amount_kop, points_centi, paid_at, refunded_kop, net_kop, net_points_centi, status` |
 | `rpt_loyalty_moves` | `loyalty` | 0407 | запись K3 бонусного счёта | `entry_id, client_id, branch_id, entry_type (accrual/penalty/spend/return/adjust/expire/reversal), original_type, amount_centi, ref_type, ref_id, at, author_type` |
 | `rpt_loyalty_balances` | `loyalty` | 0407 | клиент | `client_id, balance_centi, available_centi, blocked boolean` |
 | `rpt_certificate_ops` | `certificates` | 0407 | событие сертификата | `certificate_id, number, sale_branch_id, op ('sale'\|'redeem'\|'redeem_return'\|'expire'\|'cancel'\|'correction'), amount_kop, branch_id (где событие), client_id, booking_id, at, balance_after_kop` |
@@ -113,7 +113,7 @@ type Metric =
 | изъятия, перемещения, корректировки | отдельные строки, в «чистое движение» не входят: изъятие – выход денег из кассы, но не расход (K17 §4); показываются в «Остаток» |
 | чистое движение | `Поступления − Возвраты − Расходы` (14 §7.2) |
 | остаток на начало / конец | по каждому месту денег (наличные, безнал, K17 §2): `остаток(t) = Σ signed_kop всех операций до t` (включая `opening_balance`); конец = начало + поступления − возвраты − расходы ± изъятия, перемещения, корректировки (14 §7.2) – сверяется тестом |
-| по способам оплаты | группировка `method`: наличные, карта, перевод (14 §7.3); баллы и сертификаты – **не** деньги: отдельный блок «Неденежная оплата сеансов» из `rpt_payments` (`points`, `certificate`) |
+| по способам оплаты | группировка `method`: наличные, карта, перевод (14 §7.3); баллы и сертификаты – **не** деньги: отдельный блок «Неденежная оплата сеансов» из `rpt_payments` (`points`, `certificate`) за вычетом возвращённого (`net_kop`, `net_points_centi`) |
 
 Представления 14 §7.4: движение денег; остаток на дату; структура поступлений; структура расходов; финансовый результат мероприятий (после Э3, §3.5); продажи и погашения сертификатов (ссылка на 3.8). Детализация – таблица операций 14 §7.4 с переходом к первичному объекту (`ref_type/ref_id`).
 
@@ -143,7 +143,7 @@ type Metric =
 
 ### 3.8. Сертификаты (14 §11) – `certificates.ts`
 
-По `rpt_certificate_ops`: продажи (шт., сумма) – по филиалу продажи; погашения (сумма, по филиалу погашения – взаиморасчёт Q-25); частично погашенные (остаток > 0 и были погашения); истёкшие и сумма сгоревших остатков; аннулированные; на конец периода – активные и их остаток. Продажа – поступление (уже в 3.4 как `certificate_sale`), погашение – не поступление (приёмка 8). Подарок имениннику – отдельный раздел «Права на услугу» из `rpt_events` (K20) – до Э3 `unavailable/source_not_ready` (приёмка 14). Детализация погашения: дата, сумма, клиент (маска), сеанс, сотрудник, остаток после (14 §11).
+По `rpt_certificate_ops`: продажи (шт., сумма) – по филиалу продажи; погашения (сумма, по филиалу погашения – взаиморасчёт Q-25); частично погашенные (остаток > 0 и погашения за вычетом возвратов > 0: погашение, возвращённое целиком, не считается); истёкшие и сумма сгоревших остатков; аннулированные; на конец периода – активные и их остаток. Продажа – поступление (уже в 3.4 как `certificate_sale`), погашение – не поступление (приёмка 8). Подарок имениннику – отдельный раздел «Права на услугу» из `rpt_events` (K20) – до Э3 `unavailable/source_not_ready` (приёмка 14). Детализация погашения: дата, сумма, клиент (маска), сеанс, сотрудник, остаток после (14 §11).
 
 ### 3.9. Сотрудники и смены (14 §12) – `staff.ts`, **ждёт K18**
 
