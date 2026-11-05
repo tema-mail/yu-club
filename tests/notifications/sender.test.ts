@@ -13,7 +13,7 @@ let db: TestDatabase;
 let pool: pg.Pool;
 let rx: PushReceiver;
 let branchId: string;
-const clock = fixedClock('2026-11-14T14:00:00Z');
+const clock = fixedClock('2026-11-14T06:00:00Z'); // 13:00 НСК – внутри окна рекламы (K21 §4)
 const pair = generateVapidKeys();
 const vapid = vapidKeys(pair.publicKey, pair.privateKey, 'mailto:ops@yu-club.test');
 let deps: SenderDeps;
@@ -178,12 +178,13 @@ describe('пропуски по настройкам и брони', () => {
     await subscribe(no, '/p/m-no');
     const a = await notification(no, { category: 'marketing', kind: 'campaign', booking_id: null, booking_version: null });
     expect(await queueAndSend(a)).toBe('skipped_by_prefs');
-    expect((await row(a)).skip_reason).toBe('marketing_not_consented');
+    expect((await row(a)).skip_reason).toBe('marketing_off');
 
     const yes = await client({ marketing: true });
+    await db.client.query(`INSERT INTO journal.client_consents (client_id, kind, granted, document_version, source, actor_type, actor_id) VALUES ($1, 'marketing', true, 'v1', 'account', 'client', $1)`, [yes]);
     await subscribe(yes, '/p/m-yes');
     const b = await notification(yes, { category: 'marketing', kind: 'campaign', booking_id: null, booking_version: null });
-    expect(await queueAndSend(b)).toBe('sent_to_provider');
+    expect(await queueAndSend(b, { ...deps, unsubscribeSecret: 'u'.repeat(32) })).toBe('sent_to_provider');
     expect(rx.received).toHaveLength(1);
   });
 

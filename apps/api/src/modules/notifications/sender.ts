@@ -13,11 +13,19 @@
 //   5. настройка включена         – здесь: reminder → «Напоминания», marketing → «Реклама» (без согласия – пропуск)
 //   6. есть push-подписка         – здесь: нет активной → no_channel
 //   7. этап ещё не отправлен      – здесь: dedupe_key UNIQUE + статус 'queued' под FOR UPDATE (повтор задачи – выход)
+//
+// Э4 (K21 §7): настройки, согласие, частота и канал – единая decideSend (index.ts). Реклама: тихие часы по зоне филиала строки –
+// перенос, не пропуск; частота – под pg_advisory_xact_lock на клиента, строки 'sending' считаются (иначе две кампании обе проходят);
+// порядок блокировок всегда «advisory → строка». Личное по брони: только отмена, завершение и клиент, версия не важна (K21 §7 п.2).
+// Payload рекламы – кнопка и адрес отписки: без UNSUBSCRIBE_SECRET реклама не уходит (нечем отказаться, 38-ФЗ ст. 18).
 import type pg from 'pg';
 import { writeAudit, type AuditRequestMeta } from '../../core/audit.ts';
 import { resolveSetting } from '../../core/settings.ts';
-import { systemClock, type Clock } from '../../core/time.ts';
-import { getNotificationPrefs, withTx, type Pool } from '../clients/index.ts';
+import { systemClock, type Clock, type TimeZone } from '../../core/time.ts';
+import { withTx, type Pool } from '../clients/index.ts';
+import { marketingWindow, windowStart } from './campaign-runner.ts';
+import { decideSend, lockMarketingFrequency, type Category } from './index.ts';
+import { unsubscribeUrl } from './unsubscribe.ts';
 import { buildPushRequest, pushTopic, sendPushRequest, type FetchLike, type PushOutcome, type VapidKeys } from './webpush.ts';
 
 /** Состояние брони для проверок 1–4. Реализацию даёт модуль booking (S1-07/S1-09). */
@@ -33,14 +41,19 @@ export interface SenderDeps {
   fetch?: FetchLike;
   timeoutMs?: number;
   bookings?: BookingLookup;
+  /** UNSUBSCRIBE_SECRET (K21 §13): подпись адреса отписки в рекламном push. */
+  unsubscribeSecret?: string | null;
 }
 
-export type SendResult = 'sent_to_provider' | 'no_channel' | 'skipped_by_prefs' | 'skipped_booking_changed' | 'error' | 'retry' | 'not_queued';
+export type SendResult = 'sent_to_provider' | 'no_channel' | 'skipped_by_prefs' | 'skipped_by_frequency' | 'skipped_booking_changed' | 'error' | 'retry' | 'rescheduled' | 'not_queued';
 
 /** Задержки повторов после временной ошибки (K14): 1, 5, 15 мин. */
 export const RETRY_DELAYS_MIN = [1, 5, 15] as const;
 const TTL_BEFORE_START_SEC = 3600;
 const TTL_DEFAULT_SEC = 12 * 3600;
+const TTL_PERSONAL_SEC = 24 * 3600;
+/** Рекламных строк за проход диспетчера не больше: сервисные и напоминания не стоят за рассылкой (K21 §6). */
+export const MARKETING_DISPATCH_LIMIT = 100;
 
 const SYSTEM_META: AuditRequestMeta = { actor: { kind: 'system', process: 'notifications.sender' }, source: 'system', requestId: 'notifications.sender' };
 
@@ -48,7 +61,9 @@ interface Row {
   id: string;
   client_id: string;
   branch_id: string | null;
-  category: string;
+  branch_timezone: string | null;
+  campaign_id: string | null;
+  category: Category;
   kind: string;
   booking_id: string | null;
   booking_version: number | null;
@@ -70,18 +85,27 @@ interface Sub {
 
 /** Плановые с наступившим моментом → 'queued'. Возвращает их id (FOR UPDATE SKIP LOCKED – параллельные диспетчеры не пересекаются). */
 export async function claimDue(pool: Pool, now: Date, limit = 200): Promise<string[]> {
-  const r = await pool.query<{ id: string }>(
-    `UPDATE app.notifications SET status = 'queued', updated_at = $1
-     WHERE id IN (SELECT id FROM app.notifications
-                  WHERE status = 'planned' AND coalesce(retry_at, planned_at) <= $1
-                  ORDER BY coalesce(retry_at, planned_at) LIMIT $2 FOR UPDATE SKIP LOCKED)
-     RETURNING id`,
-    [now, limit],
-  );
-  return r.rows.map((x) => x.id);
+  const claim = async (category: string, n: number): Promise<string[]> => {
+    if (n <= 0) return [];
+    const r = await pool.query<{ id: string }>(
+      `UPDATE app.notifications SET status = 'queued', updated_at = $1
+       WHERE id IN (SELECT id FROM app.notifications
+                    WHERE status = 'planned' AND coalesce(retry_at, planned_at) <= $1 AND ${category}
+                    ORDER BY coalesce(retry_at, planned_at) LIMIT $2 FOR UPDATE SKIP LOCKED)
+       RETURNING id`,
+      [now, n],
+    );
+    return r.rows.map((x) => x.id);
+  };
+  // две очереди: сначала всё, кроме рекламы; реклама – остатком, но не больше своей пачки
+  const first = await claim(`category <> 'marketing'`, limit);
+  return [...first, ...(await claim(`category = 'marketing'`, Math.min(MARKETING_DISPATCH_LIMIT, limit - first.length)))];
 }
 
-type Verdict = { status: 'skipped_by_prefs' | 'skipped_booking_changed' | 'no_channel'; reason: string } | { status: 'send'; subs: Sub[] };
+type Verdict =
+  | { status: 'skipped_by_prefs' | 'skipped_by_frequency' | 'skipped_booking_changed' | 'no_channel' | 'error'; reason: string }
+  | { status: 'send'; subs: Sub[] }
+  | { status: 'reschedule'; at: Date };
 
 async function preCheck(tx: pg.ClientBase, row: Row, now: Date, deps: SenderDeps): Promise<Verdict> {
   if (row.not_after && row.not_after.getTime() <= now.getTime()) return { status: 'skipped_booking_changed', reason: 'expired' }; // 3
@@ -90,20 +114,23 @@ async function preCheck(tx: pg.ClientBase, row: Row, now: Date, deps: SenderDeps
     if (!b) return { status: 'skipped_booking_changed', reason: 'booking_missing' }; // 1
     if (b.state === 'cancelled' && row.kind !== 'booking_cancelled') return { status: 'skipped_booking_changed', reason: 'booking_cancelled' }; // 2
     if (b.state === 'finished') return { status: 'skipped_booking_changed', reason: 'booking_finished' }; // 3
-    if (b.version !== row.booking_version) return { status: 'skipped_booking_changed', reason: 'booking_changed' }; // 3
+    if (row.kind !== 'personal' && b.version !== row.booking_version) return { status: 'skipped_booking_changed', reason: 'booking_changed' }; // 3
     if (b.clientId !== row.client_id) return { status: 'skipped_booking_changed', reason: 'client_changed' }; // 4
   }
-  if (row.category === 'reminder' || row.category === 'marketing') {
-    const prefs = await getNotificationPrefs(tx, row.client_id); // 5
-    if (row.category === 'reminder' && !prefs.remindersEnabled) return { status: 'skipped_by_prefs', reason: 'reminders_disabled' };
-    if (row.category === 'marketing' && !prefs.marketingEnabled) return { status: 'skipped_by_prefs', reason: 'marketing_not_consented' };
+  const decision = await decideSend(tx, { clientId: row.client_id, category: row.category, push: true, notificationId: row.id }, now); // 5, 6, частота
+  if (!decision.ok && decision.status === 'skipped_by_prefs') return { status: 'skipped_by_prefs', reason: decision.reason };
+  if (row.category === 'marketing' && row.branch_timezone) {
+    const at = windowStart(now, row.branch_timezone as TimeZone, await marketingWindow(tx, now));
+    if (at.getTime() !== now.getTime()) return { status: 'reschedule', at };
   }
+  if (!decision.ok && decision.status === 'skipped_by_frequency') return { status: 'skipped_by_frequency', reason: decision.reason };
   if (!deps.vapid) return { status: 'no_channel', reason: 'push_not_configured' };
+  if (!decision.ok) return { status: 'no_channel', reason: 'no_subscription' }; // 6
+  if (row.category === 'marketing' && !deps.unsubscribeSecret) return { status: 'error', reason: 'unsubscribe_not_configured' };
   const subs = await tx.query<Sub>(
     'SELECT id, endpoint, p256dh, auth FROM app.push_subscriptions WHERE client_id = $1 AND revoked_at IS NULL ORDER BY created_at',
     [row.client_id],
   );
-  if (subs.rows.length === 0) return { status: 'no_channel', reason: 'no_subscription' }; // 6
   return { status: 'send', subs: subs.rows };
 }
 
@@ -128,14 +155,21 @@ export async function sendNotification(deps: SenderDeps, id: string): Promise<Se
   // Транзакция А: проверки и 'sending'.
   const prepared = await withTx(deps.pool, async (tx) => {
     const now = clock.now();
+    // порядок: сначала блокировка частоты, потом строка – иначе две отправки одному клиенту держат друг друга
+    const head = await tx.query<{ client_id: string; category: string }>('SELECT client_id, category FROM app.notifications WHERE id = $1', [id]);
+    if (head.rows[0]?.category === 'marketing') await lockMarketingFrequency(tx, head.rows[0].client_id);
     const r = await tx.query<Row>(
-      `SELECT id, client_id, branch_id, category, kind, booking_id, booking_version, title, body, url, not_after, status, attempts, dedupe_key
-       FROM app.notifications WHERE id = $1 FOR UPDATE`,
+      `SELECT n.id, n.client_id, n.branch_id, b.timezone AS branch_timezone, n.campaign_id, n.category, n.kind, n.booking_id, n.booking_version, n.title, n.body, n.url, n.not_after, n.status, n.attempts, n.dedupe_key
+       FROM app.notifications n LEFT JOIN app.branches b ON b.id = n.branch_id WHERE n.id = $1 FOR UPDATE OF n`,
       [id],
     );
     const row = r.rows[0];
     if (!row || row.status !== 'queued') return null; // 7: уже отправлено или обработано другим
     const v = await preCheck(tx, row, now, deps);
+    if (v.status === 'reschedule') {
+      await tx.query(`UPDATE app.notifications SET status = 'planned', planned_at = $2, retry_at = NULL, updated_at = $3 WHERE id = $1`, [id, v.at, now]);
+      return { row, result: 'rescheduled' as SendResult, subs: [] as Sub[] };
+    }
     if (v.status !== 'send') {
       await finishWithoutSend(tx, row, v.status, v.reason, now, clock);
       return { row, result: v.status as SendResult, subs: [] as Sub[] };
@@ -151,7 +185,17 @@ export async function sendNotification(deps: SenderDeps, id: string): Promise<Se
   const vapid = deps.vapid!;
   const now = clock.now();
   const before = row.kind === 'reminder_before_start';
-  const payload = { title: row.title, body: row.body, url: row.url ?? '/account/', tag: pushTopic(row.dedupe_key), id: row.id };
+  const marketing = row.category === 'marketing';
+  const payload = {
+    title: row.title,
+    body: row.body,
+    url: row.url ?? '/account/',
+    tag: pushTopic(row.dedupe_key),
+    id: row.id,
+    ...(marketing
+      ? { actions: [{ action: 'unsubscribe', title: 'Отписаться от акций' }], unsubscribeUrl: unsubscribeUrl(deps.unsubscribeSecret!, row.client_id, row.campaign_id, now) }
+      : {}),
+  };
   const outcomes: Array<{ sub: Sub; outcome: PushOutcome }> = [];
   for (const sub of subs) {
     let outcome: PushOutcome;
@@ -159,7 +203,7 @@ export async function sendNotification(deps: SenderDeps, id: string): Promise<Se
       const req = buildPushRequest(sub, payload, {
         vapid,
         now,
-        ttlSec: before ? TTL_BEFORE_START_SEC : TTL_DEFAULT_SEC,
+        ttlSec: before ? TTL_BEFORE_START_SEC : row.kind === 'personal' ? TTL_PERSONAL_SEC : TTL_DEFAULT_SEC,
         topic: pushTopic(row.dedupe_key),
         urgency: before || row.kind === 'booking_cancelled' ? 'high' : 'normal',
       });
