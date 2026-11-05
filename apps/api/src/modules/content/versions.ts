@@ -124,6 +124,13 @@ function requireReason(reason: string | null | undefined): string {
   return r;
 }
 
+/** Ссылка черновика – на существующий и не очищенный файл: иначе FK связей дал бы 500, а экран – непонятную ошибку. */
+async function assertMediaUsable(tx: Db, refs: readonly MediaRef[]): Promise<void> {
+  const frozen = await freezeMedia(tx, refs.map((r) => r.mediaId));
+  const bad = refs.filter((r) => !frozen[r.mediaId] || frozen[r.mediaId]!.status === 'purged');
+  if (bad.length > 0) throw new AppError('CONTENT_INVALID', 400, 'Файла нет в медиатеке', { issues: bad.map((r) => ({ path: r.field, message: 'файла нет в медиатеке' })) });
+}
+
 function parseDraft<D extends Record<string, unknown>>(def: EntityDef<D>, value: unknown): D {
   const r = def.schema.safeParse(value);
   if (!r.success) {
@@ -169,6 +176,7 @@ export async function createEntity<D extends Record<string, unknown>>(
   clock: Clock = systemClock,
 ): Promise<EntityRow> {
   const draft = parseDraft(def, draftInput);
+  await assertMediaUsable(tx, def.mediaRefs(draft));
   const names = Object.keys(columns);
   const values = names.map((n) => columns[n]);
   const now = clock.now();
@@ -199,6 +207,7 @@ export async function saveDraft<D extends Record<string, unknown>>(
   await def.assertEdit(tx, ctx, row, draft);
   if (row.status === 'archived') throw statusConflict(row.status, 'save_draft');
   checkVersion(row, input.rowVersion);
+  await assertMediaUsable(tx, def.mediaRefs(draft));
   const before = row.draft;
   const fields = [...new Set([...Object.keys(before), ...Object.keys(draft)])].filter((k) => JSON.stringify(before[k]) !== JSON.stringify(draft[k])).sort();
   const r = await tx.query<EntityRow>(
@@ -258,6 +267,7 @@ export async function publish<D extends Record<string, unknown>>(
   for (const ref of refs) {
     const m = frozen[ref.mediaId];
     if (!m || m.status === 'purged') issues.push({ field: ref.field, code: 'MEDIA_MISSING' });
+    else if (ref.altRequired && m.mime === 'application/pdf') issues.push({ field: ref.field, code: 'MEDIA_NOT_IMAGE' }); // PDF – только правила розыгрыша
   }
   if (issues.length > 0) throw new AppError('CONTENT_INCOMPLETE', 422, 'Заполните обязательные поля', { fields: issues });
   const noAlt = refs.filter((r) => r.altRequired && !frozen[r.mediaId]?.alt?.trim());

@@ -222,6 +222,23 @@ describe('S4-32: проверки', () => {
   });
 });
 
+describe('S4-32: ссылки на медиа в черновике', () => {
+  it('несуществующий и очищенный файл → CONTENT_INVALID по полю, а не падение FK; PDF вместо картинки → полнота', async () => {
+    const row = await newBlock({ title: 'М' });
+    const absent = randomUUID();
+    const err = await fails(save(row, { title: 'М', coverMediaId: absent }), 'CONTENT_INVALID');
+    expect(err.details?.issues).toEqual([{ path: 'cover', message: 'файла нет в медиатеке' }]);
+    const c = owner();
+    await fails(createEntity(tx, c, def, { block_type: 'hero', city_id: await createTestCity(db.client) }, { body: `![x](media:${absent})` }, meta(c), clock), 'CONTENT_INVALID');
+    const purged = await image(40, 'Фото');
+    await db.client.query(`UPDATE app.content_media SET status = 'purged' WHERE id = $1`, [purged.id]);
+    await fails(save(row, { title: 'М', coverMediaId: purged.id }), 'CONTENT_INVALID');
+    const pdf = (await uploadMedia(tx, c, store, { content: Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n'), purpose: 'document', alt: 'Правила' }, meta(c), clock)).media;
+    const withPdf = await save(row, { title: 'М', coverMediaId: pdf.id });
+    expect((await fails(pub(withPdf), 'CONTENT_INCOMPLETE')).details?.fields).toEqual([{ field: 'cover', code: 'MEDIA_NOT_IMAGE' }]);
+  });
+});
+
 describe('S4-32: миграция', () => {
   it('вверх/вниз/вверх', async () => {
     const t = await createTestDatabase({ migrate: true });
