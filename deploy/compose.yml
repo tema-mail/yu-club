@@ -72,6 +72,10 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:?нет VAPID_SUBJECT}
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
+      # закрытые вложения Э3 (K19 №350): только API, Caddy каталог не видит; в бэкапе – BACKUP_FILE_DIRS attachments=…
+      ATTACHMENTS_DIR: /data/attachments
+    volumes:
+      - ${ATTACHMENTS_HOST_DIR:-/opt/yu-club/attachments}:/data/attachments
     depends_on:
       postgres: { condition: service_healthy }
     mem_limit: 160m

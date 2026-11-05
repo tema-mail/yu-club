@@ -18,6 +18,9 @@ const schema = z.object({
   // Секрет HMAC кода сертификата (K16 §3, S2-08): pin_hash в базе и замена кода в request_hash идемпотентности.
   // Генерирует deploy.sh один раз (как SESSION_PEPPER). Смена значения = все выданные коды сертификатов перестают сходиться.
   CERT_PEPPER: z.string().min(32, 'не короче 32 символов').optional(),
+  // Закрытые вложения Э3 (K19 №350, core/files.ts): каталог вне веб-корня – Caddy его не раздаёт, файлы отдаёт только API
+  // с проверкой права на объект-владелец. В контейнере – том deploy/compose.yml; входит в бэкап (S3-94).
+  ATTACHMENTS_DIR: z.string().min(1).refine((p) => p.startsWith('/'), 'абсолютный путь').default('/data/attachments'),
   // Прокси, чьему X-Forwarded-For верим (адреса и IPv4-CIDR через запятую) – как TRUSTED_PROXIES в CRM.
   // От остальных XFF игнорируется: request.ip – адрес соединения. Нужен лимиту входа K12 по IP.
   TRUSTED_PROXIES: z

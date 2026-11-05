@@ -61,7 +61,7 @@ if [ -f "$DIR/$NAME.failed" ]; then rm -f "$DIR/$NAME.failed"; fail "pg_dump в�
 # строка БД пишется после файла (K22 §8 п.4), поэтому каждый storage_key дампа есть в снимке.
 # Список каталогов – общий с вложениями Э3 (S3-94 добавляет attachments=…) и с копией вне сервера (S3-99).
 # Каталога ещё нет (Э4 не выложен) – пропуск со строкой в выводе, не ошибка.
-FILE_DIRS=${BACKUP_FILE_DIRS:-"media=${MEDIA_DIR:-/opt/yu-club/media}"}
+FILE_DIRS=${BACKUP_FILE_DIRS:-"media=${MEDIA_DIR:-/opt/yu-club/media} attachments=${ATTACHMENTS_HOST_DIR:-/opt/yu-club/attachments}"}
 SNAPS=""
 for entry in $FILE_DIRS; do
   label=${entry%%=*}; src=${entry#*=}

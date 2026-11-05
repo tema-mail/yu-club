@@ -14,7 +14,7 @@ import { createFileStore, registerAttachmentOwner } from '../../apps/api/src/cor
 import { assertCan } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
-import { buildServer } from '../../apps/api/src/server.ts';
+import { buildServer, depsFromConfig } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const PASSWORD = 'Пароль-вложений-проверка-1';
@@ -155,5 +155,18 @@ describe('вложения по HTTP (№350)', () => {
     const inv = await post('admin', `/attachments/${a.json().attachmentId}/invalidate`, { reason: 'не тот акт' });
     expect(inv.statusCode).toBe(200);
     expect(inv.json()).toMatchObject({ status: 'invalid', invalidReason: 'не тот акт' });
+  });
+});
+
+describe('ATTACHMENTS_DIR в окружении', () => {
+  it('по умолчанию /data/attachments (том compose), только абсолютный путь; depsFromConfig подключает вложения', async () => {
+    expect(loadConfig({}).ATTACHMENTS_DIR).toBe('/data/attachments');
+    expect(() => loadConfig({ ATTACHMENTS_DIR: 'attachments' })).toThrow(/ATTACHMENTS_DIR/);
+    const { deps, close } = depsFromConfig(loadConfig({ DATABASE_URL: db.url, ATTACHMENTS_DIR: root }));
+    try {
+      expect(deps.attachments?.store.root).toBe(path.resolve(root));
+    } finally {
+      await close();
+    }
   });
 });

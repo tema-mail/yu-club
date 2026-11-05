@@ -11,7 +11,7 @@ import { registerBookingGate } from './modules/clients/index.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
-import type { FileStore } from './core/files.ts';
+import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
@@ -305,6 +305,8 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
       : null;
   deps.notifications = { vapidPublicKey: vapid?.publicKey ?? null, allowedPushHosts: config.PUSH_ENDPOINT_HOSTS ?? DEFAULT_PUSH_HOSTS };
   if (config.CERT_PEPPER) deps.certificates = { pepper: config.CERT_PEPPER };
+  // K19 №350: каталог создаётся при первой записи (mkdir в адаптере); без входа сотрудников маршруты не подключаются
+  deps.attachments = { store: createFileStore({ root: config.ATTACHMENTS_DIR }) };
   if (config.SESSION_PEPPER) {
     deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
     const sms =
