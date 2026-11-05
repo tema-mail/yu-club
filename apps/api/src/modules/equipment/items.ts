@@ -136,12 +136,18 @@ export interface ItemRow {
   p_room_id: string | null;
   p_unit_id: string | null;
   p_placed_at: Date;
+  open_repairs_count: number;
+  warranty_until: string | null;
+  last_repair_at: Date | null;
 }
 
 export const ITEM_SELECT = `SELECT i.id, i.inventory_number, i.legacy_number, i.name, i.category_id, i.manufacturer, i.model, i.serial_number, i.parent_id,
     to_char(i.purchase_date, 'YYYY-MM-DD') AS purchase_date, i.purchase_cost_kop, to_char(i.commissioned_on, 'YYYY-MM-DD') AS commissioned_on,
     i.status, i.status_reason, i.branch_id, i.comment, i.row_version,
-    p.room_id AS p_room_id, p.unit_id AS p_unit_id, p.placed_at AS p_placed_at
+    p.room_id AS p_room_id, p.unit_id AS p_unit_id, p.placed_at AS p_placed_at,
+    (SELECT count(*)::int FROM app.repairs r WHERE r.equipment_id = i.id AND r.status NOT IN ('closed','cancelled')) AS open_repairs_count,
+    (SELECT to_char(max(w.ends_on), 'YYYY-MM-DD') FROM app.equipment_warranties w WHERE w.equipment_id = i.id AND w.status = 'active' AND w.ends_on >= CURRENT_DATE) AS warranty_until,
+    (SELECT max(r.detected_at) FROM app.repairs r WHERE r.equipment_id = i.id AND r.status <> 'cancelled') AS last_repair_at
   FROM app.equipment_items i JOIN app.equipment_placements p ON p.item_id = i.id AND p.removed_at IS NULL`;
 
 export function toEquipmentDto(r: ItemRow): EquipmentDto {
@@ -161,9 +167,9 @@ export function toEquipmentDto(r: ItemRow): EquipmentDto {
     status: r.status,
     statusReason: r.status_reason,
     placement: { branchId: r.branch_id, roomId: r.p_room_id, unitId: r.p_unit_id, since: r.p_placed_at.toISOString() },
-    openRepairsCount: 0,
-    warrantyUntil: null,
-    lastRepairAt: null,
+    openRepairsCount: r.open_repairs_count,
+    warrantyUntil: r.warranty_until,
+    lastRepairAt: r.last_repair_at?.toISOString() ?? null,
     comment: r.comment,
     rowVersion: r.row_version,
   };

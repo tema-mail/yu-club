@@ -47,6 +47,8 @@ const listQuery = z.object({
   roomId: uuid.optional(),
   unitId: uuid.optional(),
   serial: z.string().trim().min(1).max(200).optional(),
+  warrantyExpiresBefore: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  hasOpenRepair: z.enum(['true', 'false']).optional(),
   cursor: z.string().regex(/^INV-\d{1,18}$/).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
@@ -71,6 +73,14 @@ async function listEquipment(db: Db, ctx: AccessContext, raw: unknown): Promise<
   if (q.cityId) {
     params.push(q.cityId);
     where.push(`i.branch_id IN (SELECT id FROM app.branches WHERE city_id = $${params.length})`);
+  }
+  if (q.warrantyExpiresBefore) {
+    params.push(q.warrantyExpiresBefore);
+    where.push(`EXISTS (SELECT 1 FROM app.equipment_warranties w WHERE w.equipment_id = i.id AND w.status = 'active' AND w.ends_on >= CURRENT_DATE AND w.ends_on < $${params.length}::date)`);
+  }
+  if (q.hasOpenRepair) {
+    const open = `EXISTS (SELECT 1 FROM app.repairs r WHERE r.equipment_id = i.id AND r.status NOT IN ('closed','cancelled'))`;
+    where.push(q.hasOpenRepair === 'true' ? open : `NOT ${open}`);
   }
   if (q.cursor) {
     params.push(q.cursor);

@@ -168,3 +168,35 @@ describe('№337: категории', () => {
     expect(denied.rowCount).toBe(1);
   });
 });
+
+describe('карточка и фильтры по ремонтам и гарантиям (10 §13.1–13.2)', () => {
+  it('открытые ремонты, последний ремонт, «гарантия до» – максимальная действующая; фильтры hasOpenRepair и warrantyExpiresBefore', async () => {
+    const eq = await newItem({ name: 'С ремонтом' });
+    const clean = await newItem({ name: 'Без ремонта' });
+    expect(eq).toMatchObject({ openRepairsCount: 0, warrantyUntil: null, lastRepairAt: null });
+    const reg = await req('admin', 'POST', '/repairs', { equipmentId: eq.id, detectedAt: '2026-11-14T04:00:00Z', brokenAtUnknown: true, symptoms: 'не включается', priority: 'low', impact: 'none' });
+    expect(reg.statusCode).toBe(201);
+    const warranties = [
+      { kind: 'manufacturer', startsOn: '2026-01-01', endsOn: '2030-06-01' },
+      { kind: 'manufacturer', startsOn: '2026-01-01', endsOn: '2031-06-01' },
+    ];
+    const ids: string[] = [];
+    for (const g of warranties) ids.push((await req('director', 'POST', `/equipment/${eq.id}/warranties`, g)).json().id);
+    const card = (await req('admin', 'GET', `/equipment/${eq.id}`)).json();
+    expect(card).toMatchObject({ openRepairsCount: 1, warrantyUntil: '2031-06-01', lastRepairAt: '2026-11-14T04:00:00.000Z' });
+    await req('director', 'POST', `/warranties/${ids[1]}/invalidate`, { reason: 'ошибка' });
+    expect((await req('admin', 'GET', `/equipment/${eq.id}`)).json().warrantyUntil).toBe('2030-06-01');
+
+    const idsOf = async (query: string) => (await req('owner', 'GET', `/equipment?limit=100&${query}`)).json().items.map((x: { id: string }) => x.id);
+    expect(await idsOf('hasOpenRepair=true')).toContain(eq.id);
+    expect(await idsOf('hasOpenRepair=true')).not.toContain(clean.id);
+    expect(await idsOf('hasOpenRepair=false')).toContain(clean.id);
+    expect(await idsOf('warrantyExpiresBefore=2030-07-01')).toEqual([eq.id]);
+    expect(await idsOf('warrantyExpiresBefore=2030-05-01')).toEqual([]);
+
+    const repair = reg.json().repair;
+    const closed = await req('director', 'POST', `/repairs/${repair.id}/status`, { rowVersion: repair.rowVersion, to: 'cancelled', comment: 'ошибочно' });
+    expect(closed.statusCode).toBe(200);
+    expect((await req('admin', 'GET', `/equipment/${eq.id}`)).json()).toMatchObject({ openRepairsCount: 0, lastRepairAt: null });
+  });
+});
