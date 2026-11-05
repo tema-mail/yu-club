@@ -14,6 +14,7 @@ import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { mediaRoutes } from './modules/content/routes.media.ts';
+import { catalogCrmRoutes } from './modules/content/routes.crm.catalog.ts';
 import { publicationCrmRoutes } from './modules/content/routes.crm.publications.ts';
 import { contentPublicRoutes } from './modules/content/routes.public.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
@@ -243,6 +244,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         authenticate: (request: FastifyRequest, reply: FastifyReply) => authenticate(staff, request, reply),
       };
       void app.register(async (scope) => publicationCrmRoutes(scope, contentCrm), { prefix: '/api/crm/v1' });
+      void app.register(async (scope) => catalogCrmRoutes(scope, contentCrm), { prefix: '/api/crm/v1' });
       void app.register(
         async (scope) =>
           mediaRoutes(scope, {
