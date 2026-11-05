@@ -212,6 +212,49 @@ export async function openIntervalsBulk(
   );
 }
 
+interface WeeklyRangeRow {
+  weekday: number;
+  open_time: string | null;
+  close_time: string | null;
+  is_closed: boolean;
+  valid_from: string;
+  valid_to: string | null;
+}
+
+/** Отчёты (K13, S4-59; K24 §3.3): открытые интервалы по многим ресурсам за диапазон дат [from, to] включительно.
+ *  Два запроса на весь диапазон (зона + недельные строки, исключения) – число запросов не зависит от числа дней;
+ *  расчёт каждого дня – та же resolveDay, что у openIntervalsBulk. db – транзакция вызывающего (снимок REPEATABLE READ
+ *  отчёта), чтобы график и исключения читались из одного состояния. Нет филиала → пустая карта. */
+export async function openIntervalsRange(
+  db: Db | Tx,
+  input: { branchId: string; from: LocalDate; to: LocalDate; resources: Array<{ resourceId: string; roomId: string | null }> },
+): Promise<Map<LocalDate, Map<string, Interval[]>>> {
+  const out = new Map<LocalDate, Map<string, Interval[]>>();
+  if (!isUuidLike(input.branchId) || input.to < input.from) return out;
+  const b = await db.query<{ timezone: string; hours: WeeklyRangeRow[] }>(
+    `SELECT b.timezone, coalesce((
+       SELECT json_agg(json_build_object('weekday', h.weekday, 'open_time', to_char(h.open_time, 'HH24:MI'),
+                'close_time', to_char(h.close_time, 'HH24:MI'), 'is_closed', h.is_closed,
+                'valid_from', h.valid_from::text, 'valid_to', h.valid_to::text))
+       FROM app.branch_weekly_hours h
+       WHERE h.branch_id = b.id AND h.valid_from <= $3::date AND (h.valid_to IS NULL OR h.valid_to >= $2::date)), '[]') AS hours
+     FROM app.branches b WHERE b.id = $1`,
+    [input.branchId, input.from, input.to],
+  );
+  const row = b.rows[0];
+  if (!row) return out;
+  const tz = zone(row.timezone);
+  const exceptions = await activeExceptions(db, input.branchId, input.from, input.to);
+  for (let d = input.from; d <= input.to; d = addDays(d, 1)) {
+    const wd = instantToLocal(branchDay(d, tz).start, tz).weekday;
+    const h = row.hours.find((x) => x.weekday === wd && x.valid_from <= d && (x.valid_to === null || x.valid_to >= d));
+    const weekly = h ? toWeekly({ has_row: true, open_time: h.open_time, close_time: h.close_time, is_closed: h.is_closed }) : null;
+    const dayEx = exceptions.filter((e) => e.date === d);
+    out.set(d, new Map(input.resources.map((r) => [r.resourceId, resolveDay({ date: d, tz, weekly, exceptions: dayEx, target: r })])));
+  }
+  return out;
+}
+
 // ---- зависимости от других модулей (подключает server.ts)
 
 /** Будущая бронь – только поля, нужные для проверки «помещается ли в новые часы». */

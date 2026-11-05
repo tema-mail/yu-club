@@ -419,6 +419,14 @@ export async function getClientRefs(db: Db | Tx, ids: string[]): Promise<Map<str
   return new Map(r.rows.map((x) => [x.id, toRef(x)]));
 }
 
+/** Полные телефоны для детализации отчётов при праве client.view.full (K24 §6; право проверяет вызывающий). */
+export async function getClientPhones(db: Db | Tx, ids: string[]): Promise<Map<string, string>> {
+  const uniq = [...new Set(ids)];
+  if (uniq.length === 0) return new Map();
+  const r = await db.query<{ id: string; phone_e164: string | null }>(`SELECT id, phone_e164 FROM app.clients WHERE id = ANY($1::uuid[]) AND phone_e164 IS NOT NULL`, [uniq]);
+  return new Map(r.rows.map((x) => [x.id, x.phone_e164!]));
+}
+
 /** Карточка: не-Владельцу – только клиент, связанный с его зоной (иначе NOT_FOUND, как несуществующий). */
 export async function getClientCard(
   db: Db,

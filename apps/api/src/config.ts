@@ -13,6 +13,9 @@ const schema = z.object({
   GIT_SHA: z.string().min(1).default('dev'),
   // Рантайм-учётка yu_app (ADR 0001). Без неё API отдаёт только /health.
   DATABASE_URL: z.string().min(1).optional(),
+  // Пул отчётов K24 §9: роль yu_reports (только SELECT на rpt_*, default_transaction_read_only = on). Нет – маршруты отчётов не подключаются.
+  REPORTS_DATABASE_URL: z.string().min(1).optional(),
+  REPORTS_POOL_MAX: z.coerce.number().int().min(1).max(20).default(3),
   // Секрет HMAC токенов сессий (K12). Без него вход сотрудников выключен.
   SESSION_PEPPER: z.string().min(32, 'не короче 32 символов').optional(),
   // Секрет HMAC кода сертификата (K16 §3, S2-08): pin_hash в базе и замена кода в request_hash идемпотентности.

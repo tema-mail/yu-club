@@ -113,10 +113,11 @@ async function summaryOf(db: Db, branch: BranchInfo, from: LocalDate, to: LocalD
   const start = branchDay(from, branch.timezone).start;
   const end = branchDay(to, branch.timezone).end;
   const r = await db.query<OpRow>(
-    `SELECT fo.kind, fo.place, fo.method, fo.direction, fo.amount_kop, fo.source, fo.category_id, fo.subcategory_id, fo.occurred_at,
-            o.kind AS o_kind, o.source AS o_source, o.method AS o_method, o.category_id AS o_category_id, o.subcategory_id AS o_subcategory_id
-     FROM journal.finance_operations fo LEFT JOIN journal.finance_operations o ON o.id = fo.reversal_of
-     WHERE fo.branch_id = $1 AND fo.occurred_at < $2 ORDER BY fo.occurred_at, fo.number`,
+    // одно определение с отчётом K24 §3.4: у сторно источник, способ и статьи – исходной операции (0407)
+    `SELECT kind, place, method, direction, amount_kop, source, category_id, subcategory_id, occurred_at,
+            original_kind AS o_kind, source AS o_source, method AS o_method, category_id AS o_category_id, subcategory_id AS o_subcategory_id
+     FROM app.rpt_finance_operations
+     WHERE branch_id = $1 AND occurred_at < $2 ORDER BY occurred_at, number`,
     [branch.id, end],
   );
   const places = { cash: emptyPlace('cash'), noncash: emptyPlace('noncash') };
