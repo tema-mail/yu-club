@@ -200,7 +200,10 @@ async function assertPreviewRight(db: Db, ctx: AccessContext, type: EntityType, 
     const r = await db.query<{ branch_id: string }>(`SELECT branch_id FROM app.rooms WHERE id = $1`, [row.room_id]);
     await inBranch(r.rows[0]!.branch_id);
   }
-  // игры, страницы и блоки – сетевой контент: цель «роль» (D4-02)
+  else if ((type === 'content_page' || type === 'home_block') && typeof row.city_id === 'string' && !can(ctx, 'content.preview', { cityId: row.city_id })) {
+    throw new AppError('NOT_FOUND', 404, 'Не найдено'); // строка города – только в зоне
+  }
+  // игры и сетевые страницы и блоки: цель «роль» (D4-02)
 }
 
 export async function publicationCrmRoutes(app: FastifyInstance, deps: ContentCrmDeps): Promise<void> {

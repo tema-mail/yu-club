@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { assertCan } from '../../core/permissions.ts';
+import { assertCan, can, type AccessContext } from '../../core/permissions.ts';
 import { blockDef, BLOCK_TYPES, ensureBlock, reorderBlocks } from './blocks.ts';
 import { uuid } from './common.ts';
 import { gameDef, GAME_DIRECTIONS, setGameBranch } from './games.ts';
@@ -20,6 +20,12 @@ const orderBody = z.strictObject({ cityId: uuid.nullable().optional(), ids: z.ar
 
 /** Ещё нет строки: экран получает пустой черновик с rowVersion = 1 – первое сохранение создаст её (чтение ничего не пишет). */
 const emptyDraft = { id: null, status: 'draft', draft: {}, rowVersion: 1, liveVersionId: null };
+
+/** Сетевое читает любая роль контента (D4-02); строка города – только в зоне, чужое – 404 (K1). */
+function assertViewCity(access: AccessContext, cityId: unknown): void {
+  assertRole(access, 'content.view');
+  if (typeof cityId === 'string' && !can(access, 'content.view', { cityId })) throw new AppError('NOT_FOUND', 404, 'Не найдено');
+}
 
 export async function catalogCrmRoutes(app: FastifyInstance, deps: ContentCrmDeps): Promise<void> {
   const command = commandRunner(deps);
@@ -145,19 +151,19 @@ export async function catalogCrmRoutes(app: FastifyInstance, deps: ContentCrmDep
   }
   app.get('/content/pages/:key/draft', async (request, reply) => {
     const { access } = await deps.authenticate(request, reply);
-    assertRole(access, 'content.view');
     const { key } = request.params as { key: string };
     assertPageKey(key);
     const { cityId } = parseInput(cityQuery, request.query);
+    assertViewCity(access, cityId);
     const row = await pageRow(key, cityId ?? null);
     return row ? { ...draftDto(row), key, cityId: row.city_id } : { ...emptyDraft, key, cityId: cityId ?? null };
   });
   app.get('/content/pages/:key/versions', async (request, reply) => {
     const { access } = await deps.authenticate(request, reply);
-    assertRole(access, 'content.view');
     const { key } = request.params as { key: string };
     assertPageKey(key);
     const { cityId } = parseInput(cityQuery, request.query);
+    assertViewCity(access, cityId);
     return versionsOf('content_page', await pageRow(key, cityId ?? null));
   });
   entityActionRoutes(app, deps, pageDef, '/content/pages/:key', async (tx, params, access, meta, clock) => {
@@ -169,8 +175,8 @@ export async function catalogCrmRoutes(app: FastifyInstance, deps: ContentCrmDep
 
   app.get('/content/home-blocks', async (request, reply) => {
     const { access } = await deps.authenticate(request, reply);
-    assertRole(access, 'content.view');
     const { cityId } = parseInput(cityQuery, request.query);
+    assertViewCity(access, cityId);
     const r = await db.query<EntityRow>(`SELECT * FROM ${blockDef.table} WHERE city_id IS NOT DISTINCT FROM $1::uuid ORDER BY sort_order, id`, [cityId ?? null]);
     return { items: r.rows.map((b) => ({ ...draftDto(b), blockType: b.block_type, cityId: b.city_id, sortOrder: b.sort_order })) };
   });
@@ -196,8 +202,9 @@ export async function catalogCrmRoutes(app: FastifyInstance, deps: ContentCrmDep
 
   app.get('/content/home-blocks/:id/versions', async (request, reply) => {
     const { access } = await deps.authenticate(request, reply);
-    assertRole(access, 'content.view');
-    return versionsOf('home_block', await loadEntity(db, blockDef.table, (request.params as { id: string }).id));
+    const row = await loadEntity(db, blockDef.table, (request.params as { id: string }).id);
+    assertViewCity(access, row.city_id);
+    return versionsOf('home_block', row);
   });
 
   entityActionRoutes(app, deps, blockDef, '/content/home-blocks/:id', async (_db, params) => (params as { id: string }).id);

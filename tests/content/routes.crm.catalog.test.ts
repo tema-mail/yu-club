@@ -36,7 +36,7 @@ const room = async (branchId: string, slug: string) => (await f.db.client.query<
 
 beforeAll(async () => {
   f = await contentFixture();
-  app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), { network: { pool: f.pool }, staff: { pool: f.pool, auth: staffAuthConfig('t'.repeat(40)), clock }, content: { mediaStore: f.store } });
+  app = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), { network: { pool: f.pool }, staff: { pool: f.pool, auth: staffAuthConfig('t'.repeat(40)), clock }, content: { mediaStore: f.store, previewSecret: 'p'.repeat(40) } });
   mine = await createTestBranch(f.db.client);
   foreign = await createTestBranch(f.db.client);
   cover = await f.image(61, 'Обложка');
@@ -136,6 +136,29 @@ describe('S4-39: страницы', () => {
     const live = await call('director', 'POST', `/content/branches/${mine.id}/publish`, { rowVersion: saved.json().rowVersion });
     expect(live.statusCode).toBe(200);
     expect((await pub(`/branches/${mine.id}`)).json().geo).toEqual({ lat: 55, lng: 82 });
+  });
+});
+
+describe('S4-39: строки чужого города (K1: чужое – 404)', () => {
+  it('черновик страницы и блока города вне зоны не читается и токен на него не выдаётся; сетевое и своя зона – да', async () => {
+    const secret = `ЧЕРНОВИК-${randomUUID()}`;
+    const page = await call('owner', 'PUT', `/content/pages/rules/draft?cityId=${foreign.cityId}`, { rowVersion: 1, draft: { title: secret, body: secret } });
+    expect(page.statusCode).toBe(200);
+    const block = await call('owner', 'PUT', '/content/home-blocks', { blockType: 'cta', cityId: foreign.cityId, draft: { blockType: 'cta', payload: { title: secret, label: 'x', url: '/schedule/' } } });
+    expect(block.statusCode).toBe(201);
+    for (const who of ['director', 'admin']) {
+      for (const url of [`/content/pages/rules/draft?cityId=${foreign.cityId}`, `/content/pages/rules/versions?cityId=${foreign.cityId}`, `/content/home-blocks?cityId=${foreign.cityId}`, `/content/home-blocks/${block.json().id}/versions`]) {
+        const res = await call(who, 'GET', url);
+        expect(res.statusCode, `${who} ${url}`).toBe(404);
+        expect(res.body).not.toContain(secret);
+      }
+      expect((await call(who, 'POST', `/content/home_block/${block.json().id}/preview-token`, {})).statusCode).toBe(404);
+      expect((await call(who, 'POST', `/content/content_page/${page.json().id}/preview-token`, {})).statusCode).toBe(404);
+      expect((await call(who, 'GET', '/content/pages/rules/draft')).statusCode).toBe(200);
+      expect((await call(who, 'GET', '/content/home-blocks')).statusCode).toBe(200);
+    }
+    expect((await call('owner', 'GET', `/content/home-blocks?cityId=${foreign.cityId}`)).json().items[0].draft.payload.title).toBe(secret);
+    expect((await call('owner', 'POST', `/content/home_block/${block.json().id}/preview-token`, {})).statusCode).toBe(201);
   });
 });
 
