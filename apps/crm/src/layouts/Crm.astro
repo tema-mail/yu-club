@@ -24,6 +24,7 @@ const MENU: MenuItem[] = [
   { href: '/certificates', label: 'Сертификаты', action: 'certificate.view', active: (p) => p.startsWith('/certificates') },
   { href: '/goods', label: 'Товары за баллы', action: 'loyalty.view', active: (p) => p.startsWith('/goods') },
   { href: '/staff', label: 'Сотрудники', action: 'staff.view', active: (p) => p.startsWith('/staff') },
+  { href: '/shifts', label: 'Расписание сотрудников', action: 'shift.view', active: (p) => p === '/shifts' || (p.startsWith('/shifts/') && p !== '/shifts/my') },
   { href: '/resources', label: 'Ресурсы', action: 'resources.view', active: (p) => p.startsWith('/resources') },
   { href: '/network/branches', label: 'Сеть', action: 'network.branch.update', active: (p) => p.startsWith('/network') },
   { href: '/dictionaries', label: 'Справочники', action: 'dictionary.manage', active: (p) => p.startsWith('/dictionaries') },
