@@ -1,7 +1,7 @@
 // Мероприятия в CRM (S3-81…S3-85): типы ответов – строго по apps/api/src/modules/events/*.ts (K20), подписи, деньги и
 // количество без дробной арифметики, время – в зоне филиала (K8), понятные тексты ошибок по кодам сервера.
-import { ApiError } from './api.ts';
-import { inZone, zonedIso } from './booking.ts';
+import { ApiError, browserCall } from './api.ts';
+import { addDays, inZone, zonedIso } from './booking.ts';
 
 export type EventStatus = 'new_request' | 'negotiation' | 'awaiting_confirmation' | 'confirmed' | 'preparing' | 'in_progress' | 'completed' | 'cancelled' | 'not_held';
 export type PartyFormat = 'h2' | 'h3plus' | 'full_day';
@@ -134,6 +134,28 @@ export const dayText = (d: string) => d.split('-').reverse().join('.');
 export const toIso = (date: string, hm: string, tz: string) => (date && hm ? zonedIso(date, hm, tz) : null);
 export const WEEKDAY = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
 export const weekdayOf = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay();
+
+// ---- мероприятия в календаре филиала (S3-83): занятость из карточек, API календаря их не отдаёт
+
+export interface CalendarEventItem { id: string; number: string; title: string; status: EventStatus; start: string; end: string; resourceIds: string[] }
+
+/** Активные ресурсы мероприятий, начинающихся в периоде → строки календаря: дорожка показывается, если её единицы пересекают занятые. */
+export async function loadCalendarEvents(branchId: string, from: string, to: string, tz: string, laneIds: string[]): Promise<CalendarEventItem[]> {
+  const q = new URLSearchParams({ branchId, from: zonedIso(from, '00:00', tz), to: zonedIso(addDays(to, 1), '00:00', tz), limit: '200' });
+  const list = await browserCall<{ items: EventDto[] }>(`/events?${q}`);
+  const live = list.items.filter((e) => e.status !== 'cancelled' && e.status !== 'not_held');
+  if (live.length === 0) return [];
+  const lanes = await Promise.all(laneIds.map((id) => browserCall<{ id: string; unitIds?: string[] }>(`/resources/${encodeURIComponent(id)}`).catch(() => ({ id, unitIds: [] as string[] }))));
+  const out: CalendarEventItem[] = [];
+  for (const e of live) {
+    const card = await browserCall<EventCardDto>(`/events/${e.id}`);
+    for (const r of card.resources.filter((x) => x.status === 'active')) {
+      const hit = lanes.filter((l) => l.id === r.resourceId || (l.unitIds ?? []).some((u) => r.unitIds.includes(u))).map((l) => l.id);
+      if (hit.length > 0) out.push({ id: e.id, number: e.number, title: e.title, status: e.status, start: r.start, end: r.end, resourceIds: hit });
+    }
+  }
+  return out;
+}
 
 // ---- ошибки
 

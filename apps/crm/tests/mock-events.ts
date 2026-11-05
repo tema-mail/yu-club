@@ -1,12 +1,13 @@
 // Мок мероприятий CRM строго по apps/api/src/modules/events/routes.crm.ts, routes.gifts.ts, events.ts, lines.ts, resources.ts,
 // money.ts, gifts.ts, party.ts и network/holidays.ts (K20 §15 №361–370, 376–379): без event.money.view – только dueKop и ни одной
 // плановой себестоимости; перенос – EVENT_MOVE_RESOURCES_INVALID (missing, duplicate, outside_planned) и откат; вторая привязка
-// расхода – OPERATION_ALREADY_LINKED; один подарок в 365 дней. Деньги – настоящие операции mock-finance (одна строка в журнале).
-// Категории оборудования и исполнители (equipment/routes*.ts, №337, №349) ставятся, только если их ещё не поставил другой мок.
+// расхода – OPERATION_ALREADY_LINKED. Деньги – настоящие операции mock-finance (одна строка в журнале).
+// Подарки, праздничный календарь и справочники оборудования – mock-gifts.ts.
 // Подключается из mock-api.ts (registerEvents – последним, resetEvents – после resetFinance).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
-import { addGiftBooking, bookingFacts, bookingBusy, setExternalBusy } from './mock-booking.ts';
+import { bookingFacts, bookingBusy, setExternalBusy } from './mock-booking.ts';
+import { giftIdsOfEvent, registerGifts, resetGifts } from './mock-gifts.ts';
 import { financeCommands, getFinanceOp, recordMoney } from './mock-finance.ts';
 import { opsHoursOn, opsState } from './mock-ops.ts';
 
@@ -30,7 +31,7 @@ export const EVENT_ACTIONS: Record<Role, string[]> = {
   admin: ['event.view', 'event.manage', 'event.money.record', 'gift.issue', 'gift.book', 'equipment.view'],
 };
 
-class Fail extends Error {
+export class Fail extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: Rec;
@@ -64,20 +65,11 @@ interface Ev {
 }
 interface EvType { id: string; code: string; name: string; status: 'active' | 'archived'; rowVersion: number }
 interface Pack { id: string; typeId: string; name: string; lines: Array<Rec & { name: string; priceKop: number }>; approxPriceKop: number | null; status: 'active' | 'archived'; rowVersion: number }
-interface GiftRec { id: string; number: string; clientId: string; basisEventId: string | null; issuedOn: string; validUntil: string; issueBranchId: string; terms: Rec; status: string; bookingId: string | null; cancelReason: string | null; rowVersion: number }
-interface HolidayRec { id: string; scope: 'network' | 'city'; cityId: string | null; date: string; name: string; status: 'active' | 'cancelled' }
-interface Category { id: string; name: string; sortOrder: number; status: 'active' | 'archived' }
-interface Executor { id: string; kind: string; name: string; staffId: string | null; contactPerson: string | null; phone: string | null; email: string | null; address: string | null; inn: string | null; comment: string | null; status: 'active' | 'archived'; rowVersion: number }
 
 let events: Ev[] = [];
 let types: EvType[] = [];
 let packs: Pack[] = [];
-let gifts: GiftRec[] = [];
-let holidays: HolidayRec[] = [];
-let categories: Category[] = [];
-let executors: Executor[] = [];
 let evSeq = 123;
-let giftSeq = 40;
 let replays = new Map<string, { hash: string; status: number; body: unknown }>();
 
 // ---- время зоны филиала
@@ -102,15 +94,8 @@ const normalize = (raw: unknown): string => {
   throw new Fail(400, 'VALIDATION_FAILED', 'Неверный номер телефона', { field: 'customer.phone' });
 };
 
-const CHECKLIST: Array<[string, string]> = [
-  ['date', 'Подтверждение даты и времени'], ['composition', 'Подтверждение состава услуг'], ['participants', 'Подтверждение количества участников'],
-  ['responsible', 'Назначение ответственного сотрудника'], ['contractor', 'Подтверждение аниматора или подрядчика'], ['catering', 'Заказ кейтеринга'],
-  ['room', 'Подготовка комнаты и оборудования'], ['purchase', 'Закупка расходных материалов'], ['payment', 'Проверка оплаты или предоплаты'], ['gift', 'Подготовка подарка имениннику'],
-];
-const TRANSITIONS: Record<string, string[]> = {
-  new_request: ['negotiation', 'awaiting_confirmation', 'cancelled'], negotiation: ['awaiting_confirmation', 'cancelled'], awaiting_confirmation: ['confirmed', 'negotiation', 'cancelled'],
-  confirmed: ['preparing', 'in_progress', 'cancelled', 'not_held'], preparing: ['in_progress', 'cancelled', 'not_held'], in_progress: ['completed'], completed: [], cancelled: [], not_held: [],
-};
+const CHECKLIST: Array<[string, string]> = [['date', 'Подтверждение даты и времени'], ['composition', 'Подтверждение состава услуг'], ['participants', 'Подтверждение количества участников'], ['responsible', 'Назначение ответственного сотрудника'], ['contractor', 'Подтверждение аниматора или подрядчика'], ['catering', 'Заказ кейтеринга'], ['room', 'Подготовка комнаты и оборудования'], ['purchase', 'Закупка расходных материалов'], ['payment', 'Проверка оплаты или предоплаты'], ['gift', 'Подготовка подарка имениннику'],];
+const TRANSITIONS: Record<string, string[]> = { new_request: ['negotiation', 'awaiting_confirmation', 'cancelled'], negotiation: ['awaiting_confirmation', 'cancelled'], awaiting_confirmation: ['confirmed', 'negotiation', 'cancelled'], confirmed: ['preparing', 'in_progress', 'cancelled', 'not_held'], preparing: ['in_progress', 'cancelled', 'not_held'], in_progress: ['completed'], completed: [], cancelled: [], not_held: [], };
 const STATUSES = Object.keys(TRANSITIONS);
 const closed = (s: string) => s === 'completed' || s === 'cancelled' || s === 'not_held';
 const typeOf = (e: Ev) => types.find((t) => t.id === e.typeId)!;
@@ -135,7 +120,7 @@ function summary(e: Ev) {
   }
   return {
     agreedKop, receivedKop, refundedKop, dueKop: agreedKop - receivedKop + refundedKop, planCostKop, factCostKop, resultKop: receivedKop - refundedKop - factCostKop,
-    deviationKop: factCostKop - planCostKop, discountsKop, giftsIssued: gifts.filter((g) => g.basisEventId === e.id && g.status !== 'cancelled').length,
+    deviationKop: factCostKop - planCostKop, discountsKop, giftsIssued: giftIdsOfEvent(e.id).length,
   };
 }
 const dto = (d: EventsMockDeps, e: Ev) => ({
@@ -146,7 +131,6 @@ const dto = (d: EventsMockDeps, e: Ev) => ({
 });
 const resourceDto = (d: EventsMockDeps, e: Ev, r: EvResource) => {
   const info = opsState().resources.find((x) => x.id === r.resourceId);
-  void d;
   return {
     id: r.id, eventId: r.eventId, resourceId: r.resourceId, resourceName: info?.name ?? '', resourceType: info?.type ?? '', start: iso(r.start), end: iso(r.end), unitIds: r.unitIds, status: r.status, releaseReason: r.releaseReason,
     requestHold: r.status === 'active' && e.status === 'new_request' ? { expiresAt: iso(r.reservedAt + 48 * 3_600_000), remind: r.reminded } : null,
@@ -177,7 +161,6 @@ function seedLine(e: Ev, v: Partial<Line> & { kind: string; name: string; priceK
 export function resetEvents(branches: BranchLite[]): void {
   replays = new Map();
   evSeq = 123;
-  giftSeq = 40;
   const now = Date.now();
   const K = 'b-nsk-krasny';
   const tz = branches.find((b) => b.id === K)!.timezone;
@@ -199,28 +182,18 @@ export function resetEvents(branches: BranchLite[]): void {
       { kind: 'animator', name: 'Аниматор', quantity: 2, unit: 'ч', priceKop: 250_000, planCostKop: 150_000, supplier: 'Праздник рядом', comment: null },
     ],
   }];
-  holidays = [
-    { id: randomUUID(), scope: 'network', cityId: null, date: weekday(7), name: 'Праздник сети', status: 'active' },
-    { id: randomUUID(), scope: 'city', cityId: 'c-tsk', date: weekday(14), name: 'День города Томск', status: 'active' },
-  ];
-  gifts = [];
-  categories = [{ id: randomUUID(), name: 'VR-шлемы', sortOrder: 10, status: 'active' }, { id: randomUUID(), name: 'Приставки', sortOrder: 20, status: 'active' }, { id: randomUUID(), name: 'Старая мебель', sortOrder: 30, status: 'archived' }];
-  executors = [{ id: randomUUID(), kind: 'contractor', name: 'ВР-Сервис', staffId: null, contactPerson: 'Игорь', phone: '+79130001122', email: null, address: null, inn: null, comment: null, status: 'active', rowVersion: 1 }];
+  resetGifts(weekday);
   events = [];
 
   // Платный праздник: подтверждён, с комнатой, оплатой, расходом
   const party = newEvent({ typeCode: 'birthday_party', title: 'День рождения Ивана', branchId: K, start: zoned(weekday(5), '14:00', tz), end: zoned(weekday(5), '16:00', tz), status: 'confirmed', customer: ['Мария Иванова', '+79131234567', CLIENT(1)], birthday: [CLIENT(1), 'Иван'], participants: 8, responsible: 's-admin', party: { format: 'h2', guests: 8, catering: true }, at: now - 3 * 86_400_000 });
-  const room = seedLine(party, { kind: 'room_rent', name: 'Комната VR+PS4, 2 часа', priceKop: 1_000_000, planCostKop: 200_000 });
+  seedLine(party, { kind: 'room_rent', name: 'Комната VR+PS4, 2 часа', priceKop: 1_000_000, planCostKop: 200_000 });
   seedLine(party, { kind: 'catering', name: 'Праздничный стол', quantity: 8, unit: 'порц.', priceKop: 50_000, discountKop: 20_000, discountReason: 'Постоянный клиент', planCostKop: 240_000, supplier: 'Кейтеринг Плюс' });
   party.resources.push({ id: randomUUID(), eventId: party.id, resourceId: 'res-vrroom', start: Date.parse(party.plannedStart!), end: Date.parse(party.plannedEnd!), unitIds: [...(opsState().composition['res-vrroom'] ?? [])], status: 'active', releaseReason: null, reservedAt: now - 86_400_000, reminded: false });
-  const income = recordMoney({ branchId: K, timezone: tz, kind: 'income', method: 'card', amountKop: 500_000, source: 'event', ref: { type: 'event', id: party.id }, comment: 'Предоплата', authorId: 's-owner', receiptIssued: true });
-  party.links.push({ operationId: income.id, role: 'income', inCost: false, lineId: null, linkedAt: iso(now) });
   party.timeline.push({ id: randomUUID(), at: iso(now - 3 * 86_400_000), action: 'event.created', actorType: 'staff', actorId: 's-owner', actorRole: 'owner', before: null, after: { title: party.title }, reason: null, result: 'success' });
   party.timeline.push({ id: randomUUID(), at: iso(now - 86_400_000), action: 'event.status_changed', actorType: 'staff', actorId: 's-owner', actorRole: 'owner', before: { status: 'awaiting_confirmation' }, after: { status: 'confirmed' }, reason: null, result: 'success' });
-  void room;
   events.push(party);
 
-  // Заявка с сайта без профиля и без даты, неоплаченный остаток – 0
   events.push(newEvent({ typeCode: 'birthday_party', title: 'Заявка с сайта: праздник', branchId: K, customer: ['Пётр Без Профиля', '+79137654321', null], participants: 6, source: 'site', at: now - 86_400_000 }));
 
   // Заявка, у которой комната держится, пора напомнить
@@ -234,11 +207,22 @@ export function resetEvents(branches: BranchLite[]): void {
   seedLine(birthday, { kind: 'service', name: 'Игровое время', priceKop: 300_000 });
   events.push(birthday);
 
-  // Чужая зона: Томск
   events.push(newEvent({ typeCode: 'program', title: 'Турнир в Томске', branchId: 'b-tsk-lenina', start: zoned(weekday(8), '12:00', 'Asia/Tomsk'), end: zoned(weekday(8), '15:00', 'Asia/Tomsk'), customer: ['Томский клуб', '+79130002233', null], at: now - 4 * 86_400_000 }));
 }
 
+/** Предоплата праздника в кассу: отдельным шагом спеков мероприятий (POST /__test/event-money) – суммы журнала в спеках кассы не меняются. */
+function seedEventMoney(branches: BranchLite[]): void {
+  const party = events.find((e) => e.number === 'EV-000124')!;
+  const tz = branches.find((b) => b.id === party.branchId)!.timezone;
+  const income = recordMoney({ branchId: party.branchId, timezone: tz, kind: 'income', method: 'card', amountKop: 500_000, source: 'event', ref: { type: 'event', id: party.id }, comment: 'Предоплата', authorId: 's-owner', receiptIssued: true });
+  party.links.push({ operationId: income.id, role: 'income', inCost: false, lineId: null, linkedAt: iso(Date.now()) });
+}
+
 export function registerEvents(app: FastifyInstance, P: string, d: EventsMockDeps): void {
+  app.post('/__test/event-money', async () => {
+    seedEventMoney(d.branches());
+    return { ok: true };
+  });
   const inZone = (s: Staffish, branchId: string) => d.zone(s).network || d.zone(s).branchIds.includes(branchId);
   const canAt = (s: Staffish, action: string, branchId: string) => d.can(s, action) && inZone(s, branchId);
   const seesMoney = (s: Staffish, e: Ev) => canAt(s, 'event.money.view', e.branchId);
@@ -473,7 +457,7 @@ export function registerEvents(app: FastifyInstance, P: string, d: EventsMockDep
       for (const r of e.resources.filter((x) => x.status === 'active')) Object.assign(r, { status: 'released', releaseReason: 'cancelled' });
       e.cancel = { reason: reason!, by: s.id, at: iso(Date.now()) };
       const m = summary(e);
-      needsDecision = { bookingIds: e.bookingIds, giftIds: gifts.filter((g) => g.basisEventId === e.id && g.status !== 'cancelled').map((g) => g.id), dueKop: m.dueKop, ...(seesMoney(s, e) ? { receivedKop: m.receivedKop } : {}) };
+      needsDecision = { bookingIds: e.bookingIds, giftIds: giftIdsOfEvent(e.id), dueKop: m.dueKop, ...(seesMoney(s, e) ? { receivedKop: m.receivedKop } : {}) };
     }
     e.status = to;
     e.rowVersion++;
@@ -810,189 +794,5 @@ export function registerEvents(app: FastifyInstance, P: string, d: EventsMockDep
     return t;
   }));
 
-  // ---- №376–378 подарки
-
-  const giftDto = (g: GiftRec) => ({ ...g, timezone: d.branches().find((b) => b.id === g.issueBranchId)!.timezone });
-  app.get(`${P}/gifts`, read((s, req) => {
-    const q = req.query as { clientId?: string; status?: string };
-    return { items: gifts.filter((g) => canAt(s, 'event.view', g.issueBranchId) && (!q.clientId || g.clientId === q.clientId) && (!q.status || g.status === q.status)).sort((a, b) => (a.issuedOn < b.issuedOn ? 1 : -1)).map(giftDto) };
-  }));
-  app.post(`${P}/gifts`, command('issue', 201, (s, _p, body) => {
-    if (typeof body.clientId !== 'string') throw zodFail('clientId');
-    let branchId: string;
-    let reason: string | null = null;
-    if (body.basisEventId) {
-      const e = events.find((x) => x.id === body.basisEventId);
-      if (!e || !canAt(s, 'event.view', e.branchId)) throw notFound();
-      if (!canAt(s, 'gift.issue', e.branchId)) throw forbidden('gift.issue');
-      const basis = (r: string) => new Fail(422, 'GIFT_BASIS_INVALID', 'Основание – день рождения этого клиента в клубе', { reason: r });
-      if (!['birthday_party', 'birthday'].includes(typeOf(e).code)) throw basis('type');
-      if (e.birthdayClientId !== body.clientId) throw basis('client');
-      if (!['in_progress', 'completed'].includes(e.status)) throw basis('status');
-      branchId = e.branchId;
-    } else {
-      manage(s, 'gift.issue.manual');
-      reason = reasonOf(body);
-      if (!body.branchId) throw invalid('Укажите филиал выдачи', 'branchId');
-      branchId = String(body.branchId);
-    }
-    const branch = d.branches().find((b) => b.id === branchId);
-    if (!branch) throw notFound();
-    const client = d.clients().find((c) => c.id === body.clientId);
-    if (!client || client.status === 'anonymized') throw notFound();
-    const issuedOn = localDate(Date.now(), branch.timezone);
-    if (gifts.some((g) => g.clientId === body.clientId && g.status !== 'cancelled' && g.issuedOn > addDays(issuedOn, -365))) throw new Fail(409, 'GIFT_ALREADY_ISSUED', 'Подарок этому клиенту уже выдан в этом году');
-    void reason;
-    const g: GiftRec = {
-      id: randomUUID(), number: `GF-${String(++giftSeq).padStart(6, '0')}`, clientId: body.clientId, basisEventId: (body.basisEventId as string | null | undefined) ?? null, issuedOn, validUntil: addDays(issuedOn, 60), issueBranchId: branch.id,
-      terms: { devices: 2, device: 'Meta Quest 3S', minutesEach: 30, roomMinutes: 40, weekdays: [1, 2, 3, 4, 5], excludesHolidays: true, notIncluded: ['PS4', 'PS VR', 'food'] }, status: 'issued', bookingId: null, cancelReason: null, rowVersion: 1,
-    };
-    gifts.push(g);
-    return giftDto(g);
-  }));
-  app.post(`${P}/gifts/:id/cancel`, command('cancel', 200, (s, p, body) => {
-    manage(s, 'gift.cancel');
-    const g = gifts.find((x) => x.id === p.id);
-    if (!g) throw notFound();
-    const reason = reasonOf(body);
-    if (g.status !== 'issued') throw new Fail(409, 'GIFT_NOT_ACTIVE', 'Отменить можно только подарок без записи', { status: g.status });
-    Object.assign(g, { status: 'cancelled', cancelReason: reason, rowVersion: g.rowVersion + 1 });
-    return giftDto(g);
-  }));
-
-  const isHoliday = (branch: BranchLite, date: string) => holidays.some((h) => h.status === 'active' && h.date === date && (h.scope === 'network' || h.cityId === branch.cityId));
-  /** assertGiftDay: срок, будни, праздник (K20 §8.2). */
-  function dayClosed(g: GiftRec, branch: BranchLite, date: string): [number, string, string] | null {
-    if (date > g.validUntil) return [409, 'GIFT_EXPIRED', 'Срок подарка истёк'];
-    const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
-    if (dow === 0 || dow === 6) return [422, 'GIFT_WEEKDAY_ONLY', 'Подарок – только с понедельника по пятницу'];
-    if (isHoliday(branch, date)) return [422, 'GIFT_HOLIDAY', 'В праздничный день подарок не действует'];
-    return null;
-  }
-  const GIFT_UNITS = () => [...(opsState().composition['res-vr1'] ?? []), ...(opsState().composition['res-vr2'] ?? [])];
-  app.get(`${P}/gifts/:id/slots`, read((s, req) => {
-    const q = req.query as { branchId?: string; date?: string };
-    if (!q.branchId || !q.date) throw zodFail('branchId');
-    const g = gifts.find((x) => x.id === idOf(req));
-    if (!g || !canAt(s, 'event.view', q.branchId)) throw notFound();
-    const branch = d.branches().find((b) => b.id === q.branchId);
-    if (!branch) throw notFound();
-    const closedBy = dayClosed(g, branch, q.date);
-    if (closedBy) return { date: q.date, closedReason: closedBy[1], slots: [] };
-    const today = localDate(Date.now(), branch.timezone);
-    if (q.date < today || q.date >= addDays(today, 30)) return { date: q.date, closedReason: 'OUTSIDE_BOOKING_WINDOW', slots: [] };
-    if (!opsState().resources.some((r) => r.branchId === branch.id && r.id === 'res-vr1')) return { date: q.date, closedReason: 'RESOURCE_UNAVAILABLE', slots: [] };
-    const h = opsHoursOn(branch.id, q.date, GIFT_UNITS());
-    if (!h) return { date: q.date, closedReason: null, slots: [] };
-    const slots: Array<{ start: string; end: string }> = [];
-    const close = zoned(q.date, h.close === '24:00' ? '23:59' : h.close, branch.timezone);
-    for (let t = zoned(q.date, h.open, branch.timezone); t + 40 * 60_000 <= close; t += 15 * 60_000) {
-      const e = t + 40 * 60_000;
-      if (t <= Date.now() || bookingBusy(branch.id, GIFT_UNITS(), t, e) || eventBusy(branch.id, GIFT_UNITS(), t, e)) continue;
-      slots.push({ start: iso(t), end: iso(e) });
-    }
-    return { date: q.date, closedReason: null, slots };
-  }));
-  app.post(`${P}/gifts/:id/book`, command('book', 201, (s, p, body) => {
-    if (typeof body.branchId !== 'string' || !isMoment(body.start)) throw zodFail('start');
-    const g = gifts.find((x) => x.id === p.id);
-    const branch = d.branches().find((b) => b.id === body.branchId);
-    if (!g || !branch || !canAt(s, 'event.view', branch.id)) throw notFound();
-    if (!canAt(s, 'gift.book', branch.id)) throw forbidden('gift.book');
-    if (body.clientId && body.clientId !== g.clientId) throw new Fail(422, 'GIFT_CLIENT_MISMATCH', 'Записать можно только самого именинника');
-    if (g.status === 'reserved') throw new Fail(409, 'GIFT_ALREADY_RESERVED', 'По подарку уже есть запись');
-    if (g.status !== 'issued') throw new Fail(409, 'GIFT_NOT_ACTIVE', 'Подарок уже не активен');
-    const start = Date.parse(body.start);
-    const closedBy = dayClosed(g, branch, localDate(start, branch.timezone));
-    if (closedBy) throw new Fail(closedBy[0], closedBy[1], closedBy[2]);
-    const end = start + 40 * 60_000;
-    if (bookingBusy(branch.id, GIFT_UNITS(), start, end) || eventBusy(branch.id, GIFT_UNITS(), start, end)) throw new Fail(409, 'SLOT_TAKEN', 'Это время уже занято');
-    const b = addGiftBooking({ branchId: branch.id, clientId: g.clientId, start, end, comment: (body.comment as string | undefined) ?? null, unitIds: GIFT_UNITS() });
-    Object.assign(g, { status: 'reserved', bookingId: b.id, rowVersion: g.rowVersion + 1 });
-    return b;
-  }));
-
-  // ---- №379 праздничный календарь
-
-  app.get(`${P}/holidays`, read((s, req) => {
-    anyZone(s);
-    const q = req.query as { from?: string; to?: string; cityId?: string; includeCancelled?: string };
-    return { items: holidays.filter((h) => (!q.from || h.date >= q.from) && (!q.to || h.date <= q.to) && (!q.cityId || h.scope === 'network' || h.cityId === q.cityId) && (q.includeCancelled === 'true' || h.status === 'active')).sort((a, b) => (a.date < b.date ? -1 : 1)) };
-  }));
-  app.post(`${P}/holidays`, command('holiday.set', 201, (s, _p, body) => {
-    manage(s, 'holiday.manage');
-    const name = typeof body.name === 'string' ? body.name.trim() : '';
-    if (!['network', 'city'].includes(String(body.scope)) || !name || !/^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) throw zodFail('date');
-    const scope = body.scope as 'network' | 'city';
-    const cityId = scope === 'city' ? ((body.cityId as string | null | undefined) ?? null) : null;
-    if (scope === 'city' && !cityId) throw invalid('Укажите город', 'cityId');
-    const same = holidays.find((h) => h.status === 'active' && h.scope === scope && h.cityId === cityId && h.date === body.date);
-    if (same) return same;
-    const h: HolidayRec = { id: randomUUID(), scope, cityId, date: String(body.date), name, status: 'active' };
-    holidays.push(h);
-    return h;
-  }));
-  app.post(`${P}/holidays/:id/cancel`, command('holiday.cancel', 200, (s, p, body) => {
-    manage(s, 'holiday.manage');
-    const reason = reasonOf(body);
-    void reason;
-    const h = holidays.find((x) => x.id === p.id && x.status === 'active');
-    if (!h) throw notFound();
-    h.status = 'cancelled';
-    return h;
-  }));
-
-  // ---- №337, №349 справочники оборудования (если их не поставил мок оборудования)
-
-  const orphan = (method: 'GET' | 'POST' | 'PATCH', url: string) => !app.hasRoute({ method, url });
-  const view = (s: Staffish) => {
-    if (!d.can(s, 'equipment.view')) throw forbidden('equipment.view');
-  };
-  if (orphan('GET', `${P}/equipment-categories`)) {
-    app.get(`${P}/equipment-categories`, read((s) => {
-      view(s);
-      return { items: [...categories].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)) };
-    }));
-    app.post(`${P}/equipment-categories`, command('category.create', 201, (s, _p, body) => {
-      manage(s, 'equipment.category.manage');
-      const name = typeof body.name === 'string' ? body.name.trim() : '';
-      if (!name) throw zodFail('name');
-      if (categories.some((c) => c.name === name)) throw invalid('Категория с таким названием уже есть', 'name');
-      const c: Category = { id: randomUUID(), name, sortOrder: (body.sortOrder as number | undefined) ?? 0, status: 'active' };
-      categories.push(c);
-      return c;
-    }));
-    app.patch(`${P}/equipment-categories/:id`, command('category.update', 200, (s, p, body) => {
-      manage(s, 'equipment.category.manage');
-      const c = categories.find((x) => x.id === p.id);
-      if (!c) throw notFound();
-      if (typeof body.name === 'string' && body.name.trim() !== c.name && categories.some((x) => x.name === body.name && x.id !== c.id)) throw invalid('Категория с таким названием уже есть', 'name');
-      Object.assign(c, typeof body.name === 'string' ? { name: body.name.trim() } : {}, body.sortOrder !== undefined ? { sortOrder: body.sortOrder } : {}, body.status ? { status: body.status } : {});
-      return c;
-    }));
-  }
-  if (orphan('GET', `${P}/repair-executors`)) {
-    app.get(`${P}/repair-executors`, read((s, req) => {
-      view(s);
-      const q = req.query as { includeArchived?: string };
-      return { items: executors.filter((x) => q.includeArchived === 'true' || x.status === 'active').sort((a, b) => a.name.localeCompare(b.name)) };
-    }));
-    app.post(`${P}/repair-executors`, command('executor.create', 201, (s, _p, body) => {
-      manage(s, 'repair.executor.manage');
-      const name = typeof body.name === 'string' ? body.name.trim() : '';
-      if (!name || !['staff', 'contractor', 'service_center', 'manufacturer'].includes(String(body.kind))) throw zodFail('name');
-      const x: Executor = { id: randomUUID(), kind: String(body.kind), name, staffId: null, contactPerson: (body.contactPerson as string | null | undefined) ?? null, phone: (body.phone as string | null | undefined) ?? null, email: (body.email as string | null | undefined) ?? null, address: null, inn: null, comment: (body.comment as string | null | undefined) ?? null, status: 'active', rowVersion: 1 };
-      executors.push(x);
-      return x;
-    }));
-    app.patch(`${P}/repair-executors/:id`, command('executor.update', 200, (s, p, body) => {
-      manage(s, 'repair.executor.manage');
-      const x = executors.find((y) => y.id === p.id);
-      if (!x) throw notFound();
-      assertVersion(x, body);
-      for (const f of ['kind', 'name', 'contactPerson', 'phone', 'email', 'comment', 'status'] as const) if (body[f] !== undefined) Object.assign(x, { [f]: body[f] });
-      x.rowVersion++;
-      return x;
-    }));
-  }
+  registerGifts(app, P, d, { command, read, canAt, manage, reasonOf, eventBusy, assertVersion, idOf, basisOf: (id) => { const e = events.find((x) => x.id === id); return e ? { branchId: e.branchId, typeCode: typeOf(e).code, birthdayClientId: e.birthdayClientId, status: e.status } : undefined; } });
 }

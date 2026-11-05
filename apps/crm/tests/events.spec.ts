@@ -2,10 +2,11 @@
 // event.money.view, создание без брони и профиля. Администратор – только остаток к оплате, ни одной суммы себестоимости. 1440 и 390.
 import { expect, test } from '@playwright/test';
 import { login, noHorizontalScroll, open, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
+import { MOCK } from './event-helpers.ts';
 
 test.describe.configure({ mode: 'serial' });
 test.beforeAll(async ({ request }) => resetMock(request));
-test.afterAll(async ({ request }) => resetMock(request));
+test.afterAll(async ({ request }) => { await request.post(`${MOCK}/__test/reset`); });
 
 const rows = (page: import('@playwright/test').Page) => page.getByTestId('event-list').locator('tbody tr');
 

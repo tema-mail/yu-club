@@ -7,6 +7,7 @@ export const SHOTS = process.env.SCREENSHOT_DIR ?? 'test-results/screens';
 
 export async function resetMock(request: APIRequestContext) {
   expect((await request.post(`${MOCK}/__test/reset`)).ok()).toBe(true);
+  expect((await request.post(`${MOCK}/__test/event-money`)).ok()).toBe(true);
 }
 export async function login(page: Page, email: string) {
   await page.goto('/login');

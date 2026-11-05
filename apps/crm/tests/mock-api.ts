@@ -642,7 +642,7 @@ export function buildMock() {
   audit = seedClientAudit();
 
   app.addHook('preHandler', async (req, reply) => {
-    if (req.url.startsWith(`${P}/auth/login`) || req.url === '/__test/reset') return;
+    if (req.url.startsWith(`${P}/auth/login`) || req.url.startsWith('/__test/')) return;
     const s = currentStaff(req);
     if (!s) return fail(reply, 401, 'AUTH_REQUIRED', 'Нужно войти');
     const allowed = [`${P}/auth/session`, `${P}/auth/password`, `${P}/auth/logout`, `${P}/me`];
