@@ -1,10 +1,15 @@
 // S2-80. Ночная сверка 16 §14 (модуль reports, ADR 0002 п.1: чужие данные – только чтение через представления rpt_*
-// модулей-владельцев, миграция 0211). Пять проверок одним снимком базы (REPEATABLE READ, READ ONLY):
+// модулей-владельцев, миграции 0211, 0311). Все проверки – одним снимком базы (REPEATABLE READ, READ ONLY):
 //   ledger_balance      – verifyBalance всех счетов K3: кэш balance = сумма записей счёта;
 //   loyalty_points      – Σ remaining активных партий клиента = max(0, баланс баллов) (K15 §2);
 //   loyalty_batch       – кэш remaining партии = amount + Σ движений партии (K15 §2);
 //   certificate_balance – остаток сертификата = номинал − погашения − сгорание ± корректировки (K16 §1; отменённый – 0);
-//   cash_place          – остаток места денег филиала (наличные, безнал) = Σ операций кассы по этому месту (K17 §2).
+//   cash_place          – остаток места денег филиала (наличные, безнал) = Σ операций кассы по этому месту (K17 §2);
+// S3-95, сущности Э3 (представления 0311):
+//   payroll_accrual     – начисление смены K3 = формула по минутам и ставке (K18 §3; смены с событием в очереди не считаются);
+//   payroll_balance     – Σ записей счёта сотрудника = баланс (счета staff_payroll вынесены из ledger_balance, чтобы не писать дважды);
+//   event_expense, repair_expense – расходы объекта = связанные живые операции (K17 §14);
+//   operation_link      – одна операция – одна живая связь, на существующий объект, с ролью по виду операции, в её филиале.
 // Результат – строка app.reconcile_runs и по строке journal.reconcile_discrepancies на расхождение; каждое расхождение –
 // в лог уровнем error (17 §13). Сверка ничего не исправляет: исправление – корректировкой модуля-владельца.
 //
@@ -15,7 +20,7 @@ import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { instantToLocal, isValidTimeZone, parseLocalTime, systemClock, type Clock, type LocalDate, type LocalTime, type TimeZone } from '../../core/time.ts';
 
-export const CHECKS = ['ledger_balance', 'loyalty_points', 'loyalty_batch', 'certificate_balance', 'cash_place'] as const;
+export const CHECKS = ['ledger_balance', 'loyalty_points', 'loyalty_batch', 'certificate_balance', 'cash_place', 'payroll_accrual', 'payroll_balance', 'event_expense', 'repair_expense', 'operation_link'] as const;
 export type ReconcileCheck = (typeof CHECKS)[number];
 
 export const DEFAULT_RECONCILE_AT = '03:30' as LocalTime;
@@ -23,7 +28,7 @@ export const DEFAULT_RECONCILE_TZ = 'Europe/Moscow' as TimeZone;
 
 export interface Discrepancy {
   check: ReconcileCheck;
-  objectType: 'ledger_account' | 'client' | 'loyalty_batch' | 'certificate' | 'branch';
+  objectType: 'ledger_account' | 'client' | 'loyalty_batch' | 'certificate' | 'branch' | 'shift' | 'staff' | 'event' | 'repair' | 'finance_operation';
   objectId: string;
   branchId: string | null;
   /** Что должно быть по первичным данным. */
@@ -60,7 +65,7 @@ export async function findDiscrepancies(db: Queryable): Promise<{ checked: Recor
   const count = async (view: string): Promise<number> => num((await db.query<{ n: string }>(`SELECT count(*) AS n FROM app.${view}`)).rows[0]!.n);
 
   const ledger = await db.query<{ account_id: string; kind: string; branch_id: string | null; owner_type: string; owner_id: string; balance: string; entries_sum: string }>(
-    `SELECT account_id, kind, branch_id, owner_type, owner_id, balance, entries_sum FROM app.rpt_ledger_balances WHERE balance <> entries_sum ORDER BY account_id`,
+    `SELECT account_id, kind, branch_id, owner_type, owner_id, balance, entries_sum FROM app.rpt_ledger_balances WHERE balance <> entries_sum AND kind <> 'staff_payroll' ORDER BY account_id`,
   );
   for (const r of ledger.rows) {
     out.push({
@@ -118,14 +123,72 @@ export async function findDiscrepancies(db: Queryable): Promise<{ checked: Recor
     });
   }
 
+  out.push(...(await findE3Discrepancies(db)));
+
+  const countWhere = async (from: string, where: string): Promise<number> => num((await db.query<{ n: string }>(`SELECT count(*) AS n FROM app.${from} WHERE ${where}`)).rows[0]!.n);
   const checked: Record<ReconcileCheck, number> = {
-    ledger_balance: await count('rpt_ledger_balances'),
+    ledger_balance: await countWhere('rpt_ledger_balances', `kind <> 'staff_payroll'`),
     loyalty_points: await count('rpt_loyalty_points'),
     loyalty_batch: await count('rpt_loyalty_batches'),
     certificate_balance: await count('rpt_certificate_balances'),
     cash_place: await count('rpt_cash_places'),
+    payroll_accrual: await countWhere('rpt_payroll_accruals', 'NOT pending'),
+    payroll_balance: await countWhere('rpt_ledger_balances', `kind = 'staff_payroll'`),
+    event_expense: await countWhere('rpt_object_expenses', `ref_type = 'event'`),
+    repair_expense: await countWhere('rpt_object_expenses', `ref_type = 'repair'`),
+    operation_link: await count('rpt_operation_links'),
   };
   return { checked, discrepancies: out };
+}
+
+/** S3-95: проверки сущностей Э3 (16 §14 «начисление воспроизводится», «расходы мероприятия совпадают со связанными операциями»). */
+async function findE3Discrepancies(db: Queryable): Promise<Discrepancy[]> {
+  const out: Discrepancy[] = [];
+  const accruals = await db.query<{
+    shift_id: string; staff_id: string; branch_id: string; status: string; paid_minutes: number | null; rate_id: string | null; fact_version: number;
+    expected_hourly_kop: string; expected_fee_kop: string; accrued_kop: string;
+  }>(
+    `SELECT shift_id, staff_id, branch_id, status, paid_minutes, rate_id, fact_version, expected_hourly_kop, expected_fee_kop, accrued_kop
+     FROM app.rpt_payroll_accruals
+     WHERE NOT pending AND accrued_kop NOT IN (expected_hourly_kop, expected_hourly_kop + expected_fee_kop)
+     ORDER BY shift_id`,
+  );
+  for (const r of accruals.rows) {
+    out.push({
+      check: 'payroll_accrual', objectType: 'shift', objectId: r.shift_id, branchId: r.branch_id,
+      expected: num(r.expected_hourly_kop) + num(r.expected_fee_kop), actual: num(r.accrued_kop),
+      details: { staffId: r.staff_id, status: r.status, paidMinutes: r.paid_minutes, rateId: r.rate_id, factVersion: r.fact_version, hourlyKop: num(r.expected_hourly_kop), feeKop: num(r.expected_fee_kop) },
+    });
+  }
+
+  const payroll = await db.query<{ account_id: string; owner_id: string; balance: string; entries_sum: string }>(
+    `SELECT account_id, owner_id, balance, entries_sum FROM app.rpt_ledger_balances WHERE kind = 'staff_payroll' AND balance <> entries_sum ORDER BY owner_id`,
+  );
+  for (const r of payroll.rows) {
+    out.push({ check: 'payroll_balance', objectType: 'staff', objectId: r.owner_id, branchId: null, expected: num(r.entries_sum), actual: num(r.balance), details: { accountId: r.account_id } });
+  }
+
+  const expenses = await db.query<{ ref_type: 'event' | 'repair'; ref_id: string; branch_id: string | null; operations_kop: string; links_kop: string }>(
+    `SELECT ref_type, ref_id, branch_id, operations_kop, links_kop FROM app.rpt_object_expenses WHERE operations_kop <> links_kop ORDER BY ref_type, ref_id`,
+  );
+  for (const r of expenses.rows) {
+    out.push({
+      check: r.ref_type === 'event' ? 'event_expense' : 'repair_expense', objectType: r.ref_type, objectId: r.ref_id, branchId: r.branch_id,
+      expected: num(r.operations_kop), actual: num(r.links_kop), details: {},
+    });
+  }
+
+  const links = await db.query<{ operation_id: string; branch_id: string; live_links: string; issue: string; ref_type: string; ref_id: string; role: string; kind: string }>(
+    `SELECT DISTINCT ON (operation_id) operation_id, branch_id, live_links, issue, ref_type, ref_id, role, kind FROM app.rpt_operation_links
+     WHERE issue IS NOT NULL ORDER BY operation_id, link_id`,
+  );
+  for (const r of links.rows) {
+    out.push({
+      check: 'operation_link', objectType: 'finance_operation', objectId: r.operation_id, branchId: r.branch_id, expected: 1, actual: num(r.live_links),
+      details: { issue: r.issue, refType: r.ref_type, refId: r.ref_id, role: r.role, kind: r.kind },
+    });
+  }
+  return out;
 }
 
 async function inTx<T>(pool: Pool, begin: string, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {

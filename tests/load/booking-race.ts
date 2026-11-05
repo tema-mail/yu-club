@@ -65,6 +65,7 @@ async function main(): Promise<void> {
   let failed = false;
   try {
     await admin.query(`CREATE ROLE yu_app NOLOGIN`);
+    await admin.query(`CREATE ROLE yu_reports NOLOGIN`); // без неё миграция 0406 останавливается
     await admin.query(`CREATE DATABASE yu_load`);
     await admin.end();
     const dbUrl = adminUrl.replace(/\/postgres$/, '/yu_load');

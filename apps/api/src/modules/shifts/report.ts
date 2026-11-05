@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import type { Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { can, roleAllows, type AccessContext } from '../../core/permissions.ts';
+import { can, hasAction, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { addDays, parseLocalDate, systemClock, type Clock, type LocalDate } from '../../core/time.ts';
 import { payrollDateSql } from './accrual.ts';
 import { coverage, MAX_COVERAGE_DAYS } from './coverage.ts';
@@ -118,7 +118,8 @@ async function resolveBranches(db: Db, ctx: AccessContext, q: z.infer<typeof que
     list = list ? list.filter((id) => inCity.includes(id)) : inCity;
   }
   if (list) return list;
-  return ctx.network ? null : [...ctx.branchIds];
+  const scope = scopeFilter(ctx, 'payroll.view');
+  return scope.kind === 'all' ? null : scope.kind === 'branches' ? scope.branchIds : [];
 }
 
 interface EntryRow {
@@ -150,7 +151,7 @@ async function countGaps(db: Db, ctx: AccessContext, branches: string[] | null, 
 }
 
 export async function payrollReport(db: Db, ctx: AccessContext, raw: unknown, clock: Clock = systemClock): Promise<PayrollReport> {
-  if (!roleAllows(ctx.role, 'payroll.view')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'payroll.view' });
+  if (!hasAction(ctx, 'payroll.view')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'payroll.view' });
   const parsed = querySchema.safeParse(raw ?? {});
   if (!parsed.success) throw new AppError('VALIDATION_FAILED', 400, 'Неверные данные запроса', { issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })) });
   const q = parsed.data;
