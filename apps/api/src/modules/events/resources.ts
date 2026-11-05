@@ -128,6 +128,19 @@ export async function releaseResource(tx: Tx, ctx: AccessContext, eventId: strin
   await releaseOne(tx, e, input.eventResourceId, requireReason(input.reason), clock.now(), meta, clock);
 }
 
+/** Перенос двигает всё занятое: каждая активная строка один раз, период ресурса внутри новых дат (K20 §4). Иначе комната осталась бы на старом времени. */
+async function assertMoveCoversResources(tx: Db, eventId: string, input: { plannedStart: Date; plannedEnd: Date; resources: Array<{ eventResourceId: string; start: Date; end: Date }> }): Promise<void> {
+  const invalid = (reason: string, eventResourceIds: string[]) => new AppError('EVENT_MOVE_RESOURCES_INVALID', 422, 'Перенос должен двигать все занятые ресурсы и держать их внутри новых дат', { reason, eventResourceIds });
+  const listed = input.resources.map((x) => x.eventResourceId);
+  const repeated = listed.filter((id, i) => listed.indexOf(id) !== i);
+  if (repeated.length > 0) throw invalid('duplicate', [...new Set(repeated)]);
+  const active = await tx.query<{ id: string }>(`SELECT id FROM app.event_resources WHERE event_id = $1 AND status = 'active' ORDER BY id`, [eventId]);
+  const missing = active.rows.map((x) => x.id).filter((id) => !listed.includes(id));
+  if (missing.length > 0) throw invalid('missing', missing);
+  const outside = input.resources.filter((x) => x.start.getTime() < input.plannedStart.getTime() || x.end.getTime() > input.plannedEnd.getTime());
+  if (outside.length > 0) throw invalid('outside_planned', outside.map((x) => x.eventResourceId));
+}
+
 /** Перенос (K20 §4, 11 §10): всё в транзакции вызывающего; конфликт нового времени откатывает её – прежнее время цело. */
 export async function moveEvent(tx: Tx, ctx: AccessContext, eventId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<EventDto> {
   const input = parseBody(moveSchema, raw);
@@ -137,6 +150,7 @@ export async function moveEvent(tx: Tx, ctx: AccessContext, eventId: string, raw
   const reason = requireReason(input.reason);
   periodOf(input.plannedStart, input.plannedEnd);
   const now = clock.now();
+  await assertMoveCoversResources(tx, e.id, input);
   const moved: Array<{ eventResourceId: string; resourceId: string; start: Date; end: Date }> = [];
   for (const item of input.resources) {
     await activeRow(tx, e.id, item.eventResourceId);

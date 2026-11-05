@@ -105,7 +105,7 @@ export function moveEvent(tx, ctx, eventId, input: { rowVersion; plannedStart; p
 
   TC-13: «непрерывный блок VR+PS4 минимум 120 минут, гости 1–10, стол отдельно; неподтверждённая цена не рассчитывается».
 - Тарифы K6 `quote` для мероприятий не вызываются никогда (решение: стоимость мероприятия – строки состава, 11 §7.1; тариф брони – про сеанс).
-- `moveEvent` (перенос, 11 §10): в одной транзакции `release(old)` → `occupy(new)`; конфликт нового интервала откатывает всё – старое время остаётся (16 §9 «если недоступен, исходная остаётся»). История старой даты – аудит `event.rescheduled`.
+- `moveEvent` (перенос, 11 §10): в одной транзакции `release(old)` → `occupy(new)`; конфликт нового интервала откатывает всё – старое время остаётся (16 §9 «если недоступен, исходная остаётся»). История старой даты – аудит `event.rescheduled`. `resources` обязан содержать каждую активную строку `event_resources` ровно один раз, период каждого ресурса – внутри новых `plannedStart…plannedEnd`; иначе `EVENT_MOVE_RESOURCES_INVALID` (422, `details.reason`: `missing`, `duplicate`, `outside_planned`) и откат: дата не уезжает от комнаты. Пустой список допустим, только если занятых ресурсов нет (ревизия 05.11).
 
 ## 5. Чек-лист (11 §6)
 
@@ -386,6 +386,7 @@ CREATE UNIQUE INDEX gift_uses_one_live ON app.gift_uses (gift_id) WHERE status I
 | `EVENT_NOT_READY` | 422 | подтверждение без даты, филиала, состава (`details.fields`) |
 | `EVENT_TRANSITION_INVALID` | 409 | переход не по таблице §2 |
 | `EVENT_CLOSED` | 409 | правка состава/ресурсов в конечном статусе |
+| `EVENT_MOVE_RESOURCES_INVALID` | 422 | перенос не покрывает все активные ресурсы или период вне новых дат (§4) |
 | `PARTY_RESOURCE_INVALID`, `PARTY_TOO_SHORT`, `PARTY_GUESTS_LIMIT`, `PARTY_FORMAT_MISMATCH` | 422 | правила праздника §4 (TC-13) |
 | `EVENT_REFUND_EXCEEDS_INCOME` | 409 | возврат больше поступления |
 | `OPERATION_ALREADY_LINKED`, `OPERATION_LINK_INVALID` | 409 / 422 | связь операции (§11) |

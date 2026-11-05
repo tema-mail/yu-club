@@ -168,6 +168,53 @@ describe('S3-52: снятие и перенос', () => {
   });
 });
 
+describe('Ревизия: перенос не оставляет комнату на старом времени (K20 §4)', () => {
+  const moveWith = (e: EventDto, rowVersion: number, plannedStart: string, plannedEnd: string, resources: Array<Record<string, unknown>>) =>
+    tx((c) => moveEvent(c, owner, e.id, { rowVersion, plannedStart, plannedEnd, reason: 'перенос', resources }, meta(), clock));
+  const state = async (e: EventDto, rowId: string) => ({
+    planned: (await one('SELECT planned_start AS s FROM app.events WHERE id = $1', [e.id])).s.toISOString(),
+    room: (await one('SELECT lower(period) AS s FROM app.event_resources WHERE id = $1', [rowId])).s.toISOString(),
+    occupied: (await eventOccupancy(pool, rowId))[0]!.start.toISOString(),
+    version: (await one('SELECT row_version FROM app.events WHERE id = $1', [e.id])).row_version,
+  });
+  const OLD = '2026-11-25T04:00:00.000Z';
+
+  it('resources: [] при занятой комнате – 422 EVENT_MOVE_RESOURCES_INVALID, ни дата, ни комната не сдвинулись', async () => {
+    const e = await party();
+    const { eventResourceId } = await reserve(e, OLD, '2026-11-25T06:00:00.000Z');
+    const before = await state(e, eventResourceId);
+    let err: unknown;
+    await moveWith(e, before.version, '2026-11-25T08:00:00Z', '2026-11-25T10:00:00Z', []).catch((x: unknown) => { err = x; });
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).code).toBe('EVENT_MOVE_RESOURCES_INVALID');
+    expect((err as AppError).httpStatus).toBe(422);
+    expect((err as AppError).details).toMatchObject({ reason: 'missing', eventResourceIds: [eventResourceId] });
+    expect(await state(e, eventResourceId)).toEqual(before);
+  });
+  it('неполный список – отказ и откат: первая строка тоже остаётся на старом времени', async () => {
+    const e = await tx((c) => createEvent(c, owner, { typeId: types.group_visit, branchId: ids.branch, customer: { name: 'А', phone: '+79131234567' } }, meta(), clock));
+    const a = await reserve(e, '2026-11-26T04:00:00.000Z', '2026-11-26T05:00:00.000Z', ids.vr1);
+    const b = await reserve(e, '2026-11-26T04:00:00.000Z', '2026-11-26T05:00:00.000Z', ids.vr2);
+    const before = await state(e, a.eventResourceId);
+    const code = await codeOf(moveWith(e, before.version, '2026-11-26T08:00:00Z', '2026-11-26T09:00:00Z', [{ eventResourceId: a.eventResourceId, resourceId: ids.vr1, start: '2026-11-26T08:00:00Z', end: '2026-11-26T09:00:00Z' }]));
+    expect(code).toBe('EVENT_MOVE_RESOURCES_INVALID');
+    expect(await state(e, a.eventResourceId)).toEqual(before);
+    expect((await state(e, b.eventResourceId)).room).toBe('2026-11-26T04:00:00.000Z');
+  });
+  it('одна строка дважды – отказ; период ресурса вне planned – отказ; внутри planned – проходит; без занятых ресурсов [] допустимо', async () => {
+    const e = await party();
+    const { eventResourceId } = await reserve(e, '2026-11-27T04:00:00.000Z', '2026-11-27T06:00:00.000Z');
+    const v = (await state(e, eventResourceId)).version;
+    const item = { eventResourceId, resourceId: ids.whole, start: '2026-11-27T08:00:00Z', end: '2026-11-27T10:00:00Z' };
+    expect(await codeOf(moveWith(e, v, '2026-11-27T08:00:00Z', '2026-11-27T10:00:00Z', [item, item]))).toBe('EVENT_MOVE_RESOURCES_INVALID');
+    expect(await codeOf(moveWith(e, v, '2026-11-27T08:00:00Z', '2026-11-27T09:30:00Z', [item]))).toBe('EVENT_MOVE_RESOURCES_INVALID');
+    expect((await state(e, eventResourceId)).room).toBe('2026-11-27T04:00:00.000Z');
+    expect((await moveWith(e, v, '2026-11-27T07:30:00Z', '2026-11-27T10:30:00Z', [item])).plannedStart).toBe('2026-11-27T07:30:00.000Z');
+    const free = await party({ plannedStart: '2026-11-28T04:00:00.000Z', plannedEnd: '2026-11-28T06:00:00.000Z' });
+    expect((await moveWith(free, free.rowVersion, '2026-11-28T08:00:00Z', '2026-11-28T10:00:00Z', [])).plannedStart).toBe('2026-11-28T08:00:00.000Z');
+  });
+});
+
 describe('S3-52: удержание под new_request', () => {
   it('за 24 ч – отметка, по истечении 48 ч снято один раз с причиной, мероприятие осталось new_request', async () => {
     await db.client.query(`UPDATE app.events SET status = 'negotiation' WHERE status = 'new_request'`); // чужие удержания предыдущих проверок
