@@ -68,7 +68,7 @@ FROM app.ledger_accounts a
 WHERE a.kind = 'loyalty_client' AND a.owner_type = 'client';
 
 CREATE VIEW app.rpt_certificate_ops AS
-SELECT c.id AS certificate_id, c.number, c.sale_branch_id,
+SELECT e.id AS entry_id, c.id AS certificate_id, c.number, c.sale_branch_id,
        CASE coalesce(o.entry_type, e.entry_type)
          WHEN 'certificate.issue' THEN CASE WHEN e.entry_type = 'reversal' THEN 'cancel' ELSE 'sale' END
          WHEN 'certificate.redeem' THEN CASE WHEN e.entry_type = 'reversal' THEN 'redeem_return' ELSE 'redeem' END
