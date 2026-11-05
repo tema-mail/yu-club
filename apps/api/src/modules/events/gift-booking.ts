@@ -15,11 +15,10 @@ import { resolveSetting } from '../../core/settings.ts';
 import { durationMinutes, instantToLocal, systemClock, todayIn, type Clock, type LocalDate, type TimeZone } from '../../core/time.ts';
 import { createStaffBooking } from '../booking/change.ts';
 import { createHold, registerServiceGrant, type GrantCheck, type HoldDto, type HoldOwner } from '../booking/hold.ts';
-import { paymentBookingProvider } from '../booking/providers.ts';
+import { deadHoldIds, paymentBookingProvider } from '../booking/providers.ts';
 import { lockClients } from '../clients/index.ts';
 import { isHoliday } from '../network/holidays.ts';
-import { expandToUnits } from '../resources/index.ts';
-import { listUnits } from '../resources/composite.ts';
+import { activeResourceOfType, expandToUnits, listUnits } from '../resources/index.ts';
 import { notFound, UUID_RE } from './events.ts';
 import { getGiftRow, type GiftRow } from './gifts.ts';
 
@@ -124,9 +123,7 @@ export function registerGiftGrant(): void {
 
 /** Подарочный ресурс филиала (K20 §8.2; создаёт ensureGiftResource, S3-62). Использовать подарок можно в любом филиале с ним (Q-114). */
 export async function giftResourceOf(db: Db, branchId: string): Promise<{ id: string; roomId: string | null } | null> {
-  const r = await db.query<{ id: string; room_id: string | null }>(`SELECT id, room_id FROM app.resources WHERE branch_id = $1 AND resource_type = $2 AND status = 'active' ORDER BY id LIMIT 1`, [branchId, GIFT_RESOURCE_TYPE]);
-  const row = r.rows[0];
-  return row ? { id: row.id, roomId: row.room_id } : null;
+  return activeResourceOfType(db, branchId, GIFT_RESOURCE_TYPE);
 }
 
 async function requireGiftResource(db: Db, branchId: string): Promise<string> {
@@ -173,11 +170,9 @@ export async function holdGift(tx: Tx, owner: HoldOwner, giftId: string, input: 
 /** Удержание истекло, а задача и обработчик ещё не прошли: подарок не держим – иначе клиент ждал бы воркера. */
 async function healStaleHold(tx: AuditTx, gift: GiftRow, now: Date, clock: Clock): Promise<void> {
   if (gift.status !== 'reserved') return;
-  const r = await tx.query<{ hold_id: string }>(
-    `SELECT u.hold_id FROM app.gift_uses u JOIN app.holds h ON h.id = u.hold_id WHERE u.gift_id = $1 AND u.status = 'held' AND (h.status <> 'active' OR h.expires_at <= $2)`,
-    [gift.id, now],
-  );
-  if (r.rows[0]) await releaseByHold(tx, r.rows[0].hold_id, now, SYSTEM_META, clock);
+  const r = await tx.query<{ hold_id: string }>(`SELECT hold_id FROM app.gift_uses WHERE gift_id = $1 AND status = 'held' AND hold_id IS NOT NULL`, [gift.id]);
+  const dead = await deadHoldIds(tx, r.rows.map((x) => x.hold_id), now);
+  if (dead[0]) await releaseByHold(tx, dead[0], now, SYSTEM_META, clock);
 }
 
 /** Запись подарка из CRM: бронь сразу (K20 №378). clientId формы, если есть, сверяется с подарком (проверка 8). */

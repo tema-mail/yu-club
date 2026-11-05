@@ -16,7 +16,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { contains, fromPgRange, instantToLocal, interval, systemClock, toPgRange, type Clock, type Interval, type TimeZone } from '../../core/time.ts';
 import { moveEventOccupancy, occupyForEvent, registerEventSourceResolver, releaseEvent } from '../booking/providers.ts';
 import { openIntervals } from '../network/index.ts';
-import { getResource } from '../resources/index.ts';
+import { getResource, type ResourceInfo } from '../resources/index.ts';
 import { assertRowVersion, getEventRow, isClosed, lockEvent, notFound, parseBody, requireReason, toEventDto, UUID_RE, type EventDto, type EventRow } from './events.ts';
 import { assertPartyRules } from './party.ts';
 
@@ -167,8 +167,6 @@ interface ResourceRow {
   id: string;
   event_id: string;
   resource_id: string;
-  name: string;
-  resource_type: string;
   period: string;
   unit_ids: string[];
   status: 'active' | 'released';
@@ -181,12 +179,14 @@ interface ResourceRow {
 /** Ресурсы мероприятия для карточки; у комнаты под new_request – срок и отметка напоминания. */
 export async function listEventResources(db: Db, eventId: string, now: Date): Promise<EventResourceDto[]> {
   const r = await db.query<ResourceRow>(
-    `SELECT er.id, er.event_id, er.resource_id, r.name, r.resource_type, er.period::text, er.unit_ids, er.status, er.release_reason, er.reserved_at, er.request_hold_reminded_at, e.status AS event_status
-       FROM app.event_resources er JOIN app.resources r ON r.id = er.resource_id JOIN app.events e ON e.id = er.event_id
+    `SELECT er.id, er.event_id, er.resource_id, er.period::text, er.unit_ids, er.status, er.release_reason, er.reserved_at, er.request_hold_reminded_at, e.status AS event_status
+       FROM app.event_resources er JOIN app.events e ON e.id = er.event_id
       WHERE er.event_id = $1 ORDER BY lower(er.period), er.id`,
     [eventId],
   );
   const s = await resolveSettings(db, ['event.request_hold_hours', 'event.request_hold_remind_hours'], { network: true }, now);
+  const info = new Map<string, ResourceInfo | null>();
+  for (const id of new Set(r.rows.map((x) => x.resource_id))) info.set(id, await getResource(db, id));
   return r.rows.map((x) => {
     const p = fromPgRange(x.period);
     const held = x.status === 'active' && x.event_status === 'new_request';
@@ -194,8 +194,8 @@ export async function listEventResources(db: Db, eventId: string, now: Date): Pr
       id: x.id,
       eventId: x.event_id,
       resourceId: x.resource_id,
-      resourceName: x.name,
-      resourceType: x.resource_type,
+      resourceName: info.get(x.resource_id)?.name ?? '',
+      resourceType: info.get(x.resource_id)?.type ?? '',
       start: p.start.toISOString(),
       end: p.end.toISOString(),
       unitIds: x.unit_ids,

@@ -224,6 +224,12 @@ function dbError(err: unknown): never {
 
 // ---- команды CRM (транзакцию открывает вызывающий)
 
+/** Есть ли действующий тариф типа в филиале (K20 §8.2: ensureGiftResource). */
+export async function hasActiveTariff(db: Db, branchId: string, resourceType: string): Promise<boolean> {
+  const r = await db.query(`SELECT 1 FROM app.tariffs WHERE branch_id = $1 AND resource_type = $2 AND status = 'active' LIMIT 1`, [branchId, resourceType]);
+  return r.rowCount === 1;
+}
+
 export async function createTariff(tx: Tx, ctx: AccessContext, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<Tariff> {
   const input = parse(createSchema, raw);
   const { cityId } = await guardBranch(tx, ctx, input.branchId, 'tariff.created', null);

@@ -11,9 +11,10 @@ import { AppError } from '../../core/errors.ts';
 import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../core/idempotency.ts';
 import { branchScopeSql, can, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
-import { instantToLocal, localToInstant, parseLocalDate, systemClock, toPgRange, type Clock, type Interval, type LocalDate, type LocalTime } from '../../core/time.ts';
+import { instantToLocal, localToInstant, parseLocalDate, systemClock, type Clock, type Interval, type LocalDate, type LocalTime } from '../../core/time.ts';
 import { bookingWindowOf } from '../booking/availability.ts';
 import { runOccupancyCommand } from '../booking/occupancy.ts';
+import { busyOnUnits } from '../booking/providers.ts';
 import { crmBooking } from '../booking/routes.crm.ts';
 import { authenticateClient, type ClientPublicDeps } from '../clients/routes.public.ts';
 import { cancelHoliday, listHolidays, setHoliday } from '../network/holidays.ts';
@@ -65,13 +66,7 @@ export async function giftSlots(db: Db, gift: GiftRow, branchId: string, rawDate
   const align = (await resolveSetting(db, 'gift.start_align_minutes', { branchId: branch.id }, now)).value;
   const minutes = gift.terms.roomMinutes;
   const day: Interval = { start: open[0]!.start, end: open.at(-1)!.end };
-  const busy = await db.query<{ s: Date; e: Date }>(
-    `SELECT lower(period) AS s, upper(period) AS e FROM app.occupancy
-      WHERE active AND unit_id = ANY($1::uuid[]) AND period && $2::tstzrange AND (hold_expires_at IS NULL OR hold_expires_at > $3)
-     UNION ALL
-     SELECT lower(period), upper(period) FROM app.resource_block_units WHERE active AND unit_id = ANY($1::uuid[]) AND period && $2::tstzrange`,
-    [units.unitIds, toPgRange(day), now],
-  );
+  const busy = await busyOnUnits(db, units.unitIds, day, now);
   const slots: GiftSlots['slots'] = [];
   for (const i of open) {
     const [hh, mm] = instantToLocal(i.start, branch.timezone).time.split(':').map(Number) as [number, number];
@@ -79,7 +74,7 @@ export async function giftSlots(db: Db, gift: GiftRow, branchId: string, rawDate
     for (let t = i.start.getTime() + shift * 60_000; t + minutes * 60_000 <= i.end.getTime(); t += align * 60_000) {
       const end = t + minutes * 60_000;
       if (t <= now.getTime()) continue;
-      if (busy.rows.some((b) => b.s.getTime() < end && b.e.getTime() > t)) continue;
+      if (busy.some((b) => b.s.getTime() < end && b.e.getTime() > t)) continue;
       slots.push({ start: new Date(t).toISOString(), end: new Date(end).toISOString() });
     }
   }
