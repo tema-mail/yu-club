@@ -99,6 +99,27 @@ describe('приход и уход', () => {
   });
 });
 
+describe('порядок блокировок', () => {
+  it('checkOut берёт строку сотрудника, как setAttendance: ждёт команду того же сотрудника', async () => {
+    const date = '2026-12-20' as LocalDate;
+    const { s, self, shift } = await setup(date);
+    await tx((t) => checkIn(t, self, shift.id, meta(self), clockAt(at('10:00', date))));
+    const holder = await pool.connect();
+    await holder.query('BEGIN');
+    await holder.query(`SELECT 1 FROM app.staff WHERE id = $1 FOR NO KEY UPDATE`, [s]);
+    let finished = false;
+    const pending = tx((t) => checkOut(t, self, shift.id, meta(self), clockAt(at('12:00', date)))).then(() => {
+      finished = true;
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(finished).toBe(false);
+    await holder.query('ROLLBACK');
+    holder.release();
+    await pending;
+    expect(finished).toBe(true);
+  });
+});
+
 describe('setAttendance', () => {
   it('ручные минуты без комментария – COMMENT_REQUIRED; с комментарием – worked, источник manual', async () => {
     const { shift } = await setup();

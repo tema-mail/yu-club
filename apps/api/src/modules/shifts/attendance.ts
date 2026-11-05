@@ -116,6 +116,7 @@ export async function checkOut(tx: Tx, ctx: AccessContext, shiftId: string, meta
   const seen = await readShift(tx, shiftId);
   assertOwn(ctx, seen);
   await assertDatesOpen(tx, [seen.local_date as LocalDate]);
+  await tx.query('SELECT 1 FROM app.staff WHERE id = $1 FOR NO KEY UPDATE', [seen.staff_id]); // как setAttendance: команды одного сотрудника – по очереди
   const row = await lockRow(tx, seen.id);
   if (row.status === 'worked' && row.fact_end) return (await getShift(tx, row.id, clock))!; // двойное нажатие
   if (row.status !== 'planned') throw new AppError('SHIFT_NOT_EDITABLE', 409, 'Смена уже не плановая: отметку исправляет руководитель', { status: row.status });
