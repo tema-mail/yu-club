@@ -10,7 +10,9 @@ import {
   type EventCardDto, type EventDto, type EventStatus, type PartyFormat, type TimelineItem,
 } from '../lib/events.ts';
 import { rub } from './CashJournal.tsx';
+import EventChecklist from './EventChecklist.tsx';
 import { ClientPicker, type PickedClient } from './EventForm.tsx';
+import EventLines from './EventLines.tsx';
 import { ReasonDialog, type EventTabProps } from './EventParts.tsx';
 
 export interface EventCardProps {
@@ -329,9 +331,9 @@ export default function EventCard(p: EventCardProps) {
       <section class="yc-panel" id="event-tab" role="tabpanel" aria-labelledby={`tab-${tab}`} data-testid={`tab-${tab}`}>
         {tab === 'main' && <MainTab key={c.rowVersion} {...tabProps} />}
         {tab === 'people' && <PeopleTab key={c.rowVersion} {...tabProps} maxGuests={p.maxGuests} />}
+        {tab === 'lines' && <EventLines {...tabProps} />}
         
-        
-        
+        {tab === 'checklist' && <EventChecklist {...tabProps} />}
         
         
         
