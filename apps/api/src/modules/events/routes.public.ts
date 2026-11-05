@@ -15,7 +15,8 @@ import { authenticateClient, type ClientPublicDeps } from '../clients/routes.pub
 import { normalizePhone, withTx } from '../clients/index.ts';
 import { getBranch, getBranches, isAcceptingBookings } from '../network/index.ts';
 import { listBookableResources } from '../resources/index.ts';
-import { assertPartyGuests, getEventRow, insertEvent, notFound, parseBody, UUID_RE } from './events.ts';
+import { getEventRow, insertEvent, notFound, parseBody, UUID_RE } from './events.ts';
+import { assertPartyGuests } from './party.ts';
 
 const MAX_PER_PHONE_DAY = 5;
 const MAX_PER_IP_HOUR = 30;

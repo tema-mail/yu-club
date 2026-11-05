@@ -11,7 +11,7 @@ import { fixedClock, interval } from '../../apps/api/src/core/time.ts';
 import { createStaffBooking } from '../../apps/api/src/modules/booking/change.ts';
 import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
 import { eventOccupancy, previewBlock, registerEventSourceResolver } from '../../apps/api/src/modules/booking/providers.ts';
-import { changeEventStatus, createEvent, type EventDto } from '../../apps/api/src/modules/events/events.ts';
+import { changeEventStatus, createEvent, updateEvent, type EventDto } from '../../apps/api/src/modules/events/events.ts';
 import { expireRequestHolds, listEventResources, moveEvent, registerEventSources, releaseResource, reserveResource } from '../../apps/api/src/modules/events/resources.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -165,6 +165,36 @@ describe('S3-52: снятие и перенос', () => {
     expect(await codeOf(move('2026-11-24T07:00:00Z', '2026-11-24T09:00:00Z'))).toBe('VERSION_CONFLICT');
     // перенос короче минимума – правила праздника на новом интервале
     expect(await codeOf(move('2026-11-24T07:00:00Z', '2026-11-24T08:00:00Z', m.rowVersion))).toBe('PARTY_TOO_SHORT');
+  });
+});
+
+describe('Ревизия: формат праздника и занятая комната (K20 §4)', () => {
+  const update = (e: { id: string }, rowVersion: number, patch: Record<string, unknown>) => tx((c) => updateEvent(c, owner, e.id, { rowVersion, ...patch }, meta(), clock));
+  const version = async (id: string) => (await one('SELECT row_version FROM app.events WHERE id = $1', [id])).row_version as number;
+  const format = async (id: string) => (await one('SELECT party_format FROM app.events WHERE id = $1', [id])).party_format as string | null;
+  const prepareToConfirm = async (id: string) => {
+    await one(`INSERT INTO app.event_lines (event_id, kind, name, quantity, unit, price_kop) VALUES ($1, 'room_rent', 'Комната', 1, 'шт', 0) RETURNING id`, [id]);
+    for (const to of ['awaiting_confirmation']) await tx(async (c) => changeEventStatus(c, owner, id, { rowVersion: await version(id), to }, meta(), clock));
+  };
+
+  it('смена формата после резервирования: h2 → h3plus при комнате на 120 мин – PARTY_FORMAT_MISMATCH, формат прежний; подходящий проходит', async () => {
+    const e = await party({ party: { format: 'h2', guests: 5 } });
+    await reserve(e, '2026-12-07T07:00:00Z', '2026-12-07T09:00:00Z');
+    const v = await version(e.id);
+    expect(await codeOf(update(e, v, { party: { format: 'h3plus', guests: 5 } }))).toBe('PARTY_FORMAT_MISMATCH');
+    expect(await format(e.id)).toBe('h2');
+    expect(await codeOf(update(e, v, { party: { format: 'h2', guests: 6 } }))).toBe('ok');
+  });
+  it('подтверждение перепроверяет комнату: формат в базе разошёлся с интервалом – PARTY_FORMAT_MISMATCH, статус прежний; без расхождения – confirmed', async () => {
+    const e = await party({ party: { format: 'h2', guests: 5 }, plannedStart: '2026-12-08T07:00:00Z', plannedEnd: '2026-12-08T09:00:00Z' });
+    await reserve(e, '2026-12-08T07:00:00Z', '2026-12-08T09:00:00Z');
+    await prepareToConfirm(e.id);
+    await db.client.query(`UPDATE app.events SET party_format = 'h3plus' WHERE id = $1`, [e.id]);
+    const confirm = async () => tx(async (c) => changeEventStatus(c, owner, e.id, { rowVersion: await version(e.id), to: 'confirmed' }, meta(), clock));
+    expect(await codeOf(confirm())).toBe('PARTY_FORMAT_MISMATCH');
+    expect((await one('SELECT status FROM app.events WHERE id = $1', [e.id])).status).toBe('awaiting_confirmation');
+    await db.client.query(`UPDATE app.events SET party_format = 'h2' WHERE id = $1`, [e.id]);
+    expect(await codeOf(confirm())).toBe('ok');
   });
 });
 

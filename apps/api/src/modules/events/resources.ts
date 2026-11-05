@@ -12,12 +12,13 @@ import { writeAudit, type AuditRequestMeta, type Db, type Tx } from '../../core/
 import { AppError } from '../../core/errors.ts';
 import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import type { AccessContext } from '../../core/permissions.ts';
-import { resolveSetting, resolveSettings } from '../../core/settings.ts';
-import { contains, durationMinutes, fromPgRange, instantToLocal, interval, systemClock, toPgRange, type Clock, type Interval, type TimeZone } from '../../core/time.ts';
+import { resolveSettings } from '../../core/settings.ts';
+import { contains, fromPgRange, instantToLocal, interval, systemClock, toPgRange, type Clock, type Interval, type TimeZone } from '../../core/time.ts';
 import { moveEventOccupancy, occupyForEvent, registerEventSourceResolver, releaseEvent } from '../booking/providers.ts';
 import { openIntervals } from '../network/index.ts';
 import { getResource } from '../resources/index.ts';
-import { assertPartyGuests, assertRowVersion, getEventRow, isClosed, lockEvent, notFound, parseBody, requireReason, toEventDto, UUID_RE, type EventDto, type EventRow } from './events.ts';
+import { assertRowVersion, getEventRow, isClosed, lockEvent, notFound, parseBody, requireReason, toEventDto, UUID_RE, type EventDto, type EventRow } from './events.ts';
+import { assertPartyRules } from './party.ts';
 
 export interface EventResourceDto {
   id: string;
@@ -60,23 +61,6 @@ async function assertInSchedule(db: Db, e: EventRow, r: { id: string; roomId: st
   const open = await openIntervals(db, { branchId: e.branch_id, date: instantToLocal(period.start, e.timezone as TimeZone).date, roomId: r.roomId, resourceId: r.id });
   if (!open.some((i) => contains(i, period))) throw new AppError('OUTSIDE_SCHEDULE', 409, 'В это время филиал не работает');
   return open;
-}
-
-/** Правила платного праздника (K20 §4, TC-13). Гости перепроверяются: настройка могла измениться с момента ввода. */
-async function assertPartyRules(db: Db, e: EventRow, resource: { type: string }, period: Interval, open: Interval[], now: Date): Promise<void> {
-  if (e.type_code !== 'birthday_party') return;
-  if (resource.type !== 'room_whole') throw new AppError('PARTY_RESOURCE_INVALID', 422, 'Праздник проходит только в комнате VR+PS4 целиком', { resourceType: resource.type });
-  const s = await resolveSetting(db, 'event.party.min_minutes', { branchId: e.branch_id }, now);
-  const minutes = durationMinutes(period);
-  if (minutes < s.value) throw new AppError('PARTY_TOO_SHORT', 422, `Праздник – непрерывно не меньше ${s.value} минут`, { minMinutes: s.value });
-  if (e.party_guests !== null) await assertPartyGuests(db, e.branch_id, e.party_guests, now);
-  if (e.participants_count !== null) await assertPartyGuests(db, e.branch_id, e.participants_count, now);
-  const fits =
-    e.party_format === null ||
-    (e.party_format === 'h2' && minutes === 120) ||
-    (e.party_format === 'h3plus' && minutes >= 180) ||
-    (e.party_format === 'full_day' && open.some((i) => i.start.getTime() === period.start.getTime() && i.end.getTime() === period.end.getTime()));
-  if (!fits) throw new AppError('PARTY_FORMAT_MISMATCH', 422, 'Длительность не соответствует формату праздника', { format: e.party_format });
 }
 
 async function checkPlacement(db: Db, e: EventRow, resourceId: string, period: Interval, now: Date): Promise<void> {

@@ -9,11 +9,11 @@ import { diffFields, writeAudit, type AuditRequestMeta, type Db, type Tx } from 
 import { AppError } from '../../core/errors.ts';
 import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { can, type AccessContext, type Action } from '../../core/permissions.ts';
-import { resolveSetting } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { releaseEvent } from '../booking/providers.ts';
 import { maskPhone, normalizePhone } from '../clients/index.ts';
 import { getBranch, type BranchInfo } from '../network/index.ts';
+import { assertPartyGuests, assertRoomsFitParty } from './party.ts';
 
 export const EVENT_STATUSES = ['new_request', 'negotiation', 'awaiting_confirmation', 'confirmed', 'preparing', 'in_progress', 'completed', 'cancelled', 'not_held'] as const;
 export type EventStatus = (typeof EVENT_STATUSES)[number];
@@ -207,12 +207,6 @@ function assertPeriod(start: Date | null | undefined, end: Date | null | undefin
   if (start && end && end.getTime() <= start.getTime()) throw new AppError('VALIDATION_FAILED', 400, 'Конец раньше начала', { field: 'plannedEnd' });
 }
 
-/** Гости праздника (K20 §4): 1…event.party.max_guests. */
-export async function assertPartyGuests(db: Db, branchId: string, guests: number, now: Date): Promise<void> {
-  const max = (await resolveSetting(db, 'event.party.max_guests', { branchId }, now)).value;
-  if (!Number.isInteger(guests) || guests < 1 || guests > max) throw new AppError('PARTY_GUESTS_LIMIT', 422, `Гостей на празднике – от 1 до ${max}`, { max });
-}
-
 async function activeType(db: Db, typeId: string): Promise<{ id: string; code: string; name: string }> {
   const r = await db.query<{ id: string; code: string; name: string }>(`SELECT id, code, name FROM app.event_types WHERE id = $1 AND status = 'active'`, [typeId]);
   if (!r.rows[0]) throw new AppError('VALIDATION_FAILED', 400, 'Тип мероприятия не найден', { field: 'typeId' });
@@ -383,6 +377,8 @@ export async function updateEvent(tx: Tx, ctx: AccessContext, id: string, raw: u
     ],
   );
   const row = (await getEventRow(tx, e.id))!;
+  // занятая комната должна подойти к новому формату: иначе подтверждённый праздник разойдётся с интервалом (K20 §4)
+  if (input.party !== undefined || input.participantsCount !== undefined) await assertRoomsFitParty(tx, row, now);
   const diff = diffFields(auditView(e), auditView(row));
   await writeAudit(tx, meta, { action: 'event.updated', object: { type: 'event', id: e.id }, branchId, before: diff.before, after: diff.after, reason: input.reason?.trim() || null }, clock);
   return toEventDto(row);
@@ -454,6 +450,7 @@ export async function changeEventStatus(tx: Tx, ctx: AccessContext, id: string, 
   if (input.to === 'confirmed') {
     const fields = await notReadyFields(tx, e);
     if (fields.length > 0) throw new AppError('EVENT_NOT_READY', 422, 'Мероприятие нельзя подтвердить: заполнено не всё', { fields });
+    await assertRoomsFitParty(tx, e, now);
   }
   let needsDecision: NeedsDecision | null = null;
   if (cancelling) {
