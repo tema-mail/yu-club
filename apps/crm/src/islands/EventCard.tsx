@@ -16,6 +16,7 @@ import EventLines from './EventLines.tsx';
 import EventMoney from './EventMoney.tsx';
 import { ReasonDialog, type EventTabProps } from './EventParts.tsx';
 import EventResources from './EventResources.tsx';
+import GiftPanel from './GiftPanel.tsx';
 
 export interface EventCardProps {
   initial: EventCardDto;
@@ -338,7 +339,7 @@ export default function EventCard(p: EventCardProps) {
         {tab === 'checklist' && <EventChecklist {...tabProps} />}
         {tab === 'income' && <EventMoney {...tabProps} mode="income" />}
         {tab === 'expenses' && <EventMoney {...tabProps} mode="expense" />}
-        
+        {tab === 'gifts' && <GiftPanel mode="event" eventCard={c} clientId={c.birthdayPerson.clientId} actions={p.actions} branches={p.branches} onChanged={onChanged} />}
         {tab === 'history' && <TimelineView items={c.timeline} tz={tz} staff={p.staff} hasDiff={fullMoney(m)} />}
       </section>
       <ReasonDialog open={closing !== null} title={closing === 'not_held' ? `Мероприятие ${c.number} не состоялось` : `Отменить мероприятие ${c.number}?`} label="Причина" confirm={closing === 'not_held' ? 'Отметить «не состоялось»' : 'Отменить мероприятие'} danger testId="event-close-dialog"
