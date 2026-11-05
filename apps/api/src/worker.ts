@@ -28,6 +28,9 @@ import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
 import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
 import { startCampaignRunner } from './modules/notifications/campaign-runner.ts';
+import { registerGiftHandlers } from './modules/events/gift-booking.ts';
+import { startGiftExpiry } from './modules/events/gifts.ts';
+import { startRequestHoldExpiry } from './modules/events/resources.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
@@ -63,6 +66,8 @@ export async function startWorkerTasks(opts: {
   campaignIntervalMs?: number;
   /** UNSUBSCRIBE_SECRET: без него рекламные строки не уходят (K21 §7). */
   unsubscribeSecret?: string | null;
+  requestHoldIntervalMs?: number;
+  giftExpiryIntervalMs?: number;
   logger?: WorkerLogger;
   /** Ночная сверка (S2-80): время и зона расписания, частота проверки «пора ли»; по умолчанию 03:30 Europe/Moscow, раз в минуту. */
   reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
@@ -79,6 +84,7 @@ export async function startWorkerTasks(opts: {
   const payments = opts.payments ?? paymentLookup;
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
   registerAccrualHandlers({ bookings: paymentBookingProvider, payments, clock });
+  registerGiftHandlers({ clock }); // K20 §8.2: жизненный цикл записи по подарку
   const outbox = await startOutboxWorker({
     pool: opts.pool,
     boss: opts.boss,
@@ -99,6 +105,20 @@ export async function startWorkerTasks(opts: {
     clock,
     intervalMs: opts.certificateIntervalMs ?? 5 * 60_000,
     onError: (err) => logger.error({ err: errText(err) }, 'certificates:expire: проход упал'),
+  });
+  // K20 §4: комната под необработанную заявку – снятие по истечении срока раз в 5 минут
+  const requestHolds = startRequestHoldExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.requestHoldIntervalMs ?? 5 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'events:request-hold-expire: проход упал'),
+  });
+  // K20 §8.1: истечение подарков раз в 10 минут
+  const gifts = startGiftExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.giftExpiryIntervalMs ?? 10 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'events.gift_expire: проход упал'),
   });
   // K15 §2: истечение партий баллов (при loyalty.batch_ttl_days = null проход ничего не делает)
   const loyaltyExpiry = startLoyaltyExpiry({
@@ -148,6 +168,8 @@ export async function startWorkerTasks(opts: {
       reconcile.stop();
       holds.stop();
       certificates.stop();
+      requestHolds.stop();
+      gifts.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
       stopCampaigns();
