@@ -203,13 +203,13 @@ export async function getPeriod(db: Db, id: string): Promise<PayrollPeriodDto | 
   return r.rows[0] ? toPeriod(r.rows[0]) : null;
 }
 
-/** Сотрудники с данными в периоде: смены или записи K3 по датам. */
+/** Сотрудники с данными в периоде: смены или записи K3 по датам (выплата прошлого периода сама ведомости не создаёт). */
 async function staffInPeriod(db: Db, range: { from: string; to: string }): Promise<string[]> {
   const r = await db.query<{ staff_id: string }>(
     `SELECT staff_id FROM app.staff_shifts WHERE local_date BETWEEN $1::date AND $2::date AND status <> 'cancelled'
      UNION
      SELECT a.owner_id FROM journal.ledger_entries le JOIN app.ledger_accounts a ON a.id = le.account_id AND a.kind = 'staff_payroll'
-      WHERE ${payrollDateSql('le')} BETWEEN $1::date AND $2::date`,
+      WHERE ${payrollDateSql('le')} BETWEEN $1::date AND $2::date AND le.entry_type <> 'payroll.payout' AND NOT (le.refs ? 'carryOffset')`,
     [range.from, range.to],
   );
   return r.rows.map((x) => x.staff_id).sort();

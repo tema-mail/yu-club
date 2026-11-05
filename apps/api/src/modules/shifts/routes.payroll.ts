@@ -1,4 +1,4 @@
-// S3-20. K18 №311–317: CRM-маршруты зарплаты на /api/crm/v1 – тонкий слой над payroll.ts, penalties.ts, payout-expense.ts, под Idempotency-Key.
+// S3-20, S3-21. K18 №311–318: CRM-маршруты зарплаты на /api/crm/v1 – тонкий слой над payroll.ts, penalties.ts, payout-expense.ts, под Idempotency-Key.
 // Администратору (без payroll.view) закрыто всё: 403 до чтения объекта. Вне зоны – 404, в зоне без права – 403 и запись отказа в аудит.
 // ПДн зарплаты (K18 §10): журнал /payroll/audit отдаёт записи payroll.* и staff.rate_set только при payroll.view в зоне записи, записи без филиала
 // (в том числе все ставки) – только Владельцу. timeline смены показывает факт любого события, а суммы и ставки без права заменяет маской.
@@ -17,6 +17,7 @@ import { createPayoutExpense, linkPayoutExpense } from './payout-expense.ts';
 import { amendPenalty, cancelPenalty, createBonus, createPenalty, listPenalties } from './penalties.ts';
 import { getShift } from './plan.ts';
 import { isUuid, notFound } from './rates.ts';
+import { payrollReport } from './report.ts';
 
 export interface PayrollCrmDeps {
   pool: Db & { connect(): Promise<pg.PoolClient> };
@@ -213,6 +214,13 @@ export async function payrollCrmRoutes(app: FastifyInstance, deps: PayrollCrmDep
   app.post('/payroll/penalties/:id/amend', command('penalty.amend', { action: 'payroll.penalty.amended', type: 'payroll_penalty' }, async (tx, ctx, p, body, meta, _k, c) => amendPenalty(tx, ctx, p.id!, body, meta, c)));
   // №317
   app.post('/payroll/corrections', command('correction', { action: 'payroll.correction.posted', type: 'payroll_statement' }, async (tx, ctx, _p, body, meta, key, c) => postCorrection(tx, ctx, body, meta, { idempotencyKey: key, clock: c }), 201));
+
+  // №318: отчёт и детализация (S3-21)
+  app.get('/payroll/report', async (request, reply) => {
+    const ctx = await viewer(request, reply);
+    reply.header('cache-control', 'no-store');
+    return reply.send(await payrollReport(deps.pool, ctx, request.query, clock));
+  });
 
   // ПДн зарплаты: журнал и timeline смены (K18 §10)
   app.get('/payroll/audit', async (request, reply) => {
