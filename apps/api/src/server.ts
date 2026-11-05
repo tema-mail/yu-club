@@ -48,7 +48,7 @@ export interface ServerDeps {
   /** Публичная сеть для сайта (K5 №1–4) – без входа, нужна только база. */
   network?: NetworkPublicDeps;
   /** Web Push (S1-15): открытый ключ VAPID (null – не настроен, подписка 503) и разрешённые push-сервисы. Нужны clients. */
-  notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[] };
+  notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[]; unsubscribeSecret?: string | null };
   /** Сертификаты (K16): CERT_PEPPER – HMAC кода. Нет – маршруты сертификатов не подключаются. */
   certificates?: { pepper: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
@@ -285,7 +285,7 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
     config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY && config.VAPID_SUBJECT
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
-  deps.notifications = { vapidPublicKey: vapid?.publicKey ?? null, allowedPushHosts: config.PUSH_ENDPOINT_HOSTS ?? DEFAULT_PUSH_HOSTS };
+  deps.notifications = { vapidPublicKey: vapid?.publicKey ?? null, allowedPushHosts: config.PUSH_ENDPOINT_HOSTS ?? DEFAULT_PUSH_HOSTS, unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null };
   if (config.CERT_PEPPER) deps.certificates = { pepper: config.CERT_PEPPER };
   if (config.SESSION_PEPPER) {
     deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
@@ -306,6 +306,7 @@ async function main(): Promise<void> {
   const app = buildServer(config, deps);
   if (!deps.staff) app.log.warn('Вход сотрудников выключен: нужны DATABASE_URL и SESSION_PEPPER');
   if (!config.CERT_PEPPER) app.log.warn('Оплата сертификатом выключена: нет CERT_PEPPER');
+  if (!config.UNSUBSCRIBE_SECRET) app.log.warn('Реклама выключена: нет UNSUBSCRIBE_SECRET (K21 §13)');
   if (sender && !sender.vapid) app.log.warn('Web Push выключен: нет VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT');
   // Диспетчер уведомлений, outbox и истечение удержаний – в отдельном процессе apps/api/src/worker.ts.
   app.addHook('onClose', async () => {
