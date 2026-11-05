@@ -159,30 +159,44 @@ export async function resolveLegacyPath(db: Db, pathname: string, now: Date): Pr
 
 export interface SitemapEntry {
   path: string;
+  /** Подпись ссылки в HTML-карте /sitemap/; у страниц филиала и комнаты – null: их имя и сам факт индексации сайт берёт из K5 №1–4. */
+  title: string | null;
   lastmod: string | null;
 }
 
-/** Индексируемые сущности контента по K23 §2: игры с полным описанием, живые публикации с indexable и незавершённым сроком, страницы about, rules, contacts.
- *  Юридические – noindex всегда, в карту не идут. Черновик, снятое и архив отсекает status = 'published'. lastmod – дата живой версии. */
+/** Индексируемые сущности контента по K23 §2: игры с полным описанием, живые публикации с indexable и незавершённым сроком, страницы about, rules, contacts;
+ *  плюс даты живых страниц филиалов и комнат (K23 §7 lastmod). Юридические – noindex всегда, в карту не идут. Черновик, снятое и архив отсекает status = 'published'. */
 export async function sitemapEntries(db: Db, now: Date): Promise<SitemapEntry[]> {
   const iso = (d: Date) => d.toISOString();
-  const games = await db.query<{ direction: GameDirection; slug: string; at: Date }>(
-    `SELECT g.direction, g.slug, v.published_at AS at FROM app.content_games g JOIN journal.content_versions v ON v.id = g.live_version_id
+  const games = await db.query<{ direction: GameDirection; slug: string; title: string | null; at: Date }>(
+    `SELECT g.direction, g.slug, v.snapshot->>'title' AS title, v.published_at AS at FROM app.content_games g JOIN journal.content_versions v ON v.id = g.live_version_id
       WHERE g.status = 'published' AND g.has_full AND g.slug IS NOT NULL ORDER BY g.direction, g.slug`,
   );
-  const pubs = await db.query<{ type: PublicationType; slug: string; at: Date }>(
-    `SELECT p.type, p.slug, v.published_at AS at FROM app.content_publications p JOIN journal.content_versions v ON v.id = p.live_version_id
+  const pubs = await db.query<{ type: PublicationType; slug: string; title: string | null; at: Date }>(
+    `SELECT p.type, p.slug, v.snapshot->>'title' AS title, v.published_at AS at FROM app.content_publications p JOIN journal.content_versions v ON v.id = p.live_version_id
       WHERE p.status = 'published' AND p.indexable AND p.slug IS NOT NULL AND p.publish_from <= $1 AND (p.publish_to IS NULL OR p.publish_to > $1) ORDER BY p.type, p.slug`,
     [now],
   );
-  const pages = await db.query<{ key: 'about' | 'rules' | 'contacts_intro'; at: Date }>(
-    `SELECT p.key, v.published_at AS at FROM app.content_pages p JOIN journal.content_versions v ON v.id = p.live_version_id
+  const pages = await db.query<{ key: 'about' | 'rules' | 'contacts_intro'; title: string | null; at: Date }>(
+    `SELECT p.key, v.snapshot->>'title' AS title, v.published_at AS at FROM app.content_pages p JOIN journal.content_versions v ON v.id = p.live_version_id
       WHERE p.status = 'published' AND p.city_id IS NULL AND p.key IN ('about','rules','contacts_intro') ORDER BY p.key`,
   );
+  const branchPages = await db.query<{ city: string; branch: string; at: Date }>(
+    `SELECT c.slug AS city, b.slug AS branch, v.published_at AS at FROM app.content_branch_pages p JOIN journal.content_versions v ON v.id = p.live_version_id
+       JOIN app.branches b ON b.id = p.branch_id JOIN app.cities c ON c.id = b.city_id
+      WHERE p.status = 'published' AND b.status IN ('active','temporarily_closed') ORDER BY c.slug, b.slug`,
+  );
+  const roomPages = await db.query<{ city: string; branch: string; room: string; at: Date }>(
+    `SELECT c.slug AS city, b.slug AS branch, rm.slug AS room, v.published_at AS at FROM app.content_room_pages p JOIN journal.content_versions v ON v.id = p.live_version_id
+       JOIN app.rooms rm ON rm.id = p.room_id JOIN app.branches b ON b.id = rm.branch_id JOIN app.cities c ON c.id = b.city_id
+      WHERE p.status = 'published' AND rm.is_published AND rm.status = 'active' AND b.status IN ('active','temporarily_closed') ORDER BY c.slug, b.slug, rm.slug`,
+  );
   return [
-    ...pages.rows.map((x) => ({ path: pagePath(x.key), lastmod: iso(x.at) })),
-    ...games.rows.map((x) => ({ path: gamePath(x.direction, x.slug), lastmod: iso(x.at) })),
-    ...pubs.rows.map((x) => ({ path: publicationPath(x.type, x.slug), lastmod: iso(x.at) })),
+    ...pages.rows.map((x) => ({ path: pagePath(x.key), title: x.title, lastmod: iso(x.at) })),
+    ...games.rows.map((x) => ({ path: gamePath(x.direction, x.slug), title: x.title, lastmod: iso(x.at) })),
+    ...pubs.rows.map((x) => ({ path: publicationPath(x.type, x.slug), title: x.title, lastmod: iso(x.at) })),
+    ...branchPages.rows.map((x) => ({ path: branchPath(x.city, x.branch), title: null, lastmod: iso(x.at) })),
+    ...roomPages.rows.map((x) => ({ path: roomPath(x.city, x.branch, x.room), title: null, lastmod: iso(x.at) })),
   ];
 }
 

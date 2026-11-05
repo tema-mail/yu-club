@@ -90,6 +90,8 @@ describe('№217 /seo/sitemap-entries', () => {
     for (const p of ['/news/only-draft/', '/news/no-index/', '/promotions/ended-promo/', '/news/future/', '/news/taken-off/', '/news/in-archive/', '/news/was-a/', '/privacy-policy/']) expect(paths, p).not.toContain(p);
     expect(items.every((i) => typeof i.lastmod === 'string' && !Number.isNaN(Date.parse(i.lastmod)))).toBe(true);
     expect(new Set(paths).size).toBe(paths.length);
+    expect(items.find((i) => i.path === '/about/')).toMatchObject({ title: 'О клубе' });
+    expect(items.find((i) => i.path === '/promotions/live-promo/')).toMatchObject({ title: 'Заголовок' });
     expect(paths.filter((p) => p.includes('undefined') || p.includes('null'))).toEqual([]);
   });
 });
