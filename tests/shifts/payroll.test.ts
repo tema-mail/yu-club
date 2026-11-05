@@ -164,49 +164,72 @@ describe('периоды', () => {
     expect((await statementOf(p.id, s)).totals.toPayKop).toBe(90_000);
   });
 
-  it('прошедшая плановая смена без отметки – UNRESOLVED (не выпадает молча до задачи shifts.review)', async () => {
+  it('любая плановая смена в периоде – UNRESOLVED: и прошедшая, и идущая с приходом, и будущая; часы не теряются', async () => {
     const r = nextRange();
     const p = await period(r);
     const s = await newStaff();
+    const self = ctx('admin', [branch], s);
     const shift = await plan(s, r.day);
-    await expect(close(p.id)).rejects.toMatchObject({ code: 'PAYROLL_PERIOD_HAS_UNRESOLVED', details: { shiftIds: [shift.id] } });
-    await db.client.query(`UPDATE app.staff_shifts SET status = 'cancelled' WHERE id = $1`, [shift.id]);
+    await expect(close(p.id)).rejects.toMatchObject({ code: 'PAYROLL_PERIOD_HAS_UNRESOLVED', details: { shiftIds: [shift.id] } }); // прошла
+    await expect(close(p.id, clockAt(at('09:00', r.day)))).rejects.toMatchObject({ code: 'PAYROLL_PERIOD_HAS_UNRESOLVED', details: { shiftIds: [shift.id] } }); // будущая
+    await tx((t) => checkIn(t, self, shift.id, meta(self), clockAt(at('10:00', r.day))));
+    await settleEvents();
+    const during = clockAt(at('12:00', r.day));
+    await expect(close(p.id, during)).rejects.toMatchObject({ code: 'PAYROLL_PERIOD_HAS_UNRESOLVED', details: { shiftIds: [shift.id] } }); // идёт
+    await tx((t) => checkOut(t, self, shift.id, meta(self), during));
+    await settleEvents();
+    expect((await close(p.id, during)).status).toBe('closed');
+    expect((await statementOf(p.id, s)).totals).toMatchObject({ accruedKop: 120_000, workedShifts: 1, paidMinutes: 120 });
   });
 
-  it('гонка «закрытие ↔ отметка ухода» 100 раз: либо отметка до закрытия и начисление в периоде, либо PAYROLL_PERIOD_CLOSED', async () => {
+  it('гонка «закрытие ↔ отметка ухода» 100 раз: закрытие не проходит мимо, отметка не теряется, начисление в периоде', async () => {
     const s = await newStaff();
     const self = ctx('admin', [branch], s);
-    const outcomes = { before: 0, closed: 0 };
     for (let i = 0; i < 100; i++) {
       const r = nextRange(1);
       const day = r.from;
       const p = await period(r);
       const shift = await plan(s, day);
-      const inTime = clockAt(at('12:00', day)); // смена идёт: плановая не считается нерешённой
-      await tx((t) => checkIn(t, self, shift.id, meta(self), inTime));
+      await tx((t) => checkIn(t, self, shift.id, meta(self), clockAt(at('12:00', day))));
       await settleEvents();
       const later = clockAt(at('13:00', day));
-      // Разный сдвиг старта: без него закрытие всегда приходит первым и вторая ветка гонки не проверяется.
       const delay = i % 2 === 0 ? 0 : (i % 10) + 1;
-      const [closing, leaving] = await Promise.allSettled([new Promise((r) => setTimeout(r, delay)).then(() => close(p.id, later)), tx((t) => checkOut(t, self, shift.id, meta(self), later))]);
-      if (leaving.status === 'fulfilled') {
+      const [closing, leaving] = await Promise.allSettled([new Promise((res) => setTimeout(res, delay)).then(() => close(p.id, later)), tx((t) => checkOut(t, self, shift.id, meta(self), later))]);
+      // В обоих порядках закрытие видит нерешённую смену: planned или worked без начисления.
+      expect(leaving.status).toBe('fulfilled');
+      expect((closing as PromiseRejectedResult).reason).toMatchObject({ code: 'PAYROLL_PERIOD_HAS_UNRESOLVED' });
+      await settleEvents();
+      expect((await close(p.id, later)).status).toBe('closed');
+      expect((await statementOf(p.id, s)).totals).toMatchObject({ accruedKop: 60_000, workedShifts: 1 });
+    }
+  }, 120_000);
+
+  it('гонка «закрытие ↔ исправление факта» 100 раз: либо исправление до закрытия и период не закрыт, либо PAYROLL_PERIOD_CLOSED и снимок цел', async () => {
+    const s = await newStaff();
+    const outcomes = { before: 0, closed: 0 };
+    for (let i = 0; i < 100; i++) {
+      const r = nextRange(1);
+      const p = await period(r);
+      const shift = await worked(await plan(s, r.from), 60);
+      await settleEvents();
+      const delay = i % 2 === 0 ? 0 : (i % 10) + 1;
+      const [closing, fixing] = await Promise.allSettled([
+        new Promise((res) => setTimeout(res, delay)).then(() => close(p.id)),
+        tx((t) => setAttendance(t, owner, shift.id, { rowVersion: shift.rowVersion, status: 'worked', paidMinutes: 90, reason: 'поправка' }, meta(), nowClock)),
+      ]);
+      if (fixing.status === 'fulfilled') {
         outcomes.before += 1;
-        // Отметка прошла раньше: закрытие либо увидело смену без начисления, либо обе не пересеклись и отказ – тот же.
-        expect(closing.status).toBe('rejected');
         expect((closing as PromiseRejectedResult).reason).toMatchObject({ code: 'PAYROLL_PERIOD_HAS_UNRESOLVED' });
         await settleEvents();
-        expect((await close(p.id, later)).status).toBe('closed');
-        expect((await statementOf(p.id, s)).totals).toMatchObject({ accruedKop: 60_000, workedShifts: 1 });
+        expect((await close(p.id)).status).toBe('closed');
+        expect((await statementOf(p.id, s)).totals.accruedKop).toBe(90_000);
       } else {
         outcomes.closed += 1;
         expect(closing.status).toBe('fulfilled');
-        expect((leaving as PromiseRejectedResult).reason).toMatchObject({ code: 'PAYROLL_PERIOD_CLOSED' });
-        const left = await db.client.query(`SELECT status, fact_end FROM app.staff_shifts WHERE id = $1`, [shift.id]);
-        expect(left.rows[0]).toEqual({ status: 'planned', fact_end: null });
-        expect((await statementOf(p.id, s)).totals.accruedKop).toBe(0);
+        expect(fixing.reason).toMatchObject({ code: 'PAYROLL_PERIOD_CLOSED' });
+        expect((await statementOf(p.id, s)).totals.accruedKop).toBe(60_000);
       }
     }
-    expect(outcomes.before + outcomes.closed).toBe(100);
     expect(outcomes.before).toBeGreaterThan(0);
     expect(outcomes.closed).toBeGreaterThan(0);
   }, 120_000);

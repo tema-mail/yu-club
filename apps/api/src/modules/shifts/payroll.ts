@@ -140,14 +140,15 @@ export async function computeTotals(db: Db, range: { from: string; to: string },
   return { totals: t, byBranch: [...lines.values()].sort((a, b) => (a.branchId < b.branchId ? -1 : 1)) };
 }
 
-/** Нерешённые смены диапазона (05 §8.3 «не включается молча»). staffId – одного сотрудника. */
-export async function unresolvedShifts(db: Db, range: { from: string; to: string }, now: Date, staffId?: string): Promise<Array<{ shiftId: string; staffId: string; reason: string }>> {
+/** Нерешённые смены диапазона (05 §8.3 «не включается молча»). staffId – одного сотрудника.
+ *  now = null – для закрытия: нерешённая любая planned, и идущая, и будущая (иначе отметка после закрытия теряет часы). С now – для показа: только прошедшая. */
+export async function unresolvedShifts(db: Db, range: { from: string; to: string }, now: Date | null, staffId?: string): Promise<Array<{ shiftId: string; staffId: string; reason: string }>> {
   const r = await db.query<{ id: string; staff_id: string; reason: string }>(
     `SELECT id, staff_id, reason FROM (
        SELECT s.id, s.staff_id,
          CASE
            WHEN s.status = 'needs_review' THEN 'needs_review'
-           WHEN s.status = 'planned' AND upper(s.period) <= $3 THEN 'no_fact'
+           WHEN s.status = 'planned' AND ($3::timestamptz IS NULL OR upper(s.period) <= $3) THEN 'no_fact'
            WHEN s.status = 'worked' AND NOT s.unpaid_confirmed AND NOT EXISTS (SELECT 1 FROM journal.staff_rates x WHERE x.staff_id = s.staff_id AND x.valid_from <= s.local_date) THEN 'rate_missing'
            WHEN s.status = 'worked' AND NOT s.unpaid_confirmed AND NOT EXISTS (SELECT 1 FROM journal.payroll_accruals a WHERE a.shift_id = s.id AND a.fact_version = s.fact_version) THEN 'accrual_pending'
            WHEN (s.status <> 'worked' OR s.unpaid_confirmed) AND EXISTS (
@@ -225,7 +226,7 @@ export async function closePeriod(tx: Tx, ctx: AccessContext, periodId: string, 
   if (period.status === 'closed') throw new AppError('PAYROLL_PERIOD_CLOSED', 409, 'Период уже закрыт', { periodId });
   const range = { from: period.date_from, to: period.date_to };
   const now = clock.now();
-  const bad = await unresolvedShifts(tx, range, now);
+  const bad = await unresolvedShifts(tx, range, null);
   // Необработанное staff.rate_set со сменами этого периода: событие ещё в outbox, начисления по старой ставке.
   const rates = await tx.query<{ rate_id: string; shift_ids: string[] }>(
     `SELECT e.aggregate_id AS rate_id, array_agg(s.id) AS shift_ids
