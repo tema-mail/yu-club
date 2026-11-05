@@ -52,7 +52,7 @@ describe('комната, турнир, акция, новость', () => {
   });
 
   it('турнир: только с одним филиалом и датой, иначе разметки нет', () => {
-    const base = { path: '/tournaments/cs2/', title: 'CS2', lead: 'Подводка', startDate: '2026-12-01T12:00:00+07:00', ended: false };
+    const base = { path: '/tournaments/cs2/', title: 'CS2', lead: 'Подводка', startDate: '2026-12-01T12:00:00+07:00' };
     const d = tournamentLd(O, { ...base, branchPaths: [P] });
     expect(d).not.toBeNull();
     expect(Event.parse(d).location['@id']).toBe(branchId(O, P));

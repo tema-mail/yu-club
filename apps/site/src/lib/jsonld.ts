@@ -83,7 +83,7 @@ export function roomLd(origin: string, r: { path: string; name: string; branchPa
 }
 
 /** Турнир: разметка только при охвате ровно одним филиалом – иначе место проведения было бы выдумкой (K23 §6). */
-export function tournamentLd(origin: string, t: { path: string; title: string; lead: string; startDate?: string | null | undefined; branchPaths: readonly string[]; ended: boolean; image?: string | null | undefined }): JsonLd | null {
+export function tournamentLd(origin: string, t: { path: string; title: string; lead: string; startDate?: string | null | undefined; branchPaths: readonly string[]; image?: string | null | undefined }): JsonLd | null {
   if (t.branchPaths.length !== 1 || !t.startDate) return null;
   return compact({
     '@context': CONTEXT, '@type': 'Event', name: t.title, url: `${origin}${t.path}`, startDate: t.startDate,
