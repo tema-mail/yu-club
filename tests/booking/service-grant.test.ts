@@ -81,6 +81,24 @@ afterAll(async () => {
 });
 
 describe('S3-58: грант в удержании', () => {
+  it('ревизия: ресурс типа с грантом при self_bookable=true – всё равно без гранта закрыт: удержание и подтверждение', async () => {
+    const calls = record();
+    const clientId = await newClient();
+    const owner = { clientId, visitorId: null };
+    const before = await tx((c) => createHold(c, owner, { branchId: ids.branch!, items: [giftItem()], serviceGrant: GRANT }, clock));
+    await db.client.query('UPDATE app.resources SET self_bookable = true WHERE id = $1', [ids.gift]);
+    try {
+      const other = await newClient();
+      expect(await codeOf(tx((c) => createHold(c, { clientId: other, visitorId: null }, { branchId: ids.branch!, items: [giftItem(new Date('2026-11-18T05:00:00Z'), new Date('2026-11-18T05:40:00Z'))] }, clock)))).toBe('RESOURCE_UNAVAILABLE');
+      expect(calls).toHaveLength(1); // валидатор не звали: гранта нет
+      // удержание, созданное до смены флага, подтверждает валидатор, а не обычная проверка
+      const denied = 'право отозвано';
+      registerServiceGrant('gift_vr', { check: async (_t, c) => { if (c.phase === 'confirm') throw new AppError('GIFT_NOT_ACTIVE', 409, denied); } });
+      expect(await codeOf(tx((c) => confirmHold(c, clientId, before.id, clock)))).toBe('GIFT_NOT_ACTIVE');
+    } finally {
+      await db.client.query('UPDATE app.resources SET self_bookable = false WHERE id = $1', [ids.gift]);
+    }
+  });
   it('без гранта – RESOURCE_UNAVAILABLE; без зарегистрированного валидатора – тоже; обычный ресурс – как раньше', async () => {
     const clientId = await newClient();
     const owner = { clientId, visitorId: null };

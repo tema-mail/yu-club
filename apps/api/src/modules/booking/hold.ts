@@ -96,7 +96,7 @@ export type GrantAccess = Pick<GrantCheck, 'phase' | 'grant' | 'clientId' | 'hol
 async function grantedItems(tx: Tx, holdId: string): Promise<Array<{ type: string; resourceId: string; roomId: string | null; period: string }>> {
   const r = await tx.query<{ type: string; resourceId: string; roomId: string | null; period: string }>(
     `SELECT r.resource_type AS type, r.id AS "resourceId", r.room_id AS "roomId", hi.period::text AS period
-       FROM app.hold_items hi JOIN app.resources r ON r.id = hi.resource_id WHERE hi.hold_id = $1 AND hi.status = 'active' AND NOT r.self_bookable ORDER BY hi.id`,
+       FROM app.hold_items hi JOIN app.resources r ON r.id = hi.resource_id WHERE hi.hold_id = $1 AND hi.status = 'active' ORDER BY hi.id`,
     [holdId],
   );
   return r.rows.filter((x) => serviceGrants.has(x.type));
@@ -152,7 +152,9 @@ function itemError(err: unknown, index: number, item: HoldItemInput): never {
 export async function checkItem(tx: Tx, branch: BranchInfo, now: Date, maxDays: number, item: HoldItemInput, access: GrantAccess | null = null) {
   const r = await getResource(tx, item.resourceId);
   if (!r || r.branchId !== branch.id) throw notFound();
-  const validator = !r.selfBookable && access !== null ? serviceGrants.get(r.type) : undefined;
+  // тип с зарегистрированным грантом закрыт для обычной записи всегда: флаг self_bookable его не открывает
+  const validator = serviceGrants.get(r.type);
+  if (validator && access === null) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи', { resourceId: r.id });
   if (!validator) assertBookable(r); // служебный ресурс без гранта – RESOURCE_UNAVAILABLE, как и раньше
   if (!(item.start.getTime() < item.end.getTime())) throw new AppError('INVALID_DURATION', 422, 'Конец раньше начала', { reason: 'empty' });
   const period: Interval = { start: item.start, end: item.end };

@@ -93,7 +93,7 @@ async function recheck(tx: Tx, branch: BranchInfo, now: Date, i: ItemRow, grant:
   const r = await getResource(tx, i.resource_id);
   if (!r) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи');
   // служебный ресурс (S3-58): подтверждает валидатор гранта – удержание создано по праву, оно ещё в силе? Статус ресурса – как обычно.
-  const validator = r.selfBookable ? undefined : serviceGrantFor(r.type);
+  const validator = serviceGrantFor(r.type);
   if (validator) {
     if (r.status !== 'active' || (r.roomId !== null && r.roomStatus !== 'active')) throw new AppError('RESOURCE_UNAVAILABLE', 409, 'Это место недоступно для записи', { resourceId: r.id });
     await validator.check(tx, { phase: 'confirm', grant: null, clientId: grant.clientId, holdId: grant.holdId, bookingId: null, resource: { id: r.id, type: r.type, roomId: r.roomId }, branch, period: { start: i.s, end: i.e }, now });

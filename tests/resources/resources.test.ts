@@ -167,6 +167,20 @@ describe('закрытие комнаты закрывает её ресурсы
     assertBookable((await getResource(pool, ids.vr1!))!);
   });
 
+  it('ревизия: служебный gift_vr не становится самостоятельным – ни при создании, ни правкой', async () => {
+    const bad = await req('director', 'POST', `/branches/${ids.krasny}/resources`, { type: 'gift_vr', name: 'Подарок', roomId: ids.vrRoom, selfBookable: true });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error.details).toMatchObject({ field: 'selfBookable' });
+    const made = await req('director', 'POST', `/branches/${ids.krasny}/resources`, { type: 'gift_vr', name: 'Подарок без флага', roomId: ids.vrRoom });
+    expect(made.statusCode).toBe(201);
+    expect(made.json().selfBookable).toBe(false);
+    const flip = await req('director', 'PATCH', `/resources/${made.json().id}`, { rowVersion: made.json().rowVersion, selfBookable: true });
+    expect(flip.statusCode).toBe(400);
+    const row = await db.client.query('SELECT self_bookable FROM app.resources WHERE id = $1', [made.json().id]);
+    expect(row.rows[0].self_bookable).toBe(false);
+    const name = await req('director', 'PATCH', `/resources/${made.json().id}`, { rowVersion: made.json().rowVersion, name: 'Подарок', selfBookable: false });
+    expect(name.statusCode).toBe(200);
+  });
   it('неопубликованная комната не попадает на сайт, «несамостоятельный» ресурс – недоступен', async () => {
     const room = (await req('director', 'GET', `/rooms/${ids.vrRoom}`)).json();
     await req('director', 'PATCH', `/rooms/${ids.vrRoom}`, { rowVersion: room.rowVersion, isPublished: false });

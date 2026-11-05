@@ -171,6 +171,12 @@ const DEFS: Record<Kind, EntityDef> = {
   },
 };
 
+/** Служебные типы: открываются только грантом booking (K5, K20 §8.2), самостоятельной записи у них нет ни при каких правах. */
+const SERVICE_RESOURCE_TYPES: ReadonlySet<string> = new Set(['gift_vr']);
+function assertNotSelfBookable(input: Record<string, unknown>): void {
+  if (input.selfBookable === true) throw new AppError('VALIDATION_FAILED', 400, 'Служебный ресурс нельзя открыть для самостоятельной записи', { field: 'selfBookable' });
+}
+
 export type EntityRow = Record<string, unknown> & { id: string; branchId: string; status: string; rowVersion: number };
 
 const selectList = (d: EntityDef) =>
@@ -213,6 +219,10 @@ export async function createEntity(tx: Tx, ctx: AccessContext, kind: Kind, branc
   if (!branch) throw notFound();
   if (branch.status === 'archived') throw new AppError('RESOURCE_ARCHIVED', 409, 'Филиал в архиве');
   const { unitCode, unitIds, ...input } = parse(d.create, raw) as Record<string, unknown> & { unitCode?: string; unitIds?: string[] };
+  if (kind === 'resource' && SERVICE_RESOURCE_TYPES.has(input.type as string)) {
+    assertNotSelfBookable(input);
+    input.selfBookable = false; // в столбце по умолчанию true: служебный тип без флага – тоже закрыт
+  }
   await checkLinks(tx, branchId, input);
   const keys = Object.keys(input).filter((k) => input[k] !== undefined);
   const cols = ['branch_id', ...keys.map((k) => d.cols[k]!)];
@@ -250,6 +260,7 @@ export async function updateEntity(tx: Tx, ctx: AccessContext, kind: Kind, id: s
   const input = parse(d.patch, raw);
   if (cur.status === 'archived') throw new AppError('RESOURCE_ARCHIVED', 409, 'Объект в архиве');
   checkVersion(cur.rowVersion, input.rowVersion);
+  if (kind === 'resource' && SERVICE_RESOURCE_TYPES.has(cur.type as string)) assertNotSelfBookable(input);
   await checkLinks(tx, cur.branchId, input);
   const keys = Object.keys(input).filter((k) => k !== 'rowVersion' && input[k] !== undefined);
   const sets = keys.map((k, i) => `${d.cols[k]!} = $${i + 2}`);
