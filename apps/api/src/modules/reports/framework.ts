@@ -283,16 +283,15 @@ export async function detailPage<R extends pg.QueryResultRow>(
   }
   const inner = def.agg === 'count_distinct' ? `SELECT DISTINCT ON (t.${id}) t.* FROM ${w.sql} ORDER BY t.${id}` : `SELECT t.* FROM ${w.sql}`;
   params.push(limit + 1);
-  const r = await db.query<R>(
-    `SELECT t.* FROM (${inner}) t ${cursorSql ? `WHERE ${cursorSql}` : ''} ORDER BY ${orderExpr} LIMIT $${params.length}`,
+  // дата курсора – текстом из базы: в JS Date микросекунды now() теряются, и строка вернулась бы на следующей странице
+  const r = await db.query<R & { cursor_date?: string }>(
+    `SELECT t.*${date ? `, t.${date}::text AS cursor_date` : ''} FROM (${inner}) t ${cursorSql ? `WHERE ${cursorSql}` : ''} ORDER BY ${orderExpr} LIMIT $${params.length}`,
     params,
   );
   const rows = r.rows.slice(0, limit);
-  const last = rows[rows.length - 1] as Record<string, unknown> | undefined;
-  const nextCursor =
-    r.rows.length > limit && last
-      ? encodeCursor(date ? (last[date] as Date).toISOString() : null, String(last[id]))
-      : null;
+  const last = rows[rows.length - 1] as (Record<string, unknown> & { cursor_date?: string }) | undefined;
+  const nextCursor = r.rows.length > limit && last ? encodeCursor(last.cursor_date ?? null, String(last[id])) : null;
+  for (const row of rows) delete row.cursor_date;
   return { rows, total, nextCursor };
 }
 

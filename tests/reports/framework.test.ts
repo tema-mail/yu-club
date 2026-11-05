@@ -122,6 +122,26 @@ describe('свойство Σ detail = aggregate (TC-20)', () => {
     }
   });
 
+  it('курсор не теряет микросекунды: строки с now() не повторяются и не пропадают между страницами', async () => {
+    const msk = branches.msk!.id;
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i++) ids.push(await booking(msk, clients[3]!, `2026-06-0${i + 1}T10:00:00Z`, { created: `2026-06-10T10:00:00.${String(123456 + i)}Z` }));
+    const def = created([{ sql: 't.booking_id = ANY(?::uuid[])', values: [ids] }]);
+    await withReportTx(reports, async (tx) => {
+      const bs = await resolveBranches(tx, owner(), 'reports.ops.view', { branchIds: [msk] });
+      const w = windowsOf(bs, { from: d('2026-06-10'), to: d('2026-06-10') });
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await detailPage<{ booking_id: string; cursor_date?: string }>(tx, def, w, { limit: 2, ...(cursor ? { cursor } : {}) });
+        seen.push(...page.rows.map((x) => x.booking_id));
+        expect(page.rows.every((x) => x.cursor_date === undefined)).toBe(true);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      expect(seen.sort()).toEqual([...ids].sort());
+    });
+  });
+
   it('where не склеивает условия мимо параметров: значение идёт параметром, чужой источник отвергается', () => {
     const w = where({ view: 'app.rpt_bookings', conds: [{ sql: 'status = ?', values: ["x' OR 1=1 --"] }] }, []);
     expect(w.sql).toContain('(status = $4)');
