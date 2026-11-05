@@ -212,6 +212,17 @@ export async function criticalPeriod(db: Db | Tx, from: Date): Promise<Interval>
   return interval(from, new Date(from.getTime() + hours * 3_600_000));
 }
 
+/** Место оборудования могли архивировать или опустошить: блокировать там нечего, но это не повод ронять регистрацию поломки или смену
+ *  статуса. unitsOfTarget бросает RESOURCE_LINK_INVALID до любой записи, транзакция остаётся живой. Выбранную сотрудником цель так не оборачивать. */
+export async function orNullIfTargetGone<T>(run: () => Promise<T>): Promise<T | null> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof AppError && err.code === 'RESOURCE_LINK_INVALID') return null;
+    throw err;
+  }
+}
+
 /** Другие открытые ремонты, чьё место пересекается с единицами: на единице или на комнате, в которой единица. */
 export async function otherOpenRepairsOn(db: Db | Tx, branchId: string, unitIds: string[], exceptId: string | null): Promise<string[]> {
   if (unitIds.length === 0) return [];
@@ -517,7 +528,8 @@ export async function setEquipmentStatus(
   const updated = await applyEquipmentStatus(tx, ctx, row, { status: input.status, reason, source: 'manual' }, meta, clock);
   const dto = toEquipmentDto(updated);
   const target = PROPOSES_BLOCK.has(input.status) ? targetOfPlacement(dto.placement) : null;
-  const blockProposal = target ? await buildProposal(tx, { branchId: row.branch_id, target, period: await criticalPeriod(tx, clock.now()) }, clock) : null;
+  const period = await criticalPeriod(tx, clock.now());
+  const blockProposal = target ? await orNullIfTargetGone(() => buildProposal(tx, { branchId: row.branch_id, target, period }, clock)) : null;
   return { equipment: dto, blockProposal };
 }
 

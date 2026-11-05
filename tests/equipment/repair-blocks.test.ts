@@ -9,7 +9,7 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock, interval } from '../../apps/api/src/core/time.ts';
 import { occupy, runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
 import { eventOccupancy, occupyForEvent, liftBlockFor } from '../../apps/api/src/modules/booking/providers.ts';
-import { createEquipment } from '../../apps/api/src/modules/equipment/items.ts';
+import { createEquipment, setEquipmentStatus } from '../../apps/api/src/modules/equipment/items.ts';
 import { confirmBlock, proposeBlock, repairDowntime } from '../../apps/api/src/modules/equipment/repair-blocks.ts';
 import { changeRepairStatus, getRepair, registerRepair } from '../../apps/api/src/modules/equipment/repairs.ts';
 import { expandToUnits } from '../../apps/api/src/modules/resources/index.ts';
@@ -138,6 +138,29 @@ describe('подтверждение (K19 §8)', () => {
     expect(await proposeBlock(w.pool, admin, reg.repair.id, {}, clock)).toBeNull();
     const manual = await proposeBlock(w.pool, admin, reg.repair.id, { target: { type: 'unit', ids: [w.units.PS4] } }, clock);
     expect(manual!.target.ids).toEqual([w.units.PS4]);
+  });
+});
+
+describe('место архивировано или опустело (ревью S3-36)', () => {
+  it('поломка и смена статуса проходят без предложения; автоблокировка не роняет регистрацию; выбранная сотрудником цель – ошибка', async () => {
+    const unit = (await w.db.client.query<{ id: string }>(`INSERT INTO app.occupancy_units (branch_id, room_id, code, name) VALUES ($1, $2, 'ARC', 'Архивная') RETURNING id`, [w.branch, w.room])).rows[0]!.id;
+    const empty = (await w.db.client.query<{ id: string }>(`INSERT INTO app.rooms (branch_id, slug, name) VALUES ($1, 'empty', 'Пустая') RETURNING id`, [w.branch])).rows[0]!.id;
+    const onUnit = await item({ unitId: unit });
+    const inRoom = await item({ roomId: empty });
+    await w.db.client.query(`UPDATE app.occupancy_units SET status = 'archived' WHERE id = $1`, [unit]);
+    const a = await register(onUnit.id);
+    expect(a.repair.unitId).toBe(unit);
+    expect(a.blockProposal).toBeNull();
+    expect((await register(inRoom.id)).blockProposal).toBeNull();
+    const changed = await inTx(w.pool, (t) => setEquipmentStatus(t, owner, onUnit.id, { rowVersion: onUnit.rowVersion, status: 'repair' }, metaOf(owner), clock));
+    expect(changed).toMatchObject({ equipment: { status: 'repair' }, blockProposal: null });
+    await fails(proposeBlock(w.pool, admin, a.repair.id, { target: { type: 'unit', ids: [unit] } }, clock), 'RESOURCE_LINK_INVALID');
+    await w.db.client.query(`INSERT INTO app.settings_values (key, level, value, valid_from, created_by) VALUES ('equipment.critical_auto_block', 'network', 'true', '2026-01-01', $1)`, [randomUUID()]);
+    try {
+      expect((await register(onUnit.id, { priority: 'critical' })).autoBlock).toBeNull();
+    } finally {
+      await w.db.client.query(`DELETE FROM app.settings_values WHERE key = 'equipment.critical_auto_block'`);
+    }
   });
 });
 

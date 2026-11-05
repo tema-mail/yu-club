@@ -21,6 +21,7 @@ import {
   guardRole,
   lockItem,
   notFound,
+  orNullIfTargetGone,
   otherOpenRepairsOn,
   parseInput,
   targetOfPlacement,
@@ -230,7 +231,8 @@ export async function repairProposal(db: Db | Tx, row: RepairRow, input: { targe
   const target = input.target ?? targetOfPlacement({ roomId: row.room_id, unitId: row.unit_id });
   if (!target) return null;
   const period = input.period ?? (await defaultRepairPeriod(db, row, clock));
-  return buildProposal(db, { branchId: row.branch_id, target, period, exceptRepairId: row.id }, clock);
+  const build = () => buildProposal(db, { branchId: row.branch_id, target, period, exceptRepairId: row.id }, clock);
+  return input.target ? build() : orNullIfTargetGone(build); // цель из снимка места могла устареть; выбранная сотрудником – ошибка как есть
 }
 
 /** Причина блокировки «Ремонт» из справочника (0010). */
@@ -371,15 +373,14 @@ export async function registerRepair(
   let autoBlock: { blockId: string; affectedBookingIds: string[]; affectedEventIds: string[] } | null = null;
   if (row.priority === 'critical' && target && (await resolveSetting(tx, 'equipment.critical_auto_block', { network: true }, now)).value) {
     const hours = (await resolveSetting(tx, 'equipment.critical_block_hours', { network: true }, now)).value;
-    const created = await createBlockFor(
-      tx,
-      ctx,
-      { branchId: row.branch_id, target, period: interval(detectedAt, new Date(detectedAt.getTime() + hours * 3_600_000)), reasonId: await repairReasonId(tx), comment: `Ремонт ${row.number}` },
-      meta,
-      clock,
+    const reasonId = await repairReasonId(tx);
+    const created = await orNullIfTargetGone(() =>
+      createBlockFor(tx, ctx, { branchId: row.branch_id, target, period: interval(detectedAt, new Date(detectedAt.getTime() + hours * 3_600_000)), reasonId, comment: `Ремонт ${row.number}` }, meta, clock),
     );
-    await linkRepairBlock(tx, ctx, row, created.blockId, { existing: false, auto: true }, meta, clock);
-    autoBlock = { blockId: created.blockId, affectedBookingIds: created.affectedBookingIds, affectedEventIds: created.affectedEventIds };
+    if (created) {
+      await linkRepairBlock(tx, ctx, row, created.blockId, { existing: false, auto: true }, meta, clock);
+      autoBlock = { blockId: created.blockId, affectedBookingIds: created.affectedBookingIds, affectedEventIds: created.affectedEventIds };
+    }
   }
   await publish(tx as OutboxTx, {
     type: 'repair.registered',
