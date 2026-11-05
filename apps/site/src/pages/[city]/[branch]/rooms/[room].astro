@@ -8,6 +8,7 @@ import Site from '../../../../layouts/Site.astro';
 import {
   ApiError, RESOURCE_KIND, ZONE_LABEL, branchRooms, findBranch, roomPath, scheduleHref, site, type ResourceDto,
 } from '../../../../lib/api.ts';
+import { metaFor } from '../../../../lib/seo.ts';
 
 const { city: citySlug = '', branch: branchSlug = '', room: slug = '' } = Astro.params;
 const { network } = Astro.locals;
@@ -35,10 +36,12 @@ const branch = found?.branch;
 const closed = branch?.status === 'temporarily_closed';
 const hasCityHub = (city?.branches.length ?? 0) >= 2;
 const others = rooms.filter((r) => r.id !== room?.id);
+const meta = room && branch && city ? metaFor({ page: 'room', room: room.name, branch: branch.name, city: city.name, description: `${room.name} в клубе ${branch.name}, ${city.name}: ${room.resources.map((r) => r.name).join(', ')}. Онлайн-запись.` }) : null;
 ---
 <Site
-  title={room && branch ? `${room.name} – ${branch.name}` : 'Комната временно недоступна – Ю-Клуб'}
-  description={room && branch && city ? `${room.name} в клубе ${branch.name}, ${city.name}: ${room.resources.map((r) => r.name).join(', ')}. Онлайн-запись.` : undefined}
+  title={meta?.title ?? 'Комната временно недоступна – Ю-Клуб'}
+  description={meta?.description}
+  index={{ kind: 'room', published: Boolean(room), branchStatus: branch?.status ?? 'active' }}
 >
   {failed || !room || !branch || !city ? (
     <section class="yu-error">
@@ -57,7 +60,7 @@ const others = rooms.filter((r) => r.id !== room?.id);
       </ol>
       <section class="yu-hero">
         <div>
-          <h1 data-testid="room-title">{room.name}</h1>
+          <h1 data-testid="room-title">{meta?.h1 ?? room.name}</h1>
           <p class="yu-lead">{branch.name}, {city.name}, {branch.address}</p>
           {closed ? (
             <p class="yu-notice" role="status" data-testid="room-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>

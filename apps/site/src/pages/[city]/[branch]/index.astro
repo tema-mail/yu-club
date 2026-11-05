@@ -11,6 +11,7 @@ import {
   ApiError, ZONE_LABEL, ZONE_ORDER, branchRooms, findBranch, roomPath, scheduleHref, site,
   type BranchDetailDto, type ResourceDto,
 } from '../../../lib/api.ts';
+import { metaFor } from '../../../lib/seo.ts';
 
 const { city: citySlug = '', branch: branchSlug = '' } = Astro.params;
 const { network } = Astro.locals;
@@ -53,9 +54,12 @@ const zones = ZONE_ORDER.map((code) => {
 }).filter((z) => z.rooms.length > 0);
 
 const title = branch && city ? `${branch.name}, ${city.name}` : 'Клуб временно недоступен';
+const meta = branch && city
+  ? metaFor({ page: 'branch', branch: branch.name, city: city.name, address: branch.address, directions: zones.map((z) => ZONE_LABEL[z.code]), hoursToday: closed ? 'Временно закрыт' : `Сегодня: ${hoursToday}`, closed })
+  : null;
 const hasCityHub = (city?.branches.length ?? 0) >= 2;
 ---
-<Site title={`${title} – Ю-Клуб`} description={branch && city ? `${branch.name}: ${city.name}, ${branch.address}. Игровые ПК, VR и PlayStation, часы работы и зоны клуба.` : undefined}>
+<Site title={meta?.title ?? `${title} – Ю-Клуб`} description={meta?.description} index={{ kind: 'branch', status: branch?.status ?? 'active' }}>
   {failed || !branch || !city ? (
     <section class="yu-error">
       <span class="yu-error__code">503</span>
@@ -71,7 +75,7 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
       </ol>
       <section class="yu-hero">
         <div>
-          <h1 data-testid="branch-title">{branch.name}</h1>
+          <h1 data-testid="branch-title">{meta?.h1 ?? branch.name}</h1>
           <p class="yu-lead">{city.name}, {branch.address}</p>
           {closed ? (
             <p class="yu-notice" role="status" data-testid="branch-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>
