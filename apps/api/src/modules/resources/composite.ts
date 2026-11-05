@@ -40,11 +40,17 @@ export async function compositionAt(tx: Tx, resourceId: string, at: Date): Promi
 }
 
 /** K6: развернуть ресурс в единицы на момент `at` (состав, действующий на начало интервала).
- *  Ресурс/комната не active, self_bookable=false, пустой состав, единица в архиве → RESOURCE_UNAVAILABLE. */
-export async function expandToUnits(tx: Tx, resourceId: string, at: Date): Promise<UnitSet> {
+ *  Ресурс/комната не active, self_bookable=false, пустой состав, единица в архиве → RESOURCE_UNAVAILABLE.
+ *  opts.serviceGrant (K5 грант бронирования, S3-58): служебный ресурс разрешён – грант уже проверил booking; статус ресурса и комнаты
+ *  проверяется как обычно. */
+export async function expandToUnits(tx: Tx, resourceId: string, at: Date, opts: { serviceGrant?: boolean } = {}): Promise<UnitSet> {
   const r = await getResource(tx, resourceId);
   if (!r) throw unavailable(resourceId, 'not_found');
-  assertBookable(r);
+  if (opts.serviceGrant) {
+    if (r.status !== 'active' || (r.roomId !== null && r.roomStatus !== 'active')) throw unavailable(resourceId, 'not_active');
+  } else {
+    assertBookable(r);
+  }
   const u = await tx.query<{ unit_id: string; status: string }>(
     `SELECT ru.unit_id, u.status FROM app.resource_units ru JOIN app.occupancy_units u ON u.id = ru.unit_id
      WHERE ru.resource_id = $1 AND ru.valid_from <= $2 AND (ru.valid_to IS NULL OR ru.valid_to > $2) ORDER BY ru.unit_id`,
