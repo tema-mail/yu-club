@@ -14,6 +14,7 @@ import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { mediaRoutes } from './modules/content/routes.media.ts';
+import { contentPublicRoutes } from './modules/content/routes.public.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
@@ -274,6 +275,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   if (deps.network) {
     const network = deps.network;
     void app.register(async (scope) => networkPublicRoutes(scope, network), { prefix: '/api/public/v1' });
+    void app.register(async (scope) => contentPublicRoutes(scope, network), { prefix: '/api/public/v1' }); // K22 §12: без сессии, только живые версии
   }
 
   if (deps.clients) {
