@@ -363,3 +363,40 @@ export async function freezeMedia(db: Db, ids: readonly string[]): Promise<Recor
   for (const m of r.rows) out[m.id] = { alt: m.alt, mime: m.mime, width: m.width, height: m.height, key: m.storage_key, variants: m.variants, status: m.status };
   return out;
 }
+
+// ---- уборка: content:media-gc (S4-44, K22 §8 п.4)
+
+const ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Файл без строки старше суток – «сирота» от сбоя между записью файлов и строкой БД: удаляется. Файлы строк, в том числе архивных и нужных
+ *  только старым версиям, не трогаются; у очищенной строки своих файлов нет – её файл, если остался после сбоя, тоже удаляется. Сутки – запас на незавершённую загрузку. */
+export async function gcMedia(db: Db, store: FileStore, now: Date): Promise<{ removed: string[]; kept: number }> {
+  const r = await db.query<{ storage_key: string; variants: MediaVariant[] }>(`SELECT storage_key, variants FROM app.content_media WHERE status <> 'purged'`);
+  const known = new Set(r.rows.flatMap((m) => [m.storage_key, ...m.variants.map((v) => v.key)]));
+  const removed: string[] = [];
+  let kept = 0;
+  for await (const file of store.list()) {
+    if (known.has(file.relative) || now.getTime() - file.modifiedAt.getTime() < ORPHAN_AGE_MS) {
+      kept += 1;
+      continue;
+    }
+    await store.remove(file.relative);
+    removed.push(file.relative);
+  }
+  return { removed, kept };
+}
+
+/** Ночная задача: проверка раз в час, проход один раз в сутки в 01:00 UTC (04:00 Москвы, после сверки). */
+export function startMediaGc(opts: { pool: Db; store: FileStore; clock?: Clock; intervalMs?: number; onError?: (err: unknown) => void; onDone?: (r: { removed: string[]; kept: number }) => void }): { stop(): void } {
+  const clock = opts.clock ?? systemClock;
+  let lastDay = '';
+  const timer = setInterval(() => {
+    const now = clock.now();
+    const day = now.toISOString().slice(0, 10);
+    if (now.getUTCHours() !== 1 || day === lastDay) return;
+    lastDay = day;
+    gcMedia(opts.pool, opts.store, now).then((r) => opts.onDone?.(r), (err: unknown) => opts.onError?.(err));
+  }, opts.intervalMs ?? 3_600_000);
+  timer.unref();
+  return { stop: () => clearInterval(timer) };
+}
