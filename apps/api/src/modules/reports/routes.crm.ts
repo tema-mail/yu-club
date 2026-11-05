@@ -27,8 +27,8 @@ async function periodParams(deps: ReportsCrmDeps, clock: Clock, q: Query): Promi
   return defined({ period: parsePeriod({ from: q.from, to: q.to }, { clock, maxDays: s['reports.interactive_max_days'].value }), cityId: q.cityId, branchIds: q.branchIds });
 }
 
-/** Отчёты, источник которых ещё не выпущен (Э3; 3.11 – S4-74): 200 с source_not_ready и проверкой права, а не «нет такого». */
-const NOT_READY: Record<string, string> = { events: 'reports.events.view', staff: 'reports.staff.view', equipment: 'reports.equipment.view', comms: 'reports.comms.view' };
+/** Отчёты, источник которых ещё не выпущен (Э3): 200 с source_not_ready и проверкой права, а не «нет такого». */
+const NOT_READY: Record<string, string> = { events: 'reports.events.view', staff: 'reports.staff.view', equipment: 'reports.equipment.view' };
 
 function assertKnown(report: string, ctx: AccessContext): ReportHandler | null {
   const h = Object.hasOwn(HANDLERS, report) ? HANDLERS[report] : undefined;
