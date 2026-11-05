@@ -222,7 +222,9 @@ export const DELEGABLE = ['block.manage', 'network.hours.manage', 'finance.incom
 
 - `network.branch.create` (04 §5) делегируется отдельно от прочих прав сети; цель права – город (`cityId`).
 - `loadAccess` добавляет действующие на дату права (`valid_from ≤ дата ≤ valid_to`, `revoked_at IS NULL`) в `ctx.grants: Map<Action, { cityIds, branchIds }>`; `can` = роль ∪ право в зоне права; `scopeFilter(ctx, action)` = зона роли ∪ зона права **на это действие**.
-- Зона права ⊆ действующих `staff_assignments` получателя на дату выдачи, иначе `GRANT_SCOPE_INVALID`. Истёкшее и отозванное право не действует со следующего запроса (без кэша, 04 §12).
+- Зона права ⊆ действующих `staff_assignments` получателя на дату начала права, иначе `GRANT_SCOPE_INVALID`. И после выдачи: `loadAccess` отбрасывает право вне назначений на дату – снятое назначение закрывает и право (решение S3-88). Истёкшее и отозванное право не действует со следующего запроса (без кэша, 04 §12).
+- Вход в раздел по праву – `hasAction(ctx, action)`, не `roleAllows`; зона – `can`/`scopeFilter`, не `ctx.branchIds`: право на филиал А не открывает другой филиал зоны роли. `client.merge` выдаётся, но своего API слияния пока нет – право начнёт действовать с ним.
+- API (K11 №380–382, S3-89): `POST /staff/:staffId/grants`, `POST /staff/grants/:grantId/revoke`, `GET /staff/grants?staffId=` (вместе с `delegable` для экрана S3-87); задним числом не выдаётся.
 - Делегированный `payroll.view` открывает все суммы зоны права, включая коллег получателя (Q-156).
 - Аудит: `staff.grant.created`, `staff.grant.revoked` (K2 «Э3»).
 
@@ -230,6 +232,7 @@ export const DELEGABLE = ['block.manage', 'network.hours.manage', 'finance.incom
 |---|---|---|
 | `GRANT_ACTION_NOT_DELEGABLE` | 422 | действие вне `DELEGABLE` |
 | `GRANT_SCOPE_INVALID` | 422 | зона права вне назначений получателя |
+| `GRANT_ALREADY_ACTIVE` | 409 | то же действие и зона на пересекающиеся даты |
 
 ### Действия Э4 (S4-01; основание – K21 §10, K22 §10, K24 §8; внесено S4-00 04.11.2026)
 
