@@ -8,12 +8,26 @@ import type pg from 'pg';
 import { z } from 'zod';
 import { diffFields, writeAudit, writeDenied, type AuditAction, type AuditObjectType, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
+import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../core/idempotency.ts';
 import { can, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
+import { SLUG_RE } from '../../../../../packages/contracts/src/paths.ts';
 import { getBranch } from '../network/index.ts';
 import { attachInitialUnits, changeComposition, compositionAt, insertUnit, listUnits, type ResourceUsageProvider } from './composite.ts';
 import { getResource, isUuid } from './index.ts';
+
+/** K4 «События этапа 4»: смена слага комнаты – в транзакции команды; историю адресов пишет content (K23 §5). */
+declare module '../../core/outbox.ts' {
+  interface EventRegistry {
+    'room.slug_changed': { id: string; parentId: string; oldSlug: string; newSlug: string };
+  }
+}
+
+/** Слаг комнаты (K23 §3): та же маска, что у города и филиала – дефис только между словами. */
+function assertRoomSlug(kind: Kind, slug: unknown): void {
+  if (kind === 'room' && typeof slug === 'string' && !SLUG_RE.test(slug)) throw new AppError('SLUG_INVALID', 422, 'Адрес: латиница и цифры, дефис только между словами', { rule: 'mask' });
+}
 
 export interface ResourcesDeps {
   pool: Db & { connect(): Promise<pg.PoolClient> };
@@ -211,6 +225,7 @@ export async function createEntity(tx: Tx, ctx: AccessContext, kind: Kind, branc
   if (!branch) throw notFound();
   if (branch.status === 'archived') throw new AppError('RESOURCE_ARCHIVED', 409, 'Филиал в архиве');
   const { unitCode, unitIds, ...input } = parse(d.create, raw) as Record<string, unknown> & { unitCode?: string; unitIds?: string[] };
+  assertRoomSlug(kind, input.slug);
   await checkLinks(tx, branchId, input);
   const keys = Object.keys(input).filter((k) => input[k] !== undefined);
   const cols = ['branch_id', ...keys.map((k) => d.cols[k]!)];
@@ -248,6 +263,7 @@ export async function updateEntity(tx: Tx, ctx: AccessContext, kind: Kind, id: s
   const input = parse(d.patch, raw);
   if (cur.status === 'archived') throw new AppError('RESOURCE_ARCHIVED', 409, 'Объект в архиве');
   checkVersion(cur.rowVersion, input.rowVersion);
+  if (input.slug !== cur.slug) assertRoomSlug(kind, input.slug);
   await checkLinks(tx, cur.branchId, input);
   const keys = Object.keys(input).filter((k) => k !== 'rowVersion' && input[k] !== undefined);
   const sets = keys.map((k, i) => `${d.cols[k]!} = $${i + 2}`);
@@ -258,6 +274,9 @@ export async function updateEntity(tx: Tx, ctx: AccessContext, kind: Kind, id: s
     )
     .catch(dbError);
   const next = r.rows[0]!;
+  if (kind === 'room' && next.slug !== cur.slug) {
+    await publish(tx as OutboxTx, { type: 'room.slug_changed', aggregateType: 'room', aggregateId: next.id, aggregateVersion: next.rowVersion, branchId: next.branchId, payload: { id: next.id, parentId: next.branchId, oldSlug: cur.slug as string, newSlug: next.slug as string }, occurredAt: clock.now() });
+  }
   await auditEntity(tx, meta, clock, action, cur, next);
   return next;
 }
