@@ -148,9 +148,9 @@ export function closePeriod(tx, ctx, periodId, input: { reason?: string }, meta)
 export function postCorrection(tx, ctx, input: { staffId; amountKop: number /* ± */; ref: { type: 'shift' | 'payroll_statement'; id }; reason }, meta): Promise<{ postingId }>;
 ```
 
-- Периоды – на сеть (сотрудник в нескольких филиалах), произвольные даты (05 §8.4 «владелец выбирает период»), не пересекаются: `EXCLUDE (daterange(from, to, '[]') WITH &&)`. По умолчанию CRM предлагает календарный месяц – `payroll.period_kind = 'month'`, ждёт заказчика (Q-62).
+- Периоды идут встык, без разрывов (`PAYROLL_PERIOD_GAP`; запись «в открытом периоде» – начало следующего существующего открытого или дата, которую покроет следующий период). Периоды – на сеть (сотрудник в нескольких филиалах), произвольные даты (05 §8.4 «владелец выбирает период»), не пересекаются: `EXCLUDE (daterange(from, to, '[]') WITH &&)`. По умолчанию CRM предлагает календарный месяц – `payroll.period_kind = 'month'`, ждёт заказчика (Q-62).
 - Дата записи – локальная дата смены по зоне филиала (K8); у штрафа и премии – их дата.
-- **Закрытие** (`closePeriod` – под `payroll_periods FOR UPDATE`): фиксирует итоги каждой ведомости (снимок в `payroll_statements.totals`) и запрещает любую запись K3 и изменение смены с датой в периоде – `PAYROLL_PERIOD_CLOSED`. Закрыть нельзя → `PAYROLL_PERIOD_HAS_UNRESOLVED` со списком (05 §8.3 «не включается молча»), если в периоде есть: смены `needs_review` или `rate_missing` без решения; смены `worked` без строки `payroll_accruals` на текущую `fact_version` (событие ещё в outbox); необработанное событие `staff.rate_set` с `affectedShiftIds` в периоде.
+- **Закрытие** (`closePeriod` – под `payroll_periods FOR UPDATE`): фиксирует итоги каждой ведомости (снимок в `payroll_statements.totals`) и запрещает любую запись K3 и изменение смены с датой в периоде – `PAYROLL_PERIOD_CLOSED`. Закрыть нельзя → `PAYROLL_PERIOD_HAS_UNRESOLVED` со списком (05 §8.3 «не включается молча»), если в периоде есть: любая смена `planned` (и идущая, и будущая – её отменяют, переносят или отмечают); смены `needs_review` или `rate_missing` без решения; смены `worked` без строки `payroll_accruals` на текущую `fact_version` (событие ещё в outbox); необработанное событие `staff.rate_set` с `affectedShiftIds` в периоде; необработанное `shift.attendance_changed` смены периода.
 - **Закрытый период – только сторно и корректировки** (решение по 05 §8.4, 16 §14): открыть закрытый период нельзя; исправление – `payroll.correction` в текущем открытом периоде со ссылкой на исходную смену или ведомость и причиной (Владелец, `payroll.correct`). Сторно записи закрытого периода (`reversal_of`) проводится датой текущего открытого периода. Снимок закрытой ведомости не меняется (приёмка 15).
 
 ## 8. Штрафы и премии (05 §9)
@@ -288,6 +288,8 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 
 `REVOKE DELETE` на все таблицы; `journal.*` – только вставка (0001). Удалений нет: отмена = статус + сторно.
 
+Уточнения при реализации (решения D3-S1…D3-S7, `docs/reshenia.md`): в 0306 CHECK ведомости – `(status = 'paid') = (actual_payout_date IS NOT NULL)`, `payout_posting_id` у `paid` может быть пуст (§9: `toPayKop ≤ 0`); `payroll_accruals.ledger_entry_id` пуст при нулевой сумме.
+
 ## 14. API CRM (дополняет K11; номера Э3 – 3xx)
 
 | # | Метод и путь | Право | Успех |
@@ -327,6 +329,7 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 | `CHECKIN_WINDOW` | 409 | приход раньше окна или после конца смены |
 | `PAYROLL_PERIOD_CLOSED` | 409 | изменение в закрытом периоде |
 | `PAYROLL_PERIOD_OVERLAP` | 409 | новый период пересекает существующий |
+| `PAYROLL_PERIOD_GAP` | 409 | новый период оставляет разрыв (`details.expectedFrom`) или корректировку перед первым (`details.date`) |
 | `PAYROLL_PERIOD_HAS_UNRESOLVED` | 409 | закрытие при `needs_review` / `rate_missing`, смене `worked` без начисления на текущую `fact_version`, необработанном `staff.rate_set` (`details.shiftIds`, `details.rateIds`) |
 | `PAYROLL_PERIOD_OPEN` | 409 | `ready` / `paid` у ведомости незакрытого периода |
 | `BRANCH_REQUIRED` | 422 | штраф Директора без филиала |
