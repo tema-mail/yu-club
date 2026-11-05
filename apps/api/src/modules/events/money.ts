@@ -123,7 +123,7 @@ export async function linkEventExpense(tx: Tx, ctx: AccessContext, eventId: stri
   await assertLineOfEvent(tx, e.id, input.lineId);
   const op = await getOperation(tx, input.operationId);
   if (!op) throw notFound();
-  if (op.branchId !== e.branch_id) throw new AppError('OPERATION_LINK_INVALID', 422, 'Расход другого филиала', { reason: 'branch' });
+  if (op.branchId !== e.branch_id) throw notFound(); // чужая операция неотличима от несуществующей (K1)
   const ref = { type: 'event' as const, id: e.id };
   if ((await linksOf(tx, ref)).some((l) => l.operation.id === op.id)) throw new AppError('OPERATION_ALREADY_LINKED', 409, 'Этот расход уже учтён в мероприятии', { ref, role: 'expense' });
   await linkOperation(tx, ctx, { operationId: op.id, ref, role: 'expense', inCost: input.inCost ?? false, lineId: input.lineId ?? null }, meta, clock);

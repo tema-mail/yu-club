@@ -204,12 +204,12 @@ describe('S3-54: расходы', () => {
     const log = await db.client.query(`SELECT after FROM journal.audit_events WHERE action = 'event.money_linked' AND object_id = $1`, [e.id]);
     expect(log.rows[0].after.operationId).toBe(op.id);
   });
-  it('расход другого филиала и поступление вместо расхода – OPERATION_LINK_INVALID; сторнированный расход выпадает из факта', async () => {
+  it('расход другого филиала – 404 как несуществующий; поступление вместо расхода – OPERATION_LINK_INVALID; сторнированный расход выпадает из факта', async () => {
     const e = await newEvent();
     const b2 = (await createTestBranch(db.client)).id;
     await tx((c) => recordIncome(c, owner, { branchId: b2, method: 'cash', amountKop: 1000, source: 'other', occurredAt: AT }, meta(), opts()));
     const far = await tx((c) => recordExpense(c, owner, { branchId: b2, method: 'cash', amountKop: 10, ...category, occurredAt: AT, comment: 'x' }, meta(), opts()));
-    expect(await codeOf(tx((c) => linkEventExpense(c, owner, e.id, { operationId: far.id }, meta(), { clock })))).toBe('OPERATION_LINK_INVALID');
+    expect(await codeOf(tx((c) => linkEventExpense(c, owner, e.id, { operationId: far.id }, meta(), { clock })))).toBe('NOT_FOUND');
     const inc = await tx((c) => recordIncome(c, owner, { branchId, method: 'cash', amountKop: 10, source: 'other', occurredAt: AT }, meta(), opts()));
     expect(await codeOf(tx((c) => linkEventExpense(c, owner, e.id, { operationId: inc.id }, meta(), { clock })))).toBe('OPERATION_LINK_INVALID');
     const op = await expense(e.id, 900);
