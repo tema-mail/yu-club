@@ -19,6 +19,9 @@ export const coreErrors = {
   // Э3, core/files.ts (K19 §15, решение D3-07): лимит attachments.max_bytes и тип по сигнатуре, а не по заявленному MIME
   ATTACHMENT_TOO_LARGE: 413,
   ATTACHMENT_TYPE_NOT_ALLOWED: 415,
+  // Э3, делегирование (K1 «Делегирование», S3-88)
+  GRANT_ACTION_NOT_DELEGABLE: 422,
+  GRANT_SCOPE_INVALID: 422,
   INTERNAL: 500,
 } as const satisfies Record<string, HttpStatus>;
 
