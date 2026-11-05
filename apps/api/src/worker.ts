@@ -1,6 +1,6 @@
 // Фоновый процесс (ADR 0002: процесс worker – тот же образ API, другая команда).
 // Запускает: подписки уведомлений на события брони (K14, до startOutboxWorker – подписки замораживаются),
-// подписки баллов (K15: штраф за неявку, резерв, начисление и paid_other по PaymentLookup finance),
+// подписки баллов (K15: штраф за неявку, резерв, начисление и paid_other по PaymentLookup finance), начисление зарплаты (K18 §6),
 // доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение партий баллов раз в 10 мин, истечение удержаний раз в 15 с
 // (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер
 // запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts) и ночную сверку 16 §14 раз в сутки
@@ -29,6 +29,7 @@ import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
+import { registerPayrollHandlers } from './modules/shifts/accrual.ts';
 import { startShiftReview } from './modules/shifts/attendance.ts';
 import { vapidKeys, type VapidKeys } from './modules/notifications/webpush.ts';
 
@@ -74,6 +75,7 @@ export async function startWorkerTasks(opts: {
   const payments = opts.payments ?? paymentLookup;
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
   registerAccrualHandlers({ bookings: paymentBookingProvider, payments, clock });
+  registerPayrollHandlers({ clock }); // K18 §6: начисление зарплаты по факту смены и новой ставке
   const outbox = await startOutboxWorker({
     pool: opts.pool,
     boss: opts.boss,
