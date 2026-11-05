@@ -79,4 +79,30 @@ if [ "$MEDIA_FILES" -gt 0 ]; then
 else
   rm -f "$KEYS"
 fi
-echo "$(date -Is) восстановление $(basename "$DUMP") проверено: таблиц $TABLES, записей $ROWS, $(grep '^ledger_sum ' "$SEEN"), файлов медиа $MEDIA_FILES"
+
+# Вложения Э3 (S3-94, K19 §9): каждый живой attachments.storage_key восстановленной базы есть в снимке и нужного размера.
+# Недействительная версия (status = 'invalid') файл не требует: её не выдают и не восстанавливают. Таблицы нет (до Э3) – пропуск.
+ATT_SNAP=${DUMP%.dump}.attachments
+KEYS=$(mktemp)
+HAS_ATT=$(docker exec "$CT" psql -U postgres -d "$TMP" -q -At -c "SELECT to_regclass('app.attachments') IS NOT NULL")
+if [ "$HAS_ATT" = "t" ]; then
+  docker exec -i "$CT" psql -U postgres -d "$TMP" -v ON_ERROR_STOP=1 -q -At >"$KEYS" <<'SQL'
+SELECT DISTINCT storage_key || ' ' || size_bytes FROM app.attachments WHERE status = 'active' ORDER BY 1;
+SQL
+fi
+ATT_FILES=$(grep -c . "$KEYS" || true)
+if [ "$ATT_FILES" -gt 0 ]; then
+  [ -d "$ATT_SNAP" ] || { rm -f "$KEYS"; fail "в базе $ATT_FILES живых вложений, а снимка $ATT_SNAP нет"; }
+  MISSING=0
+  while read -r key size; do
+    case "$key" in /*|*..*) echo "недопустимый storage_key: $key" >&2; MISSING=$((MISSING + 1)); continue ;; esac
+    if [ ! -f "$ATT_SNAP/$key" ]; then echo "нет файла вложения: $key" >&2; MISSING=$((MISSING + 1)); continue; fi
+    got=$(wc -c <"$ATT_SNAP/$key" | tr -d ' ')
+    [ "$got" = "$size" ] || { echo "размер вложения $key: $got вместо $size" >&2; MISSING=$((MISSING + 1)); }
+  done <"$KEYS"
+  rm -f "$KEYS"
+  [ "$MISSING" -eq 0 ] || fail "в снимке вложений нет или испорчено $MISSING файлов из $ATT_FILES (список выше)"
+else
+  rm -f "$KEYS"
+fi
+echo "$(date -Is) восстановление $(basename "$DUMP") проверено: таблиц $TABLES, записей $ROWS, $(grep '^ledger_sum ' "$SEEN"), файлов медиа $MEDIA_FILES, вложений $ATT_FILES"

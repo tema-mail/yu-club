@@ -23,8 +23,8 @@ export interface EventRegistry extends E3EventPayloads {}
 export type EventType = keyof EventRegistry & string;
 export type EventPayload<T extends EventType> = EventRegistry[T];
 // payment – Э2 (K10 §6); certificate – резерв Э2 (K4 «События этапа 2», решение D2-09);
-// shift, staff_rate, repair, event, gift – Э3 (K4 «События этапа 3», S3-08).
-export type AggregateType = 'hold' | 'booking' | 'resource_block' | 'client' | 'payment' | 'certificate' | 'shift' | 'staff_rate' | 'repair' | 'event' | 'gift';
+// shift, staff_rate, repair, event, gift – Э3 (K4 «События этапа 3», S3-08); city, branch, room – Э4 (K4 «События этапа 4», S4-51).
+export type AggregateType = 'hold' | 'booking' | 'resource_block' | 'client' | 'payment' | 'certificate' | 'shift' | 'staff_rate' | 'repair' | 'event' | 'gift' | 'city' | 'branch' | 'room';
 
 export interface EventEnvelope<T extends EventType = EventType> {
   eventId: string;

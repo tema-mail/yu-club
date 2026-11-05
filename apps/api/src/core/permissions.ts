@@ -1,4 +1,4 @@
-// K1. Права: роль × зона × действие (ADR 0005). Набор фиксирован кодом (N-06, R-14); права с датами – Э3.4 (S3-88).
+// K1. Права: роль × зона × действие (ADR 0005). Набор фиксирован кодом (N-06, R-14); права с датами – staff_grants (S3-88).
 // Неуказанное – запрещено: действие вне реестра даёт false для всех, включая Владельца.
 // Чужой объект – NOT_FOUND (как несуществующий), FORBIDDEN – только объект в зоне без права.
 import { writeDenied, type AuditAction, type AuditObjectType, type AuditRequestMeta, type Db } from './audit.ts';
@@ -177,6 +177,16 @@ export function roleAllows(role: StaffRole, action: string): boolean {
 
 // ---- контекст
 
+/** Закрытый список делегируемых действий (K1 «Делегирование», 04 §9). Он же – CHECK в 0310_staff_grants.sql. */
+export const DELEGABLE = ['block.manage', 'network.hours.manage', 'finance.income.create', 'finance.expense.create',
+  'equipment.view.accounts', 'client.merge', 'shift.manage', 'payroll.view', 'network.branch.create'] as const satisfies readonly Action[];
+
+/** Зона действующего права; город уже раскрыт в филиалы. */
+export interface GrantZone {
+  cityIds: ReadonlySet<string>;
+  branchIds: ReadonlySet<string>;
+}
+
 export interface AccessContext {
   actor: Extract<Actor, { kind: 'staff' }>;
   role: StaffRole;
@@ -184,6 +194,8 @@ export interface AccessContext {
   cityIds: ReadonlySet<string>;
   branchIds: ReadonlySet<string>;
   at: Date;
+  /** Действующие на дату права сверх роли (loadAccess). Нет поля – нет прав. */
+  grants?: ReadonlyMap<string, GrantZone>;
 }
 
 export type Target = { network: true } | { cityId: string } | { branchId: string } | { clientId: string };
@@ -227,16 +239,22 @@ export async function loadAccess(
      WHERE staff_id = $1 AND revoked_at IS NULL AND valid_from <= $2::date + 1 AND (valid_to IS NULL OR valid_to >= $2::date - 1)`,
     [actor.staffId, utc],
   );
+  const g = await db.query<GrantRow>(
+    `SELECT action, city_id, branch_id, valid_from::text AS valid_from, valid_to::text AS valid_to FROM app.staff_grants
+     WHERE staff_id = $1 AND revoked_at IS NULL AND valid_from <= $2::date + 1 AND (valid_to IS NULL OR valid_to >= $2::date - 1)`,
+    [actor.staffId, utc],
+  );
   const targets = { cityIds: [] as string[], branchIds: [] as string[] };
-  for (const row of a.rows) {
-    if (row.scope_type === 'city' && row.city_id) targets.cityIds.push(row.city_id);
-    if (row.scope_type === 'branch' && row.branch_id) targets.branchIds.push(row.branch_id);
+  for (const row of [...a.rows, ...g.rows]) {
+    if (row.city_id) targets.cityIds.push(row.city_id);
+    if (row.branch_id) targets.branchIds.push(row.branch_id);
   }
-  const zones = network.timezonesOf && a.rows.length > 0 ? await network.timezonesOf(db, targets) : new Map<string, string>();
-  const active = a.rows.filter((row) => {
+  const zones = network.timezonesOf && targets.cityIds.length + targets.branchIds.length > 0 ? await network.timezonesOf(db, targets) : new Map<string, string>();
+  const onDate = (row: { city_id: string | null; branch_id: string | null; valid_from: string; valid_to: string | null }): boolean => {
     const date = assignmentDate(at, zones.get(row.city_id ?? row.branch_id ?? ''));
     return row.valid_from <= date && (row.valid_to === null || row.valid_to >= date);
-  });
+  };
+  const active = a.rows.filter(onDate);
   const cityIds = new Set<string>();
   const branchIds = new Set<string>();
   for (const row of active) {
@@ -245,7 +263,68 @@ export async function loadAccess(
     if (row.scope_type === 'branch' && row.branch_id) branchIds.add(row.branch_id);
   }
   if (cityIds.size > 0) for (const b of await network.branchesOfCities(db, [...cityIds])) branchIds.add(b);
-  return { actor, role: staff.role, network: false, cityIds, branchIds, at };
+  const grants = await activeGrants(db, g.rows.filter(onDate), { cityIds, branchIds }, network);
+  return { actor, role: staff.role, network: false, cityIds, branchIds, at, grants };
+}
+
+interface GrantRow {
+  action: string;
+  city_id: string | null;
+  branch_id: string | null;
+  valid_from: string;
+  valid_to: string | null;
+}
+
+/** Права на дату по действиям. Зона права остаётся внутри назначений и после выдачи: снятое назначение закрывает и право (K1). */
+async function activeGrants(
+  db: Db,
+  rows: GrantRow[],
+  assigned: { cityIds: ReadonlySet<string>; branchIds: ReadonlySet<string> },
+  network: NetworkLookup,
+): Promise<ReadonlyMap<string, GrantZone>> {
+  const out = new Map<string, { cityIds: Set<string>; branchIds: Set<string> }>();
+  for (const row of rows) {
+    const inside = row.city_id ? assigned.cityIds.has(row.city_id) : assigned.branchIds.has(row.branch_id ?? '');
+    if (!inside) continue;
+    const zone = out.get(row.action) ?? { cityIds: new Set<string>(), branchIds: new Set<string>() };
+    out.set(row.action, zone);
+    if (row.branch_id) zone.branchIds.add(row.branch_id);
+    if (row.city_id) {
+      zone.cityIds.add(row.city_id);
+      for (const b of await network.branchesOfCities(db, [row.city_id])) zone.branchIds.add(b);
+    }
+  }
+  return out;
+}
+
+export type GrantScope = { cityId: string } | { branchId: string };
+
+/** Проверка выдачи права (S3-89 вызывает в транзакции). Зона права ⊆ действующих назначений получателя на дату начала. */
+export async function assertGrantable(
+  db: Db,
+  input: { staffId: string; action: string; scope: GrantScope; validFrom: string },
+  network: NetworkLookup = noNetwork,
+): Promise<void> {
+  if (!(DELEGABLE as readonly string[]).includes(input.action)) {
+    throw new AppError('GRANT_ACTION_NOT_DELEGABLE', 422, 'Это действие не делегируется', { action: input.action });
+  }
+  const invalid = () => new AppError('GRANT_SCOPE_INVALID', 422, 'Зона права вне назначений сотрудника');
+  // Цель network.branch.create – город (K1): право на филиал не значило бы ничего.
+  if (input.action === 'network.branch.create' && !('cityId' in input.scope)) throw invalid();
+  const a = await db.query<{ city_id: string | null; branch_id: string | null }>(
+    `SELECT city_id, branch_id FROM app.staff_assignments
+     WHERE staff_id = $1 AND revoked_at IS NULL AND scope_type IN ('city','branch')
+       AND valid_from <= $2::date AND (valid_to IS NULL OR valid_to >= $2::date)`,
+    [input.staffId, input.validFrom],
+  );
+  const cityIds = a.rows.flatMap((r) => (r.city_id ? [r.city_id] : []));
+  if ('cityId' in input.scope) {
+    if (!cityIds.includes(input.scope.cityId)) throw invalid();
+    return;
+  }
+  const { branchId } = input.scope;
+  if (a.rows.some((r) => r.branch_id === branchId)) return;
+  if (cityIds.length === 0 || !(await network.branchesOfCities(db, cityIds)).includes(branchId)) throw invalid();
 }
 
 // ---- проверки
@@ -258,10 +337,29 @@ function inZone(ctx: AccessContext, target: Target): boolean {
   return false; // клиент – только assertCanClient (асинхронно, через брони)
 }
 
-/** Чистая функция: действие в наборе роли И цель в зоне. Клиент как цель → false (нужен assertCanClient). */
+/** Цель в зоне действующего права на это действие. Сеть и клиент правом не закрываются. */
+function inGrantZone(ctx: AccessContext, action: string, target: Target): boolean {
+  const zone = ctx.grants?.get(action);
+  if (!zone) return false;
+  if ('cityId' in target) return zone.cityIds.has(target.cityId);
+  if ('branchId' in target) return zone.branchIds.has(target.branchId);
+  return false;
+}
+
+/** Есть ли действие хоть в какой-то зоне: роль или право. Вход в раздел; зону дальше решают can и scopeFilter. */
+export function hasAction(ctx: AccessContext, action: string): boolean {
+  return roleAllows(ctx.role, action) || ctx.grants?.has(action) === true;
+}
+
+/** Действия сотрудника с учётом прав – для меню CRM (K11 GET /me). */
+export function actionsOfContext(ctx: AccessContext): Action[] {
+  return ACTIONS.filter((a) => hasAction(ctx, a));
+}
+
+/** Чистая функция: действие у роли и цель в зоне роли ИЛИ цель в зоне права. Клиент как цель → false (нужен assertCanClient). */
 export function can(ctx: AccessContext, action: string, target: Target): boolean {
   if ('clientId' in target) return false;
-  return roleAllows(ctx.role, action) && inZone(ctx, target);
+  return (roleAllows(ctx.role, action) && inZone(ctx, target)) || inGrantZone(ctx, action, target);
 }
 
 const notFound = () => new AppError('NOT_FOUND', 404, 'Не найдено');
@@ -271,6 +369,7 @@ const forbidden = (action: string) => new AppError('FORBIDDEN', 403, 'Недос
  *  Для сетевой цели вне зоны – FORBIDDEN: существование сети не секрет. */
 export function assertCan(ctx: AccessContext, action: string, target: Target): void {
   if ('clientId' in target) throw new Error('assertCan: для клиента – assertCanClient (K1)');
+  if (inGrantZone(ctx, action, target)) return;
   if (!inZone(ctx, target)) throw 'network' in target ? forbidden(action) : notFound();
   if (!roleAllows(ctx.role, action)) throw forbidden(action);
 }
@@ -304,10 +403,11 @@ export async function assertCanAudited(
 
 /** Условие для списков и поиска – применяется в SQL, не после выборки. */
 export function scopeFilter(ctx: AccessContext, action: string): BranchScope {
-  if (!roleAllows(ctx.role, action)) return { kind: 'none' };
-  if (ctx.network) return { kind: 'all' };
-  if (ctx.branchIds.size === 0) return { kind: 'none' };
-  return { kind: 'branches', branchIds: [...ctx.branchIds].sort() };
+  const byRole = roleAllows(ctx.role, action);
+  if (byRole && ctx.network) return { kind: 'all' };
+  const branches = new Set<string>([...(byRole ? ctx.branchIds : []), ...(ctx.grants?.get(action)?.branchIds ?? [])]);
+  if (branches.size === 0) return { kind: 'none' };
+  return { kind: 'branches', branchIds: [...branches].sort() };
 }
 
 const COLUMN_RE = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$/;

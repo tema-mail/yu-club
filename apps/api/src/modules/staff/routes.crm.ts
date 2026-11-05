@@ -3,9 +3,10 @@
 // authenticate() – общий вход для всех CRM-маршрутов: кука → сессия → loadAccess на каждый запрос (K1).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { AUDIT_OBJECT_TYPES, objectTimeline, writeDenied, type AuditRequestMeta } from '../../core/audit.ts';
+import { AUDIT_OBJECT_TYPES, objectTimeline, writeDenied, type AuditRequestMeta, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { actionsOf, assertCan, assertCanManageStaff, loadAccess, noNetwork, roleAllows, type AccessContext, type NetworkLookup, type StaffOp } from '../../core/permissions.ts';
+import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../core/idempotency.ts';
+import { actionsOfContext, assertCan, assertCanManageStaff, loadAccess, noNetwork, roleAllows, type AccessContext, type NetworkLookup, type StaffOp } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import {
   changePassword,
@@ -18,8 +19,10 @@ import {
   type Pool,
   type ReqInfo,
   type SessionInfo,
+  withTx,
   type StaffAuthConfig,
 } from './auth.ts';
+import { createGrant, listGrants, revokeGrant } from './grants.ts';
 
 export const STAFF_COOKIE = 'yu_staff';
 
@@ -150,9 +153,63 @@ export async function staffMeRoutes(app: FastifyInstance, deps: StaffDeps): Prom
     return {
       staff,
       access: { network: access.network, cityIds: [...access.cityIds].sort(), branchIds: [...access.branchIds].sort() },
-      actions: actionsOf(access.role),
+      actions: actionsOfContext(access),
     };
   });
+
+  // K11 №380–382, делегирование (S3-89): только Владелец; команды – с Idempotency-Key, отказ – в аудит.
+  const clock = deps.clock ?? systemClock;
+  const grantCommand = (
+    operation: string,
+    auditAction: 'staff.grant.created' | 'staff.grant.revoked',
+    status: number,
+    run: (tx: Tx, ctx: AccessContext, params: Record<string, string>, body: unknown, meta: AuditRequestMeta) => Promise<unknown>,
+  ) =>
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { access, meta } = await authenticate(deps, request, reply);
+      const params = request.params as Record<string, string>;
+      try {
+        const key = requireIdempotencyKey(request.headers['idempotency-key']);
+        const result = await withTx(deps.pool, (tx) =>
+          runIdempotent(
+            tx,
+            {
+              scope: idempotencyScope('staff', access.actor.staffId, `staff.grant.${operation}`),
+              key,
+              request: { route: `${request.method} ${request.routeOptions.url}`, params, body: request.body ?? {} },
+              clock,
+            },
+            async () => ({ status, body: await run(tx, access, params, request.body, meta) }),
+          ),
+        );
+        if (result.replayed) reply.header('idempotent-replay', 'true');
+        return reply.code(result.status).send(result.body);
+      } catch (err) {
+        if (err instanceof AppError && err.code === 'FORBIDDEN') {
+          const id = params.grantId ?? null;
+          await writeDenied(deps.pool, meta, { action: auditAction, object: { type: 'staff_grant', id }, reason: `FORBIDDEN: ${auditAction}`, result: 'denied' }, clock);
+        }
+        throw err;
+      }
+    };
+  app.get('/staff/grants', async (request, reply) => {
+    const { access, meta } = await authenticate(deps, request, reply);
+    reply.header('cache-control', 'no-store');
+    return listGrants(deps.pool, access, request.query).catch(async (err: unknown) => {
+      if (err instanceof AppError && err.code === 'FORBIDDEN') {
+        await writeDenied(deps.pool, meta, { action: 'staff.grant.created', object: { type: 'staff_grant', id: null }, reason: 'FORBIDDEN: список прав', result: 'denied' }, clock);
+      }
+      throw err;
+    });
+  });
+  app.post(
+    '/staff/:staffId/grants',
+    grantCommand('create', 'staff.grant.created', 201, (tx, ctx, p, body, meta) => {
+      if (!z.uuid().safeParse(p.staffId).success) throw new AppError('NOT_FOUND', 404, 'Не найдено');
+      return createGrant(tx, ctx, p.staffId!, body, meta, { network: deps.network ?? noNetwork, clock });
+    }),
+  );
+  app.post('/staff/grants/:grantId/revoke', grantCommand('revoke', 'staff.grant.revoked', 200, (tx, ctx, p, body, meta) => revokeGrant(tx, ctx, p.grantId!, body, meta, clock)));
 
   // Хронология объекта (K2 objectTimeline). В K11 маршрута нет – формат взят из мока CRM (S0-15).
   app.get('/audit/timeline', async (request, reply) => {

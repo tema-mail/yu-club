@@ -18,7 +18,7 @@ test.beforeEach(async ({ request }) => {
 test('карточка комнаты: заголовок, крошки, canonical, места по отдельности, без вместимости', async ({ page }) => {
   const res = await page.goto(VR_ROOM);
   expect(res?.status()).toBe(200);
-  await expect(page).toHaveTitle('Комната VR+PS4 – Ю-Клуб на Красном');
+  await expect(page).toHaveTitle('Комната VR+PS4 – Ю-Клуб на Красном, Новосибирск');
   await expect(page.getByTestId('room-title')).toHaveText('Комната VR+PS4');
   const crumbs = page.getByRole('list', { name: 'Навигация' });
   await expect(crumbs.getByRole('listitem')).toHaveText(['Главная', 'Новосибирск', 'Ю-Клуб на Красном', 'Комнаты', 'Комната VR+PS4']);

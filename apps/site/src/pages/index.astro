@@ -2,15 +2,19 @@
 // Главная (карта сайта 3.1): пока – выбор клуба по городам. Блоки главной из CMS (12 §5) – шаг Э4.
 import Site from '../layouts/Site.astro';
 import { branchPath, findBranch } from '../lib/api.ts';
+import { metaFor } from '../lib/seo.ts';
+import { organizationLd, websiteLd } from '../lib/jsonld.ts';
 
-const { network, choice } = Astro.locals;
+const { network, choice, origin } = Astro.locals;
 if (!network) Astro.response.status = 503;
 const mine = network && choice ? findBranch(network, choice.city, choice.branch) : null;
+// Текст «о клубе» и заголовок баннера из блоков CMS придут с S4-119; соцсети в sameAs – с блоком подвала.
+const meta = metaFor({ page: 'home', singleCity: network?.length === 1 ? network[0]!.name : undefined });
 ---
-<Site title="Ю-Клуб – компьютерные клубы: ПК, VR и PlayStation" description="Сеть компьютерных клубов Ю-Клуб: игровые ПК, VR, PlayStation 5 и отдельные комнаты. Выберите клуб в своём городе.">
+<Site title={meta.title} description={meta.description} jsonLd={[organizationLd(origin), websiteLd(origin)]}>
   <section class="yu-hero">
     <div>
-      <h1>Компьютерные клубы Ю-Клуб</h1>
+      <h1>{meta.h1}</h1>
       <p class="yu-lead">Игровые ПК, VR и PlayStation 5 в одной сети. Выберите свой клуб: адрес, часы и зоны.</p>
     </div>
     {mine && (

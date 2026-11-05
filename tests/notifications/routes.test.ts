@@ -135,6 +135,10 @@ describe('настройки', () => {
   it('GET – умолчания; PUT без Idempotency-Key – 400; PUT меняет, повтор ключа – idempotent-replay', async () => {
     const get = await app.inject({ method: 'GET', url: `${BASE}/me/notification-settings`, headers: { cookie } });
     expect(get.json()).toEqual({ remindersEnabled: true, marketingEnabled: false, serviceAlwaysOn: true, pushSubscriptions: 0 });
+    await db.client.query(
+      `INSERT INTO app.content_pages (key, document_version, status, draft, draft_updated_at, draft_updated_by, created_by, created_at)
+       VALUES ('advertising-consent', 'advertising-consent-2026-11-01', 'published', '{}', now(), gen_random_uuid(), gen_random_uuid(), now())`,
+    );
     const payload = { remindersEnabled: true, marketingEnabled: true };
     const noKey = await app.inject({ method: 'PUT', url: `${BASE}/me/notification-settings`, headers: { cookie }, payload });
     expect(noKey.json().error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
