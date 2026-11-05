@@ -69,13 +69,13 @@ export interface PreviewDraft {
 const KIND_COLUMN: Partial<Record<EntityType, string>> = { publication: 'type', game: 'direction', content_page: 'key', home_block: 'block_type' };
 
 /** Черновик по токену: сотрудник действует и не заблокирован, row_version совпадает. Медиа – текущие из медиатеки (как будет при publish). */
-export async function resolvePreview(db: Db, secret: string, token: string, now: Date, mediaIds: (draft: Record<string, unknown>) => string[]): Promise<PreviewDraft> {
+export async function resolvePreview(db: Db, secret: string, token: string, now: Date, mediaIds: (draft: Record<string, unknown>, type: EntityType) => string[]): Promise<PreviewDraft> {
   const claims = verifyPreviewToken(secret, token, now);
   const staff = await db.query(`SELECT 1 FROM app.staff WHERE id = $1 AND status = 'active'`, [claims.staffId]);
   if (staff.rows.length === 0) throw invalid();
   const row = (await db.query<EntityRow>(`SELECT * FROM ${entityTable(claims.entityType)} WHERE id = $1`, [claims.entityId])).rows[0];
   if (!row || row.row_version !== claims.draftRowVersion || row.status === 'archived') throw invalid();
-  const ids = mediaIds(row.draft);
+  const ids = mediaIds(row.draft, claims.entityType);
   const frozen = await freezeMedia(db, ids);
   const purged = await purgedAmong(db, ids);
   const snapshot: Snapshot = { media: frozen };
