@@ -25,6 +25,8 @@ import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/a
 import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
 import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
+import { registerGiftHandlers } from './modules/events/gift-booking.ts';
+import { startGiftExpiry } from './modules/events/gifts.ts';
 import { startRequestHoldExpiry } from './modules/events/resources.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
@@ -59,6 +61,7 @@ export async function startWorkerTasks(opts: {
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
   requestHoldIntervalMs?: number;
+  giftExpiryIntervalMs?: number;
   logger?: WorkerLogger;
   /** Ночная сверка (S2-80): время и зона расписания, частота проверки «пора ли»; по умолчанию 03:30 Europe/Moscow, раз в минуту. */
   reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
@@ -73,6 +76,7 @@ export async function startWorkerTasks(opts: {
   const payments = opts.payments ?? paymentLookup;
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
   registerAccrualHandlers({ bookings: paymentBookingProvider, payments, clock });
+  registerGiftHandlers({ clock }); // K20 §8.2: жизненный цикл записи по подарку
   const outbox = await startOutboxWorker({
     pool: opts.pool,
     boss: opts.boss,
@@ -100,6 +104,13 @@ export async function startWorkerTasks(opts: {
     clock,
     intervalMs: opts.requestHoldIntervalMs ?? 5 * 60_000,
     onError: (err) => logger.error({ err: errText(err) }, 'events:request-hold-expire: проход упал'),
+  });
+  // K20 §8.1: истечение подарков раз в 10 минут
+  const gifts = startGiftExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.giftExpiryIntervalMs ?? 10 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'events.gift_expire: проход упал'),
   });
   // K15 §2: истечение партий баллов (при loyalty.batch_ttl_days = null проход ничего не делает)
   const loyaltyExpiry = startLoyaltyExpiry({
@@ -133,6 +144,7 @@ export async function startWorkerTasks(opts: {
       holds.stop();
       certificates.stop();
       requestHolds.stop();
+      gifts.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
       await outbox.stop();
