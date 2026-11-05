@@ -1,4 +1,4 @@
-import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from 'fastify';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
@@ -73,11 +73,19 @@ function registerModuleHooks(): void {
 /** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
 export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
+/** Лог запроса как у Fastify по умолчанию, но без токена отписки: ?t= №205 – действующий ключ отказа от рекламы (K21 §4, K2 правило 4). */
+const logSerializers = {
+  req(req: FastifyRequest) {
+    const url = req.url.startsWith('/api/public/v1/unsubscribe') ? req.url.split('?')[0]! : req.url;
+    return { method: req.method, url, host: req.host, remoteAddress: req.ip, remotePort: req.socket?.remotePort };
+  },
+};
+
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
   registerModuleHooks();
   // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
   const app = Fastify({
-    logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream } : { level: config.LOG_LEVEL },
+    logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream, serializers: logSerializers } : { level: config.LOG_LEVEL, serializers: logSerializers },
     trustProxy: config.TRUSTED_PROXIES,
   });
 

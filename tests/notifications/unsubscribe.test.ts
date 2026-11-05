@@ -1,5 +1,6 @@
 // S4-19: отписка в один шаг K21 §4, §11 №205–206: токен HMAC, GET не меняет, POST меняет, повтор идемпотентен, частота с IP.
 import { randomUUID } from 'node:crypto';
+import { Writable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -131,6 +132,30 @@ describe('№205–206', () => {
     expect((await get(tok)).statusCode).toBe(200);
     t += 60_000;
     expect((await post(tok, from)).statusCode).toBe(200);
+  });
+
+  it('токен из ?t= не попадает в лог запроса; адрес маршрута остаётся; другие запросы – без изменений', async () => {
+    let logs = '';
+    const logStream = new Writable({
+      write(chunk: Buffer, _enc, cb) {
+        logs += chunk.toString();
+        cb();
+      },
+    });
+    const clients = { pool, auth: clientAuthConfig('c'.repeat(40)), sms: createDevSmsSender('dev'), clock };
+    const logged = buildServer(loadConfig({ LOG_LEVEL: 'trace' }), { clients, notifications: { vapidPublicKey: null, unsubscribeSecret: SECRET }, logStream });
+    try {
+      const tok = token(await client(true));
+      expect((await get(tok, ip(), logged)).statusCode).toBe(200);
+      expect((await get('поддельный', ip(), logged)).statusCode).toBe(400);
+      await logged.inject({ method: 'GET', url: `${BASE}/push/vapid-public-key?x=1` });
+      expect(logs).toContain('/unsubscribe/check');
+      expect(logs).not.toContain(tok);
+      expect(logs).not.toContain(encodeURIComponent('поддельный'));
+      expect(logs).toContain('/push/vapid-public-key?x=1');
+    } finally {
+      await logged.close();
+    }
   });
 
   it('без UNSUBSCRIBE_SECRET → 503 MARKETING_NOT_CONFIGURED, согласие не меняется', async () => {
