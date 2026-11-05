@@ -467,3 +467,32 @@
 @media (prefers-reduced-motion:reduce){
   .yc *,.yc *::before,.yc *::after{ transition:none !important; animation:none !important; }
 }
+
+/* ── Оборудование и ремонт (S3-76…S3-80) ───────────── */
+.yc-eq{ display:grid; gap:var(--yc-sp-s); }
+.yc-eq > *{ min-width:0; }
+.yc-eq__filters{ display:grid; gap:var(--yc-sp-xs); align-items:end; grid-template-columns:repeat(auto-fit, minmax(min(100%,12rem), 1fr)); }
+.yc-eq__filters > *{ min-width:0; }
+.yc-eq__tabs{ display:flex; flex-wrap:wrap; gap:var(--yc-sp-3xs); }
+.yc-eq__tabs > *{ min-width:0; }
+.yc-eq__tab{
+  min-height:var(--yc-tap); padding:0 var(--yc-sp-xs); border:1px solid var(--yc-line); border-radius:var(--yc-r-s);
+  background:var(--yc-surface); color:var(--yc-text); font:inherit; font-size:var(--yc-fs-s); cursor:pointer;
+}
+.yc-eq__tab[aria-selected="true"]{ background:var(--yc-accent-bg); border-color:var(--yc-accent); font-weight:600; }
+.yc-eq__top{ display:grid; gap:var(--yc-sp-2xs); }
+.yc-eq__top > *{ min-width:0; overflow-wrap:anywhere; }
+.yc-eq__facts{ display:flex; flex-wrap:wrap; gap:var(--yc-sp-2xs) var(--yc-sp-s); align-items:center; font-size:var(--yc-fs-s); }
+.yc-eq__facts > *{ min-width:0; }
+.yc-eq__actions{ display:flex; flex-wrap:wrap; gap:var(--yc-sp-2xs); }
+.yc-eq__actions > *{ min-width:0; }
+.yc-eq__rows{ display:grid; gap:var(--yc-sp-2xs); margin:0; padding:0; list-style:none; }
+.yc-eq__row{ display:grid; gap:var(--yc-sp-3xs); padding:var(--yc-sp-2xs) 0; border-bottom:1px solid var(--yc-line); font-size:var(--yc-fs-s); }
+.yc-eq__row:last-child{ border-bottom:0; }
+.yc-eq__row > *{ min-width:0; overflow-wrap:anywhere; }
+.yc-eq__muted{ color:var(--yc-muted); font-size:var(--yc-fs-xs); }
+.yc-eq__warn{ display:grid; gap:var(--yc-sp-2xs); padding:var(--yc-sp-xs); border-radius:var(--yc-r-s); background:var(--yc-warn-bg); color:var(--yc-text); }
+.yc-eq__warn > *{ min-width:0; overflow-wrap:anywhere; }
+.yc-eq__pair{ display:grid; gap:var(--yc-sp-xs); grid-template-columns:repeat(auto-fit, minmax(min(100%,12rem), 1fr)); }
+.yc-eq__pair > *{ min-width:0; }
+.yc-eq .yc-check,.yc-dialog .yc-check{ min-height:var(--yc-tap); }
