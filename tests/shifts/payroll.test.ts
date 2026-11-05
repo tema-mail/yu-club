@@ -26,7 +26,7 @@ let branch2 = '';
 const TZ = 'Asia/Novosibirsk' as TimeZone;
 const at = (time: string, date: LocalDate) => localToInstant(date, time as LocalTime, TZ);
 const clockAt = (d: Date): Clock => ({ now: () => d });
-const nowClock = clockAt(new Date('2031-12-01T05:00:00Z')); // позже всех дат тестов: смены в прошлом
+const nowClock = clockAt(new Date('2040-12-01T05:00:00Z')); // позже всех дат тестов: смены в прошлом
 const d = (s: string) => s as LocalDate;
 
 function ctx(role: StaffRole, branchIds: string[] = [], staffId: string = randomUUID()): AccessContext {
@@ -85,7 +85,7 @@ const toStatus = (s: PayrollStatementDto, status: 'checked' | 'ready' | 'dispute
 async function readyStatement(s: PayrollStatementDto): Promise<PayrollStatementDto> {
   return toStatus(await toStatus(s, 'checked'), 'ready');
 }
-const paid = (s: PayrollStatementDto, date = '2031-11-30') => tx((t) => markPaid(t, owner, s.id, { rowVersion: s.rowVersion, actualPayoutDate: date }, meta(), nowClock));
+const paid = (s: PayrollStatementDto, date = '2040-11-30') => tx((t) => markPaid(t, owner, s.id, { rowVersion: s.rowVersion, actualPayoutDate: date }, meta(), nowClock));
 const balance = async (staffId: string) => {
   const a = await db.client.query<{ id: string }>(`SELECT id FROM app.ledger_accounts WHERE kind = 'staff_payroll' AND owner_id = $1`, [staffId]);
   return (await verifyBalance(db.client, a.rows[0]!.id)).cached;
@@ -292,7 +292,7 @@ describe('периоды', () => {
     await expect(tx((t) => postCorrection(t, director, { staffId: s, amountKop: -5_000, ref: { type: 'shift', id: shift.id }, reason: 'x' }, meta(director), { idempotencyKey: randomUUID(), clock: nowClock }))).rejects.toMatchObject({ code: 'FORBIDDEN' });
     const key = randomUUID();
     const c = await tx((t) => postCorrection(t, owner, { staffId: s, amountKop: -5_000, ref: { type: 'shift', id: shift.id }, reason: 'переплата' }, meta(), { idempotencyKey: key, clock: nowClock }));
-    expect(c.date).toBe('2031-12-01');
+    expect(c.date).toBe('2040-12-01');
     const e = await db.client.query(`SELECT entry_type, amount, ref_type, ref_id, branch_id FROM journal.ledger_entries WHERE posting_id = $1`, [c.postingId]);
     expect(e.rows).toEqual([{ entry_type: 'payroll.correction', amount: '-5000', ref_type: 'shift', ref_id: shift.id, branch_id: branch }]);
     const again = await tx((t) => postCorrection(t, owner, { staffId: s, amountKop: -5_000, ref: { type: 'shift', id: shift.id }, reason: 'переплата' }, meta(), { idempotencyKey: key, clock: nowClock }));
@@ -360,9 +360,104 @@ describe('ведомости', () => {
     const payouts = await db.client.query(`SELECT amount FROM journal.ledger_entries WHERE ref_type = 'payroll_statement' AND ref_id = $1 AND entry_type = 'payroll.payout'`, [ready.id]);
     expect(payouts.rows).toEqual([{ amount: '-60000' }]);
     expect(await balance(s)).toBe(0);
-    expect((await paid(ready)).actualPayoutDate).toBe('2031-11-30');
+    expect((await paid(ready)).actualPayoutDate).toBe('2040-11-30');
     await expect(toStatus(one, 'disputed')).rejects.toBeInstanceOf(AppError);
   });
+
+  it('needsReview ведомости Директору – только смены его зоны', async () => {
+    const r = nextRange();
+    const p = await period(r);
+    const s = await newStaff();
+    const inA = await plan(s, r.day);
+    const inB = await plan(s, addDays(r.day, 1), branch2);
+    const st = (await tx((t) => calculateStatements(t, owner, p.id, meta(), nowClock))).find((x) => x.staffId === s)!;
+    expect(st.needsReview.map((n) => n.shiftId).sort()).toEqual([inA.id, inB.id].sort());
+    const seen = await getStatement(pool, ctx('director', [branch]), st.id, nowClock);
+    expect(seen.needsReview.map((n) => n.shiftId)).toEqual([inA.id]);
+  });
+
+  it('write_off: минус списан, в следующую ведомость не переносится, баланс в ноль', async () => {
+    await db.client.query(`INSERT INTO app.settings_values (key, level, value, valid_from, created_by) VALUES ('payroll.negative_carry', 'network', '"write_off"', '2020-01-01', $1)`, [randomUUID()]);
+    try {
+      const r1 = nextRange();
+      const r2 = nextRange();
+      const p1 = await period(r1);
+      const p2 = await period(r2);
+      const s = await newStaff();
+      await tx((t) => createPenalty(t, owner, { staffId: s, branchId: branch, date: r1.day, amountKop: 30_000, reason: 'недостача' }, meta(), nowClock));
+      await close(p1.id);
+      const done = await paid(await readyStatement(await statementOf(p1.id, s)));
+      expect(done.status).toBe('paid');
+      const rows = await db.client.query<{ amount: string; refs: Record<string, string> }>(`SELECT amount, refs FROM journal.ledger_entries WHERE ref_id = $1`, [done.id]);
+      expect(rows.rows).toEqual([{ amount: '30000', refs: { carryOffset: 'true' } }]);
+      expect(await balance(s)).toBe(0);
+      await worked(await plan(s, r2.day), 60);
+      await settleEvents();
+      await close(p2.id);
+      expect((await statementOf(p2.id, s)).totals).toMatchObject({ correctionsKop: 0, toPayKop: 60_000 });
+    } finally {
+      await db.client.query(`DELETE FROM app.settings_values WHERE key = 'payroll.negative_carry'`);
+    }
+  });
+
+  it('параллельные гонки закрытия: штраф, обработчик и корректировка – снимок сходится с журналом', async () => {
+    const outcomes = { penaltyIn: 0, penaltyClosed: 0, corrIn: 0, corrNext: 0 };
+    for (let i = 0; i < 40; i++) {
+      const delay = i % 2 === 0 ? 0 : (i % 8) + 1;
+      const wait = () => new Promise((res) => setTimeout(res, delay));
+      // штраф ↔ закрытие
+      const r1 = nextRange(1);
+      const p1 = await period(r1);
+      const s1 = await newStaff();
+      const [c1, pen] = await Promise.allSettled([wait().then(() => close(p1.id)), tx((t) => createPenalty(t, owner, { staffId: s1, branchId: branch, date: r1.from, amountKop: 1_000, reason: 'x' }, meta(), nowClock))]);
+      expect(c1.status).toBe('fulfilled');
+      if (pen.status === 'fulfilled') {
+        outcomes.penaltyIn += 1;
+        expect((await statementOf(p1.id, s1)).totals.penaltiesKop).toBe(1_000);
+      } else {
+        outcomes.penaltyClosed += 1;
+        expect(pen.reason).toMatchObject({ code: 'PAYROLL_PERIOD_CLOSED' });
+        expect((await db.client.query(`SELECT 1 FROM app.payroll_penalties WHERE staff_id = $1`, [s1])).rows).toEqual([]);
+      }
+      // обработчик ↔ закрытие: начисление либо есть и период закрыт, либо закрытие отказало
+      const r2 = nextRange(1);
+      const p2 = await period(r2);
+      const s2 = await newStaff();
+      await worked(await plan(s2, r2.from), 60);
+      const [c2, settled] = await Promise.allSettled([wait().then(() => close(p2.id)), settleEvents()]);
+      expect(settled.status).toBe('fulfilled');
+      if (c2.status !== 'fulfilled') {
+        expect(c2.reason).toMatchObject({ code: 'PAYROLL_PERIOD_HAS_UNRESOLVED' });
+        await close(p2.id);
+      }
+      expect((await statementOf(p2.id, s2)).totals.accruedKop).toBe(60_000);
+      // корректировка ↔ закрытие: запись либо внутри и в снимке, либо дальше; часы теста внутри периода
+      const r3 = nextRange(1);
+      const p3 = await period(r3);
+      const s3 = await newStaff();
+      const shift3 = await worked(await plan(s3, r3.from), 60);
+      await settleEvents();
+      const inside = clockAt(at('20:30', r3.from));
+      const [c3, corr] = await Promise.allSettled([
+        wait().then(() => close(p3.id, inside)),
+        tx((t) => postCorrection(t, owner, { staffId: s3, amountKop: 500, ref: { type: 'shift', id: shift3.id }, reason: 'x' }, meta(), { idempotencyKey: randomUUID(), clock: inside })),
+      ]);
+      expect(c3.status).toBe('fulfilled');
+      expect(corr.status).toBe('fulfilled');
+      const date = (corr as PromiseFulfilledResult<{ date: string }>).value.date;
+      const snap = (await statementOf(p3.id, s3)).totals.correctionsKop;
+      if (date === r3.from) {
+        outcomes.corrIn += 1;
+        expect(snap).toBe(500);
+      } else {
+        outcomes.corrNext += 1;
+        expect(date > r3.to).toBe(true);
+        expect(snap).toBe(0);
+      }
+    }
+    expect(outcomes.penaltyIn + outcomes.penaltyClosed).toBe(40);
+    expect(outcomes.corrIn + outcomes.corrNext).toBe(40);
+  }, 120_000);
 
   it('toPayKop = 0 → paid без проводки', async () => {
     const r = nextRange();
@@ -439,7 +534,7 @@ describe('ведомости', () => {
     expect(seen.totals).toMatchObject({ accruedKop: 60_000, toPayKop: 60_000, workedShifts: 1 });
     expect(seen.byBranch.map((b) => b.branchId)).toEqual([branch]);
     await expect(toStatus(st, 'ready', director)).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(tx((t) => markPaid(t, director, st.id, { rowVersion: st.rowVersion, actualPayoutDate: '2031-11-30' }, meta(director), nowClock))).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(tx((t) => markPaid(t, director, st.id, { rowVersion: st.rowVersion, actualPayoutDate: '2040-11-30' }, meta(director), nowClock))).rejects.toMatchObject({ code: 'FORBIDDEN' });
     const other = await statementOf(p.id, onlyB);
     await expect(getStatement(pool, director, other.id, nowClock)).rejects.toMatchObject({ code: 'NOT_FOUND' });
     await expect(getStatement(pool, ctx('admin', [branch]), st.id, nowClock)).rejects.toMatchObject({ code: 'FORBIDDEN' });

@@ -142,10 +142,10 @@ export async function computeTotals(db: Db, range: { from: string; to: string },
 
 /** Нерешённые смены диапазона (05 §8.3 «не включается молча»). staffId – одного сотрудника.
  *  now = null – для закрытия: нерешённая любая planned, и идущая, и будущая (иначе отметка после закрытия теряет часы). С now – для показа: только прошедшая. */
-export async function unresolvedShifts(db: Db, range: { from: string; to: string }, now: Date | null, staffId?: string): Promise<Array<{ shiftId: string; staffId: string; reason: string }>> {
-  const r = await db.query<{ id: string; staff_id: string; reason: string }>(
-    `SELECT id, staff_id, reason FROM (
-       SELECT s.id, s.staff_id,
+export async function unresolvedShifts(db: Db, range: { from: string; to: string }, now: Date | null, staffId?: string): Promise<Array<{ shiftId: string; staffId: string; branchId: string; reason: string }>> {
+  const r = await db.query<{ id: string; staff_id: string; branch_id: string; reason: string }>(
+    `SELECT id, staff_id, branch_id, reason FROM (
+       SELECT s.id, s.staff_id, s.branch_id,
          CASE
            WHEN s.status = 'needs_review' THEN 'needs_review'
            WHEN s.status = 'planned' AND ($3::timestamptz IS NULL OR upper(s.period) <= $3) THEN 'no_fact'
@@ -160,7 +160,7 @@ export async function unresolvedShifts(db: Db, range: { from: string; to: string
      ) q WHERE reason IS NOT NULL ORDER BY id`,
     [range.from, range.to, now, staffId ?? null],
   );
-  return r.rows.map((x) => ({ shiftId: x.id, staffId: x.staff_id, reason: x.reason }));
+  return r.rows.map((x) => ({ shiftId: x.id, staffId: x.staff_id, branchId: x.branch_id, reason: x.reason }));
 }
 
 // ---- периоды
@@ -328,7 +328,7 @@ async function toStatement(db: Db, ctx: AccessContext, r: StatementRow, clock: C
     const zone = await zoneOf(db, ctx, r.staff_id, range);
     ({ totals, byBranch } = await computeTotals(db, range, r.staff_id, clock, zone)); // Директор – только суммы своей зоны (K18 §10)
   }
-  const needsReview = (await unresolvedShifts(db, range, clock.now(), r.staff_id)).map((u) => ({ shiftId: u.shiftId, reason: u.reason }));
+  const needsReview = (await unresolvedShifts(db, range, clock.now(), r.staff_id)).filter((u) => ctx.network || ctx.branchIds.has(u.branchId)).map((u) => ({ shiftId: u.shiftId, reason: u.reason }));
   return {
     id: r.id,
     periodId: r.period_id,
