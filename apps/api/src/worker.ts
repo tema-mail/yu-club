@@ -25,6 +25,7 @@ import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/a
 import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
 import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
+import { startCampaignRunner } from './modules/notifications/campaign-runner.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
@@ -57,6 +58,7 @@ export async function startWorkerTasks(opts: {
   loyaltyExpiryIntervalMs?: number;
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
+  campaignIntervalMs?: number;
   logger?: WorkerLogger;
   /** Ночная сверка (S2-80): время и зона расписания, частота проверки «пора ли»; по умолчанию 03:30 Europe/Moscow, раз в минуту. */
   reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
@@ -104,6 +106,11 @@ export async function startWorkerTasks(opts: {
     { pool: opts.pool, vapid: opts.vapid, clock, bookings: bookingLookup },
     { intervalMs: opts.dispatcherIntervalMs ?? 30_000, log: (err) => logger.error({ err: errText(err) }, 'notifications: диспетчер') },
   );
+  // K21 §6: разворачивание подтверждённых кампаний и закрытие завершённых
+  const stopCampaigns = startCampaignRunner(
+    { pool: opts.pool, clock },
+    { intervalMs: opts.campaignIntervalMs ?? 30_000, log: (err) => logger.error({ err: errText(err) }, 'notifications: кампании') },
+  );
   const reconcileLogger: ReconcileLogger = opts.reconcile?.logger ?? {
     info: (obj, msg) => log('info', msg, obj),
     error: (obj, msg) => logger.error(obj, msg),
@@ -125,6 +132,7 @@ export async function startWorkerTasks(opts: {
       certificates.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
+      stopCampaigns();
       await outbox.stop();
     },
   };

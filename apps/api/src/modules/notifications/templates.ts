@@ -33,7 +33,9 @@ export function renderText(text: string, values: PlaceholderValues): string {
     .replace(PLACEHOLDER_RE, (_m, name: string) => values[name as Placeholder] ?? '')
     .replace(/ {2,}/g, ' ')
     .replace(/ +([,.!?:;])/g, '$1')
+    .replace(/,{2,}/g, ',')
     .replace(/^[ ,.!?:;]+/, '')
+    .replace(/[ ,:;]+$/, '')
     .trim();
 }
 
