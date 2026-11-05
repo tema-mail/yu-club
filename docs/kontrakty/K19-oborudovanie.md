@@ -348,3 +348,16 @@ CREATE TABLE app.equipment_warranties (id uuid PK, kind text NOT NULL CHECK (kin
 - Расход: «Создать расход» дважды (двойной клик) → одна операция; привязка ручного расхода → новой операции нет; та же операция ко второму ремонту или мероприятию → `OPERATION_ALREADY_LINKED`; сторно в кассе → `payment.status` пересчитан (приёмка 18, 16 §14).
 - Списанное не ставится в единицу (приёмка 19); каждое действие – в аудите (10 §14, приёмка 20): `equipment.created/updated/serial_changed/status_changed/moved/written_off`, `equipment.account.bound/rebound`, `repair.registered/updated/status_changed/approved/closed/block_linked/expense_linked`, `warranty.created/invalidated`, `attachment.added/invalidated`.
 - IDOR: каждый маршрут №331–350 с объектом чужого филиала → `404`.
+
+## 18. Решения реализации (S3-30…S3-39)
+
+- **`affectedEvents`:** поля `number`, `status`, `start`, `end` – от модуля events: он вызывает `registerEventSummaries` (`equipment/items.ts`) при старте, equipment его не импортирует (ADR 0002). До регистрации приходит только `eventId`, остальные поля `null`.
+- **Выход из `lost`:** любой, а не только `lost → in_service`, – право `equipment.write_off` и причина: иначе Директор обошёл бы запрет переводом через другой статус.
+- **`reserve`, `lost`, `written_off` при смене статуса** покидают единицу и комнату: текущая строка размещения закрывается, новая – на уровне филиала; бронь не трогается.
+- **Перемещение:** будущие занятия считаются от «сейчас», а не от `at`: прошедшая бронь решения не требует, даже если перемещение датировано задним числом; `at` в будущем – отказ. `details` у `EQUIPMENT_MOVE_HAS_BOOKINGS` содержит ещё `holdIds`.
+- **`impact = 'none'`** при регистрации не предлагает блокировку (сотрудник может запросить предложение №345).
+- **Период предложения:** от `detectedAt`, при уже связанной блокировке – от «сейчас». №345 GET без места и без цели – `200` с `target: null`, цель выбирает сотрудник (`?targetType=&targetId=&start=&end=`).
+- **`createRepairExpense`:** поля `place` нет – место денег выводит K17 из `method`. Плательщик вне зоны – `FORBIDDEN`, как и без права; по отменённому ремонту и закрытому «без затрат» – `REPAIR_TRANSITION_INVALID`.
+- **Блокировка за закрытым ремонтом** (`stillBlocked`) снимается сотрудником обычной командой K11 №14; автоматически не снимается и после закрытия второго ремонта (16 §12 «только явно»).
+- **Отмена ремонта** статус оборудования назад не возвращает: сотрудник ставит его вручную (K19 §2 не описывает возврат).
+- **Сверх §14:** `GET /equipment-accounts` (вкладка «Учётки», право `equipment.view.accounts`), `GET /repair-executors?includeArchived=`, в №343 – `downtime { minutes, hasBlocks }`.
