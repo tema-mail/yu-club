@@ -29,7 +29,7 @@ const rows = (page: Page, kind = 'reasons') => page.getByTestId(`dict-${kind}`).
 
 test('Владелец: меню и системный код причины – не удаляется и не меняется', async ({ page }) => {
   await login(page, 'owner@yu.test');
-  await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Расписание', 'Филиалы', 'Клиенты', 'Финансы', 'Сертификаты', 'Товары за баллы', 'Сотрудники', 'Ресурсы', 'Сеть', 'Справочники', 'Настройки']);
+  await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Расписание', 'Филиалы', 'Клиенты', 'Мероприятия', 'Финансы', 'Сертификаты', 'Товары за баллы', 'Сотрудники', 'Ресурсы', 'Сеть', 'Справочники', 'Настройки']);
   await page.getByRole('link', { name: 'Справочники' }).click();
   await expect(page).toHaveURL(/\/dictionaries\/reasons$/);
   await expect(rows(page)).toHaveCount(10);
