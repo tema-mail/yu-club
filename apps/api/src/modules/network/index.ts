@@ -6,12 +6,15 @@ import type { Db, Tx } from '../../core/audit.ts';
 import { isValidTimeZone, type TimeZone } from '../../core/time.ts';
 
 export {
+  activeExceptions,
   applyHoursChange,
   noAffectedBookings,
   openIntervals,
   openIntervalsBulk,
   previewHoursChange,
+  resolveDay,
   unconnectedTargets,
+  weeklyDay,
   type AffectedBookingsProvider,
   type CalendarTargets,
   type FutureBooking,
