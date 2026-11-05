@@ -132,6 +132,7 @@ interface EntryRow {
   basis: string | null;
   ref_type: string | null;
   ref_id: string | null;
+  carried_from: string | null;
 }
 
 /** Пустые интервалы покрытия за период, кусками по 31 дню (K18 §10, 05 §10.5). */
@@ -197,7 +198,7 @@ export async function payrollReport(db: Db, ctx: AccessContext, raw: unknown, cl
   const entryRows = (
     await db.query<EntryRow>(
       `SELECT le.id::text AS id, a.owner_id AS staff_id, to_char(${payrollDateSql('le')}, 'YYYY-MM-DD') AS date, le.entry_type, coalesce(o.entry_type, le.entry_type) AS kind,
-              le.branch_id, le.amount::text AS amount, le.basis, le.ref_type, le.ref_id
+              le.branch_id, le.amount::text AS amount, le.basis, le.ref_type, le.ref_id, le.refs->>'carriedFrom' AS carried_from
          FROM journal.ledger_entries le
          JOIN app.ledger_accounts a ON a.id = le.account_id AND a.kind = 'staff_payroll'
          LEFT JOIN journal.ledger_entries o ON o.id = le.reversal_of
@@ -206,7 +207,18 @@ export async function payrollReport(db: Db, ctx: AccessContext, raw: unknown, cl
     )
   ).rows;
   const matchedShifts = new Set(dtos.map((d) => d.id));
-  const entries = q.shiftStatus ? entryRows.filter((e) => e.ref_type === 'shift' && e.ref_id !== null && matchedShifts.has(e.ref_id)) : entryRows;
+  // Перенос минуса: если ведомость-источник целиком в диапазоне, её минус уже в суммах – запись переноса задвоила бы его.
+  const carrySources = [...new Set(entryRows.flatMap((e) => (e.carried_from ? [e.carried_from] : [])))];
+  const carriedInside = new Set(
+    (
+      await db.query<{ id: string }>(
+        `SELECT st.id FROM app.payroll_statements st JOIN app.payroll_periods p ON p.id = st.period_id WHERE st.id = ANY($1::uuid[]) AND p.date_from >= $2::date AND p.date_to <= $3::date`,
+        [carrySources, from, to],
+      )
+    ).rows.map((x) => x.id),
+  );
+  const uncarried = entryRows.filter((e) => !(e.carried_from && carriedInside.has(e.carried_from)));
+  const entries = q.shiftStatus ? uncarried.filter((e) => e.ref_type === 'shift' && e.ref_id !== null && matchedShifts.has(e.ref_id)) : uncarried;
 
   // сотрудники
   const staffIds = [...new Set([...dtos.map((d) => d.staffId), ...entries.map((e) => e.staff_id)])];

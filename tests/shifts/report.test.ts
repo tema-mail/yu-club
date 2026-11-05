@@ -11,7 +11,7 @@ import type { AccessContext, StaffRole } from '../../apps/api/src/core/permissio
 import { localToInstant, type Clock, type LocalDate, type LocalTime, type TimeZone } from '../../apps/api/src/core/time.ts';
 import { HANDLER_ATTENDANCE, registerPayrollHandlers } from '../../apps/api/src/modules/shifts/accrual.ts';
 import { setAttendance } from '../../apps/api/src/modules/shifts/attendance.ts';
-import { closePeriod, createPeriod, postCorrection } from '../../apps/api/src/modules/shifts/payroll.ts';
+import { closePeriod, createPeriod, markPaid, postCorrection } from '../../apps/api/src/modules/shifts/payroll.ts';
 import { createPenalty } from '../../apps/api/src/modules/shifts/penalties.ts';
 import { createShift } from '../../apps/api/src/modules/shifts/plan.ts';
 import { setRate } from '../../apps/api/src/modules/shifts/rates.ts';
@@ -213,6 +213,28 @@ describe('период и ведомость', () => {
     const novRow = rowOf(nov.rows, s);
     expect(novRow.correctionsKop).toBe(-1_000);
     assertDetailMatches(novRow);
+  });
+});
+
+describe('перенос минуса в отчёте', () => {
+  it('через два периода минус не задваивается; по одному второму – виден как корректировка', async () => {
+    const s = await newStaff([a], 60_000, 0);
+    await tx((t) => createPeriod(t, owner, { from: '2026-07-01', to: '2026-07-31' }, meta(), clock));
+    const p1 = await tx((t) => createPeriod(t, owner, { from: '2026-06-01', to: '2026-06-30' }, meta(), clock));
+    await tx((t) => createPenalty(t, owner, { staffId: s, branchId: a, date: '2026-06-10', amountKop: 50_000, reason: 'недостача' }, meta(), clock));
+    await tx((t) => closePeriod(t, owner, p1.id, {}, meta(), clock));
+    const st = (await db.client.query<{ id: string; row_version: number }>(`SELECT id, row_version FROM app.payroll_statements WHERE period_id = $1 AND staff_id = $2`, [p1.id, s])).rows[0]!;
+    await db.client.query(`UPDATE app.payroll_statements SET status = 'ready' WHERE id = $1`, [st.id]);
+    await tx((t) => markPaid(t, owner, st.id, { rowVersion: st.row_version, actualPayoutDate: '2026-07-02' }, meta(), clock));
+    await worked(s, a, '2026-07-20', 120);
+    await settle();
+    const oct = rowOf((await payrollReport(pool, owner, { from: '2026-07-01', to: '2026-07-31', staffId: s, detail: 'true' }, clock)).rows, s);
+    expect(oct).toMatchObject({ accruedKop: 120_000, correctionsKop: -50_000, toPayKop: 70_000 });
+    assertDetailMatches(oct);
+    const both_ = await payrollReport(pool, owner, { from: '2026-06-01', to: '2026-07-31', staffId: s, detail: 'true' }, clock);
+    const row = rowOf(both_.rows, s);
+    expect(row).toMatchObject({ accruedKop: 120_000, penaltiesKop: 50_000, correctionsKop: 0, toPayKop: 70_000 });
+    assertDetailMatches(row);
   });
 });
 
