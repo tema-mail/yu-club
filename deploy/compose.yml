@@ -72,6 +72,8 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:?нет VAPID_SUBJECT}
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
+      # секрет предпросмотра черновиков (K22 §11): один на api, сайт и CRM, генерирует deploy.sh один раз
+      PREVIEW_SECRET: ${PREVIEW_SECRET:?нет PREVIEW_SECRET}
       # закрытые вложения Э3 (K19 №350): только API, Caddy каталог не видит; в бэкапе – BACKUP_FILE_DIRS attachments=…
       ATTACHMENTS_DIR: /data/attachments
       # медиатека CMS (K22 §8): пишет API, отдаёт Caddy только для чтения; в бэкапе – BACKUP_FILE_DIRS media=…
@@ -133,6 +135,10 @@ services:
     restart: unless-stopped
     environment:
       API_URL: ${CRM_API_URL:-http://yu-club-api:3000}
+      # предпросмотр черновика (K22 §11): CRM берёт страницу у сайта по внутренней сети; на публичном домене её нет
+      SITE_INTERNAL_URL: ${SITE_INTERNAL_URL:-http://yu-club-site:4341}
+      PREVIEW_SECRET: ${PREVIEW_SECRET:?нет PREVIEW_SECRET}
+      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
       # Caddy общего сервера приходит из сети Docker – его X-Forwarded-For принимаем (lib/client-ip.ts)
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
     depends_on:
@@ -154,6 +160,7 @@ services:
       APP_ENV: ${APP_ENV:-stage}
       API_URL: ${SITE_API_URL:-http://yu-club-api:3000}
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
+      PREVIEW_SECRET: ${PREVIEW_SECRET:?нет PREVIEW_SECRET}
       # прокси /api/public/v1/* сайта: X-Forwarded-For принимаем только от Caddy (сети Docker)
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
     depends_on:
