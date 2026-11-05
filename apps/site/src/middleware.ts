@@ -46,8 +46,9 @@ const unavailable = () =>
     { status: 503, headers: { 'content-type': 'text/html; charset=utf-8', 'retry-after': '30' } },
   );
 
-/** Адреса вне реестра страниц: токены чувствительны к регистру, файлы отдаёт сервер; /404/ – внутренняя подмена страниц. */
-const OUTSIDE_REGISTRY = /^\/(api|_astro|media|preview|unsubscribe)(\/|$)|^\/404\/?$|\.[a-z0-9]+\/?$/i;
+/** Адреса вне реестра страниц: токены чувствительны к регистру, файлы отдаёт сервер; /404/ – внутренняя подмена страниц.
+ *  Процент-кодирование (кириллица, пробел): слаг такого не содержит, а URL снова поднимает регистр %XX – нижний регистр дал бы вечную петлю 301. */
+const OUTSIDE_REGISTRY = /^\/(api|_astro|media|preview|unsubscribe)(\/|$)|^\/404\/?$|\.[a-z0-9]+\/?$|%/i;
 
 /** K5 №216: текущий адрес старого пути или null. Сбой API – исключение. */
 async function resolveLegacy(path: string): Promise<string | null> {
@@ -78,7 +79,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     } catch (e) {
       console.error('site: redirects/resolve не ответил', e);
     }
-    return moved(target, search);
+    return isIndexable() ? moved(target, search) : withHeaders(moved(target, search), { 'x-robots-tag': 'noindex, nofollow' });
   }
 
   const isAccount = pathname === '/account/' || pathname.startsWith('/account/');

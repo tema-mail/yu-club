@@ -72,6 +72,25 @@ test('несуществующее – 404 с кодом 404 и закрыто �
   await oneHop(request, '/tomsk/lenina/rooms/', '/tomsk/lenina/#rooms');
 });
 
+test('кириллица и процент-кодирование: 404 с кодом 404 без петли, в том числе с заглавными сегментами', async ({ request }) => {
+  for (const path of ['/%D0%9F/', '/%d0%9f/', '/Tomsk/%D0%9F/', `/${encodeURIComponent('новосибирск')}/`, '/a%20b/']) {
+    const res = await hop(request, path);
+    expect(res.status(), path).toBe(404);
+    expect(res.headers().location, path).toBeUndefined();
+    expect((await hop(request, `${PROD}${path}`)).status(), path).toBe(404);
+  }
+});
+
+test('стенд: переход нормализации тоже с X-Robots-Tag; бой – без него', async ({ request }) => {
+  expect((await hop(request, '/News/')).headers()['x-robots-tag']).toBe('noindex, nofollow');
+  expect((await hop(request, `${PROD}/News/`)).headers()['x-robots-tag']).toBeUndefined();
+});
+
+test('параметры сохраняются и на переходах самих страниц: город с одним филиалом, раздел комнат', async ({ request }) => {
+  await oneHop(request, '/tomsk/?utm_source=x', '/tomsk/lenina/?utm_source=x');
+  await oneHop(request, '/tomsk/lenina/rooms/?utm_source=x', '/tomsk/lenina/?utm_source=x#rooms');
+});
+
 test('API истории молчит: 503, а не ложный 404; ненормальный адрес всё равно нормализуется', async ({ request }) => {
   const res = await hop(request, '/api-down/');
   expect(res.status()).toBe(503);
