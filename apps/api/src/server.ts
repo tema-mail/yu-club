@@ -20,6 +20,7 @@ import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
 import { registerGiftGrant } from './modules/events/gift-booking.ts';
+import { ensureGiftResource } from './modules/events/gift-resource.ts';
 import { registerEventSources } from './modules/events/resources.ts';
 import { giftCrmRoutes, giftPublicRoutes } from './modules/events/routes.gifts.ts';
 import { eventCrmRoutes } from './modules/events/routes.crm.ts';
@@ -203,6 +204,10 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         resourcesRoutes(scope, {
           pool: staff.pool,
           usage: bookingsProvider,
+          // K20 §8.2: новое VR-место может сделать комнату VR-комнатой – подарочный ресурс и тариф 0 ₽ появляются сами
+          onResourceCreated: async (tx, ctx, resource, meta, clock) => {
+            if (resource.type === 'vr_seat') await ensureGiftResource(tx, ctx, resource.branchId, meta, clock);
+          },
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
         }),

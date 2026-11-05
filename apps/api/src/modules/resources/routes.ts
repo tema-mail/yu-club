@@ -21,6 +21,8 @@ export interface ResourcesDeps {
   clock?: Clock;
   /** Будущие брони и удержания ресурса для смены состава (booking/providers.ts, ADR 0002 п.1). */
   usage: ResourceUsageProvider;
+  /** Ресурс создан с экрана ресурсов, в той же транзакции: подарочный ресурс VR-комнаты (K20 §8.2, S3-62; подключает server.ts). */
+  onResourceCreated?: (tx: Tx, ctx: AccessContext, resource: { branchId: string; type: string }, meta: AuditRequestMeta, clock: Clock) => Promise<void>;
 }
 
 // ---- права и отказы
@@ -421,7 +423,16 @@ export async function resourcesRoutes(app: FastifyInstance, deps: ResourcesDeps)
     );
     app.post(
       `/branches/:branchId/${plural}`,
-      commandHandler(deps, `${kind}.create`, (tx, ctx, branchId, body, meta, c) => createEntity(tx, ctx, kind, branchId, body, meta, c), 201),
+      commandHandler(
+        deps,
+        `${kind}.create`,
+        async (tx, ctx, branchId, body, meta, c) => {
+          const row = await createEntity(tx, ctx, kind, branchId, body, meta, c);
+          if (kind === 'resource') await deps.onResourceCreated?.(tx, ctx, { branchId: row.branchId, type: row.type as string }, meta, c);
+          return row;
+        },
+        201,
+      ),
     );
     app.patch(`/${plural}/:${idParam}`, commandHandler(deps, `${kind}.update`, (tx, ctx, id, body, meta, c) => updateEntity(tx, ctx, kind, id, body, meta, c)));
     app.post(`/${plural}/:${idParam}/archive`, commandHandler(deps, `${kind}.archive`, (tx, ctx, id, body, meta, c) => archiveEntity(tx, ctx, kind, id, body, meta, c)));
