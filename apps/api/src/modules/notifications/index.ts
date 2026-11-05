@@ -8,6 +8,7 @@ import { writeAudit, type AuditRequestMeta, type Tx } from '../../core/audit.ts'
 import { AppError } from '../../core/errors.ts';
 import { idempotencyScope, runIdempotent, type IdempotentResult } from '../../core/idempotency.ts';
 import { publish } from '../../core/outbox.ts';
+import { resolveSetting } from '../../core/settings.ts';
 import { type Clock } from '../../core/time.ts';
 import { getNotificationPrefs, withTx, type Pool } from '../clients/index.ts';
 import { skipRemindersForClient } from './reminders.ts';
@@ -254,4 +255,73 @@ export async function updateNotificationSettings(
       },
     ),
   );
+}
+
+// ---- Э4: единое решение об отправке (K21 §2). Зовётся при создании строки, в предпросмотре аудитории и повторно в send.
+
+export type Category = 'service' | 'reminder' | 'marketing';
+
+export type SendDecision =
+  | { ok: true }
+  | { ok: false; status: 'skipped_by_prefs'; reason: 'reminders_off' | 'marketing_off' | 'no_marketing_consent' | 'client_inactive' }
+  | { ok: false; status: 'skipped_by_frequency'; reason: 'min_interval' }
+  | { ok: false; status: 'no_channel' };
+
+export interface DecideInput {
+  clientId: string;
+  category: Category;
+  push: boolean;
+  /** Строка, для которой решаем в send: сама себя в частоте не считает. */
+  notificationId?: string | undefined;
+}
+
+/** Статусы клиента, которым реклама не уходит никогда (K21 §2 п.1); сервисное по записи – уходит. Гость – без профиля и согласия. */
+const INACTIVE = new Set(['guest', 'blocked', 'deletion_requested', 'anonymized']);
+
+/**
+ * K21 §2: категория, а не источник (система / сотрудник), определяет политику. Порядок: статус клиента → настройки и журнал
+ * согласий → частота (только marketing, §4) → канал. Блокировку частоты (lockMarketingFrequency) берёт вызывающий
+ * (sender.ts) до этой функции: иначе две кампании одному клиенту параллельно обе проходят частоту.
+ * В частоту идут рекламные строки sent_to_provider (по sent_at) и sending (по updated_at – момент взятия отправителем).
+ */
+export async function decideSend(tx: Tx, n: DecideInput, at: Date): Promise<SendDecision> {
+  const r = await tx.query<{ status: string; reminders: boolean | null; marketing: boolean | null; consent: boolean | null }>(
+    `SELECT c.status, p.reminders_enabled AS reminders, p.marketing_enabled AS marketing,
+            (SELECT cc.granted FROM journal.client_consents cc WHERE cc.client_id = c.id AND cc.kind = 'marketing' ORDER BY cc.at DESC, cc.id DESC LIMIT 1) AS consent
+     FROM app.clients c LEFT JOIN app.client_notification_prefs p ON p.client_id = c.id WHERE c.id = $1`,
+    [n.clientId],
+  );
+  const c = r.rows[0];
+  if (!c) return { ok: false, status: 'skipped_by_prefs', reason: 'client_inactive' };
+  if (n.category === 'marketing') {
+    if (INACTIVE.has(c.status)) return { ok: false, status: 'skipped_by_prefs', reason: 'client_inactive' };
+    if (!c.marketing) return { ok: false, status: 'skipped_by_prefs', reason: 'marketing_off' };
+    if (c.consent !== true) {
+      // переключатель включён, а доказательства согласия нет – реклама не уходит (38-ФЗ ст. 18 ч. 1)
+      if (c.consent === null) console.warn(JSON.stringify({ level: 'warn', msg: 'notifications: marketing_enabled без записи согласия', clientId: n.clientId }));
+      return { ok: false, status: 'skipped_by_prefs', reason: 'no_marketing_consent' };
+    }
+    const hours = (await resolveSetting(tx, 'notifications.marketing_min_interval_hours', { network: true }, at)).value;
+    if (hours > 0) {
+      const since = new Date(at.getTime() - hours * 3600_000);
+      const recent = await tx.query(
+        `SELECT 1 FROM app.notifications WHERE client_id = $1 AND category = 'marketing' AND id IS DISTINCT FROM $3::uuid
+           AND ((status = 'sent_to_provider' AND sent_at > $2) OR (status = 'sending' AND updated_at > $2)) LIMIT 1`,
+        [n.clientId, since, n.notificationId ?? null],
+      );
+      if (recent.rowCount) return { ok: false, status: 'skipped_by_frequency', reason: 'min_interval' };
+    }
+  } else if (n.category === 'reminder') {
+    if (c.reminders === false) return { ok: false, status: 'skipped_by_prefs', reason: 'reminders_off' };
+  }
+  if (n.push) {
+    const s = await tx.query('SELECT 1 FROM app.push_subscriptions WHERE client_id = $1 AND revoked_at IS NULL LIMIT 1', [n.clientId]);
+    if (!s.rowCount) return { ok: false, status: 'no_channel' };
+  }
+  return { ok: true };
+}
+
+/** Блокировка частоты рекламы клиента до конца транзакции (K21 §4): pg_advisory_xact_lock(hashtext('marketing:' || client_id)). */
+export async function lockMarketingFrequency(tx: Tx, clientId: string): Promise<void> {
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext('marketing:' || $1::text))`, [clientId]);
 }
