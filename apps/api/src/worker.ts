@@ -5,7 +5,8 @@
 // (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер
 // запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts) и ночную сверку 16 §14 раз в сутки
 // (modules/reports/reconcile.ts, 03:30 по RECONCILE_TIMEZONE; ручной запуск – командой из того же файла),
-// проверку смен без отметки раз в 15 мин (modules/shifts/attendance.ts, K18 §5).
+// проверку смен без отметки раз в 15 мин (modules/shifts/attendance.ts, K18 §5),
+// файлы экспорта отчётов и их уборку (modules/reports/export.ts, K24 §7) – если задан REPORTS_DATABASE_URL.
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
 //
 // Окружение: DATABASE_URL – рантайм yu_app (данные модулей); PGBOSS_DATABASE_URL – роль yu_boss, владелец
@@ -34,6 +35,9 @@ import { startGiftExpiry } from './modules/events/gifts.ts';
 import { startRequestHoldExpiry } from './modules/events/resources.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
+import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
+import { startExportGc, startExportRunner } from './modules/reports/export.ts';
+import { createReportsPool, type ReportsPool } from './modules/reports/framework.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
 import { registerPayrollHandlers } from './modules/shifts/accrual.ts';
 import { startShiftReview } from './modules/shifts/attendance.ts';
@@ -79,6 +83,8 @@ export async function startWorkerTasks(opts: {
   payments?: PaymentLookup;
   /** Медиатека CMS: ночная уборка «сирот» content:media-gc (K22 §8). Нет – задача не запускается. */
   mediaStore?: FileStore;
+  /** Экспорт отчётов: пул yu_reports и каталог EXPORT_DIR (K24 §7, §9). Нет – задачи стоят в очереди, файлы не считаются. */
+  exports?: { reports: ReportsPool; store: FileStore; intervalMs?: number };
 }): Promise<WorkerTasks> {
   const clock = opts.clock ?? systemClock;
   const logger = opts.logger ?? { error: (obj: Record<string, unknown>, msg: string) => log('error', msg, obj) };
@@ -172,10 +178,28 @@ export async function startWorkerTasks(opts: {
         },
       })
     : null;
+  const exportRunner = opts.exports
+    ? startExportRunner(
+        {
+          pool: opts.pool,
+          reports: opts.exports.reports,
+          store: opts.exports.store,
+          clock,
+          network: { branchesOfCities: branchIdsOfCities, timezonesOf },
+          log: (err) => logger.error({ err: errText(err) }, 'reports:export: сбой задачи'),
+        },
+        { intervalMs: opts.exports.intervalMs ?? 5_000 },
+      )
+    : null;
+  const exportGc = opts.exports
+    ? startExportGc({ pool: opts.pool, store: opts.exports.store, clock, onError: (err) => logger.error({ err: errText(err) }, 'reports:export-gc: проход упал') })
+    : null;
   return {
     outbox,
     reconcile,
     stop: async () => {
+      exportGc?.stop();
+      await exportRunner?.stop();
       mediaGc?.stop();
       reconcile.stop();
       holds.stop();
@@ -209,6 +233,7 @@ async function main(): Promise<void> {
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   const schedule = scheduleFromEnv();
+  const reportsPool = config.REPORTS_DATABASE_URL ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX) : null;
   const tasks = await startWorkerTasks({
     pool,
     boss,
@@ -216,6 +241,7 @@ async function main(): Promise<void> {
     reconcile: schedule,
     unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null,
     mediaStore: createFileStore({ root: config.MEDIA_DIR }),
+    ...(reportsPool ? { exports: { reports: reportsPool, store: createFileStore({ root: config.EXPORT_DIR }) } } : {}),
   });
   log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, партий баллов 10 мин, сгорание сертификатов 5 мин, отправка 30 с, сверка раз в сутки', {
     version: config.GIT_SHA,
@@ -237,6 +263,7 @@ async function main(): Promise<void> {
     try {
       await tasks.stop();
       await boss.stop({ graceful: true, timeout: 20_000 });
+      await reportsPool?.end();
       await pool.end();
       log('info', 'остановлен');
       process.exit(0);

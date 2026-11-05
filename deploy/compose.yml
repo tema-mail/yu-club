@@ -108,6 +108,8 @@ services:
       DATABASE_URL: postgres://yu_app:${YU_APP_PASSWORD}@postgres:5432/yu_club
       # pg-boss: роль yu_boss – владелец только схемы pgboss (ADR 0001)
       PGBOSS_DATABASE_URL: postgres://yu_boss:${YU_BOSS_PASSWORD}@postgres:5432/yu_club
+      # файлы экспорта считает worker в снимке под ролью отчётов (K24 §9)
+      REPORTS_DATABASE_URL: postgres://yu_reports:${YU_REPORTS_PASSWORD}@postgres:5432/yu_club
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?нет VAPID_PUBLIC_KEY}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?нет VAPID_PRIVATE_KEY}
       VAPID_SUBJECT: ${VAPID_SUBJECT:?нет VAPID_SUBJECT}
