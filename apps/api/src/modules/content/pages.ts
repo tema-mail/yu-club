@@ -176,7 +176,7 @@ export const roomPageDef: EntityDef<RoomPageDraft> = {
   type: 'room_page',
   table: 'app.content_room_pages',
   schema: roomPageDraft,
-  richText: (d) => [['description', d.description]],
+  richText: (d) => [['description', d.description], ['rentFormatsText', d.rentFormatsText]],
   mediaRefs: galleryRefs,
   complete: needDescription,
   assertEdit: async (db, ctx, row) => assertCan(ctx, 'content.draft.edit', { branchId: await branchOfRoom(db, String(row.room_id)) }),

@@ -52,7 +52,7 @@ export const blockDef: EntityDef<BlockDraft> = {
   type: 'home_block',
   table: 'app.content_home_blocks',
   schema: blockDraft,
-  richText: (d) => (d.blockType === 'about' ? [['payload.body', d.payload.body]] : []),
+  richText: (d) => (d.blockType === 'about' ? [['payload.body', d.payload.body]] : d.blockType === 'promo_strip' ? [['payload.text', d.payload.text]] : []),
   mediaRefs: blockMedia,
   complete: () => [], // схема типа проверяется при каждом сохранении и при публикации (K22 §9)
   assertEdit(_db, ctx, row, draft) {

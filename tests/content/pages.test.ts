@@ -147,6 +147,16 @@ describe('S4-35: страницы комнат и филиалов', () => {
     await f.db.client.query(`UPDATE app.branches SET status = 'active', archived_at = NULL WHERE id = $1`, [branchA]);
   });
 
+  it('описание форматов аренды – тоже Markdown: картинка в обход формы не проходит, из медиатеки попадает в снимок', async () => {
+    const roomId = await room(branchA);
+    const row = await f.inTx((tx) => ensureRoomPage(tx, f.owner(), roomId, f.meta(f.owner()), clock));
+    const image = await f.image(9, 'Зал');
+    await fails(fill(roomPageDef, row, { description: 'x', rentFormatsText: `![Иван][r]\n\n[r]: media:${image}` }), 'CONTENT_INVALID');
+    const saved = await fill(roomPageDef, row, { description: 'x', rentFormatsText: `![a](media:${image})` });
+    const v = await pub(roomPageDef, saved);
+    expect(v.version.snapshot.media?.[image]?.alt).toBe('Зал');
+  });
+
   it('черновик не в выдаче', async () => {
     const secret = `ЧЕРНОВИК-${randomUUID()}`;
     const row = await f.inTx((tx) => ensureBranchPage(tx, f.owner(), branchA, f.meta(f.owner()), clock));
