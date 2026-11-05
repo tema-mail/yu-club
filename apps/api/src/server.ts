@@ -19,6 +19,8 @@ import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvi
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { registerEventSources } from './modules/events/resources.ts';
+import { eventCrmRoutes } from './modules/events/routes.crm.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
 import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
@@ -66,6 +68,7 @@ function registerModuleHooks(): void {
   if (hooksRegistered) return;
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
+  registerEventSources(); // K6, K20 §4: блокировка видит мероприятие по строке занятости (S3-52)
   hooksRegistered = true;
 }
 
@@ -242,6 +245,16 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         { prefix: '/api/crm/v1' },
       );
     }
+    // K20 №361–370: мероприятия
+    void app.register(
+      async (scope) =>
+        eventCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
     // K15 №24–28: бонусный счёт и товары за баллы; зона клиента – через брони (clientBranchLinks)
     void app.register(
       async (scope) =>
