@@ -12,6 +12,7 @@ import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
+import { createReportsPool } from './modules/reports/framework.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
@@ -51,6 +52,8 @@ export interface ServerDeps {
   notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[] };
   /** Сертификаты (K16): CERT_PEPPER – HMAC кода. Нет – маршруты сертификатов не подключаются. */
   certificates?: { pepper: string };
+  /** Пул отчётов K24 §9 под ролью yu_reports. Нет – маршруты отчётов не подключаются (нужен и staff). */
+  reports?: { pool: pg.Pool };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
 }
@@ -295,7 +298,13 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
   }
   // Диспетчер уведомлений работает и без VAPID: строки получают статус «нет канала» и остаются в ЛК.
   // sender здесь – только для предупреждения о VAPID при старте; отправляет worker (startWorkerTasks, с bookingLookup)
-  return { deps, close: () => pool.end(), sender: { pool, vapid } };
+  const reportsPool = config.REPORTS_DATABASE_URL ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX) : null;
+  if (reportsPool) deps.reports = { pool: reportsPool };
+  const close = async () => {
+    await reportsPool?.end();
+    await pool.end();
+  };
+  return { deps, close, sender: { pool, vapid } };
 }
 
 async function main(): Promise<void> {

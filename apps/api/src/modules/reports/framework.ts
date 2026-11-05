@@ -14,6 +14,7 @@ export const DAY_RULE = 'Сутки – по времени каждого фи�
 export const SCREEN_TIMEOUT_MS = 15_000;
 export const EXPORT_TIMEOUT_MS = 300_000;
 const DETAIL_MAX_LIMIT = 500;
+const POOL_WAIT_MS = 15_000; // пул занят отчётами дольше – тот же ответ, что на долгий запрос
 
 // ---- значение показателя (K24 §2)
 
@@ -392,12 +393,15 @@ export interface ReportsPool {
 
 /** Отдельный пул под ролью yu_reports: исчерпание не задевает основной (17 §6). */
 export function createReportsPool(url: string, max = 3): pg.Pool {
-  return new pg.Pool({ connectionString: url, options: '-c search_path=app', max });
+  return new pg.Pool({ connectionString: url, options: '-c search_path=app', max, connectionTimeoutMillis: POOL_WAIT_MS });
 }
 
 /** Один снимок на отчёт: REPEATABLE READ READ ONLY, statement_timeout (экран 15 с, экспорт 300 с), work_mem 16 МБ. */
 export async function withReportTx<T>(pool: ReportsPool, fn: (tx: Tx) => Promise<T>, opts: { timeoutMs?: number } = {}): Promise<T> {
-  const c = await pool.connect();
+  const c = await pool.connect().catch((err: unknown) => {
+    if (err instanceof Error && /timeout/i.test(err.message)) throw new AppError('REPORT_TIMEOUT', 504, 'Отчёт не уложился – сузьте период или сформируйте файл');
+    throw err;
+  });
   try {
     await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     await c.query(`SET LOCAL statement_timeout = ${Math.trunc(opts.timeoutMs ?? SCREEN_TIMEOUT_MS)}`);
