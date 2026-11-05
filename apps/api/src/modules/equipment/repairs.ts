@@ -7,7 +7,7 @@ import { AppError } from '../../core/errors.ts';
 import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { branchScopeSql, can, roleAllows, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
-import { addDays, interval, localToInstant, parseLocalDate, parseLocalTime, systemClock, type Clock, type Interval } from '../../core/time.ts';
+import { addDays, interval, localToInstant, parseLocalDate, parseLocalTime, systemClock, todayIn, type Clock, type Interval } from '../../core/time.ts';
 import { createBlockFor } from '../booking/providers.ts';
 import { linksOf } from '../finance/links.ts';
 import { getBranch } from '../network/index.ts';
@@ -391,7 +391,8 @@ export async function registerRepair(
     payload: { repairId: id, number: row.number, equipmentId: row.equipment_id, branchId: row.branch_id, priority: row.priority, impact: row.impact, autoBlockId: autoBlock?.blockId ?? null },
   });
   const blockProposal = row.impact === 'none' || autoBlock ? null : await repairProposal(tx, row, {}, clock);
-  const details = await repairHistory(tx, row.equipment_id, id, now.toISOString().slice(0, 10));
+  const branch = await getBranch(tx, row.branch_id);
+  const details = await repairHistory(tx, row.equipment_id, id, todayIn(clock, branch!.timezone));
   return { repair: await toRepairDto(tx, row), blockProposal, autoBlock, details };
 }
 
@@ -539,7 +540,8 @@ export async function changeRepairStatus(tx: Tx, ctx: AccessContext, id: string,
   assertVersion(row.row_version, input.rowVersion);
   if (!input.comment) throw new AppError('COMMENT_REQUIRED', 422, 'Смена статуса ремонта – с комментарием', { field: 'comment' });
   if (!TRANSITIONS[row.status].includes(input.to)) throw invalidTransition(row.status, input.to);
-  if (input.to === 'planned' || input.to === 'in_repair') {
+  // done_pending_check из работ – тоже: иначе план, поднятый выше порога в in_repair, обошёл бы согласование
+  if (input.to === 'planned' || input.to === 'in_repair' || (input.to === 'done_pending_check' && row.status === 'in_repair')) {
     const threshold = await approvalThreshold(tx, clock.now());
     if (aboveThreshold(num(row.plan_cost_kop), threshold) && !row.approved_at) {
       throw new AppError('REPAIR_APPROVAL_REQUIRED', 409, 'План выше порога – нужно согласование', { planCostKop: num(row.plan_cost_kop), thresholdKop: threshold });
@@ -562,10 +564,13 @@ export async function approveRepair(tx: Tx, ctx: AccessContext, id: string, raw:
   assertVersion(row.row_version, input.rowVersion);
   if (!input.comment) throw new AppError('COMMENT_REQUIRED', 422, 'Решение по согласованию – с комментарием', { field: 'comment' });
   const to: RepairStatus = input.decision === 'approve' ? 'planned' : 'diagnostics';
-  if (row.status !== 'awaiting_approval') throw invalidTransition(row.status, to);
+  // План подняли или сбросили согласование уже в работе (K19 §6): таблица переходов выхода не даёт, поэтому Владелец решает на месте, статус не меняется (K19 §18)
+  const inPlace = row.approval_required && !row.approved_at && (row.status === 'planned' || row.status === 'in_repair' || row.status === 'awaiting_parts');
+  if (row.status !== 'awaiting_approval' && !inPlace) throw invalidTransition(row.status, to);
   if (input.decision === 'approve') await tx.query('UPDATE app.repairs SET approved_by = $2, approved_at = $3 WHERE id = $1', [id, ctx.actor.staffId, clock.now()]);
-  await writeTransition(tx, ctx, row, to, input.comment, meta, clock);
-  await writeAudit(tx, meta, { action: 'repair.approved', object: { type: 'repair', id }, branchId: row.branch_id, after: { decision: input.decision, planCostKop: num(row.plan_cost_kop) }, reason: input.comment }, clock);
+  if (inPlace) await tx.query('UPDATE app.repairs SET row_version = row_version + 1 WHERE id = $1', [id]);
+  else await writeTransition(tx, ctx, row, to, input.comment, meta, clock);
+  await writeAudit(tx, meta, { action: 'repair.approved', object: { type: 'repair', id }, branchId: row.branch_id, after: { decision: input.decision, planCostKop: num(row.plan_cost_kop), inPlace }, reason: input.comment }, clock);
   return toRepairDto(tx, (await repairRow(tx, id))!);
 }
 

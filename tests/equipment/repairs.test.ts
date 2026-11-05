@@ -203,6 +203,19 @@ describe('согласование выше порога (Q-52)', () => {
     const changed = await update(ok.id, { rowVersion: ok.rowVersion, plan: { costKop: 2_500_000 } });
     expect(changed.approval).toMatchObject({ required: true, approvedAt: null });
     await fails(status(changed, 'in_repair'), 'REPAIR_APPROVAL_REQUIRED');
+    // выход из сброса: Директору нельзя, Владелец согласует на месте, статус тот же, работа продолжается
+    await fails(approve(changed, 'approve', director), 'FORBIDDEN');
+    const again = await approve(changed, 'approve');
+    expect(again).toMatchObject({ status: 'planned', approval: { approvedBy: owner.actor.staffId } });
+    const working = await status(again, 'in_repair');
+    await fails(approve(working, 'approve'), 'REPAIR_TRANSITION_INVALID'); // согласовывать нечего
+    // план подняли уже в работе: на проверку без согласования нельзя; отказ на месте согласования не даёт
+    const raised = await update(working.id, { rowVersion: working.rowVersion, plan: { costKop: 3_000_000 } });
+    await fails(status(raised, 'done_pending_check'), 'REPAIR_APPROVAL_REQUIRED');
+    const refused = await approve(raised, 'reject');
+    expect(refused).toMatchObject({ status: 'in_repair', approval: { approvedAt: null } });
+    await fails(status(refused, 'done_pending_check'), 'REPAIR_APPROVAL_REQUIRED');
+    expect((await status(await approve(refused, 'approve'), 'done_pending_check')).status).toBe('done_pending_check');
     // правка диагностики план не меняет – согласование цело
     const okAgain = await planned(2_000_000);
     const a = await approve(await status(await status(okAgain, 'diagnostics'), 'awaiting_approval'), 'approve');
