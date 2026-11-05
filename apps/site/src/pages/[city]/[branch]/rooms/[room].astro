@@ -6,12 +6,13 @@
 // Нет такой комнаты (в т.ч. в архиве или снятой с публикации – API её не отдаёт) – 404 с кодом 404.
 import Site from '../../../../layouts/Site.astro';
 import {
-  ApiError, RESOURCE_KIND, ZONE_LABEL, branchRooms, findBranch, roomPath, scheduleHref, site, type ResourceDto,
+  ApiError, RESOURCE_KIND, ZONE_LABEL, branchPath, branchRooms, findBranch, roomPath, scheduleHref, site, type ResourceDto,
 } from '../../../../lib/api.ts';
 import { metaFor } from '../../../../lib/seo.ts';
+import { breadcrumbLd, roomLd } from '../../../../lib/jsonld.ts';
 
 const { city: citySlug = '', branch: branchSlug = '', room: slug = '' } = Astro.params;
-const { network } = Astro.locals;
+const { network, origin } = Astro.locals;
 const found = network ? findBranch(network, citySlug, branchSlug) : null;
 if (network && !found) return Astro.rewrite('/404/');
 
@@ -36,12 +37,20 @@ const branch = found?.branch;
 const closed = branch?.status === 'temporarily_closed';
 const hasCityHub = (city?.branches.length ?? 0) >= 2;
 const others = rooms.filter((r) => r.id !== room?.id);
+// Описание, фото и вместимость из страницы CMS добавит S4-121: нет данных – нет полей (K23 §6).
+const jsonLd = room && branch && city
+  ? [
+      roomLd(origin, { path: roomPath(city.slug, branch.slug, room.slug), name: room.name, branchPath: branchPath(city.slug, branch.slug) }),
+      breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, ...(hasCityHub ? [{ name: city.name, path: `/${city.slug}/` }] : []), { name: branch.name, path: branchPath(city.slug, branch.slug) }, { name: room.name, path: roomPath(city.slug, branch.slug, room.slug) }]),
+    ]
+  : [];
 const meta = room && branch && city ? metaFor({ page: 'room', room: room.name, branch: branch.name, city: city.name, description: `${room.name} в клубе ${branch.name}, ${city.name}: ${room.resources.map((r) => r.name).join(', ')}. Онлайн-запись.` }) : null;
 ---
 <Site
   title={meta?.title ?? 'Комната временно недоступна – Ю-Клуб'}
   description={meta?.description}
   index={{ kind: 'room', published: Boolean(room), branchStatus: branch?.status ?? 'active' }}
+  jsonLd={jsonLd}
 >
   {failed || !room || !branch || !city ? (
     <section class="yu-error">
