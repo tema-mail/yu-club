@@ -100,7 +100,7 @@ CREATE TABLE app.equipment_accounts (
 CREATE INDEX equipment_accounts_equipment_idx ON app.equipment_accounts (equipment_id);
 CREATE INDEX equipment_accounts_branch_idx ON app.equipment_accounts (branch_id);
 REVOKE UPDATE ON app.equipment_accounts FROM yu_app;
-GRANT UPDATE (status, bound_to, end_reason) ON app.equipment_accounts TO yu_app;
+GRANT UPDATE (status, bound_to, end_reason, branch_id) ON app.equipment_accounts TO yu_app;
 
 REVOKE DELETE, TRUNCATE ON app.equipment_categories, app.equipment_items, app.equipment_placements, app.equipment_accounts FROM yu_app;
 

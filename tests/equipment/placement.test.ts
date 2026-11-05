@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock, interval } from '../../apps/api/src/core/time.ts';
 import { eventOccupancy, occupyForEvent } from '../../apps/api/src/modules/booking/providers.ts';
+import { bindAccount, listAccounts, rebindAccount } from '../../apps/api/src/modules/equipment/accounts.ts';
 import { createEquipment, setEquipmentStatus } from '../../apps/api/src/modules/equipment/items.ts';
 import { listPlacements, moveEquipment } from '../../apps/api/src/modules/equipment/placement.ts';
 import { createBooking, createEquipmentWorld, ctxOf, fails, inTx, metaOf, type EquipmentWorld } from '../helpers/equipment.ts';
@@ -99,6 +100,27 @@ describe('перемещение (10 §4)', () => {
     const both = ctxOf(clock, 'director', [w.branch, w.other]);
     expect((await move(a.id, { rowVersion: 1, to: { branchId: w.other, unitId: w.units.otherUnit } }, both)).equipment.placement).toMatchObject({ branchId: w.other, unitId: w.units.otherUnit, roomId: w.otherRoom });
     await fails(move(a.id, { rowVersion: 2, to: { branchId: w.branch } }, director), 'NOT_FOUND');
+  });
+
+  it('компонент в чужом филиале с родителем не едет; действующие учётки едут с оборудованием (ревью S3-31)', async () => {
+    const parent = await create({ unitId: w.units.PS4 });
+    const child = await create({ parentId: parent.id });
+    const both = ctxOf(clock, 'director', [w.branch, w.other]);
+    const moved = await move(child.id, { rowVersion: 1, to: { branchId: w.other } }, both);
+    expect(moved.equipment.placement.branchId).toBe(w.other);
+    await move(parent.id, { rowVersion: 1, to: { branchId: w.branch, roomId: w.room } }, director);
+    const after = await listPlacements(w.pool, owner, child.id);
+    expect(after[0]).toMatchObject({ branchId: w.other, removedAt: null });
+    expect(after).toHaveLength(2); // перемещение родителя компонент не тронуло
+
+    const console = await create({});
+    const account = await inTx(w.pool, (t) => bindAccount(t, both, { platform: 'playstation', displayName: 'psn-move', equipmentId: console.id, branchId: w.branch, boundFrom: '2026-11-01' }, metaOf(both), clock));
+    await move(console.id, { rowVersion: 1, to: { branchId: w.other } }, both);
+    const foreignDirector = ctxOf(clock, 'director', [w.other]);
+    expect((await listAccounts(w.pool, foreignDirector, { equipmentId: console.id })).map((a) => [a.id, a.branchId])).toEqual([[account.id, w.other]]);
+    await fails(inTx(w.pool, (t) => rebindAccount(t, director, account.id, { equipmentId: null, at: '2026-11-10', reason: 'x' }, metaOf(director), clock)), 'NOT_FOUND');
+    const done = await inTx(w.pool, (t) => rebindAccount(t, foreignDirector, account.id, { equipmentId: null, at: '2026-11-10', reason: 'продали' }, metaOf(foreignDirector), clock));
+    expect(done.ended.status).toBe('ended');
   });
 
   it('компонент едет с родителем одной операцией, история у каждого; устаревшая версия и будущий момент – отказ', async () => {

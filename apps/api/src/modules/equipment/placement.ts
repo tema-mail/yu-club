@@ -20,6 +20,7 @@ import {
   itemRow,
   lockItem,
   notFound,
+  orNullIfTargetGone,
   parseInput,
   resolvePlace,
   targetOfPlacement,
@@ -55,10 +56,10 @@ async function unitsOfPlace(db: Db | Tx, branchId: string, place: { roomId: stri
 async function lockComponents(tx: Tx, parentId: string): Promise<ItemRow[]> {
   const r = await tx.query<{ id: string }>(
     `WITH RECURSIVE down AS (
-       SELECT id FROM app.equipment_items WHERE parent_id = $1
+       SELECT id, 1 AS depth FROM app.equipment_items WHERE parent_id = $1
        UNION ALL
-       SELECT i.id FROM app.equipment_items i JOIN down ON i.parent_id = down.id
-     ) SELECT id FROM down ORDER BY id`,
+       SELECT i.id, down.depth + 1 FROM app.equipment_items i JOIN down ON i.parent_id = down.id WHERE down.depth < 10
+     ) SELECT DISTINCT id FROM down ORDER BY id`,
     [parentId],
   );
   const out: ItemRow[] = [];
@@ -98,7 +99,8 @@ export async function moveEquipment(
   if (at.getTime() > now.getTime()) throw new AppError('VALIDATION_FAILED', 400, 'Перемещение – фактический момент, не будущий', { field: 'at' });
   if (at.getTime() < row.p_placed_at.getTime()) throw new AppError('VALIDATION_FAILED', 400, 'Момент перемещения раньше постановки на прежнее место', { field: 'at' });
 
-  const components = (await lockComponents(tx, row.id)).filter((c) => c.status !== 'written_off' && c.status !== 'lost');
+  // Компонент, уже уехавший в другой филиал, с родителем не едет: иначе родитель увёз бы его из чужой зоны (K19 §4)
+  const components = (await lockComponents(tx, row.id)).filter((c) => c.id !== row.id && c.branch_id === row.branch_id && c.status !== 'written_off' && c.status !== 'lost');
   const same = (r: ItemRow) => r.branch_id === input.to.branchId && r.p_room_id === place.roomId && r.p_unit_id === place.unitId;
   const moving = [row, ...components].filter((r) => !same(r));
   if (moving.length === 0) throw new AppError('VALIDATION_FAILED', 400, 'Оборудование уже на этом месте', { field: 'to' });
@@ -121,6 +123,8 @@ export async function moveEquipment(
     const childPlace = isPlaceable(r.status) ? place : { roomId: null, unitId: null };
     await insertPlacement(tx, { itemId: r.id, branchId: input.to.branchId, ...childPlace, at: at.getTime() < r.p_placed_at.getTime() ? r.p_placed_at : at, by: ctx.actor.staffId, reason: input.reason });
     await tx.query('UPDATE app.equipment_items SET branch_id = $2, row_version = row_version + 1 WHERE id = $1', [r.id, input.to.branchId]);
+    // Действующие учётки едут с оборудованием: управляет ими зона нового филиала (K19 §5)
+    if (r.branch_id !== input.to.branchId) await tx.query(`UPDATE app.equipment_accounts SET branch_id = $2 WHERE equipment_id = $1 AND status = 'active'`, [r.id, input.to.branchId]);
     await writeAudit(
       tx,
       meta,
@@ -147,7 +151,8 @@ export async function moveEquipment(
 
   const equipment = toEquipmentDto((await itemRow(tx, row.id))!);
   const freed = targetOfPlacement({ roomId: row.p_room_id, unitId: row.p_unit_id });
-  const blockProposal = hasAffected && freed ? await buildProposal(tx, { branchId: row.branch_id, target: freed, period: await criticalPeriod(tx, now) }, clock) : null;
+  const period = await criticalPeriod(tx, now);
+  const blockProposal = hasAffected && freed ? await orNullIfTargetGone(() => buildProposal(tx, { branchId: row.branch_id, target: freed, period }, clock)) : null;
   return { equipment, affectedBookingIds: affected.bookingIds, blockProposal };
 }
 
