@@ -17,10 +17,11 @@
 | `rpt_no_shows` | `booking` | 0406 | живая неявка | `no_show_id, booking_id, branch_id, client_id, planned_start, marked_at, reason_code` |
 | `rpt_unit_booked` | `booking` | 0406 | строка занятости активной брони по единице | `unit_id, resource_id, room_id, branch_id, booking_id, period, whole_room boolean` (бронь составной конфигурации «комната целиком» – `true`) |
 | `rpt_unit_blocks` | `booking` | 0406 | блокировка по единице | `unit_id, branch_id, block_id, period, reason_code, kind ('repair'\|'maintenance'\|'admin'\|'closure')` |
-| `rpt_units` | `resources` | 0406 | единица занятости | `unit_id, resource_id, room_id, branch_id, resource_type, self_bookable, unit_name, status` |
+| `rpt_units` | `resources` | 0406 | единица занятости и каждый её «свой» состав (закрытые и архивные – тоже, D4-20) | `unit_id, resource_id, room_id, branch_id, resource_type, self_bookable, unit_name, status, valid_period tstzmultirange` (когда состав ресурса – ровно эта единица; нет своего ресурса – `NULL`) |
 | `rpt_clients` | `clients` | 0406 | клиент | `client_id, status, created_at, registered_at, registration_source` (без телефона и имени; имя и телефон для детализации – через `clients/index.ts` с маской §6) |
 | `rpt_finance_operations` | `finance` | 0407 | операция кассы (с учётом сторно) | `operation_id, number, branch_id, kind, place, method, direction, amount_kop, signed_kop, source, category_id, subcategory_id, ref_type, ref_id, occurred_at, author_id, is_reversed, reversal_of, original_kind` |
-| `rpt_payments` | `finance` | 0407 | строка платежа | `payment_id, booking_id, branch_id, method ('cash'\|'card'\|'transfer'\|'points'\|'certificate'\|'none'), amount_kop, points_centi, paid_at, refunded_kop, status` |
+| `rpt_finance_categories` | `finance` | 0407 | статья кассы | `category_id, parent_id, name` (названия статей для 3.4; таблицу справочника `yu_reports` не видит) |
+| `rpt_payments` | `finance` | 0407 | строка платежа | `payment_id, booking_id, branch_id, method ('cash'\|'card'\|'transfer'\|'points'\|'certificate'\|'none'), amount_kop, points_centi, paid_at, refunded_kop, net_kop, net_points_centi, status` |
 | `rpt_loyalty_moves` | `loyalty` | 0407 | запись K3 бонусного счёта | `entry_id, client_id, branch_id, entry_type (accrual/penalty/spend/return/adjust/expire/reversal), original_type, amount_centi, ref_type, ref_id, at, author_type` |
 | `rpt_loyalty_balances` | `loyalty` | 0407 | клиент | `client_id, balance_centi, available_centi, blocked boolean` |
 | `rpt_certificate_ops` | `certificates` | 0407 | событие сертификата | `certificate_id, number, sale_branch_id, op ('sale'\|'redeem'\|'redeem_return'\|'expire'\|'cancel'\|'correction'), amount_kop, branch_id (где событие), client_id, booking_id, at, balance_after_kop` |
@@ -84,14 +85,15 @@ type Metric =
 
 | Показатель | Формула (на единицу, затем сумма по выбранным) |
 |---|---|
-| плановое доступное время `A` | `Σ` открытых интервалов `network.openIntervalsRange` за период (по каждому дню – та же `resolveDay`; закрытия и исключения уже вычтены) для ресурса единицы, пересечённых с `P`; один вызов на филиал, не на день – иначе месяц × 20 филиалов даёт сотни запросов к календарю |
+| плановое доступное время `A` | `Σ` открытых интервалов `network.openIntervalsRange` за период (по каждому дню – та же `resolveDay`; закрытия и исключения уже вычтены) для ресурса единицы, пересечённых с `P` и с `valid_period` состава (единицы и составы – действовавшие в периоде, D4-20); один вызов на филиал, не на день – иначе месяц × 20 филиалов даёт сотни запросов к календарю |
+| прошедшее доступное `Ae` | часть `A` до текущего момента; у завершённого периода `Ae = A` |
 | время блокировок `L` | `range_agg(rpt_unit_blocks.period) * A` – только внутри доступного времени (приёмка 6 «без двойного вычета») |
 | технический простой | часть `L` с `kind ∈ (repair, maintenance)` |
 | забронированное `Bk` | `range_agg(rpt_unit_booked.period) * A` |
-| фактически использованное `F` | `range_agg(period броней с живым посещением) * A` (неявка – не использование, 14 §6.2) |
+| фактически использованное `F` | `range_agg(period броней с живым посещением) * Ae` (неявка – не использование, 14 §6.2; идущее посещение – до текущего момента) |
 | свободное | `A − (Bk + L)` в мультидиапазонах: `A − range_agg(Bk ∪ L)` |
-| фактическая загрузка | `F / A × 100%`; `A = 0` → `unavailable/missing_input` |
-| коммерческая занятость | `Bk / A × 100%` – отдельной колонкой с подписью «не равна фактической: бронь может закончиться неявкой» |
+| фактическая загрузка | `F / Ae × 100%` (решение техлида D4-20, Q-158); `Ae = 0` → `unavailable/missing_input` |
+| коммерческая занятость | `Bk / A × 100%` по всему периоду, с будущими бронями – отдельной колонкой с подписью «не равна фактической: бронь может закончиться неявкой» |
 
 Решение: блокировки вычитаются из числителя «свободного», а не из `A`: 14 §6.2 определяет `A` по расписанию филиала без блокировок, иначе ремонт поднимал бы загрузку.
 
@@ -111,7 +113,7 @@ type Metric =
 | изъятия, перемещения, корректировки | отдельные строки, в «чистое движение» не входят: изъятие – выход денег из кассы, но не расход (K17 §4); показываются в «Остаток» |
 | чистое движение | `Поступления − Возвраты − Расходы` (14 §7.2) |
 | остаток на начало / конец | по каждому месту денег (наличные, безнал, K17 §2): `остаток(t) = Σ signed_kop всех операций до t` (включая `opening_balance`); конец = начало + поступления − возвраты − расходы ± изъятия, перемещения, корректировки (14 §7.2) – сверяется тестом |
-| по способам оплаты | группировка `method`: наличные, карта, перевод (14 §7.3); баллы и сертификаты – **не** деньги: отдельный блок «Неденежная оплата сеансов» из `rpt_payments` (`points`, `certificate`) |
+| по способам оплаты | группировка `method`: наличные, карта, перевод (14 §7.3); баллы и сертификаты – **не** деньги: отдельный блок «Неденежная оплата сеансов» из `rpt_payments` (`points`, `certificate`) за вычетом возвращённого (`net_kop`, `net_points_centi`) |
 
 Представления 14 §7.4: движение денег; остаток на дату; структура поступлений; структура расходов; финансовый результат мероприятий (после Э3, §3.5); продажи и погашения сертификатов (ссылка на 3.8). Детализация – таблица операций 14 §7.4 с переходом к первичному объекту (`ref_type/ref_id`).
 
@@ -141,7 +143,7 @@ type Metric =
 
 ### 3.8. Сертификаты (14 §11) – `certificates.ts`
 
-По `rpt_certificate_ops`: продажи (шт., сумма) – по филиалу продажи; погашения (сумма, по филиалу погашения – взаиморасчёт Q-25); частично погашенные (остаток > 0 и были погашения); истёкшие и сумма сгоревших остатков; аннулированные; на конец периода – активные и их остаток. Продажа – поступление (уже в 3.4 как `certificate_sale`), погашение – не поступление (приёмка 8). Подарок имениннику – отдельный раздел «Права на услугу» из `rpt_events` (K20) – до Э3 `unavailable/source_not_ready` (приёмка 14). Детализация погашения: дата, сумма, клиент (маска), сеанс, сотрудник, остаток после (14 §11).
+По `rpt_certificate_ops`: продажи (шт., сумма) – по филиалу продажи; погашения (сумма, по филиалу погашения – взаиморасчёт Q-25); частично погашенные (остаток > 0 и погашения за вычетом возвратов > 0: погашение, возвращённое целиком, не считается); истёкшие и сумма сгоревших остатков; аннулированные; на конец периода – активные и их остаток. Продажа – поступление (уже в 3.4 как `certificate_sale`), погашение – не поступление (приёмка 8). Подарок имениннику – отдельный раздел «Права на услугу» из `rpt_events` (K20) – до Э3 `unavailable/source_not_ready` (приёмка 14). Детализация погашения: дата, сумма, клиент (маска), сеанс, сотрудник, остаток после (14 §11).
 
 ### 3.9. Сотрудники и смены (14 §12) – `staff.ts`, **ждёт K18**
 
@@ -176,10 +178,10 @@ type Metric =
 | клиент | телефон – точное совпадение или по последним 4–10 цифрам; имя – префикс `lower(last_name)`/`lower(first_name)` (индекс `clients_name_idx`); внутренний номер | `client.view.basic`; клиент виден, если у него есть бронь в зоне сотрудника (K1 `assertCanClient`) – иначе не находится вовсе (13 §7.1 «не раскрывать факт существования») |
 | бронь | номер – точно; дата – `YYYY-MM-DD` или `ДД.ММ`; клиент – через найденных клиентов | `schedule.view`, `scopeFilter` по `branch_id` |
 | финансовая операция | номер – точно; комментарий – `ILIKE` в пределах 92 дней | `finance.view` (Администратору – нет) |
-| сотрудник | имя – префикс | `staff.view` |
+| сотрудник | имя – префикс (`staff/index.ts: searchStaffByName`, зона – через `network/index.ts`, ADR 0002) | `staff.view` |
 | мероприятие, оборудование | номер, заказчик, дата; инвентарный/серийный номер | после Э3 (K19, K20), до того групп нет |
 
-Все запросы – одной READ ONLY транзакцией, `statement_timeout` 2 с (17 §4.1 «поиск ≤ 2 с»); тип, на который нет права, в ответе отсутствует (не «0 найдено»). Запрос пишется в аудит только при поиске по телефону (`client.searched`, маска номера – K2), чтобы видеть перебор телефонов (решение).
+Все запросы – одной READ ONLY транзакцией, `statement_timeout` 2 с (17 §4.1 «поиск ≤ 2 с»), одновременно не больше 3 поисков на процесс, лишний – `RATE_LIMITED` 429: поиск идёт основным пулом и не должен занимать соединения брони и оплаты; тип, на который нет права, в ответе отсутствует (не «0 найдено»). Запрос пишется в аудит только при поиске по телефону (`client.searched`, маска номера – K2), чтобы видеть перебор телефонов (решение).
 
 ## 6. Маскировка ПДн и границы видимости (14 §2.3, §9, §16; 17 §8)
 
@@ -244,10 +246,10 @@ queued|running → failed (error_code)
 
 | Правило | Как |
 |---|---|
-| отчёты не тормозят бронь и оплату (17 §6 «ошибка отчётного модуля не должна блокировать приём оплаты») | отдельный пул `REPORTS_POOL_MAX` = 3 соединения под **отдельной ролью БД `yu_reports`** (`REPORTS_DATABASE_URL`): `SELECT` только на `rpt_*` и нужные таблицы календаря `network`, `ALTER ROLE yu_reports SET default_transaction_read_only = on`; роль создаёт `deploy/initdb/01-roles.sh` (как `yu_app`), права выдаёт 0406 (S4-60) – ошибка в отчёте не может ни записать, ни прочитать таблицы модулей в обход `rpt_*`; транзакция `READ ONLY`, `REPEATABLE READ` (один снимок на отчёт – детализация и итог из одного состояния); `statement_timeout`: экран – 15 с, экспорт – 300 с; `work_mem` сессии – 16 МБ |
+| отчёты не тормозят бронь и оплату (17 §6 «ошибка отчётного модуля не должна блокировать приём оплаты») | отдельный пул `REPORTS_POOL_MAX` = 3 соединения под **отдельной ролью БД `yu_reports`** (`REPORTS_DATABASE_URL`): `SELECT` только на `rpt_*` и нужные таблицы календаря `network`, `ALTER ROLE yu_reports SET default_transaction_read_only = on`; роль создаёт `deploy/initdb/01-roles.sh` (как `yu_app`), права выдаёт 0406 (S4-60) – ошибка в отчёте не может ни записать, ни прочитать таблицы модулей в обход `rpt_*`; транзакция `READ ONLY`, `REPEATABLE READ` (один снимок на отчёт – детализация и итог из одного состояния); `statement_timeout`: экран – 15 с, экспорт – 300 с; **общий бюджет отчёта** (десятки запросов подряд): экран – 30 с, экспорт – 300 с, поиск – 5 с; истёк – идущий запрос отменяется, следующий не начинается, `REPORT_TIMEOUT` (D4-22); `work_mem` сессии – 16 МБ |
 | «стандартная сводка за месяц ≤ 5 с» (17 §4.1) | цель p95 на объёме Q-93 (20 филиалов, 12 месяцев, ≈ 400 тыс. броней, ≈ 1 млн операций кассы – синтетика S4-131); не уложились – дневные агрегаты (§2 «Актуальность»), решение после замера |
-| тяжёлые – в фоне (17 §4.3) | период > `reports.interactive_max_days` (92) или детализация > 10 000 строк – экран предлагает «Сформировать файл»; на экране детализация – курсорная, по 100 строк (17 §4.4) |
-| явная кнопка «Сформировать» (14 §15) | у отчётов 3.3 и 3.6 при периоде > 31 дня; остальные – по смене фильтра с отменой предыдущего запроса (`AbortController` + `pg_cancel_backend` по `request_id`), старые и новые данные не смешиваются |
+| тяжёлые – в фоне (17 §4.3) | период > `reports.interactive_max_days` (92) или детализация > 10 000 строк – экран предлагает «Сформировать файл»; на экране детализация – курсорная, по 100 строк (17 §4.4), у всех показателей без исключения: `total` считается по всем строкам области, а не по странице (TC-20) |
+| явная кнопка «Сформировать» (14 §15) | у отчётов 3.3 и 3.6 при периоде > 31 дня; остальные – по смене фильтра с отменой предыдущего запроса (`AbortController`; сервер по закрытию запроса делает `pg_cancel_backend` своей роли по `pid` соединения этого запроса, отдельным соединением мимо занятого пула – D4-22), старые и новые данные не смешиваются |
 | гонка с записью | снимок `REPEATABLE READ`; отчёт не берёт блокировок строк |
 | нагрузка экспорта | одна задача `reports:export` на сотрудника одновременно, всего ≤ 2 (`teamConcurrency`) |
 
@@ -257,7 +259,7 @@ queued|running → failed (error_code)
 |---|---|---|---|
 | K11 №239 | `GET /reports/dashboard?from=&to=&cityId=&branchIds=` | по карточкам (§8; нет права – карточки нет) | `200 { cards: Card[], period, prevPeriod, dayRule, computedAt }` |
 | K11 №240 | `GET /reports/{report}?from=&to=&…фильтры` (`report` ∈ `bookings`, `utilization`, `finance`, `events`, `clients`, `loyalty`, `certificates`, `staff`, `equipment`, `comms`) | `reports.<x>.view` | `200 { metrics: Record<string, Metric>, groups?, series?, computedAt, dateBasis, dayRule }` |
-| K11 №241 | `GET /reports/{report}/detail?metric=&segment=&…фильтры&cursor=&limit=` | как №240 | `200 { columns, rows, total: Metric, nextCursor }` – `total` равен агрегату показателя |
+| K11 №241 | `GET /reports/{report}/detail?metric=&segment=&…фильтры&cursor=&limit=` | как №240 | `200 { columns, rows, total: Metric, nextCursor }` – `total` равен агрегату показателя с теми же фильтрами и сегментом. `segment=<измерение>:<значение>`: `branch`, `day` – все отчёты; `resourceType` – 3.2, 3.3; `status` – 3.2; `hour` (`00`..`23` по зоне филиала) – 3.3; `method`, `source`, `category`, `place` – 3.4. Сегмент сужает фильтры, дальше тот же `where(spec)`; не совместим с фильтром или неизвестен отчёту – `REPORT_FILTER_INVALID` |
 | K11 №242 | `GET /reports/utilization/calendar?unitId=&date=` | `reports.ops.view` | `200 { open, booked, blocked, free }` (мультидиапазоны → интервалы) |
 | K11 №243 | `POST /reports/exports` (`{ report, params, format: 'xlsx'\|'csv', detail }`) | `reports.export` (+ §7 по составу) | `202 ExportJob` |
 | K11 №244 | `GET /reports/exports?cursor=` (свои) | `reports.export` | `200 { items: ExportJob[] }` |
@@ -268,7 +270,7 @@ queued|running → failed (error_code)
 | K11 №249 | резерв | – | – |
 | K11 №250 | `GET /search?q=` | `search.global` | `200 { groups: [{ type, items, more }] }` |
 
-Ошибки (`reports/errors.ts`): `REPORT_UNKNOWN` (404), `REPORT_PERIOD_INVALID` (422: `from > to`, будущее больше года), `REPORT_PERIOD_TOO_LONG` (422, интерактивно > 92 дней – `details.useExport`), `REPORT_FILTER_INVALID` (422), `REPORT_TIMEOUT` (504, «отчёт не уложился – сузьте период или сформируйте файл»), `EXPORT_TOO_LARGE` (422), `EXPORT_NOT_READY` (409), `EXPORT_EXPIRED` (410), `EXPORT_FORBIDDEN` (403 – право потеряно до скачивания), `SEARCH_QUERY_TOO_SHORT` (422).
+Ошибки (`reports/errors.ts`): `REPORT_UNKNOWN` (404), `REPORT_PERIOD_INVALID` (422: `from > to`, будущее больше года), `REPORT_PERIOD_TOO_LONG` (422, интерактивно > 92 дней – `details.useExport`), `REPORT_FILTER_INVALID` (422), `REPORT_TIMEOUT` (504, «отчёт не уложился – сузьте период или сформируйте файл»), `REPORT_CANCELLED` (409, клиент закрыл запрос – отвечать некому), `EXPORT_TOO_LARGE` (422), `EXPORT_NOT_READY` (409), `EXPORT_EXPIRED` (410), `EXPORT_FORBIDDEN` (403 – право потеряно до скачивания), `SEARCH_QUERY_TOO_SHORT` (422).
 
 ## 11. Настройки (K7, меняет Владелец)
 
@@ -290,8 +292,9 @@ queued|running → failed (error_code)
 - 0406 `rpt_ops` – представления §1 строк 1–8 (владельцы `booking`, `resources`, `clients`); индексы владельцев; `GRANT SELECT` роли `yu_reports` на `rpt_*` и таблицы календаря `network` (роль создаёт скрипт кластера, §9).
 - 0407 `rpt_money` – строки 9–13 (`finance`, `loyalty`, `certificates`).
 - 0408 `report_exports`: `id`, `staff_id → staff`, `report`, `format`, `params jsonb`, `params_hash`, `detail boolean`, `masked boolean`, `status`, `error_code`, `rows int`, `bytes bigint`, `file_key`, `created_at`, `started_at`, `finished_at`, `expires_at`, `downloaded_at`; частичный `UNIQUE (staff_id, params_hash) WHERE status IN ('queued','running','ready')`; расширение CHECK `journal.reconcile_discrepancies.check_name` значением `utilization_over_capacity` – пересозданием с полным списком (значения 0211, 0311 и новое; §12).
-- 0409 `rpt_comms` – строки 14–16 (`notifications`, `clients`, `content`).
-- 0410 `rpt_e3` – только недостающее по факту 0311 (строка 17); `rpt_*` Э3 создаёт 0311, 0410 их не трогает; может не понадобиться вовсе.
+- 0409 `rpt_comms` – строки 14–16 (`notifications`, `clients`, `content`); сама выдаёт `GRANT SELECT … TO yu_reports` и `REVOKE` записи у `yu_app`.
+- 0410 `rpt_e3` – только недостающее по факту 0311 (строка 17); `rpt_*` Э3 создаёт 0311, 0410 их не трогает; может не понадобиться вовсе. Новое представление – со своим `GRANT` в этой же миграции.
+- **Права на будущие `rpt_*`:** `ALTER DEFAULT PRIVILEGES` не используется, каждая миграция, создающая представление для отчётов (0311 Э3, 0409, 0410 и последующие), сама выдаёт `GRANT SELECT` роли `yu_reports` (D4-23). Страж – `tests/reports/grants.test.ts`: всё `rpt_*`, кроме сверки 0211, читается под `yu_reports`.
 
 ## 14. Проверка
 

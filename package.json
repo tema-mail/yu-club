@@ -26,6 +26,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && npm run check -w @yu/crm && npm run check -w @yu/site",
     "test": "vitest run",
+    "test:perf": "vitest run -c vitest.perf.config.ts",
     "dev:api": "node apps/api/src/server.ts",
     "lint": "eslint .",
     "build:crm": "npm run build -w @yu/crm",

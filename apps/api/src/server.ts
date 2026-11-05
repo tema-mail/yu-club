@@ -22,6 +22,8 @@ import { publicationCrmRoutes } from './modules/content/routes.crm.publications.
 import { contentInternalRoutes } from './modules/content/routes.internal.ts';
 import { contentPublicRoutes } from './modules/content/routes.public.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
+import { createReportsPool } from './modules/reports/framework.ts';
+import { reportsCrmRoutes } from './modules/reports/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
@@ -73,6 +75,8 @@ export interface ServerDeps {
   certificates?: { pepper: string };
   /** Вложения Э3 (K19 №350): адаптер диска с корнем ATTACHMENTS_DIR вне веб-корня. Нет – маршруты не подключаются. */
   attachments?: { store: FileStore };
+  /** Пул отчётов K24 §9 под ролью yu_reports. Нет – маршруты отчётов не подключаются (нужен и staff). */
+  reports?: { pool: pg.Pool };
   /** CMS (K22): медиатека – адаптер диска с корнем MEDIA_DIR и квотой. Нет – маршруты медиа не подключаются. */
   content?: { mediaStore: FileStore; previewSecret?: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
@@ -319,6 +323,20 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         { prefix: '/api/crm/v1' },
       );
     }
+    // K24 §10: отчёты – только с пулом yu_reports (REPORTS_DATABASE_URL)
+    if (deps.reports) {
+      const reports = deps.reports.pool;
+      void app.register(
+        async (scope) =>
+          reportsCrmRoutes(scope, {
+            pool: staff.pool,
+            reports,
+            ...(staff.clock ? { clock: staff.clock } : {}),
+            authenticate: (request, reply) => authenticate(staff, request, reply),
+          }),
+        { prefix: '/api/crm/v1' },
+      );
+    }
     // K21 §11, K11 №201–212: кампании, журнал отправок, шаблоны, сводка клиента
     void app.register(
       async (scope) =>
@@ -437,6 +455,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
 export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void>; sender?: SenderDeps } {
   if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
+  // без обработчика ошибка простаивающего соединения роняет процесс API (как в worker.ts)
+  pool.on('error', (err) => console.error('пул yu_app: ошибка простаивающего соединения', err.message));
   const deps: ServerDeps = { network: { pool } };
   // Пара VAPID проверяется здесь: несовпадение ключей – ошибка запуска, а не тихий отказ всех отправок.
   const vapid =
@@ -459,7 +479,13 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
   }
   // Диспетчер уведомлений работает и без VAPID: строки получают статус «нет канала» и остаются в ЛК.
   // sender здесь – только для предупреждения о VAPID при старте; отправляет worker (startWorkerTasks, с bookingLookup)
-  return { deps, close: () => pool.end(), sender: { pool, vapid } };
+  const reportsPool = config.REPORTS_DATABASE_URL ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX) : null;
+  if (reportsPool) deps.reports = { pool: reportsPool };
+  const close = async () => {
+    await reportsPool?.end();
+    await pool.end();
+  };
+  return { deps, close, sender: { pool, vapid } };
 }
 
 async function main(): Promise<void> {

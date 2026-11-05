@@ -11,6 +11,7 @@ export {
   noAffectedBookings,
   openIntervals,
   openIntervalsBulk,
+  openIntervalsRange,
   previewHoursChange,
   resolveDay,
   unconnectedTargets,

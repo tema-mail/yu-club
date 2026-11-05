@@ -21,6 +21,7 @@ import { migrateUp } from '../../db/migrate.ts';
 declare module 'vitest' {
   export interface ProvidedContext {
     pgAdminUrl: string;
+    pgReportsPassword: string;
   }
 }
 
@@ -35,13 +36,18 @@ function freePort(): Promise<number> {
   });
 }
 
-async function ensureClusterRoles(adminUrl: string): Promise<void> {
+// yu_reports (пул отчётов K24 §9) – с входом: тесты S4-60/S4-62 подключаются под ней, чтобы проверить
+// default_transaction_read_only (настройка роли действует при входе, не при SET ROLE). Пароль – одноразовый на прогон.
+async function ensureClusterRoles(adminUrl: string, reportsPassword: string): Promise<void> {
   const c = new pg.Client({ connectionString: adminUrl });
   await c.connect();
   try {
     await c.query(`DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yu_app') THEN CREATE ROLE yu_app NOLOGIN; END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yu_reports') THEN CREATE ROLE yu_reports LOGIN; END IF;
     END $$`);
+    await c.query(`ALTER ROLE yu_reports LOGIN PASSWORD '${reportsPassword}'`);
+    await c.query('ALTER ROLE yu_reports SET default_transaction_read_only = on');
   } finally {
     await c.end();
   }
@@ -49,8 +55,10 @@ async function ensureClusterRoles(adminUrl: string): Promise<void> {
 
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const external = process.env.TEST_DATABASE_URL;
+  const reportsPassword = randomBytes(12).toString('hex');
+  project.provide('pgReportsPassword', reportsPassword);
   if (external) {
-    await ensureClusterRoles(external);
+    await ensureClusterRoles(external, reportsPassword);
     project.provide('pgAdminUrl', external);
     return async () => {};
   }
@@ -71,7 +79,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
   await server.initialise();
   await server.start();
   const adminUrl = `postgres://postgres:${password}@127.0.0.1:${port}/postgres`;
-  await ensureClusterRoles(adminUrl);
+  await ensureClusterRoles(adminUrl, reportsPassword);
   project.provide('pgAdminUrl', adminUrl);
   return async () => {
     await server.stop();
@@ -81,6 +89,8 @@ export default async function setup(project: TestProject): Promise<() => Promise
 
 export interface TestDatabase {
   url: string;
+  /** Та же база под ролью yu_reports (только чтение, K24 §9). */
+  reportsUrl: string;
   client: pg.Client;
   drop: () => Promise<void>;
 }
@@ -100,8 +110,12 @@ export async function createTestDatabase(opts: { migrate?: boolean } = {}): Prom
   await client.connect();
   if (opts.migrate) await migrateUp(client);
 
+  const reports = new URL(url.toString());
+  reports.username = 'yu_reports';
+  reports.password = inject('pgReportsPassword');
   return {
     url: url.toString(),
+    reportsUrl: reports.toString(),
     client,
     drop: async () => {
       await client.end();
