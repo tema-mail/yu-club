@@ -894,7 +894,7 @@ deploy/        compose, Caddy, бэкап
 
 | № | Файл | Таблицы и изменения | FK наружу | Отложенные FK, добавляемые здесь | Шаг |
 |---|---|---|---|---|---|
-| 0401 | `0401_notifications_center.sql` | `notifications`: `read_at`, `push`, `campaign_id`, `retry_of`, `purpose`; CHECK `category`, `kind`, `status`; индексы центра и частоты; CHECK `journal.client_consents`: `kind = 'marketing' AND granted` → `document_version IS NOT NULL` (`NOT VALID` + `VALIDATE` после проверки старых строк) | – | `notifications.booking_id → bookings` (обещан шапкой 0111, не добавлен) | S4-10 |
+| 0401 | `0401_notifications_center.sql` | `notifications`: `read_at`, `push`, `campaign_id`, `retry_of`, `purpose`; CHECK `category`, `kind`, `status`; индексы центра и частоты; CHECK `journal.client_consents`: `kind = 'marketing' AND granted` → `document_version IS NOT NULL` (`NOT VALID` + `VALIDATE` после проверки старых строк) | – | вынесен в `0412_notifications_booking_fk.sql` (D4-12): `notifications.booking_id → bookings` | S4-10 |
 | 0402 | `0402_notification_campaigns.sql` | `notification_templates`, `notification_campaigns` (+ триггер неизменности), `journal.notification_campaign_recipients` | `→ branches`, `→ clients`, `→ notification_templates` | `notifications.campaign_id → notification_campaigns` | S4-12 |
 | 0403 | `0403_content_media.sql` | `content_media`, `content_media_usages` | – | – | S4-30 |
 | 0404 | `0404_content.sql` | `content_publications`, `content_publication_scopes`, `content_games`, `content_game_branches`, `content_room_pages`, `content_branch_pages`, `content_pages`, `content_home_blocks`, `journal.content_versions` | `→ cities`, `→ branches`, `→ rooms`, `→ content_media` | – | S4-32 |

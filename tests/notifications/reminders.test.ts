@@ -11,6 +11,7 @@ import {
   skipRemindersForClient,
   type BookingFacts,
 } from '../../apps/api/src/modules/notifications/reminders.ts';
+import { createTestBooking } from '../helpers/booking.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -105,8 +106,8 @@ describe('плановые строки в базе', () => {
   let clientId: string;
   const now = new Date('2026-11-10T03:00:00Z');
 
-  const facts = (over: Partial<BookingFacts> = {}): BookingFacts => ({
-    bookingId: randomUUID(),
+  const facts = async (over: Partial<BookingFacts> = {}): Promise<BookingFacts> => ({
+    bookingId: await createTestBooking(db.client, { clientId, branchId }),
     bookingVersion: 1,
     clientId,
     branchId,
@@ -136,7 +137,7 @@ describe('плановые строки в базе', () => {
   afterAll(async () => db.drop());
 
   it('подтверждение: три строки; повтор события – без дублей', async () => {
-    const b = facts();
+    const b = await facts();
     expect(await planBookingNotifications(db.client, b, now)).toHaveLength(3);
     expect(await planBookingNotifications(db.client, b, now)).toHaveLength(0);
     expect(await statuses(b.bookingId)).toEqual([
@@ -147,7 +148,7 @@ describe('плановые строки в базе', () => {
   });
 
   it('перенос: старые → skipped_booking_changed, новые напоминания запланированы (TC-18)', async () => {
-    const b = facts();
+    const b = await facts();
     await planBookingNotifications(db.client, b, now);
     const moved = { ...b, bookingVersion: 2, start: at('2026-11-16', '18:00', NSK), end: at('2026-11-16', '19:00', NSK) };
     expect(await skipPlannedForBooking(db.client, b.bookingId, now, 2)).toBe(3);
@@ -165,7 +166,7 @@ describe('плановые строки в базе', () => {
   });
 
   it('выключил напоминания: плановые reminder → skipped_by_prefs, отмена клубом всё равно запланирована', async () => {
-    const b = facts();
+    const b = await facts();
     await planBookingNotifications(db.client, b, now, null);
     expect(await skipRemindersForClient(db.client, clientId, now)).toBeGreaterThanOrEqual(2);
     await skipPlannedForBooking(db.client, b.bookingId, now);

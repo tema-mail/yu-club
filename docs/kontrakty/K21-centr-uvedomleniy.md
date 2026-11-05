@@ -199,7 +199,7 @@ draft → cancelled ; confirmed|expanding|sending → cancelled (остаток 
 | K11 №201 | `GET /notifications/campaigns?…фильтры 09 §12.2&cursor=` | `notifications.view` | `200 { items: CampaignRow[], nextCursor }` |
 | K11 №202 | `POST /notifications/campaigns` | по категории (§10) | `201 Campaign` (`draft`) |
 | K11 №203 | `GET /notifications/campaigns/{id}` | `notifications.view` | `200 Campaign & { counters, timeline: AuditEventView[] }` |
-| K11 №204 | `PATCH /notifications/campaigns/{id}` | как №202 | `200 Campaign`; не `draft` – `409 CAMPAIGN_NOT_EDITABLE` |
+| K11 №204 | `PATCH /notifications/campaigns/{id}` (без `Idempotency-Key`, защита – `row_version`) | как №202 | `200 Campaign`; не `draft` – `409 CAMPAIGN_NOT_EDITABLE` |
 | K11 №205 | `POST /notifications/campaigns/{id}/preview` | как №202 | `200 AudiencePreview` |
 | K11 №206 | `POST /notifications/campaigns/{id}/confirm` | как №202 (+ `send.mass` для `segment`) | `200 Campaign` (`confirmed`) |
 | K11 №207 | `POST /notifications/campaigns/{id}/cancel` | как №202 | `200 Campaign` |

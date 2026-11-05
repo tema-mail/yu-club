@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { claimDue, runDue, sendNotification, type BookingLookup, type SenderDeps } from '../../apps/api/src/modules/notifications/sender.ts';
 import { generateVapidKeys, vapidKeys } from '../../apps/api/src/modules/notifications/webpush.ts';
+import { createTestBooking } from '../helpers/booking.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 import { decryptAes128gcm, fakeBrowser, startPushReceiver, verifyVapid, type FakeBrowser, type PushReceiver } from '../helpers/push-receiver.ts';
@@ -13,7 +14,7 @@ let db: TestDatabase;
 let pool: pg.Pool;
 let rx: PushReceiver;
 let branchId: string;
-const clock = fixedClock('2026-11-14T14:00:00Z');
+const clock = fixedClock('2026-11-14T06:00:00Z'); // 13:00 НСК – внутри окна рекламы (K21 §4)
 const pair = generateVapidKeys();
 const vapid = vapidKeys(pair.publicKey, pair.privateKey, 'mailto:ops@yu-club.test');
 let deps: SenderDeps;
@@ -45,7 +46,8 @@ async function subscribe(clientId: string, path: string, ua: FakeBrowser = fakeB
 }
 
 async function notification(clientId: string, over: Record<string, unknown> = {}): Promise<string> {
-  const v = { category: 'service', kind: 'booking_confirmed', booking_id: randomUUID(), booking_version: 1, not_after: null, planned_at: clock.now(), ...over };
+  const bookingId = 'booking_id' in over ? over.booking_id : await createTestBooking(db.client, { clientId, branchId });
+  const v = { category: 'service', kind: 'booking_confirmed', booking_id: bookingId, booking_version: 1, not_after: null, planned_at: clock.now(), ...over };
   const r = await db.client.query<{ id: string }>(
     `INSERT INTO app.notifications (client_id, branch_id, category, kind, booking_id, booking_version, source, title, body, url, planned_at, not_after, dedupe_key)
      VALUES ($1, $2, $3, $4, $5, $6, 'system', 'Ю-Клуб: запись подтверждена', '15 ноября, 14:00 – Центр, ПК 7', '/account/bookings/', $7, $8, $9) RETURNING id`,
@@ -178,12 +180,13 @@ describe('пропуски по настройкам и брони', () => {
     await subscribe(no, '/p/m-no');
     const a = await notification(no, { category: 'marketing', kind: 'campaign', booking_id: null, booking_version: null });
     expect(await queueAndSend(a)).toBe('skipped_by_prefs');
-    expect((await row(a)).skip_reason).toBe('marketing_not_consented');
+    expect((await row(a)).skip_reason).toBe('marketing_off');
 
     const yes = await client({ marketing: true });
+    await db.client.query(`INSERT INTO journal.client_consents (client_id, kind, granted, document_version, source, actor_type, actor_id) VALUES ($1, 'marketing', true, 'v1', 'account', 'client', $1)`, [yes]);
     await subscribe(yes, '/p/m-yes');
     const b = await notification(yes, { category: 'marketing', kind: 'campaign', booking_id: null, booking_version: null });
-    expect(await queueAndSend(b)).toBe('sent_to_provider');
+    expect(await queueAndSend(b, { ...deps, unsubscribeSecret: 'u'.repeat(32) })).toBe('sent_to_provider');
     expect(rx.received).toHaveLength(1);
   });
 
@@ -211,7 +214,7 @@ describe('пропуски по настройкам и брони', () => {
     const state = new Map<string, Awaited<ReturnType<BookingLookup['snapshot']>>>();
     const d: SenderDeps = { ...deps, bookings: { snapshot: async (_tx, bookingId) => state.get(bookingId) ?? null } };
     const make = async (snap: Awaited<ReturnType<BookingLookup['snapshot']>>, kind = 'reminder_day_before') => {
-      const bookingId = randomUUID();
+      const bookingId = await createTestBooking(db.client, { clientId: c, branchId });
       state.set(bookingId, snap);
       return notification(c, { category: kind === 'booking_cancelled' ? 'service' : 'reminder', kind, booking_id: bookingId });
     };

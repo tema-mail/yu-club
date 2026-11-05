@@ -1,4 +1,4 @@
-import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from 'fastify';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
@@ -13,6 +13,8 @@ import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from '.
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
+import { equipmentCrmRoutes } from './modules/equipment/routes.crm.ts';
+import { registerEquipmentAttachmentOwners, repairCrmRoutes } from './modules/equipment/routes.repairs.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
@@ -37,6 +39,7 @@ import { createCertificatePaymentMethod, verifyCertificatePin } from './modules/
 import { certificateCrmRoutes } from './modules/certificates/routes.crm.ts';
 import { certificatePublicRoutes } from './modules/certificates/routes.public.ts';
 import { DEFAULT_PUSH_HOSTS } from './modules/notifications/index.ts';
+import { notificationCrmRoutes } from './modules/notifications/routes.crm.ts';
 import { notificationPublicRoutes } from './modules/notifications/routes.public.ts';
 import type { SenderDeps } from './modules/notifications/sender.ts';
 import { vapidKeys } from './modules/notifications/webpush.ts';
@@ -52,7 +55,7 @@ export interface ServerDeps {
   /** Публичная сеть для сайта (K5 №1–4) – без входа, нужна только база. */
   network?: NetworkPublicDeps;
   /** Web Push (S1-15): открытый ключ VAPID (null – не настроен, подписка 503) и разрешённые push-сервисы. Нужны clients. */
-  notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[] };
+  notifications?: { vapidPublicKey: string | null; allowedPushHosts?: readonly string[]; unsubscribeSecret?: string | null };
   /** Сертификаты (K16): CERT_PEPPER – HMAC кода. Нет – маршруты сертификатов не подключаются. */
   certificates?: { pepper: string };
   /** Вложения Э3 (K19 №350): адаптер диска с корнем ATTACHMENTS_DIR вне веб-корня. Нет – маршруты не подключаются. */
@@ -68,17 +71,26 @@ function registerModuleHooks(): void {
   if (hooksRegistered) return;
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
+  registerEquipmentAttachmentOwners(); // K19 §9: вложения оборудования и ремонта
   hooksRegistered = true;
 }
 
 /** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
 export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
+/** Лог запроса как у Fastify по умолчанию, но без токена отписки: ?t= №205 – действующий ключ отказа от рекламы (K21 §4, K2 правило 4). */
+const logSerializers = {
+  req(req: FastifyRequest) {
+    const url = req.url.startsWith('/api/public/v1/unsubscribe') ? req.url.split('?')[0]! : req.url;
+    return { method: req.method, url, host: req.host, remoteAddress: req.ip, remotePort: req.socket?.remotePort };
+  },
+};
+
 export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInstance {
   registerModuleHooks();
   // trustProxy – только список доверенных: иначе за Caddy у всех один request.ip и 51 неудача закроет вход всем.
   const app = Fastify({
-    logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream } : { level: config.LOG_LEVEL },
+    logger: deps.logStream ? { level: config.LOG_LEVEL, stream: deps.logStream, serializers: logSerializers } : { level: config.LOG_LEVEL, serializers: logSerializers },
     trustProxy: config.TRUSTED_PROXIES,
   });
 
@@ -230,6 +242,26 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
     );
+    // K19 №331–337: оборудование (S3-33)
+    void app.register(
+      async (scope) =>
+        equipmentCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    // K19 №341–349: ремонт (S3-39)
+    void app.register(
+      async (scope) =>
+        repairCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
     // K19 №350: закрытые вложения – выдача только через API с правом на объект-владелец
     if (deps.attachments) {
       const store = deps.attachments.store;
@@ -244,6 +276,19 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         { prefix: '/api/crm/v1' },
       );
     }
+    // K21 §11, K11 №201–212: кампании, журнал отправок, шаблоны, сводка клиента
+    void app.register(
+      async (scope) =>
+        notificationCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          network: staff.network ?? networkLookup,
+          bookings: bookingLookup,
+          unsubscribeSecret: deps.notifications?.unsubscribeSecret ?? null,
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
     // K15 №24–28: бонусный счёт и товары за баллы; зона клиента – через брони (clientBranchLinks)
     void app.register(
       async (scope) =>
@@ -287,7 +332,7 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     const clients: ClientPublicDeps = { ...deps.clients, hooks: { onLogin: attachVisitorHolds, ...deps.clients.hooks } };
     void app.register(async (scope) => clientPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     const push = deps.notifications ?? { vapidPublicKey: null };
-    void app.register(async (scope) => notificationPublicRoutes(scope, { clients, ...push }), { prefix: '/api/public/v1' });
+    void app.register(async (scope) => notificationPublicRoutes(scope, { clients, bookings: bookingLookup, ...push }), { prefix: '/api/public/v1' });
     // ЛК «Мои сертификаты» (K16 §8): только чтение, CERT_PEPPER не нужен
     void app.register(async (scope) => certificatePublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     // K15 §11: баллы в ЛК – баланс, история, резерв на своё удержание, каталог
@@ -325,7 +370,7 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
     config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY && config.VAPID_SUBJECT
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
-  deps.notifications = { vapidPublicKey: vapid?.publicKey ?? null, allowedPushHosts: config.PUSH_ENDPOINT_HOSTS ?? DEFAULT_PUSH_HOSTS };
+  deps.notifications = { vapidPublicKey: vapid?.publicKey ?? null, allowedPushHosts: config.PUSH_ENDPOINT_HOSTS ?? DEFAULT_PUSH_HOSTS, unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null };
   if (config.CERT_PEPPER) deps.certificates = { pepper: config.CERT_PEPPER };
   // K19 №350: каталог создаётся при первой записи (mkdir в адаптере); без входа сотрудников маршруты не подключаются
   deps.attachments = { store: createFileStore({ root: config.ATTACHMENTS_DIR }) };
@@ -348,6 +393,7 @@ async function main(): Promise<void> {
   const app = buildServer(config, deps);
   if (!deps.staff) app.log.warn('Вход сотрудников выключен: нужны DATABASE_URL и SESSION_PEPPER');
   if (!config.CERT_PEPPER) app.log.warn('Оплата сертификатом выключена: нет CERT_PEPPER');
+  if (!config.UNSUBSCRIBE_SECRET) app.log.warn('Реклама выключена: нет UNSUBSCRIBE_SECRET (K21 §13)');
   if (sender && !sender.vapid) app.log.warn('Web Push выключен: нет VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT');
   // Диспетчер уведомлений, outbox и истечение удержаний – в отдельном процессе apps/api/src/worker.ts.
   app.addHook('onClose', async () => {

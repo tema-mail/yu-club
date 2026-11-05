@@ -26,6 +26,7 @@ import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/a
 import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
 import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
+import { startCampaignRunner } from './modules/notifications/campaign-runner.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
@@ -61,6 +62,9 @@ export async function startWorkerTasks(opts: {
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
   shiftReviewIntervalMs?: number;
+  campaignIntervalMs?: number;
+  /** UNSUBSCRIBE_SECRET: без него рекламные строки не уходят (K21 §7). */
+  unsubscribeSecret?: string | null;
   logger?: WorkerLogger;
   /** Ночная сверка (S2-80): время и зона расписания, частота проверки «пора ли»; по умолчанию 03:30 Europe/Moscow, раз в минуту. */
   reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
@@ -113,8 +117,13 @@ export async function startWorkerTasks(opts: {
   });
   // проверки 1–4 перед отправкой – по таблице броней (как в API, server.ts)
   const stopDispatcher = startDispatcher(
-    { pool: opts.pool, vapid: opts.vapid, clock, bookings: bookingLookup },
+    { pool: opts.pool, vapid: opts.vapid, clock, bookings: bookingLookup, unsubscribeSecret: opts.unsubscribeSecret ?? null },
     { intervalMs: opts.dispatcherIntervalMs ?? 30_000, log: (err) => logger.error({ err: errText(err) }, 'notifications: диспетчер') },
+  );
+  // K21 §6: разворачивание подтверждённых кампаний и закрытие завершённых
+  const stopCampaigns = startCampaignRunner(
+    { pool: opts.pool, clock },
+    { intervalMs: opts.campaignIntervalMs ?? 30_000, log: (err) => logger.error({ err: errText(err) }, 'notifications: кампании') },
   );
   const reconcileLogger: ReconcileLogger = opts.reconcile?.logger ?? {
     info: (obj, msg) => log('info', msg, obj),
@@ -138,6 +147,7 @@ export async function startWorkerTasks(opts: {
       shiftReview.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
+      stopCampaigns();
       await outbox.stop();
     },
   };
@@ -161,7 +171,7 @@ async function main(): Promise<void> {
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   const schedule = scheduleFromEnv();
-  const tasks = await startWorkerTasks({ pool, boss, vapid, reconcile: schedule });
+  const tasks = await startWorkerTasks({ pool, boss, vapid, reconcile: schedule, unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null });
   log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, партий баллов 10 мин, сгорание сертификатов 5 мин, отправка 30 с, сверка раз в сутки', {
     version: config.GIT_SHA,
     webPush: Boolean(vapid),

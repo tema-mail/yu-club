@@ -13,9 +13,12 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock, interval } from '../../apps/api/src/core/time.ts';
 import { occupy, runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
 import {
+  blockInfo,
+  bookingRowsByIds,
   bookingsOnUnits,
   createBlockFor,
   eventOccupancy,
+  liftBlockFor,
   moveEventOccupancy,
   occupyForEvent,
   previewBlock,
@@ -199,5 +202,44 @@ describe('S3-09: занятие мероприятием', () => {
     const later = await bookingsOnUnits(pool, [units.VR2!], at('2026-11-21T10:00:00Z'));
     expect(later.bookingIds).not.toContain(b);
     expect(later.eventIds).not.toContain(ev);
+  });
+});
+
+describe('Э3: блокировка и строки броней для ремонта (K19 §7, §8)', () => {
+  it('bookingRowsByIds: строки CRM по текущей версии, телефон маскирован; неизвестный id пропущен', async () => {
+    const client = (await db.client.query<{ id: string }>(`INSERT INTO app.clients (phone_e164, first_name, status, created_by_type, registered_at) VALUES ('+79130000077', 'Анна', 'active', 'system', now()) RETURNING id`)).rows[0]!.id;
+    const b = (
+      await db.client.query<{ id: string }>(
+        `INSERT INTO app.bookings (checkout_id, branch_id, client_id, resource_id, period, price_kop, source, created_by_type)
+         VALUES (gen_random_uuid(), $1, $2, $3, tstzrange('2026-11-25T05:00:00Z', '2026-11-25T06:00:00Z', '[)'), 100, 'crm', 'staff') RETURNING id`,
+        [ids.branch, client, ids.pc],
+      )
+    ).rows[0]!.id;
+    await db.client.query(
+      `INSERT INTO journal.booking_versions (booking_id, version, resource_id, period, branch_timezone, unit_ids, resource_snapshot, price_kop, price_snapshot, created_by_type)
+       VALUES ($1, 1, $2, tstzrange('2026-11-25T05:00:00Z', '2026-11-25T06:00:00Z', '[)'), 'Asia/Novosibirsk', ARRAY[gen_random_uuid()], '{"name":"ПК-1"}', 100, '{}', 'staff')`,
+      [b, ids.pc],
+    );
+    const rows = await bookingRowsByIds(pool, [b, randomUUID()], clock.now());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: b, status: 'confirmed', resourceName: 'ПК-1', needsDecision: false, client: { id: client, name: 'Анна', isGuest: false } });
+    expect(rows[0]!.client.phoneMasked).not.toContain('+79130000077');
+    expect(await bookingRowsByIds(pool, [], clock.now())).toEqual([]);
+  });
+
+  it('liftBlockFor: снимает по текущей версии, блокировка остаётся в истории; повтор – без изменений', async () => {
+    const meta = { actor: owner.actor, access: owner, source: 'crm' as const, requestId: randomUUID() };
+    const c = await pool.connect();
+    try {
+      await c.query('BEGIN');
+      const { blockId } = await createBlockFor(c, owner, { branchId: ids.branch!, target: { type: 'unit', ids: [units.PS4!] }, period: interval(at('2026-12-01T05:00:00Z'), at('2026-12-01T06:00:00Z')), reasonId: ids.repair! }, meta, clock);
+      const lifted = await liftBlockFor(c, owner, blockId, { comment: 'починили' }, meta, clock);
+      expect(lifted.status).toBe('lifted');
+      expect((await liftBlockFor(c, owner, blockId, {}, meta, clock)).status).toBe('lifted');
+      expect((await blockInfo(c, blockId))?.status).toBe('lifted');
+      await c.query('COMMIT');
+    } finally {
+      c.release();
+    }
   });
 });
