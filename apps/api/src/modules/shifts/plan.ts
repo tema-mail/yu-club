@@ -305,6 +305,11 @@ export async function updateShift(tx: Tx, ctx: AccessContext, shiftId: string, r
   const staff = await lockStaff(tx, seen.staff_id);
   const row = await lockShift(tx, shiftId, input.rowVersion);
   assertEditable(ctx, row, old, clock);
+  // K18 §4 п.7: срок своей правки – и по старому началу, иначе близкую смену можно «унести» переносом на дальнюю дату.
+  if (row.staff_id === ctx.actor.staffId) {
+    const deadline = await resolveSettings(tx, ['shift.self_edit_deadline_hours'], { network: true }, clock.now());
+    assertSelfDeadline(old.start, deadline['shift.self_edit_deadline_hours'].value, clock);
+  }
   const outside = await assertSlot(tx, ctx, { staffId: row.staff_id, staff, branch: targetBranch, period: next, date, selfShiftId: row.id, periods, clock });
   const now = clock.now();
   try {

@@ -248,6 +248,34 @@ describe('правка и отмена', () => {
     await expect(tx((t) => cancelShift(t, self, near.id, { rowVersion: 1, reason: 'заболел' }, meta(self), clock))).rejects.toMatchObject({ code: 'SHIFT_EDIT_DEADLINE' });
   });
 
+  it('своя смена ближе срока не переносится на дальнюю дату: срок проверяется и по старому началу (K18 §4 п.7)', async () => {
+    const a = await newBranch();
+    const adminId = await newStaff([a]);
+    const self = ctx('admin', adminId, [a]);
+    const soon = new Date(new Date(NOW).getTime() + 3_600_000);
+    const near = await create(adminId, a, soon.toISOString(), new Date(soon.getTime() + 3_600_000).toISOString());
+    await expect(tx((t) => updateShift(t, self, near.id, { rowVersion: 1, start: at('10:00'), end: at('12:00') }, meta(self), clock))).rejects.toMatchObject({ code: 'SHIFT_EDIT_DEADLINE' });
+    const far = await create(adminId, a, at('14:00'), at('16:00'));
+    const moved = await tx((t) => updateShift(t, self, far.id, { rowVersion: 1, start: at('15:00') }, meta(self), clock));
+    expect(moved.plannedMinutes).toBe(60);
+  });
+
+  it('переход времени: смена в сутках 25 ч – минуты по факту, сутки по зоне филиала; граница полуночи в новом смещении', async () => {
+    const berlin = 'Europe/Berlin' as TimeZone;
+    const { id: b } = await createTestBranch(db.client, { timezone: berlin });
+    await db.client.query(`INSERT INTO app.branch_weekly_hours (branch_id, weekday, open_time, close_time, valid_from, created_by) SELECT $1, d, '00:00', '23:59', '2026-01-01', $2 FROM generate_series(1, 7) d`, [b, randomUUID()]);
+    const s = await newStaff([b]);
+    const dstDay = '2027-10-31' as LocalDate; // в 03:00 часы переводят на 02:00
+    const start = localToInstant(dstDay, '01:00' as LocalTime, berlin).toISOString();
+    const end = localToInstant(dstDay, '04:00' as LocalTime, berlin).toISOString();
+    const shift = await create(s, b, start, end);
+    expect(shift).toMatchObject({ localDate: dstDay, plannedMinutes: 240 }); // четыре часа, а не три
+    const late = localToInstant(dstDay, '22:00' as LocalTime, berlin).toISOString();
+    const lateEnd = localToInstant(dstDay, '23:30' as LocalTime, berlin).toISOString();
+    expect((await create(s, b, late, lateEnd)).localDate).toBe(dstDay);
+    await expect(create(s, b, localToInstant(dstDay, '23:40' as LocalTime, berlin).toISOString(), localToInstant('2027-11-01' as LocalDate, '00:30' as LocalTime, berlin).toISOString())).rejects.toMatchObject({ code: 'INVALID_DURATION' });
+  });
+
   it('смена с фактом: Администратор не правит, Директор правит – новая fact_version и событие начисления', async () => {
     const a = await newBranch();
     const s = await newStaff([a]);
