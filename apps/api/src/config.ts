@@ -21,6 +21,9 @@ const schema = z.object({
   // Закрытые вложения Э3 (K19 №350, core/files.ts): каталог вне веб-корня – Caddy его не раздаёт, файлы отдаёт только API
   // с проверкой права на объект-владелец. В контейнере – том deploy/compose.yml; входит в бэкап (S3-94).
   ATTACHMENTS_DIR: z.string().min(1).refine((p) => p.startsWith('/'), 'абсолютный путь').default('/data/attachments'),
+  // Секрет подписи ссылки отписки от рекламы (K21 §4, §13). Нет – рекламу нельзя подтвердить (MARKETING_NOT_CONFIGURED) и она не уходит.
+  // Смена значения = выданные ссылки отписки перестают работать (остаётся выключение в ЛК).
+  UNSUBSCRIBE_SECRET: z.string().min(32, 'не короче 32 символов').optional(),
   // Прокси, чьему X-Forwarded-For верим (адреса и IPv4-CIDR через запятую) – как TRUSTED_PROXIES в CRM.
   // От остальных XFF игнорируется: request.ip – адрес соединения. Нужен лимиту входа K12 по IP.
   TRUSTED_PROXIES: z
