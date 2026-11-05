@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { writeAudit, type AuditRequestMeta, type Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { lockAccounts, post, type EntryInput, type RefType, type Tx } from '../../core/ledger.ts';
-import { assertCan, roleAllows, type AccessContext } from '../../core/permissions.ts';
+import { assertCan, can, hasAction, roleAllows, type AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { addDays, parseLocalDate, systemClock, type Clock, type LocalDate, type TimeZone } from '../../core/time.ts';
 import { getBranch } from '../network/index.ts';
@@ -316,7 +316,7 @@ async function zoneOf(db: Db, ctx: AccessContext, staffId: string, range: { from
       WHERE le.branch_id IS NOT NULL AND ${payrollDateSql('le')} BETWEEN $2::date AND $3::date`,
     [staffId, range.from, range.to],
   );
-  return r.rows.map((x) => x.branch_id).filter((b) => ctx.branchIds.has(b));
+  return r.rows.map((x) => x.branch_id).filter((b) => can(ctx, 'payroll.view', { branchId: b }));
 }
 
 async function toStatement(db: Db, ctx: AccessContext, r: StatementRow, clock: Clock): Promise<PayrollStatementDto> {
@@ -328,7 +328,7 @@ async function toStatement(db: Db, ctx: AccessContext, r: StatementRow, clock: C
     const zone = await zoneOf(db, ctx, r.staff_id, range);
     ({ totals, byBranch } = await computeTotals(db, range, r.staff_id, clock, zone)); // Директор – только суммы своей зоны (K18 §10)
   }
-  const needsReview = (await unresolvedShifts(db, range, clock.now(), r.staff_id)).filter((u) => ctx.network || ctx.branchIds.has(u.branchId)).map((u) => ({ shiftId: u.shiftId, reason: u.reason }));
+  const needsReview = (await unresolvedShifts(db, range, clock.now(), r.staff_id)).filter((u) => can(ctx, 'payroll.view', { branchId: u.branchId })).map((u) => ({ shiftId: u.shiftId, reason: u.reason }));
   return {
     id: r.id,
     periodId: r.period_id,
@@ -355,9 +355,9 @@ async function readStatement(db: Db, ctx: AccessContext, id: string, right = 'pa
   const res = await db.query<StatementRow>(`${STATEMENT_SELECT} WHERE st.id = $1`, [id]);
   const row = res.rows[0];
   if (!row) throw notFound();
-  if (!roleAllows(ctx.role, 'payroll.view')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'payroll.view' });
+  if (!hasAction(ctx, 'payroll.view')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'payroll.view' });
   if (!ctx.network && (await zoneOf(db, ctx, row.staff_id, { from: row.date_from, to: row.date_to })).length === 0) throw notFound();
-  if (!roleAllows(ctx.role, right)) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: right });
+  if (!hasAction(ctx, right)) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: right });
   return row;
 }
 
