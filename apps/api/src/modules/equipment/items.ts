@@ -212,9 +212,23 @@ export async function criticalPeriod(db: Db | Tx, from: Date): Promise<Interval>
   return interval(from, new Date(from.getTime() + hours * 3_600_000));
 }
 
+/** Другие открытые ремонты, чьё место пересекается с единицами: на единице или на комнате, в которой единица. */
+export async function otherOpenRepairsOn(db: Db | Tx, branchId: string, unitIds: string[], exceptId: string | null): Promise<string[]> {
+  if (unitIds.length === 0) return [];
+  const r = await db.query<{ id: string }>(
+    `SELECT r.id FROM app.repairs r
+      WHERE r.branch_id = $1 AND r.status NOT IN ('closed','cancelled') AND ($3::uuid IS NULL OR r.id <> $3)
+        AND (r.unit_id = ANY($2::uuid[])
+             OR (r.unit_id IS NULL AND r.room_id IS NOT NULL AND EXISTS (SELECT 1 FROM app.occupancy_units u WHERE u.room_id = r.room_id AND u.id = ANY($2::uuid[]))))
+      ORDER BY r.number`,
+    [branchId, unitIds, exceptId],
+  );
+  return r.rows.map((x) => x.id);
+}
+
 export async function buildProposal(
   db: Db | Tx,
-  input: { branchId: string; target: BlockProposal['target']; period: Interval; otherOpenRepairs?: string[] },
+  input: { branchId: string; target: BlockProposal['target']; period: Interval; exceptRepairId?: string },
   clock: Clock = systemClock,
 ): Promise<BlockProposal> {
   const preview = await previewBlock(db, { branchId: input.branchId, target: input.target, period: input.period }, clock);
@@ -224,7 +238,7 @@ export async function buildProposal(
     reasonCode: 'repair',
     affectedBookings: await bookingRowsByIds(db, preview.bookingIds, clock.now()),
     affectedEvents: await eventSummaries.summaries(db, preview.eventIds),
-    otherOpenRepairs: input.otherOpenRepairs ?? [],
+    otherOpenRepairs: await otherOpenRepairsOn(db, input.branchId, preview.unitIds, input.exceptRepairId ?? null),
   };
 }
 

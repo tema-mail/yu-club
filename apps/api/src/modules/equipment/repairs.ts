@@ -11,7 +11,6 @@ import { addDays, interval, localToInstant, parseLocalDate, parseLocalTime, syst
 import { createBlockFor } from '../booking/providers.ts';
 import { linksOf } from '../finance/links.ts';
 import { getBranch } from '../network/index.ts';
-import { unitsOfTarget } from '../resources/index.ts';
 import {
   applyEquipmentStatus,
   assertVersion,
@@ -22,6 +21,7 @@ import {
   guardRole,
   lockItem,
   notFound,
+  otherOpenRepairsOn,
   parseInput,
   targetOfPlacement,
   UUID_RE,
@@ -208,19 +208,7 @@ const repairObject = (id: string) => ({ type: 'repair' as const, id: UUID_RE.tes
 
 // ---- предложение блокировки по ремонту (K19 §8)
 
-/** Другие открытые ремонты, чьё место пересекается с единицами: на единице или на комнате, в которой единица. */
-export async function otherOpenRepairsOn(db: Db | Tx, branchId: string, unitIds: string[], exceptId: string | null): Promise<string[]> {
-  if (unitIds.length === 0) return [];
-  const r = await db.query<{ id: string }>(
-    `SELECT r.id FROM app.repairs r
-      WHERE r.branch_id = $1 AND r.${OPEN_REPAIR_SQL} AND ($3::uuid IS NULL OR r.id <> $3)
-        AND (r.unit_id = ANY($2::uuid[])
-             OR (r.unit_id IS NULL AND r.room_id IS NOT NULL AND EXISTS (SELECT 1 FROM app.occupancy_units u WHERE u.room_id = r.room_id AND u.id = ANY($2::uuid[]))))
-      ORDER BY r.number`,
-    [branchId, unitIds, exceptId],
-  );
-  return r.rows.map((x) => x.id);
-}
+export { otherOpenRepairsOn };
 
 /** Период по умолчанию (K19 §8): от обнаружения (при повторной блокировке – от «сейчас») до конца плана + 1 день, иначе – критические часы. */
 export async function defaultRepairPeriod(db: Db | Tx, row: RepairRow, clock: Clock): Promise<Interval> {
@@ -242,8 +230,7 @@ export async function repairProposal(db: Db | Tx, row: RepairRow, input: { targe
   const target = input.target ?? targetOfPlacement({ roomId: row.room_id, unitId: row.unit_id });
   if (!target) return null;
   const period = input.period ?? (await defaultRepairPeriod(db, row, clock));
-  const units = await unitsOfTarget(db, row.branch_id, target, period.start);
-  return buildProposal(db, { branchId: row.branch_id, target, period, otherOpenRepairs: await otherOpenRepairsOn(db, row.branch_id, units, row.id) }, clock);
+  return buildProposal(db, { branchId: row.branch_id, target, period, exceptRepairId: row.id }, clock);
 }
 
 /** Причина блокировки «Ремонт» из справочника (0010). */

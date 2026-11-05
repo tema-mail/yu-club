@@ -7,6 +7,7 @@ import { migrateDown, migrateUp } from '../../db/migrate.ts';
 import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { createCategory, createEquipment, listCategories, setEquipmentStatus, updateCategory, updateEquipment } from '../../apps/api/src/modules/equipment/items.ts';
+import { registerRepair } from '../../apps/api/src/modules/equipment/repairs.ts';
 import { createBooking, createEquipmentWorld, ctxOf, fails, inTx, metaOf, type EquipmentWorld } from '../helpers/equipment.ts';
 import { createTestDatabase } from '../helpers/pg.ts';
 
@@ -159,6 +160,17 @@ describe('статусы (K19 §2)', () => {
     const moved = await setStatus(reserve.id, { rowVersion: 1, status: 'reserve' });
     expect(moved.equipment.placement.unitId).toBeNull();
     expect(moved.blockProposal).toBeNull();
+  });
+
+  it('предложение при смене статуса показывает открытые ремонты на этой единице; закрытые и чужие единицы – нет', async () => {
+    const a = await create({ unitId: w.units.PS4 });
+    const b = await create({ unitId: w.units.PS4 });
+    const other = await create({ unitId: w.units.VR2 });
+    const reg = (id: string) => inTx(w.pool, (t) => registerRepair(t, owner, { equipmentId: id, detectedAt: '2026-11-14T04:00:00Z', brokenAtUnknown: true, symptoms: 'сломалось', priority: 'low', impact: 'none' }, metaOf(owner), clock));
+    const onUnit = (await reg(a.id)).repair;
+    await reg(other.id);
+    const r = await setStatus(b.id, { rowVersion: 1, status: 'unavailable', reason: 'нет питания' });
+    expect(r.blockProposal!.otherOpenRepairs).toEqual([onUnit.id]);
   });
 
   it('чужой филиал – 404, неизвестный статус и лишние поля – отказ', async () => {
