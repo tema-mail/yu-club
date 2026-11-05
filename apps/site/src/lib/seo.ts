@@ -56,7 +56,7 @@ export interface ManualSeo {
 export type PageMetaInput =
   | { page: 'home'; singleCity?: string | undefined; about?: string | undefined; hero?: string | undefined }
   | { page: 'city'; city: string; branches: readonly string[] }
-  | { page: 'branch'; branch: string; city: string; address: string; directions: readonly string[]; hoursToday: string }
+  | { page: 'branch'; branch: string; city: string; address: string; directions: readonly string[]; hoursToday: string; closed?: boolean | undefined }
   | { page: 'room'; room: string; branch: string; city: string; description?: string | undefined }
   | { page: 'gameCatalog'; direction: 'pc' | 'vr' | 'playstation'; count: number }
   | { page: 'game'; title: string; short: string }
@@ -115,7 +115,8 @@ function template(p: PageMetaInput): Omit<PageMeta, 'ogImage'> {
     case 'branch':
       return {
         title: `${branded(p.branch)}, ${p.city} – ${p.address}`,
-        description: cutByWord(`${[...p.directions, ''].join(', ').replace(/, $/, '')}. ${p.hoursToday}. Онлайн-запись на сайте.`.replace(/^\. /, '')),
+        // Временно закрытый: записи нет – обещать её в сниппете нельзя (12 §4.3).
+        description: cutByWord([p.directions.join(', '), p.hoursToday, p.closed ? '' : 'Онлайн-запись на сайте'].filter(Boolean).join('. ') + '.'),
         h1: branded(p.branch),
         ogType: 'website',
       };

@@ -59,6 +59,7 @@ describe('шаблоны и ручные поля', () => {
   it('каждое поле решается отдельно; бренд не удваивается; один город – в title главной', () => {
     expect(metaFor({ page: 'game', title: 'Игра', short: 'К' }, { h1: 'Свой' })).toMatchObject({ title: 'Игра – где поиграть в Ю-Клуб', h1: 'Свой' });
     expect(metaFor({ page: 'branch', branch: 'Ю-Клуб на Ленина', city: 'Томск', address: 'а', directions: [], hoursToday: 'Закрыто сегодня' })).toMatchObject({ h1: 'Ю-Клуб на Ленина', description: 'Закрыто сегодня. Онлайн-запись на сайте.' });
+    expect(metaFor({ page: 'branch', branch: 'А', city: 'Б', address: 'в', directions: ['ПК'], hoursToday: 'Временно закрыт', closed: true }).description).toBe('ПК. Временно закрыт.');
     expect(metaFor({ page: 'home', singleCity: 'Томск' }).title).toBe('Ю-Клуб – компьютерный клуб: ПК, VR, PlayStation – Томск');
   });
 
