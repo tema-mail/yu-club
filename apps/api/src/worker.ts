@@ -21,6 +21,7 @@ import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/
 import { systemClock, type Clock, type LocalTime, type TimeZone } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
 import { startCertificateExpiry } from './modules/certificates/lifecycle.ts';
+import { registerContentHandlers } from './modules/content/handlers.ts';
 import { startMediaGc } from './modules/content/media.ts';
 import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
 import { paymentLookup } from './modules/finance/payment.ts';
@@ -83,6 +84,7 @@ export async function startWorkerTasks(opts: {
   const payments = opts.payments ?? paymentLookup;
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
   registerAccrualHandlers({ bookings: paymentBookingProvider, payments, clock });
+  registerContentHandlers({ clock }); // история адресов K23 §5: смена слага города, филиала, комнаты
   registerPayrollHandlers({ clock }); // K18 §6: начисление зарплаты по факту смены и новой ставке
   const outbox = await startOutboxWorker({
     pool: opts.pool,
