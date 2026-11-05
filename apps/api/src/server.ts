@@ -13,6 +13,7 @@ import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from '.
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
+import { equipmentCrmRoutes } from './modules/equipment/routes.crm.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
@@ -227,6 +228,16 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
       async (scope) =>
         clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
       { prefix: '/api/crm/v1/clients' },
+    );
+    // K19 №331–337: оборудование (S3-33)
+    void app.register(
+      async (scope) =>
+        equipmentCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
     );
     // K19 №350: закрытые вложения – выдача только через API с правом на объект-владелец
     if (deps.attachments) {
