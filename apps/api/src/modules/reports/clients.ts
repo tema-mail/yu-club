@@ -5,36 +5,88 @@
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import {
-  computeMetrics, loadMaskedClients, metricDef, noData, okMetric, prevPeriod, resolveBranches, runDetail, windowsOf,
-  type BranchWindow, type MaskedClient, type Metric, type MetricDef, type MetricSpec, type Period, type ReportEnv, type ReportParams, DAY_RULE,
+  loadMaskedClients, noData, okMetric, prevPeriod, resolveBranches, windowsOf,
+  type BranchWindow, type MaskedClient, type Metric, type Period, type ReportEnv, type ReportParams, DAY_RULE,
 } from './framework.ts';
 
 export const CLIENTS_ACTION = 'reports.clients.view';
 export const CLIENTS_LABELS = { byBranch: 'Один клиент может быть в нескольких филиалах: итог сети не равен сумме филиалов' };
 
 const VISITS = 'app.rpt_visits';
-const PROFILE: NonNullable<MetricSpec['conds']>[number] = { sql: `t.client_kind = 'profile'` };
-const distinctClients = (conds: NonNullable<MetricSpec['conds']>, date: string | null = 'planned_start'): MetricDef => ({
-  spec: { view: VISITS, ...(date ? { date } : {}), conds: [PROFILE, ...conds] },
-  agg: 'count_distinct', col: 'client_id', unit: 'count', dateBasis: 'session_start', idCol: 'client_id',
-});
 
 export type ClientsPeriodMetric = 'withVisit' | 'firstTime' | 'returning' | 'repeat' | 'notVisited' | 'profileVisits';
+const PERIOD_METRICS: readonly ClientsPeriodMetric[] = ['withVisit', 'firstTime', 'returning', 'repeat', 'notVisited', 'profileVisits'];
 
-export function clientsDefs(): Record<ClientsPeriodMetric, MetricDef> {
-  const hist = (extra: string) => `(SELECT 1 FROM ${VISITS} h WHERE h.client_id = t.client_id ${extra})`;
+const arr = (w: readonly BranchWindow[]): [Array<string | null>, Date[], Date[]] => [w.map((x) => x.branchId), w.map((x) => x.start), w.map((x) => x.end)];
+
+// ---- один проход по истории профилей: итог и детализация – из одних и тех же строк (Σ detail = aggregate, TC-20)
+
+interface ClientStat {
+  client_id: string;
+  branch_id: string; // филиал посещения в периоде или до него – для маски
+  visits: number; // посещений в периоде
+  firstTime: boolean;
+  returning: boolean;
+  repeat: boolean;
+  notVisited: boolean;
+}
+
+/** Строка на клиента области. История – вся сеть; «до периода» и «в периоде» – по суткам филиала посещения. */
+async function clientStats(tx: Tx, windows: readonly BranchWindow[]): Promise<ClientStat[]> {
+  if (windows.length === 0) return [];
+  const [ids, starts, ends] = arr(windows);
+  const r = await tx.query<{ client_id: string; branch_id: string; n: string; first_at: Date; total: string; window_start: Date | null; had_prior: boolean }>(
+    `WITH w AS (SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS x(branch_id, s, e)),
+     v AS (SELECT client_id, branch_id, planned_start FROM ${VISITS} WHERE client_kind = 'profile'),
+     h AS (SELECT client_id, min(planned_start) AS first_at, count(*) AS total FROM v GROUP BY client_id),
+     s AS (
+       SELECT v.client_id, min(v.branch_id::text) AS branch_id,
+              count(*) FILTER (WHERE v.planned_start >= w.s AND v.planned_start < w.e) AS n,
+              min(w.s) FILTER (WHERE v.planned_start >= w.s AND v.planned_start < w.e) AS window_start,
+              bool_or(v.planned_start < w.s) AS had_prior
+       FROM v JOIN w ON w.branch_id = v.branch_id GROUP BY v.client_id
+     )
+     SELECT s.client_id, s.branch_id, s.n, h.first_at, h.total, s.window_start, s.had_prior
+     FROM s JOIN h ON h.client_id = s.client_id ORDER BY s.client_id`,
+    [ids, starts, ends],
+  );
+  return r.rows.map((x) => {
+    const visits = Number(x.n);
+    const first = visits > 0 && x.first_at.getTime() >= x.window_start!.getTime();
+    return {
+      client_id: x.client_id, branch_id: x.branch_id, visits, firstTime: first, returning: visits > 0 && !first,
+      repeat: visits > 0 && Number(x.total) >= 2, notVisited: visits === 0 && x.had_prior,
+    };
+  });
+}
+
+const STAT_FILTERS: Record<Exclude<ClientsPeriodMetric, 'profileVisits'>, (s: ClientStat) => boolean> = {
+  withVisit: (s) => s.visits > 0,
+  firstTime: (s) => s.firstTime,
+  returning: (s) => s.returning,
+  repeat: (s) => s.repeat,
+  notVisited: (s) => s.notVisited,
+};
+
+function statValues(stats: readonly ClientStat[]): Record<ClientsPeriodMetric, number> {
+  const count = (k: Exclude<ClientsPeriodMetric, 'profileVisits'>) => stats.filter(STAT_FILTERS[k]).length;
   return {
-    withVisit: distinctClients([]),
-    // первый за всю историю приход попал в период: раньше окна посещений нет
-    firstTime: distinctClients([{ sql: `NOT EXISTS ${hist('AND h.planned_start < w.s')}` }]),
-    returning: distinctClients([{ sql: `EXISTS ${hist('AND h.planned_start < w.s')}` }]),
-    repeat: distinctClients([{ sql: `(SELECT count(*) FROM ${VISITS} h WHERE h.client_id = t.client_id) >= 2` }]),
-    notVisited: distinctClients([{ sql: `t.planned_start < w.s AND NOT EXISTS ${hist('AND h.planned_start >= w.s AND h.planned_start < w.e')}` }], null),
-    profileVisits: { spec: { view: VISITS, date: 'planned_start', conds: [PROFILE] }, agg: 'count', unit: 'count', dateBasis: 'session_start', idCol: 'visit_id' },
+    withVisit: count('withVisit'), firstTime: count('firstTime'), returning: count('returning'), repeat: count('repeat'), notVisited: count('notVisited'),
+    profileVisits: stats.reduce((n, s) => n + s.visits, 0),
   };
 }
 
-const arr = (w: readonly BranchWindow[]): [Array<string | null>, Date[], Date[]] => [w.map((x) => x.branchId), w.map((x) => x.start), w.map((x) => x.end)];
+/** Период без посещений профилей и истории области – no_data; прошлое значение – если и там есть записи. */
+function periodMetrics(cur: readonly ClientStat[], prev: readonly ClientStat[] | null): Record<ClientsPeriodMetric, Metric> {
+  const c = statValues(cur);
+  const live = c.profileVisits > 0;
+  const p = prev && statValues(prev);
+  const hasPrev = p !== null && p.profileVisits > 0;
+  return Object.fromEntries(PERIOD_METRICS.map((k) => {
+    if (!live && !(k === 'notVisited' && c.notVisited > 0)) return [k, noData];
+    return [k, okMetric(c[k], 'count', hasPrev ? p[k] : null)];
+  })) as Record<ClientsPeriodMetric, Metric>;
+}
 
 // ---- новые профили: у клиента нет филиала, поэтому сеть – все профили периода, зона – профили с бронью в её филиалах (TC-16)
 
@@ -116,8 +168,8 @@ export async function clientsReport(env: ReportEnv, p: ReportParams): Promise<Cl
   const prevP = prevPeriod(p.period);
   const cur = windowsOf(branches, p.period);
   const prev = windowsOf(branches, prevP);
-  const defs = clientsDefs();
-  const base = await computeMetrics(env.tx, defs, cur, prev);
+  const stats = await clientStats(env.tx, cur);
+  const base = periodMetrics(stats, await clientStats(env.tx, prev));
   const networkWide = isNetworkWide(env, p);
   const newCur = await countNew(env.tx, { networkWide, windows: cur });
   const newPrev = await countNew(env.tx, { networkWide, windows: prev });
@@ -131,7 +183,7 @@ export async function clientsReport(env: ReportEnv, p: ReportParams): Promise<Cl
   const ivPrev = await intervalRows(env.tx, prev);
   const byBranch: ClientsBranchGroup[] = [];
   if (branches.length > 1) {
-    for (const b of branches) byBranch.push({ branchId: b.id, metrics: await computeMetrics(env.tx, defs, windowsOf([b], p.period), []) });
+    for (const b of branches) byBranch.push({ branchId: b.id, metrics: periodMetrics(await clientStats(env.tx, windowsOf([b], p.period)), null) });
   }
   const metrics: Record<ClientsMetric, Metric> = {
     ...base,
@@ -208,8 +260,21 @@ export async function clientsDetail(
       nextCursor: null,
     };
   }
-  if (typeof metric !== 'string') throw new AppError('REPORT_FILTER_INVALID', 422, 'Неизвестный показатель', { field: 'metric' });
-  const def = metricDef(clientsDefs(), metric);
-  const page = await runDetail<{ client_id: string; branch_id: string; visit_id: string }>(env, CLIENTS_ACTION, p, def, opts);
-  return { rows: await mask(page.rows.map((r) => ({ clientId: r.client_id, branchId: r.branch_id, value: 1 }))), total: page.total, nextCursor: page.nextCursor };
+  if (metric === 'profileVisits' || (typeof metric === 'string' && Object.hasOwn(STAT_FILTERS, metric))) {
+    const key = metric as ClientsPeriodMetric;
+    const all = await clientStats(env.tx, windows);
+    const chosen = key === 'profileVisits' ? all.filter((s) => s.visits > 0) : all.filter(STAT_FILTERS[key]);
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+    const from = opts.cursor ? chosen.findIndex((s) => s.client_id > opts.cursor!) : 0;
+    const start = from < 0 ? chosen.length : from;
+    const slice = chosen.slice(start, start + limit);
+    const value = (s: ClientStat) => (key === 'profileVisits' ? s.visits : 1);
+    const total = chosen.reduce((n, s) => n + value(s), 0);
+    return {
+      rows: await mask(slice.map((s) => ({ clientId: s.client_id, branchId: s.branch_id, value: value(s) }))),
+      total: chosen.length ? okMetric(total, 'count') : noData,
+      nextCursor: start + limit < chosen.length ? slice[slice.length - 1]!.client_id : null,
+    };
+  }
+  throw new AppError('REPORT_FILTER_INVALID', 422, 'Неизвестный показатель', { field: 'metric' });
 }
