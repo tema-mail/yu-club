@@ -10,8 +10,7 @@ import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { can } from '../../core/permissions.ts';
 import { branchDay, instantToLocal, parseLocalDate, type Interval, type LocalDate, type TimeZone } from '../../core/time.ts';
-import { openIntervalsRange } from '../network/calendar.ts';
-import type { BranchInfo } from '../network/index.ts';
+import { openIntervalsRange, type BranchInfo } from '../network/index.ts';
 import { DAY_RULE, noData, okMetric, pageByKey, prevPeriod, resolveBranches, unavailable, windowsOf, type Metric, type PageOpts, type Period, type ReportEnv, type ReportParams } from './framework.ts';
 
 export const UTILIZATION_ACTION = 'reports.ops.view';

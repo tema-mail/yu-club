@@ -119,8 +119,8 @@ async function expenseGroups(tx: Tx, windows: readonly BranchWindow[], p: Financ
     `SELECT t.category_id, t.subcategory_id, sum(t.signed_kop) AS amount, c.name AS cat, s.name AS sub
      FROM app.rpt_finance_operations t
      JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON w.branch_id = t.branch_id AND t.occurred_at >= w.s AND t.occurred_at < w.e
-     JOIN app.finance_categories c ON c.id = t.category_id
-     LEFT JOIN app.finance_categories s ON s.id = t.subcategory_id
+     JOIN app.rpt_finance_categories c ON c.category_id = t.category_id
+     LEFT JOIN app.rpt_finance_categories s ON s.category_id = t.subcategory_id
      WHERE t.original_kind = 'expense' AND ($4::text[] IS NULL OR t.method = ANY($4::text[])) AND ($5::uuid IS NULL OR t.category_id = $5 OR t.subcategory_id = $5)
      GROUP BY t.category_id, t.subcategory_id, c.name, s.name ORDER BY c.name, s.name NULLS FIRST`,
     [windows.map((w) => w.branchId), windows.map((w) => w.start), windows.map((w) => w.end), p.method?.length ? p.method : null, p.categoryId ?? null],

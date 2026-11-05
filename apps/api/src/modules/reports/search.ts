@@ -9,7 +9,8 @@ import { AppError } from '../../core/errors.ts';
 import { roleAllows, type AccessContext } from '../../core/permissions.ts';
 import { formatLocal, parseLocalDate, todayIn, type Clock, type LocalDate } from '../../core/time.ts';
 import { searchClients } from '../clients/index.ts';
-import type { BranchInfo } from '../network/index.ts';
+import { getBranches, type BranchInfo } from '../network/index.ts';
+import { searchStaffByName } from '../staff/index.ts';
 import { maskClient, resolveBranches, where, windowsOf, withReportTx, type MaskedClient, type ReportsPool } from './framework.ts';
 
 export const SEARCH_TIMEOUT_MS = 2_000;
@@ -122,24 +123,15 @@ async function financeGroup(tx: Tx, ctx: AccessContext, q: string, clock: Clock)
 /** Сотрудники: Владелец – все, Директор – у кого есть назначение на филиал или город его зоны (TC-16). */
 async function staffGroup(tx: Tx, ctx: AccessContext, q: string): Promise<SearchGroup | null> {
   if (!roleAllows(ctx.role, 'staff.view')) return null;
-  const params: unknown[] = [`${escapeLike(q.toLowerCase())}%`];
-  let zone = 'TRUE';
+  let zone: { branchIds: string[]; cityIds: string[] } | null = null;
   if (!ctx.network) {
-    params.push([...ctx.branchIds]);
-    zone = `EXISTS (SELECT 1 FROM app.staff_assignments a WHERE a.staff_id = s.id AND a.revoked_at IS NULL
-                    AND (a.branch_id = ANY($2::uuid[]) OR a.city_id IN (SELECT city_id FROM app.branches WHERE id = ANY($2::uuid[]))))`;
+    const branchIds = [...ctx.branchIds];
+    zone = { branchIds, cityIds: [...new Set([...(await getBranches(tx, branchIds)).values()].map((b) => b.cityId))] };
   }
-  const rows = (
-    await tx.query<{ id: string; first_name: string; last_name: string; role: string }>(
-      `SELECT s.id, s.first_name, s.last_name, s.role FROM app.staff s
-       WHERE s.status <> 'archived' AND (lower(s.last_name) LIKE $1 OR lower(s.first_name) LIKE $1) AND ${zone}
-       ORDER BY lower(s.last_name), lower(s.first_name), s.id LIMIT ${GROUP_LIMIT + 1}`,
-      params,
-    )
-  ).rows;
+  const rows = await searchStaffByName(tx, { text: q, zone, limit: GROUP_LIMIT + 1 });
   return {
     type: 'staff',
-    items: rows.slice(0, GROUP_LIMIT).map((r) => ({ id: r.id, name: `${r.first_name} ${r.last_name}`, role: r.role })),
+    items: rows.slice(0, GROUP_LIMIT).map((r) => ({ id: r.id, name: `${r.firstName} ${r.lastName}`, role: r.role })),
     more: rows.length > GROUP_LIMIT,
   };
 }

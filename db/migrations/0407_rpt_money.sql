@@ -4,6 +4,7 @@
 --                                method, категории – исходной операции), signed_kop со знаком минус: Σ signed_kop
 --                                по виду = итог вида с учётом сторно. delta_kop – движение своего места (in +, out −);
 --                                перевод между местами (и его сторно) двигает и второе место: counter_place, −delta_kop;
+--   app.rpt_finance_categories – finance (K17): справочник статей кассы (название и родитель, без денег);
 --   app.rpt_payments           – finance (K10): строка платежа сеанса (деньги, баллы, сертификат) и возвращённое по ней;
 --   app.rpt_loyalty_moves      – loyalty (K15, K3): запись бонусного счёта клиента; entry_type – вид K24 §3.7
 --                                (accrual, penalty, spend, return, adjust, expire, reversal), original_type – вид исходной
@@ -30,6 +31,9 @@ SELECT fo.id AS operation_id, fo.number, fo.branch_id, fo.kind, fo.place,
        fo.reversal_of, coalesce(o.kind, fo.kind) AS original_kind
 FROM journal.finance_operations fo
 LEFT JOIN journal.finance_operations o ON o.id = fo.reversal_of;
+
+CREATE VIEW app.rpt_finance_categories AS
+SELECT c.id AS category_id, c.parent_id, c.name FROM app.finance_categories c;
 
 CREATE VIEW app.rpt_payments AS
 SELECT p.id AS payment_id, l.line_no, s.booking_id, s.branch_id, s.client_id, l.method, l.amount_kop, l.points_centi,
@@ -84,17 +88,15 @@ LEFT JOIN journal.ledger_entries o ON o.id = e.reversal_of
 LEFT JOIN app.certificate_redemptions rd ON rd.ledger_entry_id = e.id
 LEFT JOIN app.certificate_redemptions rr ON rr.return_entry_id = e.id;
 
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON app.rpt_finance_operations, app.rpt_payments, app.rpt_loyalty_moves,
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON app.rpt_finance_operations, app.rpt_finance_categories, app.rpt_payments, app.rpt_loyalty_moves,
   app.rpt_loyalty_balances, app.rpt_certificate_ops FROM yu_app;
-GRANT SELECT ON app.rpt_finance_operations, app.rpt_payments, app.rpt_loyalty_moves, app.rpt_loyalty_balances,
+GRANT SELECT ON app.rpt_finance_operations, app.rpt_finance_categories, app.rpt_payments, app.rpt_loyalty_moves, app.rpt_loyalty_balances,
   app.rpt_certificate_ops TO yu_reports;
--- названия статей расходов для отчёта 3.4 (справочник finance, без денег)
-GRANT SELECT ON app.finance_categories TO yu_reports;
 
 -- migrate:down
-REVOKE SELECT ON app.finance_categories FROM yu_reports;
 DROP VIEW app.rpt_certificate_ops;
 DROP VIEW app.rpt_loyalty_balances;
 DROP VIEW app.rpt_loyalty_moves;
 DROP VIEW app.rpt_payments;
+DROP VIEW app.rpt_finance_categories;
 DROP VIEW app.rpt_finance_operations;

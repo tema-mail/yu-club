@@ -20,6 +20,7 @@
 | `rpt_units` | `resources` | 0406 | единица занятости и каждый её «свой» состав (закрытые и архивные – тоже, D4-20) | `unit_id, resource_id, room_id, branch_id, resource_type, self_bookable, unit_name, status, valid_period tstzmultirange` (когда состав ресурса – ровно эта единица; нет своего ресурса – `NULL`) |
 | `rpt_clients` | `clients` | 0406 | клиент | `client_id, status, created_at, registered_at, registration_source` (без телефона и имени; имя и телефон для детализации – через `clients/index.ts` с маской §6) |
 | `rpt_finance_operations` | `finance` | 0407 | операция кассы (с учётом сторно) | `operation_id, number, branch_id, kind, place, method, direction, amount_kop, signed_kop, source, category_id, subcategory_id, ref_type, ref_id, occurred_at, author_id, is_reversed, reversal_of, original_kind` |
+| `rpt_finance_categories` | `finance` | 0407 | статья кассы | `category_id, parent_id, name` (названия статей для 3.4; таблицу справочника `yu_reports` не видит) |
 | `rpt_payments` | `finance` | 0407 | строка платежа | `payment_id, booking_id, branch_id, method ('cash'\|'card'\|'transfer'\|'points'\|'certificate'\|'none'), amount_kop, points_centi, paid_at, refunded_kop, status` |
 | `rpt_loyalty_moves` | `loyalty` | 0407 | запись K3 бонусного счёта | `entry_id, client_id, branch_id, entry_type (accrual/penalty/spend/return/adjust/expire/reversal), original_type, amount_centi, ref_type, ref_id, at, author_type` |
 | `rpt_loyalty_balances` | `loyalty` | 0407 | клиент | `client_id, balance_centi, available_centi, blocked boolean` |
@@ -177,7 +178,7 @@ type Metric =
 | клиент | телефон – точное совпадение или по последним 4–10 цифрам; имя – префикс `lower(last_name)`/`lower(first_name)` (индекс `clients_name_idx`); внутренний номер | `client.view.basic`; клиент виден, если у него есть бронь в зоне сотрудника (K1 `assertCanClient`) – иначе не находится вовсе (13 §7.1 «не раскрывать факт существования») |
 | бронь | номер – точно; дата – `YYYY-MM-DD` или `ДД.ММ`; клиент – через найденных клиентов | `schedule.view`, `scopeFilter` по `branch_id` |
 | финансовая операция | номер – точно; комментарий – `ILIKE` в пределах 92 дней | `finance.view` (Администратору – нет) |
-| сотрудник | имя – префикс | `staff.view` |
+| сотрудник | имя – префикс (`staff/index.ts: searchStaffByName`, зона – через `network/index.ts`, ADR 0002) | `staff.view` |
 | мероприятие, оборудование | номер, заказчик, дата; инвентарный/серийный номер | после Э3 (K19, K20), до того групп нет |
 
 Все запросы – одной READ ONLY транзакцией, `statement_timeout` 2 с (17 §4.1 «поиск ≤ 2 с»); тип, на который нет права, в ответе отсутствует (не «0 найдено»). Запрос пишется в аудит только при поиске по телефону (`client.searched`, маска номера – K2), чтобы видеть перебор телефонов (решение).
