@@ -21,6 +21,7 @@
 | `planning_status` | `'available' \| 'on_leave'` | 05 §3.2 «Временно не работает» |
 | `manager_comment` | `text` | 05 §3.1 |
 
+- `GET /staff/{id}` отдаёт `employmentStart`, `employmentEnd`, `planningStatus`, `managerComment`; список `/staff` – нет. Комментарий читает только тот, кто вправе править этого сотрудника (иначе `null`): Директор не видит комментарий о себе.
 - `staff.status` (`active / blocked / archived`) из Э0 не меняется: «Заблокирован» = `blocked`, «Уволен/архив» = `archived`. «Временно не работает» – **не статус входа**, а `planning_status = 'on_leave'` (решение: 05 §3.2 запрещает только планирование, вход не упоминает).
 - `on_leave`: новые смены → `STAFF_ON_LEAVE`; уже запланированные будущие смены не отменяются, а попадают в список «требуют решения» – по умолчанию, ждёт заказчика (Q-119).
 - `archived` / `blocked`: новые смены → `STAFF_NOT_ACTIVE`; прошлые смены, начисления и штрафы остаются (05 §3.2).
@@ -294,7 +295,7 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 
 | # | Метод и путь | Право | Успех |
 |---|---|---|---|
-| 301 | `GET /shifts?branchIds=&staffId=&from=&to=&status=` | `shift.view` / `shift.view.own` | `200 { items: ShiftDto[] }` (≤ 31 день); без `payroll.view` – `plannedAccrualKop`, `factAccrualKop` = `null` |
+| 301 | `GET /shifts?branchIds=&staffId=&from=&to=&status=` | `shift.view` / `shift.view.own` | `200 { items: ShiftDto[] }` (≤ 31 день); без `payroll.view` – `plannedAccrualKop`, `factAccrualKop` = `null`. В чтениях (этот список и `GET /shifts/{id}`) есть `staffName` – только имя: Администратор видит, кто работает (§12), без фамилии, контактов и ставок |
 | 302 | `POST /shifts` | `shift.plan.own` (сам) / `shift.manage` | `201 ShiftDto` |
 | 303 | `PATCH /shifts/{id}` | то же | `200 ShiftDto` |
 | 304 | `POST /shifts/{id}/cancel` | то же | `200` |
@@ -303,7 +304,7 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 | 307 | `GET /shifts/coverage?branchIds=&from=&to=` | `shift.view` | `200 CoverageDto[]` |
 | 308 | `GET /me/shift-changes?unread=true`, `POST /me/shift-changes/{id}/ack` | `shift.view.own` | `200` |
 | 309 | `GET /staff/{id}/rates`, `POST /staff/{id}/rates` | `payroll.view` / `payroll.rate.manage` | `200` / `201 { rate, affectedShiftIds }` |
-| 310 | `PATCH /staff/{id}/planning` | `staff.planning_status` | `200 { planningStatus, futureShiftsNeedingDecision: ShiftDto[] }` |
+| 310 | `PATCH /staff/{id}/planning` | `staff.planning_status` | `200 { planningStatus, rowVersion, futureShiftsNeedingDecision: ShiftDto[] }` |
 | 311 | `GET /payroll/periods`, `POST /payroll/periods`, `POST /payroll/periods/{id}/close` | `payroll.view` / `payroll.period.manage` | `200` / `201` |
 | 312 | `POST /payroll/periods/{id}/calculate` | `payroll.statement.review` | `200 PayrollStatementDto[]` |
 | 313 | `GET /payroll/statements/{id}`, `POST /payroll/statements/{id}/status` | `payroll.view` / по статусу | `200` |
@@ -312,6 +313,7 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 | 316 | `GET /payroll/penalties?staffId=&periodId=`, `POST /payroll/penalties`, `POST /payroll/penalties/{id}/cancel`, `POST /payroll/penalties/{id}/amend` | `payroll.view` / `payroll.penalty.manage` | `200` / `201` |
 | 317 | `POST /payroll/corrections` | `payroll.correct` | `201` |
 | 318 | `GET /payroll/report?...` | `payroll.view` | `200` (§10) |
+| 319 | `PATCH /staff/{id}/employment` `{ rowVersion, employmentStart?, employmentEnd?, managerComment? }` | как правка карточки (K1 `assertCanManageStaff`, `update_profile`) | `200 { rowVersion }` (ответ хранится в идемпотентности, ПДн в него не кладём; значения – из `GET /staff/{id}`); аудит `staff.employment_changed`, значения маскируются (K2 `PD_KEYS`) |
 
 Изменяющие – `Idempotency-Key` обязателен; карточки – `rowVersion`. Объект вне зоны – `404`.
 
@@ -365,4 +367,4 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 - Штраф без причины – `COMMENT_REQUIRED`; отмена сохраняет исходную запись и причину (приёмка 16–17).
 - TC-19: `paid` → один `payroll.payout`; двойное нажатие «Создать расход» → одна связь и операции на `toPayKop`; второй вызов – `PAYOUT_EXPENSE_EXISTS`; сторно расхода в кассе → расход можно создать заново; сводка кассы K17 и ведомость сходятся.
 - TC-16: Директор зоны {А} не видит смен и сумм филиала Б, не меняет ставки (`FORBIDDEN`), штраф сотруднику только филиала Б – `404`.
-- Аудит каждой команды (05 §13): `shift.created/updated/cancelled`, `shift.attendance_set`, `staff.rate_set`, `staff.planning_changed`, `payroll.period.created/closed`, `payroll.statement.status_changed`, `payroll.paid`, `payroll.penalty.created/cancelled/amended`, `payroll.correction.posted`, `payroll.payout_expense.created/linked`.
+- Аудит каждой команды (05 §13): `shift.created/updated/cancelled`, `shift.attendance_set`, `staff.rate_set`, `staff.planning_changed`, `staff.employment_changed`, `payroll.period.created/closed`, `payroll.statement.status_changed`, `payroll.paid`, `payroll.penalty.created/cancelled/amended`, `payroll.correction.posted`, `payroll.payout_expense.created/linked`.

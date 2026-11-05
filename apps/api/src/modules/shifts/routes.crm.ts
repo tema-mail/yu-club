@@ -1,7 +1,8 @@
 // S3-14. K18 №301–310: CRM-маршруты смен на /api/crm/v1 – тонкий слой (ADR 0002 п.7): разбор пути → команда в транзакции под
 // Idempotency-Key (ADR 0004) → ответ. Права – K1 по филиалу: вне зоны – 404 с телом несуществующего, в зоне без права – 403 и
 // запись отказа в аудит отдельной транзакцией (ADR 0005 п.8). Суммы (plannedAccrualKop, factAccrualKop) – только с payroll.view
-// на филиал смены (K18 §14 №301), в том числе в ответах команд и сохранённых ответах идемпотентности.
+// на филиал смены (K18 §14 №301), в том числе в ответах команд и сохранённых ответах идемпотентности. Чтения смен несут staffName – только имя:
+// Администратор видит, кто работает (K18 §12), но контактов, фамилии и ставок коллег не получает (/staff ему закрыт).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type pg from 'pg';
 import { z } from 'zod';
@@ -13,7 +14,7 @@ import { assertCan, branchScopeSql, can, roleAllows, scopeFilter, type AccessCon
 import { addDays, parseLocalDate, systemClock, type Clock, type LocalDate } from '../../core/time.ts';
 import { checkIn, checkOut, setAttendance } from './attendance.ts';
 import { coverage, MAX_COVERAGE_DAYS } from './coverage.ts';
-import { cancelShift, createShift, getShift, setPlanningStatus, SHIFT_SELECT, shiftDtos, staffTargets, updateShift, type ShiftDto, type ShiftRow } from './plan.ts';
+import { cancelShift, createShift, getShift, setEmployment, setPlanningStatus, SHIFT_SELECT, shiftDtos, staffTargets, updateShift, type ShiftDto, type ShiftRow } from './plan.ts';
 import { isUuid, listRates, notFound, setRate } from './rates.ts';
 
 export interface ShiftsCrmDeps {
@@ -55,8 +56,18 @@ function parseRange(from: string, to: string): { from: LocalDate; to: LocalDate 
   }
 }
 
+export type ShiftView = ShiftDto & { staffName: string };
+
+/** Имя сотрудника смены (без фамилии и контактов). Вызывать только для смен, которые вызывающий уже вправе видеть. */
+async function withNames(db: Db, items: ShiftDto[]): Promise<ShiftView[]> {
+  if (items.length === 0) return [];
+  const r = await db.query<{ id: string; first_name: string }>(`SELECT id, first_name FROM app.staff WHERE id = ANY($1::uuid[])`, [[...new Set(items.map((d) => d.staffId))]]);
+  const names = new Map(r.rows.map((x) => [x.id, x.first_name]));
+  return items.map((d) => ({ ...d, staffName: names.get(d.staffId) ?? '' }));
+}
+
 /** №301: смены в зоне shift.view плюс свои; явно названный филиал вне зоны – 404. */
-async function listShifts(db: Db, ctx: AccessContext, query: unknown, clock: Clock): Promise<{ items: ShiftDto[] }> {
+async function listShifts(db: Db, ctx: AccessContext, query: unknown, clock: Clock): Promise<{ items: ShiftView[] }> {
   const parsed = listSchema.safeParse(query ?? {});
   if (!parsed.success) throw new AppError('VALIDATION_FAILED', 400, 'Нужны даты from и to');
   const q = parsed.data;
@@ -80,7 +91,7 @@ async function listShifts(db: Db, ctx: AccessContext, query: unknown, clock: Clo
     where += ` AND s.status = $${params.length}`;
   }
   const r = await db.query<ShiftRow>(`${SHIFT_SELECT} WHERE ${where} ORDER BY lower(s.period), s.id LIMIT 2000`, params);
-  return { items: (await shiftDtos(db, r.rows, clock)).map((d) => maskShift(ctx, d)) };
+  return { items: await withNames(db, (await shiftDtos(db, r.rows, clock)).map((d) => maskShift(ctx, d))) };
 }
 
 interface ChangeRow {
@@ -202,7 +213,7 @@ export async function shiftsCrmRoutes(app: FastifyInstance, deps: ShiftsCrmDeps)
     const { access } = await deps.authenticate(request, reply);
     const dto = await getShift(deps.pool, (request.params as { id: string }).id, clock);
     if (!dto || !canSee(access, dto)) throw notFound();
-    return reply.send(maskShift(access, dto));
+    return reply.send((await withNames(deps.pool, [maskShift(access, dto)]))[0]);
   });
   // №302–304
   app.post('/shifts', command('create', { action: 'shift.created', type: 'shift' }, async (tx, ctx, _p, body, meta, c) => maskShift(ctx, await createShift(tx, ctx, body, meta, c)), 201));
@@ -258,4 +269,6 @@ export async function shiftsCrmRoutes(app: FastifyInstance, deps: ShiftsCrmDeps)
       return { ...res, futureShiftsNeedingDecision: res.futureShiftsNeedingDecision.map((d) => maskShift(ctx, d)) };
     }),
   );
+  // №319
+  app.patch('/staff/:id/employment', command('employment', { action: 'staff.employment_changed', type: 'staff' }, async (tx, ctx, p, body, meta, c) => setEmployment(tx, ctx, p.id!, body, meta, c)));
 }

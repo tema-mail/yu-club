@@ -12,6 +12,8 @@ export interface ShiftDto {
   /** null – нет ставки или нет права payroll.view (не ноль). */
   plannedAccrualKop: number | null; factAccrualKop: number | null;
   factVersion: number; comment: string | null; createdBy: string; rowVersion: number;
+  /** Только имя; есть в чтениях (№301, GET /shifts/{id}), в ответах команд нет. */
+  staffName?: string;
 }
 export interface Interval { start: string; end: string }
 export interface CoverageDto { branchId: string; date: string; timezone: string; open: Interval[]; covered: Interval[]; gaps: Interval[]; state: 'full' | 'partial' | 'empty' | 'closed' }
@@ -93,6 +95,8 @@ const FRIENDLY: Record<string, string> = {
   PAYROLL_STATEMENT_NEEDS_REVIEW: 'В ведомости есть нерешённые смены: сначала разберите их.',
   PAYOUT_EXPENSE_EXISTS: 'Расход по этой выплате уже создан: второй не проводим.',
   PAYOUT_AMOUNT_MISMATCH: 'Сумма расхода не совпадает с выплатой.',
+  OPERATION_ALREADY_LINKED: 'Эта операция уже привязана к другой записи.',
+  OPERATION_LINK_INVALID: 'Эту операцию нельзя привязать: она не подходит или сторнирована.',
   FEATURE_DISABLED: 'Штрафы выключены настройкой до юридической проверки.',
   BRANCH_REQUIRED: 'Укажите филиал: без филиала запись ставит только Владелец.',
   INVALID_AMOUNT: 'Проверьте сумму.',

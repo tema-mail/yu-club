@@ -2,11 +2,11 @@
 // Сотрудники (S0-15c, staff/routes.staff.ts): /staff – список зоны, /staff/new – создание, /staff/{id} – карточка.
 // Экран – при staff.view (Владелец, Директор); Администратору – 404, как несуществующей странице.
 // Опция «Директор» в создании – только при staff.director.assign (Владелец). Решает всё равно сервер (K1).
-// S3-70: блок ставок (K18 №309) – при payroll.view; текущий planning_status API в карточке не отдаёт: читаем последнюю запись журнала staff.planning_changed.
+// S3-70: блок ставок (K18 №309) – при payroll.view. Даты работы, статус планирования и комментарий руководителя – поля карточки GET /staff/{id} (K18 §2), правка – №319.
 import Crm from '../../layouts/Crm.astro';
 import EntityList from '../../islands/EntityList.tsx';
-import StaffForm, { type StaffItem } from '../../islands/StaffForm.tsx';
-import StaffRates, { type PlanningStatus } from '../../islands/StaffRates.tsx';
+import StaffForm, { type StaffCard } from '../../islands/StaffForm.tsx';
+import StaffRates from '../../islands/StaffRates.tsx';
 import { ApiError, ROLE_LABEL, serverCall, type StaffRole } from '../../lib/api.ts';
 import { today as todayIn } from '../../lib/booking.ts';
 import type { StaffRate } from '../../lib/shifts.ts';
@@ -18,10 +18,10 @@ const can = (a: string) => me.actions.includes(a);
 const [key = '', extra] = (Astro.params.path ?? '').split('/');
 
 let notFound = extra !== undefined || !can('staff.view') || (key === 'new' && !can('staff.admin.assign'));
-let staff: StaffItem | null = null;
+let staff: StaffCard | null = null;
 if (!notFound && key && key !== 'new') {
   try {
-    staff = await serverCall<StaffItem>(cookie, `/staff/${encodeURIComponent(key)}`);
+    staff = await serverCall<StaffCard>(cookie, `/staff/${encodeURIComponent(key)}`);
   } catch (e) {
     if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
     notFound = true;
@@ -42,7 +42,6 @@ const canBlock = Boolean(staff) && can('staff.block') && !self && (staff?.role =
 
 // S3-70: ставки и планирование
 let rates: StaffRate[] | null = null;
-let planning: PlanningStatus | null = null;
 const staffNames: Record<string, string> = {};
 if (staff) {
   if (can('payroll.view')) {
@@ -51,18 +50,6 @@ if (staff) {
     } catch (e) {
       if (!(e instanceof ApiError) || ![403, 404].includes(e.status)) throw e;
     }
-  }
-  try {
-    let cursor: string | null = null;
-    for (let page = 0; page < 5 && planning === null; page++) {
-      const q: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
-      const r: { items: Array<{ action: string; after?: { planningStatus?: PlanningStatus } }>; nextCursor: string | null } = await serverCall(cookie, `/audit/timeline?objectType=staff&objectId=${encodeURIComponent(staff.id)}&limit=100${q}`);
-      planning = r.items.find((x) => x.action === 'staff.planning_changed')?.after?.planningStatus ?? null;
-      if (planning === null && !r.nextCursor) planning = 'available'; // журнал прочитан целиком, отметок не было
-      cursor = r.nextCursor;
-    }
-  } catch (e) {
-    if (!(e instanceof ApiError) || ![403, 404].includes(e.status)) throw e;
   }
   let cursor: string | null = null;
   for (let page = 0; page < 20; page++) {
@@ -73,9 +60,6 @@ if (staff) {
     cursor = r.nextCursor;
   }
 }
-const live = staff?.assignments ?? [];
-const workFrom = live.map((a) => a.validFrom).sort()[0] ?? null;
-const workTo = live.length > 0 && live.every((a) => a.validTo) ? live.map((a) => a.validTo!).sort().at(-1)! : null;
 
 const title = notFound ? 'Не найдено' : staff ? `${staff.lastName} ${staff.firstName}` : key === 'new' ? 'Новый сотрудник' : 'Сотрудники';
 ---
@@ -125,7 +109,8 @@ const title = notFound ? 'Не найдено' : staff ? `${staff.lastName} ${st
       )}
       {staff && (
         <StaffRates client:load staffId={staff.id} initialRates={rates} canManage={can('payroll.rate.manage')} canPlanning={can('staff.planning_status')}
-          initialPlanning={planning} workFrom={workFrom} workTo={workTo} today={todayIn(timezone)} staffNames={staffNames} />
+          initialPlanning={staff.planningStatus} initialWork={{ employmentStart: staff.employmentStart, employmentEnd: staff.employmentEnd, managerComment: staff.managerComment }}
+          rowVersion={staff.rowVersion} canWork={canAssign} today={todayIn(timezone)} staffNames={staffNames} />
       )}
     </>
   )}

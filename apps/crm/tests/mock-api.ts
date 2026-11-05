@@ -104,7 +104,7 @@ const staff: MockStaff[] = [
   // После засева/сброса: сервер пускает только в session, password, logout (K12).
   // Администратор двух филиалов двух городов (TC-15, S3-72).
   { id: 's-two', email: 'two@yu.test', password: MOCK_PASSWORD, firstName: 'Дарья', lastName: 'Двухфилиальная', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny', 'b-tsk-lenina'] },
-  { id: 's-fresh', email: 'fresh@yu.test', password: MOCK_PASSWORD, firstName: 'Фёдор', lastName: 'Новиков', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], mustChangePassword: true },
+  { id: 's-fresh', email: 'fresh@yu.test', password: MOCK_PASSWORD, firstName: 'Фёдор', lastName: 'Новиков', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], mustChangePassword: true, employmentStart: '2026-01-01' },
 ];
 
 const sessions = new Map<string, string>(); // токен → staffId

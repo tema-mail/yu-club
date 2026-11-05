@@ -194,4 +194,79 @@ describe('смены по HTTP', () => {
     expect((await req('other', 'GET', '/me/shift-changes')).statusCode).toBe(200);
     await req('owner', 'PATCH', `/staff/${ids.other}/planning`, { planningStatus: 'available' });
   });
+
+  it('K18 §12: Администратор видит имя коллеги в расписании – только имя, без контактов и ставок; чужой филиал – 404', async () => {
+    await db.client.query(`UPDATE app.staff SET first_name = 'Дарья', last_name = 'Секретова', phone_e164 = '+79130000099' WHERE id = $1`, [ids.director]);
+    const date = '2026-11-27' as LocalDate;
+    const shift = await newShift('owner', 'director', 'lenina', '10:00', '12:00', date);
+    const foreign = await newShift('owner', 'other', 'marksa', '10:00', '12:00', date);
+
+    const r = await req('admin', 'GET', `/shifts?branchIds=${ids.lenina}&from=${date}&to=${date}`);
+    expect(r.statusCode).toBe(200);
+    const item = (r.json().items as Array<{ id: string; staffName: string; plannedAccrualKop: unknown }>).find((s) => s.id === shift.id);
+    expect(item?.staffName).toBe('Дарья');
+    expect(item?.plannedAccrualKop).toBeNull();
+    for (const secret of ['Секретова', '+79130000099', 'director@yu.test', 'hourlyKop', 'attendanceFeeKop']) expect(r.body).not.toContain(secret);
+
+    const card = await req('admin', 'GET', `/shifts/${shift.id}`);
+    expect(card.json().staffName).toBe('Дарья');
+    expect(card.body).not.toContain('Секретова');
+
+    expect((await req('admin', 'GET', `/shifts?branchIds=${ids.marksa}&from=${date}&to=${date}`)).statusCode).toBe(404);
+    expect((await req('admin', 'GET', `/shifts/${foreign.id}`)).statusCode).toBe(404);
+    const all = await req('admin', 'GET', `/shifts?from=${date}&to=${date}`);
+    expect((all.json().items as Array<{ id: string }>).map((s) => s.id)).not.toContain(foreign.id);
+  });
+
+  it('карточка сотрудника: поля K18 §2 есть только в GET /staff/{id}; №319 – по rowVersion, с аудитом без значений; права как у правки карточки', async () => {
+    const first = await req('director', 'GET', `/staff/${ids.admin}`);
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ employmentStart: null, employmentEnd: null, planningStatus: 'available', managerComment: null });
+    const body = { rowVersion: first.json().rowVersion as number, employmentStart: '2026-03-01', employmentEnd: '2026-12-31', managerComment: '  Сильный на кассе ' };
+
+    expect((await req('director', 'PATCH', `/staff/${ids.admin}/employment`, body, null)).statusCode).toBe(400); // нет Idempotency-Key
+    const saved = await req('director', 'PATCH', `/staff/${ids.admin}/employment`, body);
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toEqual({ rowVersion: body.rowVersion + 1 });
+    const stored = await db.client.query<{ body: string }>(`SELECT response_body::text AS body FROM app.idempotency_keys WHERE response_body::text LIKE '%Сильный%'`);
+    expect(stored.rowCount).toBe(0); // комментарий не остаётся в сохранённом ответе
+    const card = await req('director', 'GET', `/staff/${ids.admin}`);
+    expect(card.json()).toMatchObject({ employmentStart: '2026-03-01', employmentEnd: '2026-12-31', managerComment: 'Сильный на кассе', rowVersion: body.rowVersion + 1 });
+
+    const stale = await req('director', 'PATCH', `/staff/${ids.admin}/employment`, { ...body, managerComment: 'другое' });
+    expect([stale.statusCode, stale.json().error.code]).toEqual([409, 'VERSION_CONFLICT']);
+    const swapped = await req('director', 'PATCH', `/staff/${ids.admin}/employment`, { rowVersion: body.rowVersion + 1, employmentStart: '2027-01-01' });
+    expect([swapped.statusCode, swapped.json().error.details.field]).toEqual([400, 'employmentEnd']);
+    expect((await req('director', 'PATCH', `/staff/${ids.admin}/employment`, { rowVersion: body.rowVersion + 1, employmentEnd: '2026-02-31' })).statusCode).toBe(400);
+
+    // ПДн по K2: в журнале факт и имена полей, значений нет.
+    const audit = await db.client.query<{ before: Record<string, unknown>; after: Record<string, unknown> }>(`SELECT before, after FROM journal.audit_events WHERE action = 'staff.employment_changed' AND object_id = $1 AND result = 'success'`, [ids.admin]);
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.after).toEqual({ employmentStart: '****-**-**', employmentEnd: '****-**-**', managerComment: '***' });
+    expect(JSON.stringify(audit.rows[0])).not.toContain('Сильный');
+
+    // Права: Директор чужой зоны и чужой сотрудник – 404; Директор про себя – 403 и в журнале отказ; Администратор – 403; комментарий о себе Директору не виден.
+    expect((await req('director', 'PATCH', `/staff/${ids.other}/employment`, { rowVersion: 1, managerComment: 'x' })).statusCode).toBe(404);
+    expect((await req('director', 'GET', `/staff/${ids.other}`)).statusCode).toBe(404);
+    expect((await req('director', 'PATCH', `/staff/${randomUUID()}/employment`, { rowVersion: 1 })).statusCode).toBe(404);
+    expect((await req('admin', 'PATCH', `/staff/${ids.admin}/employment`, { rowVersion: 1, managerComment: 'x' })).statusCode).toBe(403);
+    expect((await req('admin', 'GET', `/staff/${ids.admin}`)).statusCode).toBe(403);
+    const self = await req('director', 'GET', `/staff/${ids.director}`);
+    const v = self.json().rowVersion as number;
+    const byOwner = await req('owner', 'PATCH', `/staff/${ids.director}/employment`, { rowVersion: v, managerComment: 'о Директоре' });
+    expect(byOwner.statusCode).toBe(200);
+    expect((await req('owner', 'GET', `/staff/${ids.director}`)).json().managerComment).toBe('о Директоре');
+    expect((await req('director', 'GET', `/staff/${ids.director}`)).json().managerComment).toBeNull();
+    expect((await req('director', 'PATCH', `/staff/${ids.director}/employment`, { rowVersion: v + 1, managerComment: 'x' })).statusCode).toBe(403);
+    const denied = await db.client.query(`SELECT 1 FROM journal.audit_events WHERE action = 'staff.employment_changed' AND object_id = $1 AND result = 'denied'`, [ids.director]);
+    expect(denied.rowCount).toBe(1);
+
+    // Список сотрудников новых полей не несёт; №310 отдаёт новую версию.
+    const list = await req('owner', 'GET', '/staff?limit=100');
+    expect(list.body).not.toContain('managerComment');
+    const leave = await req('director', 'PATCH', `/staff/${ids.admin}/planning`, { planningStatus: 'on_leave' });
+    expect(leave.json().rowVersion).toBe(body.rowVersion + 2);
+    expect((await req('director', 'GET', `/staff/${ids.admin}`)).json().planningStatus).toBe('on_leave');
+    await req('director', 'PATCH', `/staff/${ids.admin}/planning`, { planningStatus: 'available' });
+  });
 });
