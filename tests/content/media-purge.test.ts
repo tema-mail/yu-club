@@ -160,6 +160,44 @@ describe('S4-45: очистка', () => {
     expect(audit.rowCount).toBe(1);
   });
 
+  it('подпись в тексте не возвращается после отката; поле условий тоже чистится; живой снимок без id и подписи', async () => {
+    const id = await f.image(97, 'Фото');
+    const c = f.owner();
+    const cover = await f.image(98, 'Обложка');
+    const news = await liveNews(cover, `Абзац ![Иван Иванов](media:${id}) конец`);
+    await purge('owner', id);
+    const after = (await pubGet(`/publications/news/${news.slug}`)).json();
+    expect(JSON.stringify(after)).not.toContain('Иван Иванов');
+    expect(JSON.stringify(after)).not.toContain(id);
+    const fresh = (await f.db.client.query<EntityRow>(`SELECT * FROM app.content_publications WHERE id = $1`, [news.row.id])).rows[0]!;
+    await f.inTx((tx) => rollback(tx, c, publicationDef, news.row.id, { versionId: news.versionId, rowVersion: fresh.row_version, reason: 'откат' }, f.meta(c), clock));
+    const back = await pubGet(`/publications/news/${news.slug}`);
+    expect(back.body).not.toContain('Иван Иванов');
+    expect(back.json().body).toBe(`Абзац ![](media:${id}) конец`);
+    expect(back.json().media[id]).toMatchObject({ removed: true, url: null });
+    const versions = await listVersions(f.pool, 'publication', news.row.id);
+    expect(JSON.stringify(versions.at(-1)!.snapshot)).toContain('Иван Иванов'); // журнал не правится
+    expect(JSON.stringify(versions[0]!.snapshot)).not.toContain('Иван Иванов');
+
+    const other = await f.image(99, 'Фото');
+    n += 1;
+    const draft: PublicationDraft = { scope: { type: 'network' }, title: 'Акция', lead: 'л', body: 'т', slug: `purge-c-${n}`, coverMediaId: cover, publishFrom: '2026-11-01T00:00:00Z', publishTo: '2027-01-01T00:00:00Z', conditions: `Условия ![Пётр](media:${other})` };
+    const made = await f.inTx((tx) => createEntity(tx, c, publicationDef, { type: 'promotion' }, draft, f.meta(c), clock));
+    await f.inTx((tx) => publish(tx, c, publicationDef, made.id, { rowVersion: made.row_version }, f.meta(c), clock));
+    expect((await purge('owner', other)).json().affected).toEqual([{ entityType: 'publication', entityId: made.id, versionNo: 2 }]);
+    const promo = await pubGet(`/publications/promotion/${draft.slug}`);
+    expect(promo.body).not.toContain('Пётр');
+    expect(promo.body).not.toContain(other);
+  });
+
+  it('запрет повторной загрузки не снимается: удалить очищенную строку нельзя', async () => {
+    const id = await f.image(100, 'Фото');
+    await purge('owner', id);
+    const res = await app.inject({ method: 'DELETE', url: `${BASE}/content/media/${id}`, headers: { cookie: cookies.owner!, 'idempotency-key': randomUUID() } });
+    expect(res.statusCode).toBe(404);
+    expect((await getMediaRow(f.pool, id))?.status).toBe('purged');
+  });
+
   it('очищенный файл заново не загрузить; в списке медиатеки его нет; правка и архив – 404', async () => {
     const c = f.owner();
     const content = await sharp({ create: { width: 90, height: 60, channels: 3, background: '#445566' } }).png().toBuffer();

@@ -51,7 +51,7 @@ async function republishWithout(tx: Db, ctx: AccessContext, type: EntityType, me
   const table = entityTable(type);
   const live = await tx.query<{ id: string; snapshot: Snapshot }>(
     `SELECT t.id, v.snapshot FROM ${table} t JOIN journal.content_versions v ON v.id = t.live_version_id
-      WHERE t.status = 'published' AND v.snapshot->'media' ? $1 FOR UPDATE OF t`,
+      WHERE t.status = 'published' AND v.snapshot::text LIKE '%' || $1 || '%' FOR UPDATE OF t`,
     [mediaId],
   );
   const out: PurgeAffected[] = [];

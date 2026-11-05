@@ -44,7 +44,8 @@ const purgeBody = z.strictObject({ reason: z.string().max(2000).optional(), basi
 async function deleteUnused(tx: Db, ctx: AccessContext, id: string, meta: AuditRequestMeta, clock: Clock): Promise<string[]> {
   assertRole(ctx, 'content.media.purge');
   const row = await getMediaRow(tx, id);
-  if (!row) throw new AppError('NOT_FOUND', 404, 'Не найдено');
+  // Очищенная строка держит sha256 – запрет повторной загрузки (S4-45): обычным удалением её не снять.
+  if (!row || row.status === 'purged') throw new AppError('NOT_FOUND', 404, 'Не найдено');
   await tx.query(`SELECT 1 FROM app.content_media WHERE id = $1 FOR UPDATE`, [id]);
   const usages = await mediaUsages(tx, id);
   if (usages.length > 0) throw new AppError('MEDIA_IN_USE', 409, 'Файл используется', { usages });
