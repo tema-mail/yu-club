@@ -271,14 +271,20 @@ export interface DetailPage<R> {
 }
 
 const encodeCursor = (date: string | null, id: string): string => Buffer.from(JSON.stringify([date, id])).toString('base64url');
-function decodeCursor(c: string): [string | null, string] {
+const badCursor = () => new AppError('REPORT_FILTER_INVALID', 422, 'Неверный курсор', { field: 'cursor' });
+// дата курсора – текст timestamptz из базы; JS Date его микросекунды не понимает, поэтому форма – здесь, значения (13-й месяц) – база, см. detailPage
+const CURSOR_DATE_RE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:\d{2})?)$/;
+
+function decodeCursor(c: string, withDate: boolean): [string | null, string] {
+  let v: unknown;
   try {
-    const v = JSON.parse(Buffer.from(c, 'base64url').toString()) as unknown;
-    if (Array.isArray(v) && v.length === 2 && typeof v[1] === 'string') return [v[0] as string | null, v[1]];
+    v = JSON.parse(Buffer.from(c, 'base64url').toString());
   } catch {
-    // ниже – ошибка
+    throw badCursor();
   }
-  throw new AppError('REPORT_FILTER_INVALID', 422, 'Неверный курсор', { field: 'cursor' });
+  if (!Array.isArray(v) || v.length !== 2 || typeof v[1] !== 'string') throw badCursor();
+  if (withDate && (typeof v[0] !== 'string' || !CURSOR_DATE_RE.test(v[0]))) throw badCursor();
+  return [v[0] as string | null, v[1]];
 }
 
 /** Страница строк показателя. count_distinct – по строке на значение col. Сумма всех страниц = aggregate (одно условие). */
@@ -299,7 +305,7 @@ export async function detailPage<R extends pg.QueryResultRow>(
   const orderExpr = date ? `t.${date}, t.${id}::text` : `t.${id}::text`;
   let cursorSql = '';
   if (opts.cursor) {
-    const [d, i] = decodeCursor(opts.cursor);
+    const [d, i] = decodeCursor(opts.cursor, Boolean(date));
     params.push(i);
     if (date) {
       params.push(d);
@@ -314,7 +320,11 @@ export async function detailPage<R extends pg.QueryResultRow>(
   const r = await db.query<R & { cursor_date?: string }>(
     `SELECT t.*${date ? `, t.${date}::text AS cursor_date` : ''} FROM (${inner}) t ${cursorSql ? `WHERE ${cursorSql}` : ''} ORDER BY ${orderExpr} LIMIT $${params.length}`,
     params,
-  );
+  ).catch((err: { code?: string }) => {
+    // 22xxx – значение даты курсора не приняла база (2026-13-45): это плохой курсор, а не сбой сервера
+    if (opts.cursor && err.code?.startsWith('22')) throw badCursor();
+    throw err;
+  });
   const rows = r.rows.slice(0, limit);
   const last = rows[rows.length - 1] as (Record<string, unknown> & { cursor_date?: string }) | undefined;
   const nextCursor = r.rows.length > limit && last ? encodeCursor(last.cursor_date ?? null, String(last[id])) : null;
