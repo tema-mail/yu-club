@@ -14,6 +14,7 @@ import EventChecklist from './EventChecklist.tsx';
 import { ClientPicker, type PickedClient } from './EventForm.tsx';
 import EventLines from './EventLines.tsx';
 import { ReasonDialog, type EventTabProps } from './EventParts.tsx';
+import EventResources from './EventResources.tsx';
 
 export interface EventCardProps {
   initial: EventCardDto;
@@ -332,7 +333,7 @@ export default function EventCard(p: EventCardProps) {
         {tab === 'main' && <MainTab key={c.rowVersion} {...tabProps} />}
         {tab === 'people' && <PeopleTab key={c.rowVersion} {...tabProps} maxGuests={p.maxGuests} />}
         {tab === 'lines' && <EventLines {...tabProps} />}
-        
+        {tab === 'resources' && <EventResources {...tabProps} minMinutes={p.minMinutes} />}
         {tab === 'checklist' && <EventChecklist {...tabProps} />}
         
         
