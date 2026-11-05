@@ -25,6 +25,7 @@ import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/a
 import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
 import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
+import { startRequestHoldExpiry } from './modules/events/resources.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
@@ -57,6 +58,7 @@ export async function startWorkerTasks(opts: {
   loyaltyExpiryIntervalMs?: number;
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
+  requestHoldIntervalMs?: number;
   logger?: WorkerLogger;
   /** Ночная сверка (S2-80): время и зона расписания, частота проверки «пора ли»; по умолчанию 03:30 Europe/Moscow, раз в минуту. */
   reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
@@ -92,6 +94,13 @@ export async function startWorkerTasks(opts: {
     intervalMs: opts.certificateIntervalMs ?? 5 * 60_000,
     onError: (err) => logger.error({ err: errText(err) }, 'certificates:expire: проход упал'),
   });
+  // K20 §4: комната под необработанную заявку – снятие по истечении срока раз в 5 минут
+  const requestHolds = startRequestHoldExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.requestHoldIntervalMs ?? 5 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'events:request-hold-expire: проход упал'),
+  });
   // K15 §2: истечение партий баллов (при loyalty.batch_ttl_days = null проход ничего не делает)
   const loyaltyExpiry = startLoyaltyExpiry({
     pool: opts.pool,
@@ -123,6 +132,7 @@ export async function startWorkerTasks(opts: {
       reconcile.stop();
       holds.stop();
       certificates.stop();
+      requestHolds.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
       await outbox.stop();
