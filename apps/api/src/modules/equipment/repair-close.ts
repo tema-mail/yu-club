@@ -16,6 +16,7 @@ import {
   executorSnapshot,
   lockRepair,
   otherOpenRepairsOn,
+  repairPayment,
   repairRow,
   toRepairDto,
   writeTransition,
@@ -150,25 +151,34 @@ export async function closeRepair(tx: Tx, ctx: AccessContext, id: string, raw: u
   const noCost = input.noCost === true;
   if (noCost === (input.actualCostKop !== undefined)) missing.push('actualCostKop', 'noCost'); // ровно одно из двух
   if (noCost && !input.costComment) missing.push('costComment');
+  if (input.actualCostKop === 0) missing.push('noCost'); // ноль рублей – это «без затрат» с комментарием, иначе статус оплаты навсегда unpaid
   if (!executorId && (await workWasDone(tx, row.id))) missing.push('executorId');
   if (missing.length > 0) throw new AppError('REPAIR_CLOSE_INCOMPLETE', 422, 'Для закрытия ремонта не хватает данных', { fields: missing });
 
   const completedAt = new Date(input.completedAt!);
   const now = clock.now();
   if (completedAt.getTime() < row.detected_at.getTime() || completedAt.getTime() > now.getTime()) throw new AppError('REPAIR_DATES_INVALID', 422, 'Дата завершения – между обнаружением и сейчас');
-  // Администратор принимает только в пределах порога согласования (K19 §7, 10 §14)
-  if (!canClose && aboveThreshold(input.actualCostKop ?? null, await approvalThreshold(tx, now))) denyWith(forbidden('repair.close'), { ...denied, branchId: row.branch_id }, 'repair.close');
+  // Администратор принимает только в пределах порога (K19 §7, 10 §14): считается и план – иначе «без затрат» или 1 ₽ обошли бы порог согласованного ремонта
+  const decisiveKop = Math.max(input.actualCostKop ?? 0, Number(row.plan_cost_kop ?? 0));
+  if (!canClose && aboveThreshold(decisiveKop, await approvalThreshold(tx, now))) denyWith(forbidden('repair.close'), { ...denied, branchId: row.branch_id }, 'repair.close');
   const finalStatus: EquipmentStatus = input.finalEquipmentStatus!;
   if (finalStatus === 'written_off' || finalStatus === 'lost') guardRole(ctx, row.branch_id, 'equipment.write_off', denied);
+  const item = await lockItem(tx, row.equipment_id);
+  // Выход из lost – только с equipment.write_off, закрытие ремонта его не обходит (K19 §2, §18)
+  if (item?.status === 'lost' && finalStatus !== 'lost') guardRole(ctx, row.branch_id, 'equipment.write_off', denied);
+  if (noCost) {
+    // Касса уже списала: «без затрат» разошлось бы со связанными операциями (K19 §10, 16 §14). Строка ремонта под замком – новый расход не проскочит.
+    const paid = await repairPayment(tx, row);
+    if (paid.paidKop > 0) throw new AppError('REPAIR_CLOSE_INCOMPLETE', 422, 'По ремонту уже есть расход – укажите сумму', { fields: ['noCost'], operationIds: paid.operationIds });
+  }
 
-  const snapshot = executorId && executorId !== row.executor_id ? await executorSnapshot(tx, executorId) : row.executor_snapshot;
+  const snapshot = executorId === null ? null : executorId !== row.executor_id ? await executorSnapshot(tx, executorId) : row.executor_snapshot;
   await tx.query(
     `UPDATE app.repairs SET works_done = $2, completed_at = $3, final_equipment_status = $4, actual_cost_kop = $5, no_cost = $6, cost_comment = $7, executor_id = $8, executor_snapshot = $9, accepted_by = $10 WHERE id = $1`,
     [id, input.worksDone, completedAt, finalStatus, input.actualCostKop ?? null, noCost, input.costComment ?? null, executorId, snapshot === null ? null : JSON.stringify(snapshot), ctx.actor.staffId],
   );
   await writeTransition(tx, ctx, row, 'closed', input.worksDone!, meta, clock);
 
-  const item = await lockItem(tx, row.equipment_id);
   if (item && item.status !== finalStatus && item.status !== 'written_off') {
     await applyEquipmentStatus(tx, ctx, item, { status: finalStatus, reason: `Ремонт ${row.number} закрыт`, source: 'repair' }, meta, clock);
   }

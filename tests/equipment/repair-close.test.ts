@@ -9,10 +9,12 @@ import { fixedClock, interval } from '../../apps/api/src/core/time.ts';
 import { occupy, runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
 import { liftBlockFor } from '../../apps/api/src/modules/booking/providers.ts';
 import { createExecutor } from '../../apps/api/src/modules/equipment/executors.ts';
-import { createEquipment, getEquipment } from '../../apps/api/src/modules/equipment/items.ts';
+import { reverseOperation } from '../../apps/api/src/modules/finance/corrections.ts';
+import { createRepairExpense } from '../../apps/api/src/modules/equipment/repair-expense.ts';
+import { createEquipment, getEquipment, setEquipmentStatus } from '../../apps/api/src/modules/equipment/items.ts';
 import { confirmBlock } from '../../apps/api/src/modules/equipment/repair-blocks.ts';
 import { closeRepair, createWarranty, invalidateWarranty, listWarranties } from '../../apps/api/src/modules/equipment/repair-close.ts';
-import { changeRepairStatus, getRepair, registerRepair, updateRepair, type RepairDto } from '../../apps/api/src/modules/equipment/repairs.ts';
+import { approveRepair, changeRepairStatus, getRepair, registerRepair, updateRepair, type RepairDto } from '../../apps/api/src/modules/equipment/repairs.ts';
 import { expandToUnits } from '../../apps/api/src/modules/resources/index.ts';
 import { createBooking, createEquipmentWorld, ctxOf, fails, inTx, metaOf, type EquipmentWorld } from '../helpers/equipment.ts';
 
@@ -110,6 +112,48 @@ describe('кто принимает (Q-52)', () => {
     expect((await getEquipment(w.pool, owner, eq.id)).status).toBe('written_off');
     const foreign = ctxOf(clock, 'director', [w.other]);
     await fails(close(big, {}, foreign), 'NOT_FOUND');
+  });
+});
+
+describe('дыры закрытия (ревью S3-37)', () => {
+  it('выход из lost закрытием – только Владелец: Директор и Администратор получают FORBIDDEN', async () => {
+    const eq = await item({});
+    const r = await toCheck((await register(eq.id)).repair);
+    const cur = await getEquipment(w.pool, owner, eq.id);
+    await inTx(w.pool, (t) => setEquipmentStatus(t, owner, eq.id, { rowVersion: cur.rowVersion, status: 'lost', reason: 'пропал' }, metaOf(owner), clock));
+    await fails(close(r, {}, director), 'FORBIDDEN');
+    await fails(close(r, {}, admin), 'FORBIDDEN');
+    expect((await getEquipment(w.pool, owner, eq.id)).status).toBe('lost');
+    expect((await close(r, {}, owner)).repair.status).toBe('closed');
+    expect((await getEquipment(w.pool, owner, eq.id)).status).toBe('in_service');
+  });
+
+  it('порог для Администратора считает и план: «без затрат» и 1 ₽ на плане выше порога – FORBIDDEN', async () => {
+    const eq = await item({});
+    const { repair } = await register(eq.id);
+    const planned = await inTx(w.pool, (t) => updateRepair(t, director, repair.id, { rowVersion: repair.rowVersion, plan: { costKop: 2_000_000 } }, metaOf(director), clock));
+    const waiting = await status(await status(planned, 'diagnostics'), 'awaiting_approval');
+    const ok = await inTx(w.pool, (t) => approveRepair(t, owner, repair.id, { rowVersion: waiting.rowVersion, decision: 'approve', comment: 'да' }, metaOf(owner), clock));
+    const r = await toCheck(ok);
+    await fails(close(r, { actualCostKop: undefined, noCost: true, costComment: 'нет затрат' }, admin), 'FORBIDDEN');
+    await fails(close(r, { actualCostKop: 1 }, admin), 'FORBIDDEN');
+    expect((await close(r, { actualCostKop: 1_900_000 }, director)).repair.status).toBe('closed');
+  });
+
+  it('«без затрат» при живом расходе – отказ; после сторно – можно; 0 ₽ вместо «без затрат» – отказ; executorId: null убирает снимок', async () => {
+    await w.db.client.query(`INSERT INTO app.settings_values (key, level, branch_id, value, valid_from, created_by) VALUES ('finance.negative_balance_allowed', 'branch', $1, 'true', '2026-01-01', $2)`, [w.branch, randomUUID()]);
+    const eq = await item({});
+    const d = await status((await register(eq.id)).repair, 'diagnostics');
+    const op = await inTx(w.pool, (t) => createRepairExpense(t, director, d.id, { branchId: w.branch, method: 'cash', amountKop: 1000, occurredAt: DONE }, metaOf(director), { idempotencyKey: randomUUID(), clock }));
+    const assigned = await inTx(w.pool, (t) => updateRepair(t, director, d.id, { rowVersion: d.rowVersion, executorId }, metaOf(director), clock));
+    const r = await status(assigned, 'done_pending_check');
+    const free = { actualCostKop: undefined, noCost: true, costComment: 'нет затрат', executorId: null };
+    const err = await fails(close(r, free), 'REPAIR_CLOSE_INCOMPLETE');
+    expect(err.details).toMatchObject({ fields: ['noCost'], operationIds: [op.id] });
+    expect((await fails(close(r, { actualCostKop: 0 }), 'REPAIR_CLOSE_INCOMPLETE')).details?.fields).toEqual(['noCost']);
+    await inTx(w.pool, (t) => reverseOperation(t, owner, { operationId: op.id, reason: 'ошибка' }, metaOf(owner), { idempotencyKey: randomUUID(), clock }));
+    const closed = await close(r, free);
+    expect(closed.repair).toMatchObject({ noCost: true, payment: { status: 'no_cost', paidKop: 0 }, executor: { id: null, snapshot: null } });
   });
 });
 
