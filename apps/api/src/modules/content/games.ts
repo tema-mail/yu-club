@@ -6,6 +6,7 @@ import { AppError } from '../../core/errors.ts';
 import { assertCan, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { assertSlug, assertSlugFree, mediaOf, seoDto, seoShape, showMedia, uuid, withSlugConflict, type SeoDto } from './common.ts';
+import { recordSlugChange, releaseSlug } from './paths.ts';
 import { mediaIdsInText, type EntityDef, type EntityRow, type FieldIssue, type PublicMedia, type Snapshot } from './versions.ts';
 
 export const GAME_DIRECTIONS = ['pc', 'vr', 'playstation'] as const;
@@ -48,8 +49,8 @@ export const gameDef: EntityDef<GameDraft> = {
   complete: gameComplete,
   assertEdit: (_db, ctx) => manage(ctx),
   assertPublish: (_db, ctx) => manage(ctx),
-  // Смена слага у живой версии – место истории адресов K23 §5 (S4-50).
-  async applyLive(tx, row, d) {
+  // Смена слага у живой версии пишет историю адресов K23 §5; черновик до первой публикации истории не оставляет.
+  async applyLive(tx, row, d, ctx) {
     const slug = d.slug?.trim() || null;
     if (slug) {
       assertSlug(slug);
@@ -58,6 +59,10 @@ export const gameDef: EntityDef<GameDraft> = {
     await withSlugConflict(tx, slug ?? '', () =>
       tx.query(`UPDATE app.content_games SET slug = $2, has_full = $3, cover_media_id = $4, sort_order = $5 WHERE id = $1`, [row.id, slug, Boolean(d.full?.trim()), d.coverMediaId ?? null, d.sortOrder ?? 0]),
     );
+    if (!slug) return; // без полного описания страницы нет: старый адрес отдаёт 404
+    const parentKey = String(row.direction);
+    if (typeof row.slug === 'string') await recordSlugChange(tx, { entityType: 'game', entityId: row.id, parentKey, oldSlug: row.slug, newSlug: slug }, { now: () => ctx.at });
+    else await releaseSlug(tx, 'game', parentKey, slug); // новый объект занял слаг из истории (K23 §5)
   },
 };
 

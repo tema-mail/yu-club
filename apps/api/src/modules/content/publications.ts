@@ -9,6 +9,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { assertSlug, assertSlugFree, internalPath, isoDate, mediaOf, seoDto, seoShape, showMedia, uuid, withSlugConflict, type SeoDto } from './common.ts';
 import type { PublicMedia, Snapshot, EntityDef, EntityRow, FieldIssue } from './versions.ts';
 import { mediaIdsInText } from './versions.ts';
+import { recordSlugChange, releaseSlug } from './paths.ts';
 
 export const PUBLICATION_TYPES = ['news', 'promotion', 'giveaway', 'tournament'] as const;
 export type PublicationType = (typeof PUBLICATION_TYPES)[number];
@@ -87,8 +88,8 @@ async function assertScopeExists(tx: Db, scope: Scope): Promise<void> {
   if (r.rows[0]!.n !== new Set(ids).size) throw new AppError('NOT_FOUND', 404, 'Не найдено');
 }
 
-/** Живые столбцы и охват – только из publish и rollback. Смена слага у живой версии – место истории адресов K23 §5 (S4-50). */
-async function applyLive(tx: Db, row: EntityRow, d: PublicationDraft): Promise<void> {
+/** Живые столбцы и охват – только из publish и rollback. Смена слага у живой версии пишет историю адресов K23 §5; черновик до первой публикации истории не оставляет. */
+async function applyLive(tx: Db, row: EntityRow, d: PublicationDraft, ctx: AccessContext): Promise<void> {
   await assertScopeExists(tx, d.scope);
   const slug = d.slug!;
   assertSlug(slug);
@@ -104,6 +105,9 @@ async function applyLive(tx: Db, row: EntityRow, d: PublicationDraft): Promise<v
       d.rulesMediaId ?? null,
     ]),
   );
+  const parentKey = String(row.type);
+  if (typeof row.slug === 'string') await recordSlugChange(tx, { entityType: 'publication', entityId: row.id, parentKey, oldSlug: row.slug, newSlug: slug }, { now: () => ctx.at });
+  else await releaseSlug(tx, 'publication', parentKey, slug); // новый объект занял слаг из истории (K23 §5)
   await tx.query(`DELETE FROM app.content_publication_scopes WHERE publication_id = $1`, [row.id]);
   if (d.scope.type === 'network') {
     await tx.query(`INSERT INTO app.content_publication_scopes (publication_id, scope_type) VALUES ($1, 'network')`, [row.id]);
