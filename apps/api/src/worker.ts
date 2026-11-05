@@ -1,10 +1,11 @@
 // Фоновый процесс (ADR 0002: процесс worker – тот же образ API, другая команда).
 // Запускает: подписки уведомлений на события брони (K14, до startOutboxWorker – подписки замораживаются),
-// подписки баллов (K15: штраф за неявку, резерв, начисление и paid_other по PaymentLookup finance),
+// подписки баллов (K15: штраф за неявку, резерв, начисление и paid_other по PaymentLookup finance), начисление зарплаты (K18 §6),
 // доставку outbox через pg-boss (K4, core/outbox-worker.ts), истечение партий баллов раз в 10 мин, истечение удержаний раз в 15 с
 // (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер
 // запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts) и ночную сверку 16 §14 раз в сутки
-// (modules/reports/reconcile.ts, 03:30 по RECONCILE_TIMEZONE; ручной запуск – командой из того же файла).
+// (modules/reports/reconcile.ts, 03:30 по RECONCILE_TIMEZONE; ручной запуск – командой из того же файла),
+// проверку смен без отметки раз в 15 мин (modules/shifts/attendance.ts, K18 §5).
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
 //
 // Окружение: DATABASE_URL – рантайм yu_app (данные модулей); PGBOSS_DATABASE_URL – роль yu_boss, владелец
@@ -15,10 +16,12 @@ import { pathToFileURL } from 'node:url';
 import { PgBoss } from 'pg-boss';
 import pg from 'pg';
 import { loadConfig } from './config.ts';
+import { createFileStore, type FileStore } from './core/files.ts';
 import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/outbox-worker.ts';
 import { systemClock, type Clock, type LocalTime, type TimeZone } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
 import { startCertificateExpiry } from './modules/certificates/lifecycle.ts';
+import { startMediaGc } from './modules/content/media.ts';
 import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
 import { paymentLookup } from './modules/finance/payment.ts';
 import { registerAccrualHandlers, type PaymentLookup } from './modules/loyalty/accrual.ts';
@@ -29,6 +32,8 @@ import { startCampaignRunner } from './modules/notifications/campaign-runner.ts'
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
+import { registerPayrollHandlers } from './modules/shifts/accrual.ts';
+import { startShiftReview } from './modules/shifts/attendance.ts';
 import { vapidKeys, type VapidKeys } from './modules/notifications/webpush.ts';
 
 const log = (level: 'info' | 'error', msg: string, extra: Record<string, unknown> = {}): void => {
@@ -58,6 +63,7 @@ export async function startWorkerTasks(opts: {
   loyaltyExpiryIntervalMs?: number;
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
+  shiftReviewIntervalMs?: number;
   campaignIntervalMs?: number;
   /** UNSUBSCRIBE_SECRET: без него рекламные строки не уходят (K21 §7). */
   unsubscribeSecret?: string | null;
@@ -66,6 +72,8 @@ export async function startWorkerTasks(opts: {
   reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
   /** Чтение оплаты для начисления баллов и снятия резерва paid_other (K15 §3–4); по умолчанию – finance paymentLookup (K10, S2-20). */
   payments?: PaymentLookup;
+  /** Медиатека CMS: ночная уборка «сирот» content:media-gc (K22 §8). Нет – задача не запускается. */
+  mediaStore?: FileStore;
 }): Promise<WorkerTasks> {
   const clock = opts.clock ?? systemClock;
   const logger = opts.logger ?? { error: (obj: Record<string, unknown>, msg: string) => log('error', msg, obj) };
@@ -75,6 +83,7 @@ export async function startWorkerTasks(opts: {
   const payments = opts.payments ?? paymentLookup;
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
   registerAccrualHandlers({ bookings: paymentBookingProvider, payments, clock });
+  registerPayrollHandlers({ clock }); // K18 §6: начисление зарплаты по факту смены и новой ставке
   const outbox = await startOutboxWorker({
     pool: opts.pool,
     boss: opts.boss,
@@ -95,6 +104,13 @@ export async function startWorkerTasks(opts: {
     clock,
     intervalMs: opts.certificateIntervalMs ?? 5 * 60_000,
     onError: (err) => logger.error({ err: errText(err) }, 'certificates:expire: проход упал'),
+  });
+  // K18 §5: смена без отметки после review_grace – needs_review
+  const shiftReview = startShiftReview({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.shiftReviewIntervalMs ?? 15 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'shifts.review: проход упал'),
   });
   // K15 §2: истечение партий баллов (при loyalty.batch_ttl_days = null проход ничего не делает)
   const loyaltyExpiry = startLoyaltyExpiry({
@@ -125,13 +141,26 @@ export async function startWorkerTasks(opts: {
     ...(opts.reconcile?.timeZone ? { timeZone: opts.reconcile.timeZone } : {}),
     ...(opts.reconcile?.intervalMs ? { intervalMs: opts.reconcile.intervalMs } : {}),
   });
+  const mediaGc = opts.mediaStore
+    ? startMediaGc({
+        pool: opts.pool,
+        store: opts.mediaStore,
+        clock,
+        onError: (err) => logger.error({ err: errText(err) }, 'content:media-gc: проход упал'),
+        onDone: (r) => {
+          if (r.removed.length > 0) log('info', 'content:media-gc: удалены файлы без строки', { removed: r.removed.length, kept: r.kept });
+        },
+      })
+    : null;
   return {
     outbox,
     reconcile,
     stop: async () => {
+      mediaGc?.stop();
       reconcile.stop();
       holds.stop();
       certificates.stop();
+      shiftReview.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
       stopCampaigns();
@@ -158,7 +187,14 @@ async function main(): Promise<void> {
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   const schedule = scheduleFromEnv();
-  const tasks = await startWorkerTasks({ pool, boss, vapid, reconcile: schedule, unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null });
+  const tasks = await startWorkerTasks({
+    pool,
+    boss,
+    vapid,
+    reconcile: schedule,
+    unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null,
+    mediaStore: createFileStore({ root: config.MEDIA_DIR }),
+  });
   log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, партий баллов 10 мин, сгорание сертификатов 5 мин, отправка 30 с, сверка раз в сутки', {
     version: config.GIT_SHA,
     webPush: Boolean(vapid),

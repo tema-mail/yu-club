@@ -75,13 +75,23 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:?нет VAPID_SUBJECT}
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
+      # секрет предпросмотра черновиков (K22 §11): один на api, сайт и CRM, генерирует deploy.sh один раз
+      PREVIEW_SECRET: ${PREVIEW_SECRET:?нет PREVIEW_SECRET}
       # закрытые вложения Э3 (K19 №350): только API, Caddy каталог не видит; в бэкапе – BACKUP_FILE_DIRS attachments=…
       ATTACHMENTS_DIR: /data/attachments
+      # медиатека CMS (K22 §8): пишет API, отдаёт Caddy только для чтения; в бэкапе – BACKUP_FILE_DIRS media=…
+      MEDIA_DIR: /data/media
+      MEDIA_QUOTA_GB: ${MEDIA_QUOTA_GB:-5}
+      # экспорты отчётов (K24 §7): вне веб-корня, живут 24 ч, в бэкап не входят
+      EXPORT_DIR: /data/exports
     volumes:
       - ${ATTACHMENTS_HOST_DIR:-/opt/yu-club/attachments}:/data/attachments
+      - ${MEDIA_DIR:-/opt/yu-club/media}:/data/media
+      - ${EXPORT_DIR:-/opt/yu-club/exports}:/data/exports
     depends_on:
       postgres: { condition: service_healthy }
-    mem_limit: 160m
+    # 160 → 320 МБ: перекодирование sharp (K22 §8; 40 Мп, одно-два одновременно)
+    mem_limit: 320m
     networks: [internal, caddy]
     logging: *log
 
@@ -101,6 +111,12 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?нет VAPID_PUBLIC_KEY}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?нет VAPID_PRIVATE_KEY}
       VAPID_SUBJECT: ${VAPID_SUBJECT:?нет VAPID_SUBJECT}
+      # ночная уборка медиатеки и чистка экспортов (K22 §8, K24 §7) – те же каталоги, что у api
+      MEDIA_DIR: /data/media
+      EXPORT_DIR: /data/exports
+    volumes:
+      - ${MEDIA_DIR:-/opt/yu-club/media}:/data/media
+      - ${EXPORT_DIR:-/opt/yu-club/exports}:/data/exports
     depends_on:
       postgres: { condition: service_healthy }
     # HTTP-проверки у процесса нет – отключаем унаследованный от образа HEALTHCHECK на /health
@@ -122,6 +138,9 @@ services:
     restart: unless-stopped
     environment:
       API_URL: ${CRM_API_URL:-http://yu-club-api:3000}
+      # предпросмотр черновика (K22 §11): CRM берёт страницу у сайта по внутренней сети; на публичном домене её нет
+      SITE_INTERNAL_URL: ${SITE_INTERNAL_URL:-http://yu-club-site:4341}
+      PREVIEW_SECRET: ${PREVIEW_SECRET:?нет PREVIEW_SECRET}
       # Caddy общего сервера приходит из сети Docker – его X-Forwarded-For принимаем (lib/client-ip.ts)
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
     depends_on:
@@ -143,6 +162,7 @@ services:
       APP_ENV: ${APP_ENV:-stage}
       API_URL: ${SITE_API_URL:-http://yu-club-api:3000}
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-}
+      PREVIEW_SECRET: ${PREVIEW_SECRET:?нет PREVIEW_SECRET}
       # прокси /api/public/v1/* сайта: X-Forwarded-For принимаем только от Caddy (сети Docker)
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,172.16.0.0/12}
     depends_on:

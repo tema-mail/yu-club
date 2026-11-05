@@ -27,6 +27,15 @@ const schema = z.object({
   // Секрет подписи ссылки отписки от рекламы (K21 §4, §13). Нет – рекламу нельзя подтвердить (MARKETING_NOT_CONFIGURED) и она не уходит.
   // Смена значения = выданные ссылки отписки перестают работать (остаётся выключение в ЛК).
   UNSUBSCRIBE_SECRET: z.string().min(32, 'не короче 32 символов').optional(),
+  // Медиатека CMS (K22 §8, S4-06): в контейнере – том deploy/compose.yml (на сервере /opt/yu-club/media), отдаёт Caddy, входит в бэкап.
+  MEDIA_DIR: z.string().min(1).refine((p) => p.startsWith('/'), 'абсолютный путь').default('/data/media'),
+  // Квота медиатеки, ГБ: сверх неё загрузка – MEDIA_QUOTA_EXCEEDED (K22 §8).
+  MEDIA_QUOTA_GB: z.coerce.number().positive().default(5),
+  // Секрет предпросмотра черновиков (K22 §11): подпись токена и заголовок X-Preview-Secret внутренней сети. Генерирует deploy.sh один раз
+  // (как SESSION_PEPPER), один на api, сайт и CRM. Нет – предпросмотра нет: токен не выдаётся, внутренний маршрут не регистрируется.
+  PREVIEW_SECRET: z.string().min(32, 'не короче 32 символов').optional(),
+  // Файлы экспортов отчётов (K24 §7): вне веб-корня, выдача – только через API; живут 24 ч.
+  EXPORT_DIR: z.string().min(1).refine((p) => p.startsWith('/'), 'абсолютный путь').default('/data/exports'),
   // Прокси, чьему X-Forwarded-For верим (адреса и IPv4-CIDR через запятую) – как TRUSTED_PROXIES в CRM.
   // От остальных XFF игнорируется: request.ip – адрес соединения. Нужен лимиту входа K12 по IP.
   TRUSTED_PROXIES: z

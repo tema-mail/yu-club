@@ -50,6 +50,26 @@ export function buildMock() {
   const app = Fastify({ logger: false });
   const P = '/api/public/v1';
 
+  // Черновик для предпросмотра (K22 §11, S4-43): только с секретом и токеном; в тексте – атака, очистка на стороне сайта.
+  app.get('/api/internal/v1/content/preview/:token', async (request, reply) => {
+    const { token } = request.params as { token: string };
+    if (request.headers['x-preview-secret'] !== process.env.MOCK_PREVIEW_SECRET || token !== 'draft-token') return reply.code(404).send({ error: { code: 'PREVIEW_TOKEN_INVALID', message: 'Не найдено' } });
+    const media = 'aaaaaaaa-0000-4000-8000-000000000001';
+    return {
+      entityType: 'publication',
+      entityId: 'cccccccc-0000-4000-8000-000000000001',
+      branchId: null,
+      kind: 'news',
+      draft: {
+        title: 'Заголовок черновика',
+        lead: 'Подводка',
+        coverMediaId: media,
+        body: `ТЕКСТ-ЧЕРНОВИКА <script>window.hacked = true</script> <img src=x onerror="window.hacked = true"> [чужая](//evil.ru) [плохая](javascript:alert(1)) ![подмена](media:${media})`,
+      },
+      media: { [media]: { removed: false, alt: 'Зал из снимка', width: 1600, height: 900, url: '/media/aa/bb/x-1600.webp', variants: [{ w: 1600, h: 900, format: 'webp', url: '/media/aa/bb/x-1600.webp' }] } },
+    };
+  });
+
   app.get(`${P}/cities`, async () => ({
     items: cities.filter((c) => publicBranches().some((b) => b.cityId === c.id)),
   }));

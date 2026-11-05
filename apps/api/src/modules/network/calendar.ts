@@ -174,6 +174,25 @@ export async function weeklyDay(db: Db | Tx, branchId: string, date: LocalDate):
   return { tz: zone(row.timezone), weekly: toWeekly(row) };
 }
 
+/** Недельные строки филиала на все даты [from, to] одним запросом (покрытие смен, K18 §4). Нет филиала → null. */
+export async function weeklyDaysRange(db: Db | Tx, branchId: string, from: LocalDate, to: LocalDate): Promise<{ tz: TimeZone; days: Map<LocalDate, WeeklyDay | null> } | null> {
+  if (!isUuidLike(branchId)) return null;
+  const r = await db.query<DayRow & { date: string }>(
+    `SELECT to_char(d, 'YYYY-MM-DD') AS date, b.timezone, h.id IS NOT NULL AS has_row,
+            to_char(h.open_time, 'HH24:MI') AS open_time, to_char(h.close_time, 'HH24:MI') AS close_time, h.is_closed
+     FROM app.branches b
+     CROSS JOIN generate_series($2::date, $3::date, interval '1 day') AS d
+     LEFT JOIN app.branch_weekly_hours h ON h.branch_id = b.id
+       AND h.weekday = extract(isodow FROM d)
+       AND h.valid_from <= d::date AND (h.valid_to IS NULL OR h.valid_to >= d::date)
+     WHERE b.id = $1`,
+    [branchId, from, to],
+  );
+  const first = r.rows[0];
+  if (!first) return null;
+  return { tz: zone(first.timezone), days: new Map(r.rows.map((row) => [row.date as LocalDate, toWeekly(row)])) };
+}
+
 function toWeekly(row: { has_row: boolean; open_time: string | null; close_time: string | null; is_closed: boolean | null }): WeeklyDay | null {
   if (!row.has_row) return null;
   if (row.is_closed || row.open_time === null || row.close_time === null) return { closed: true };

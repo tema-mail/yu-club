@@ -11,7 +11,7 @@
 #     YU_CADDY=/etc/caddy/Caddyfile YU_CADDY_CT=caddy YU_CADDY_NETWORK=caddy YU_NGINX_CONF=none deploy/deploy.sh
 # YU_NGINX_CONF=none – свой nginx на :80 не ставить (если :80 у самого Caddy – тогда http-блоки с redir permanent в Caddyfile.yu-club).
 # Адреса в deploy/Caddyfile.yu-club и deploy/nginx-yu-club.conf записаны для стенда и при выкладке заменяются на YU_DOMAIN/YU_CRM_DOMAIN.
-# Пароли БД, SESSION_PEPPER, CERT_PEPPER и пара VAPID генерируются на сервере один раз в $ROOT/.env (600) и никуда не выводятся.
+# Пароли БД, SESSION_PEPPER, CERT_PEPPER, PREVIEW_SECRET и пара VAPID генерируются на сервере один раз в $ROOT/.env (600) и никуда не выводятся.
 #
 # Следующий шаг (не сделан, решение владельца позже): .github/workflows/deploy-test.yml – выкладка по тегу
 # test-*: тот же сценарий из Actions; нужен деплой-ключ сервера в секретах репозитория.
@@ -50,7 +50,7 @@ if [ "$RESET" = 1 ]; then
 fi
 
 # 1. код
-git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/backups $ROOT/attachments; chmod 700 $ROOT/backups $ROOT/attachments; chown 1000:1000 $ROOT/attachments; rm -rf $ROOT/src.new; mkdir $ROOT/src.new; tar -x -C $ROOT/src.new; rm -rf $ROOT/src.old; [ -d $ROOT/src ] && mv $ROOT/src $ROOT/src.old; mv $ROOT/src.new $ROOT/src; echo $REV > $ROOT/src/REVISION"
+git archive --format=tar HEAD | "${SSH[@]}" "set -e; mkdir -p $ROOT/data $ROOT/backups $ROOT/attachments $ROOT/media $ROOT/exports; chmod 700 $ROOT/backups $ROOT/attachments $ROOT/exports; chmod 750 $ROOT/media; chown 1000:1000 $ROOT/attachments $ROOT/media $ROOT/exports; rm -rf $ROOT/src.new; mkdir $ROOT/src.new; tar -x -C $ROOT/src.new; rm -rf $ROOT/src.old; [ -d $ROOT/src ] && mv $ROOT/src $ROOT/src.old; mv $ROOT/src.new $ROOT/src; echo $REV > $ROOT/src/REVISION"
 # CRM и сайт собираются здесь (дерево чистое = HEAD): на стенде astro build не помещается в память
 for app in crm site; do
   PATH="$HOME/.local/node/bin:$PATH" npm run -s build -w "@yu/$app" >/dev/null
@@ -65,6 +65,8 @@ echo "→ CRM и сайт собраны на маке и отправлены"
 # CERT_PEPPER (K16 §3, S2-08) – HMAC кода сертификата, тоже один раз; дописывается на стенде со старым .env.
 # Смена значения = все выданные коды сертификатов перестают сходиться – после первой продажи не менять.
 "${SSH[@]}" "set -e; grep -q '^CERT_PEPPER=' $ROOT/.env || { umask 077; printf 'CERT_PEPPER=%s\n' \$(openssl rand -hex 32) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен CERT_PEPPER'; }; chmod 600 $ROOT/.env"
+# PREVIEW_SECRET (K22 §11) – подпись токена предпросмотра и заголовок внутренней сети, тоже один раз.
+"${SSH[@]}" "set -e; grep -q '^PREVIEW_SECRET=' $ROOT/.env || { umask 077; printf 'PREVIEW_SECRET=%s\n' \$(openssl rand -hex 32) >> $ROOT/.env; echo '→ в $ROOT/.env добавлен PREVIEW_SECRET'; }; chmod 600 $ROOT/.env"
 # VAPID (Web Push, S1-15) – пара P-256 тоже один раз: SEC1 DER 121 байт, закрытый ключ – байты 8..39, открытый – последние 65.
 # Смена пары = все подписки браузеров недействительны (клиентам подписываться заново).
 "${SSH[@]}" "set -e; grep -q '^VAPID_PRIVATE_KEY=' $ROOT/.env || { umask 077; K=\$(mktemp); openssl ecparam -name prime256v1 -genkey -noout -outform DER -out \$K; test \$(wc -c <\$K) -eq 121; printf 'VAPID_PUBLIC_KEY=%s\nVAPID_PRIVATE_KEY=%s\nVAPID_SUBJECT=https://%s\n' \$(tail -c 65 \$K | base64 | tr '+/' '-_' | tr -d '=\n') \$(head -c 39 \$K | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n') $DOMAIN >> $ROOT/.env; rm -f \$K; echo '→ в $ROOT/.env добавлены VAPID_*'; }; chmod 600 $ROOT/.env"

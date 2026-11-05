@@ -1,4 +1,4 @@
-import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { loadConfig, type Config } from './config.ts';
@@ -15,6 +15,11 @@ import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { equipmentCrmRoutes } from './modules/equipment/routes.crm.ts';
 import { registerEquipmentAttachmentOwners, repairCrmRoutes } from './modules/equipment/routes.repairs.ts';
+import { mediaRoutes } from './modules/content/routes.media.ts';
+import { catalogCrmRoutes } from './modules/content/routes.crm.catalog.ts';
+import { publicationCrmRoutes } from './modules/content/routes.crm.publications.ts';
+import { contentInternalRoutes } from './modules/content/routes.internal.ts';
+import { contentPublicRoutes } from './modules/content/routes.public.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
 import { createReportsPool } from './modules/reports/framework.ts';
 import { reportsCrmRoutes } from './modules/reports/routes.crm.ts';
@@ -46,6 +51,8 @@ import { notificationPublicRoutes } from './modules/notifications/routes.public.
 import type { SenderDeps } from './modules/notifications/sender.ts';
 import { vapidKeys } from './modules/notifications/webpush.ts';
 import { staffAuthConfig } from './modules/staff/auth.ts';
+import { shiftsCrmRoutes } from './modules/shifts/routes.crm.ts';
+import { payrollCrmRoutes } from './modules/shifts/routes.payroll.ts';
 import { authenticate, staffAuthRoutes, staffMeRoutes, type StaffDeps } from './modules/staff/routes.crm.ts';
 import { staffAdminRoutes } from './modules/staff/routes.staff.ts';
 
@@ -62,6 +69,8 @@ export interface ServerDeps {
   attachments?: { store: FileStore };
   /** Пул отчётов K24 §9 под ролью yu_reports. Нет – маршруты отчётов не подключаются (нужен и staff). */
   reports?: { pool: pg.Pool };
+  /** CMS (K22): медиатека – адаптер диска с корнем MEDIA_DIR и квотой. Нет – маршруты медиа не подключаются. */
+  content?: { mediaStore: FileStore; previewSecret?: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
 }
@@ -265,6 +274,27 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
       { prefix: '/api/crm/v1' },
     );
     // K19 №350: закрытые вложения – выдача только через API с правом на объект-владелец
+    if (deps.content) {
+      const store = deps.content.mediaStore;
+      const contentCrm = {
+        pool: staff.pool,
+        previewSecret: deps.content.previewSecret,
+        ...(staff.clock ? { clock: staff.clock } : {}),
+        authenticate: (request: FastifyRequest, reply: FastifyReply) => authenticate(staff, request, reply),
+      };
+      void app.register(async (scope) => publicationCrmRoutes(scope, contentCrm), { prefix: '/api/crm/v1' });
+      void app.register(async (scope) => catalogCrmRoutes(scope, contentCrm), { prefix: '/api/crm/v1' });
+      void app.register(
+        async (scope) =>
+          mediaRoutes(scope, {
+            pool: staff.pool,
+            store,
+            ...(staff.clock ? { clock: staff.clock } : {}),
+            authenticate: (request, reply) => authenticate(staff, request, reply),
+          }),
+        { prefix: '/api/crm/v1' },
+      );
+    }
     if (deps.attachments) {
       const store = deps.attachments.store;
       void app.register(
@@ -316,11 +346,37 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         }),
       { prefix: '/api/crm/v1' },
     );
+    // K18 №301–310: смены, покрытие, ставки, «временно не работает»
+    void app.register(
+      async (scope) =>
+        shiftsCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    // K18 №311–318: периоды, ведомости, выплата, расход, штрафы, корректировки, отчёт; журнал ПДн зарплаты
+    void app.register(
+      async (scope) =>
+        payrollCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
   }
 
   if (deps.network) {
     const network = deps.network;
     void app.register(async (scope) => networkPublicRoutes(scope, network), { prefix: '/api/public/v1' });
+    void app.register(async (scope) => contentPublicRoutes(scope, network), { prefix: '/api/public/v1' }); // K22 §12: без сессии, только живые версии
+    // K22 §11: черновик для предпросмотра – только по внутренней сети и только с секретом; без PREVIEW_SECRET маршрута нет
+    const previewSecret = deps.content?.previewSecret;
+    if (previewSecret) {
+      void app.register(async (scope) => contentInternalRoutes(scope, { ...network, previewSecret }), { prefix: '/api/internal/v1' });
+    }
   }
 
   if (deps.clients) {
@@ -370,6 +426,10 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
   if (config.CERT_PEPPER) deps.certificates = { pepper: config.CERT_PEPPER };
   // K19 №350: каталог создаётся при первой записи (mkdir в адаптере); без входа сотрудников маршруты не подключаются
   deps.attachments = { store: createFileStore({ root: config.ATTACHMENTS_DIR }) };
+  deps.content = {
+    mediaStore: createFileStore({ root: config.MEDIA_DIR, quota: { maxBytes: Math.round(config.MEDIA_QUOTA_GB * 1024 ** 3), code: 'MEDIA_QUOTA_EXCEEDED' } }),
+    ...(config.PREVIEW_SECRET ? { previewSecret: config.PREVIEW_SECRET } : {}),
+  };
   if (config.SESSION_PEPPER) {
     deps.staff = { pool, auth: staffAuthConfig(config.SESSION_PEPPER) };
     const sms =
