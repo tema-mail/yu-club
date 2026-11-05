@@ -14,7 +14,7 @@ import { assertCan, roleAllows, type AccessContext } from '../../core/permission
 import { resolveSetting } from '../../core/settings.ts';
 import { addDays, parseLocalDate, systemClock, type Clock, type LocalDate, type TimeZone } from '../../core/time.ts';
 import { getBranch } from '../network/index.ts';
-import { HANDLER_ATTENDANCE, HANDLER_RATE, openPayrollDate, payrollDateSql, payrollInstant, staffAccount } from './accrual.ts';
+import { HANDLER_ATTENDANCE, HANDLER_RATE, nextOpenDate, openPayrollDate, payrollDateSql, payrollInstant, staffAccount } from './accrual.ts';
 import { SHIFT_SELECT, shiftDtos, type ShiftRow } from './plan.ts';
 import { isUuid, lockPeriodCreation, lockPeriodsShared, notFound, requireReason } from './rates.ts';
 
@@ -189,8 +189,27 @@ export async function createPeriod(tx: Tx, ctx: AccessContext, raw: unknown, met
     if (e.code === '23P01' && e.constraint === 'payroll_periods_no_overlap') throw new AppError('PAYROLL_PERIOD_OVERLAP', 409, 'Период пересекается с существующим');
     throw err;
   }
+  await assertNoGap(tx, row);
   await writeAudit(tx, meta, { action: 'payroll.period.created', object: { type: 'payroll_period', id: row.id }, after: { from, to } }, clock);
   return toPeriod(row);
+}
+
+/** Периоды идут встык: иначе запись корректировки или переноса может попасть в разрыв и не войти ни в одну ведомость (K18 §7).
+ *  Первый период не оставляет перед собой уже сделанных корректировок. Новый – сразу за последним или сразу перед первым. */
+async function assertNoGap(tx: Tx, row: PeriodRow): Promise<void> {
+  const others = (await tx.query<{ first_from: string | null; last_to: string | null }>(`SELECT to_char(min(date_from), 'YYYY-MM-DD') AS first_from, to_char(max(date_to), 'YYYY-MM-DD') AS last_to FROM app.payroll_periods WHERE id <> $1`, [row.id])).rows[0]!;
+  if (others.first_from === null || others.last_to === null) {
+    const early = await tx.query<{ d: string | null }>(
+      `SELECT to_char(min(${payrollDateSql('le')}), 'YYYY-MM-DD') AS d FROM journal.ledger_entries le WHERE le.entry_type = 'payroll.correction' AND ${payrollDateSql('le')} < $1::date`,
+      [row.date_from],
+    );
+    const d = early.rows[0]?.d;
+    if (d) throw new AppError('PAYROLL_PERIOD_GAP', 409, 'Первый период должен покрывать уже сделанные корректировки', { date: d });
+    return;
+  }
+  const expectedFrom = addDays(others.last_to as LocalDate, 1);
+  if (row.date_from === expectedFrom || addDays(row.date_to as LocalDate, 1) === others.first_from) return;
+  throw new AppError('PAYROLL_PERIOD_GAP', 409, 'Периоды идут без разрывов: новый начинается сразу за последним', { expectedFrom });
 }
 
 export async function listPeriods(db: Db): Promise<PayrollPeriodDto[]> {
@@ -403,16 +422,6 @@ export async function setStatementStatus(tx: Tx, ctx: AccessContext, id: string,
   await writeAudit(tx, meta, { action: 'payroll.statement.status_changed', object: { type: 'payroll_statement', id: row.id }, before: { status: row.status }, after: { status: input.status }, reason: input.comment?.trim() || null }, clock);
   const fresh = await tx.query<StatementRow>(`${STATEMENT_SELECT} WHERE st.id = $1`, [row.id]);
   return toStatement(tx, ctx, fresh.rows[0]!, clock);
-}
-
-/** Первая дата начиная с from вне закрытых периодов; строка её периода – FOR SHARE. */
-async function nextOpenDate(tx: Tx, from: LocalDate): Promise<LocalDate> {
-  let date = from;
-  for (;;) {
-    const [p] = await lockPeriodsShared(tx, [date]);
-    if (!p || p.status === 'open') return date;
-    date = addDays(p.to, 1);
-  }
 }
 
 const paidSchema = z.object({ rowVersion: z.number().int(), actualPayoutDate: z.string(), comment: z.string().max(2000).nullish() });

@@ -26,15 +26,26 @@ export function staffAccount(tx: Tx, staffId: string): Promise<Account> {
   return ensureAccount(tx, { kind: 'staff_payroll', ownerType: 'staff', ownerId: staffId }, { unit: 'RUB_KOP', branchId: null, minBalance: null });
 }
 
-/** Дата для записи «в текущем открытом периоде» (K18 §7): сегодня по зоне; день в закрытом периоде – первый день после него.
- *  Вызывать до lockAccounts: строка периода этой даты берётся FOR SHARE, дата без периода защищена gate из lockPeriodsShared. */
-export async function openPayrollDate(tx: Tx, tz: TimeZone, clock: Clock): Promise<LocalDate> {
-  let date = instantToLocal(clock.now(), tz).date;
+/** Первая дата начиная с from, куда можно записать: внутри открытого периода – она сама; до открытого – его начало; закрытый – дальше;
+ *  периода дальше нет – сама дата: периоды идут встык (createPeriod), следующий её покроет. Строка периода – FOR SHARE, дата без периода – под gate. */
+export async function nextOpenDate(tx: Tx, from: LocalDate): Promise<LocalDate> {
+  await lockPeriodsShared(tx, []);
+  let date = from;
   for (;;) {
-    const [p] = await lockPeriodsShared(tx, [date]);
-    if (!p || p.status === 'open') return date;
-    date = addDays(p.to, 1);
+    const r = await tx.query<{ date_from: string; date_to: string; status: 'open' | 'closed' }>(
+      `SELECT to_char(date_from, 'YYYY-MM-DD') AS date_from, to_char(date_to, 'YYYY-MM-DD') AS date_to, status FROM app.payroll_periods WHERE date_to >= $1::date ORDER BY date_from LIMIT 1 FOR SHARE`,
+      [date],
+    );
+    const p = r.rows[0];
+    if (!p) return date;
+    if (p.status === 'open') return p.date_from > date ? (p.date_from as LocalDate) : date;
+    date = addDays(p.date_to as LocalDate, 1);
   }
+}
+
+/** Дата для записи «в текущем открытом периоде» (K18 §7) от сегодняшней по зоне. Вызывать до lockAccounts. */
+export function openPayrollDate(tx: Tx, tz: TimeZone, clock: Clock): Promise<LocalDate> {
+  return nextOpenDate(tx, instantToLocal(clock.now(), tz).date);
 }
 
 interface LiveEntry {
