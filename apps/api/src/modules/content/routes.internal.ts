@@ -11,7 +11,7 @@ import { gameDef, type GameDraft } from './games.ts';
 import { branchPageDef, pageDef, roomPageDef, type BranchPageDraft, type PageDraft, type RoomPageDraft } from './pages.ts';
 import { resolvePreview } from './preview.ts';
 import { publicationDef, type PublicationDraft } from './publications.ts';
-import type { EntityType } from './versions.ts';
+import { refsOf, type EntityType } from './versions.ts';
 
 export interface InternalContentDeps {
   pool: Db;
@@ -27,12 +27,12 @@ function secretMatches(given: unknown, secret: string): boolean {
 }
 
 const MEDIA_OF: Record<EntityType, (draft: Record<string, unknown>) => string[]> = {
-  publication: (d) => publicationDef.mediaRefs(d as PublicationDraft).map((r) => r.mediaId),
-  game: (d) => gameDef.mediaRefs(d as GameDraft).map((r) => r.mediaId),
-  room_page: (d) => roomPageDef.mediaRefs(d as RoomPageDraft).map((r) => r.mediaId),
-  branch_page: (d) => branchPageDef.mediaRefs(d as BranchPageDraft).map((r) => r.mediaId),
-  content_page: (d) => pageDef.mediaRefs(d as PageDraft).map((r) => r.mediaId),
-  home_block: (d) => blockDef.mediaRefs(d as BlockDraft).map((r) => r.mediaId),
+  publication: (d) => refsOf(publicationDef, d as PublicationDraft).map((r) => r.mediaId),
+  game: (d) => refsOf(gameDef, d as GameDraft).map((r) => r.mediaId),
+  room_page: (d) => refsOf(roomPageDef, d as RoomPageDraft).map((r) => r.mediaId),
+  branch_page: (d) => refsOf(branchPageDef, d as BranchPageDraft).map((r) => r.mediaId),
+  content_page: (d) => refsOf(pageDef, d as PageDraft).map((r) => r.mediaId),
+  home_block: (d) => refsOf(blockDef, d as BlockDraft).map((r) => r.mediaId),
 };
 
 export async function contentInternalRoutes(app: FastifyInstance, deps: InternalContentDeps): Promise<void> {

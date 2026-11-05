@@ -15,7 +15,7 @@ import { createFileStore, type FileStore } from '../../apps/api/src/core/files.t
 import { assertCan, type AccessContext, type StaffRole } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { mediaUsages, updateMedia, uploadMedia } from '../../apps/api/src/modules/content/media.ts';
-import { archive, checkRichText, createEntity, listVersions, mediaIdsInText, mediaInVersions, publicMedia, publish, purgedAmong, rollback, saveDraft, unpublish, type EntityDef, type EntityRow } from '../../apps/api/src/modules/content/versions.ts';
+import { archive, checkRichText, createEntity, listVersions, mediaIdsInText, mediaIdsOfSnapshot, mediaInVersions, publicMedia, publish, purgedAmong, refsOf, rollback, saveDraft, scrubPurged, unpublish, type EntityDef, type EntityRow } from '../../apps/api/src/modules/content/versions.ts';
 import { createTestCity } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -236,6 +236,37 @@ describe('S4-32: ссылки на медиа в черновике', () => {
     const pdf = (await uploadMedia(tx, c, store, { content: Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n'), purpose: 'document', alt: 'Правила' }, meta(c), clock)).media;
     const withPdf = await save(row, { title: 'М', coverMediaId: pdf.id });
     expect((await fails(pub(withPdf), 'CONTENT_INCOMPLETE')).details?.fields).toEqual([{ field: 'cover', code: 'MEDIA_NOT_IMAGE' }]);
+  });
+});
+
+describe('S4-32: форма картинки в тексте', () => {
+  it('подпись в другой форме не проходит: заголовок, скобки в подписи, сноска, сущность; строгая форма – да', async () => {
+    const id = 'aaaaaaaa-0000-4000-8000-000000000001';
+    for (const text of [`![Иван](media:${id} "Иван И")`, `![Ив[а]н](media:${id})`, `![Иван][r]\n\n[r]: media:${id}`, `![Иван](media&#58;${id})`, `![Иван](media\\:${id})`, '![x](https://evil.ru/a.png)', `[r]: media:${id}`]) {
+      await fails((async () => checkRichText('body', text))(), 'CONTENT_INVALID');
+    }
+    expect(() => checkRichText('body', `Текст ![Зал](media:${id}) и [ссылка](/news/x/)`)).not.toThrow();
+  });
+
+  it('картинка любого поля Markdown попадает в связи и снимок, даже если сущность её не объявила', () => {
+    const id = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const partial = { ...def, mediaRefs: () => [] };
+    expect(refsOf(partial, { body: `![a](media:${id})` })).toEqual([{ mediaId: id, field: 'body', altRequired: true }]);
+    expect(refsOf(partial, { body: `![a](media:${id}) ![b](media:${id})` })).toHaveLength(1);
+  });
+
+  it('снимок для отката: подпись и alt очищенного убраны, ссылка и чужие файлы целы; без очищенных – тот же объект', () => {
+    const a = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const b = 'bbbbbbbb-0000-4000-8000-000000000002';
+    const frozen = { alt: 'Иван', mime: 'image/png', width: 1, height: 1, key: 'k', variants: [] };
+    const snap = { body: `![Иван](media:${a}) ![Зал](media:${b})`, media: { [a]: frozen, [b]: { ...frozen, alt: 'Зал' } } };
+    expect(scrubPurged(snap, new Set())).toBe(snap);
+    expect(mediaIdsOfSnapshot(snap).sort()).toEqual([a, b]);
+    const out = scrubPurged(snap, new Set([a]));
+    expect(out.body).toBe(`![](media:${a}) ![Зал](media:${b})`);
+    expect(out.media?.[a]).toEqual({ alt: null, mime: 'image/png', width: null, height: null, key: '', variants: [] });
+    expect(out.media?.[b]?.alt).toBe('Зал');
+    expect(JSON.stringify(out)).not.toContain('Иван');
   });
 });
 

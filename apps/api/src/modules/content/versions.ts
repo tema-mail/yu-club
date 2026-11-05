@@ -106,12 +106,31 @@ export function checkRichText(field: string, text: string | null | undefined): v
   if (!text) return;
   if (text.length > RICH_TEXT_MAX) throw new AppError('RICH_TEXT_TOO_LONG', 422, `Текст длиннее ${RICH_TEXT_MAX} знаков`, { field, max: RICH_TEXT_MAX });
   if (RAW_HTML_RE.test(text)) throw new AppError('RICH_TEXT_HTML_FORBIDDEN', 422, 'В тексте нельзя использовать HTML', { field });
+  // Картинка – только в форме ![подпись](media:<id>): подпись, заголовок или сноска в другой форме не нашлись бы при очистке по ГК ст. 152.1.
+  const rest = text.replace(MEDIA_LINK_RE, '');
+  if (rest.includes('![') || /media(:|&#|%3a|\\:)/i.test(rest)) {
+    throw new AppError('CONTENT_INVALID', 400, 'Картинка в тексте – только из медиатеки', { issues: [{ path: field, message: 'картинка только в виде ![подпись](media:id)' }] });
+  }
 }
 
 /** Картинки медиатеки в Markdown: ![alt](media:<id>). */
 export function mediaIdsInText(text: string | null | undefined): string[] {
   if (!text) return [];
   return [...text.matchAll(MEDIA_LINK_RE)].map((m) => m[1]!.toLowerCase());
+}
+
+/** Все ссылки черновика на медиа: объявленные сущностью и картинки каждого поля Markdown – чтобы ни одна не прошла мимо снимка и очистки. */
+export function refsOf<D extends Record<string, unknown>>(def: EntityDef<D>, draft: D): DraftMediaRef[] {
+  const refs = [...def.mediaRefs(draft)];
+  const seen = new Set(refs.map((r) => `${r.field}:${r.mediaId}`));
+  for (const [field, text] of def.richText(draft)) {
+    for (const mediaId of mediaIdsInText(text)) {
+      if (seen.has(`${field}:${mediaId}`)) continue;
+      seen.add(`${field}:${mediaId}`);
+      refs.push({ mediaId, field, altRequired: true });
+    }
+  }
+  return refs;
 }
 
 const notFound = () => new AppError('NOT_FOUND', 404, 'Не найдено');
@@ -176,7 +195,7 @@ export async function createEntity<D extends Record<string, unknown>>(
   clock: Clock = systemClock,
 ): Promise<EntityRow> {
   const draft = parseDraft(def, draftInput);
-  await assertMediaUsable(tx, def.mediaRefs(draft));
+  await assertMediaUsable(tx, refsOf(def, draft));
   const names = Object.keys(columns);
   const values = names.map((n) => columns[n]);
   const now = clock.now();
@@ -187,7 +206,7 @@ export async function createEntity<D extends Record<string, unknown>>(
     [JSON.stringify(draft), now, ctx.actor.staffId, ctx.actor.staffId, ...values],
   );
   const row = r.rows[0]!;
-  await syncUsages(tx, def.type, row.id, false, def.mediaRefs(draft));
+  await syncUsages(tx, def.type, row.id, false, refsOf(def, draft));
   await writeAudit(tx, meta, { action: 'content.draft_saved', object: auditObject(def.type, row.id), after: { fields: Object.keys(draft).sort(), created: true } }, clock);
   return row;
 }
@@ -207,14 +226,14 @@ export async function saveDraft<D extends Record<string, unknown>>(
   await def.assertEdit(tx, ctx, row, draft);
   if (row.status === 'archived') throw statusConflict(row.status, 'save_draft');
   checkVersion(row, input.rowVersion);
-  await assertMediaUsable(tx, def.mediaRefs(draft));
+  await assertMediaUsable(tx, refsOf(def, draft));
   const before = row.draft;
   const fields = [...new Set([...Object.keys(before), ...Object.keys(draft)])].filter((k) => JSON.stringify(before[k]) !== JSON.stringify(draft[k])).sort();
   const r = await tx.query<EntityRow>(
     `UPDATE ${def.table} SET draft = $2, draft_updated_at = $3, draft_updated_by = $4, row_version = row_version + 1 WHERE id = $1 RETURNING *`,
     [id, JSON.stringify(draft), clock.now(), ctx.actor.staffId],
   );
-  await syncUsages(tx, def.type, id, false, def.mediaRefs(draft));
+  await syncUsages(tx, def.type, id, false, refsOf(def, draft));
   await writeAudit(tx, meta, { action: 'content.draft_saved', object: auditObject(def.type, id), after: { fields } }, clock);
   return r.rows[0]!;
 }
@@ -242,7 +261,7 @@ async function goLive<D extends Record<string, unknown>>(tx: Db, ctx: AccessCont
     `UPDATE ${def.table} SET status = 'published', live_version_id = $2, row_version = row_version + 1${extraSet} WHERE id = $1 RETURNING *`,
     [row.id, versionId],
   );
-  await syncUsages(tx, def.type, row.id, true, def.mediaRefs(draft));
+  await syncUsages(tx, def.type, row.id, true, refsOf(def, draft));
   return r.rows[0]!;
 }
 
@@ -262,7 +281,7 @@ export async function publish<D extends Record<string, unknown>>(
   if (row.status === 'archived') throw statusConflict(row.status, 'publish');
   checkVersion(row, input.rowVersion);
   const issues = def.complete(draft, row);
-  const refs = def.mediaRefs(draft);
+  const refs = refsOf(def, draft);
   const frozen = await freezeMedia(tx, refs.map((r) => r.mediaId));
   for (const ref of refs) {
     const m = frozen[ref.mediaId];
@@ -333,14 +352,16 @@ export async function rollback<D extends Record<string, unknown>>(
     )
   ).rows[0];
   if (!source) throw notFound();
-  const fields: Record<string, unknown> = { ...source.snapshot };
+  // Журнал не правится, но новая версия не повторяет подпись и alt очищенного фото (K22 §8): показ остальных полей – дословно.
+  const snapshot = scrubPurged(source.snapshot, await purgedAmong(tx, mediaIdsOfSnapshot(source.snapshot)));
+  const fields: Record<string, unknown> = { ...snapshot };
   delete fields.media;
   const draft = fields as D;
   await def.assertPublish(tx, ctx, row, draft); // цель снимка может быть иной, чем у текущего черновика
-  const version = await insertVersion(tx, def, id, ctx, { snapshot: source.snapshot, action: 'rollback_publish', reason, sourceVersionId: source.id }, clock);
+  const version = await insertVersion(tx, def, id, ctx, { snapshot, action: 'rollback_publish', reason, sourceVersionId: source.id }, clock);
   await tx.query(`UPDATE ${def.table} SET draft = $2, draft_updated_at = $3, draft_updated_by = $4 WHERE id = $1`, [id, JSON.stringify(draft), clock.now(), ctx.actor.staffId]);
   const live = await goLive(tx, ctx, def, row, draft, version.id);
-  await syncUsages(tx, def.type, id, false, def.mediaRefs(draft));
+  await syncUsages(tx, def.type, id, false, refsOf(def, draft));
   await writeAudit(tx, meta, { action: 'content.rolled_back', object: auditObject(def.type, id), after: { versionNo: version.version_no, fromVersionNo: source.version_no }, reason }, clock);
   return { row: live, version };
 }
@@ -412,6 +433,27 @@ export async function purgedAmong(db: Db, ids: readonly string[]): Promise<Set<s
   if (ids.length === 0) return new Set();
   const r = await db.query<{ id: string }>(`SELECT id FROM app.content_media WHERE id = ANY($1::uuid[]) AND status = 'purged'`, [ids]);
   return new Set(r.rows.map((x) => x.id));
+}
+
+/** Все файлы снимка: из карты media и из текста. */
+export function mediaIdsOfSnapshot(snapshot: Snapshot): string[] {
+  const inText = [...JSON.stringify(snapshot).matchAll(/media:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi)].map((m) => m[1]!.toLowerCase());
+  return [...new Set([...Object.keys(snapshot.media ?? {}), ...inText])];
+}
+
+/** Снимок для новой версии: у очищенных файлов – ни подписи в тексте, ни alt и адресов в карте. Ссылка остаётся, при показе – заглушка. */
+export function scrubPurged(snapshot: Snapshot, purged: ReadonlySet<string>): Snapshot {
+  if (purged.size === 0) return snapshot;
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') return v.replace(MEDIA_LINK_RE, (whole, id: string) => (purged.has(id.toLowerCase()) ? `![](media:${id})` : whole));
+    if (Array.isArray(v)) return v.map(walk);
+    if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  const { media, ...fields } = snapshot;
+  const kept: Record<string, FrozenMedia> = {};
+  for (const [id, m] of Object.entries(media ?? {})) kept[id] = purged.has(id) ? { alt: null, mime: m.mime, width: null, height: null, key: '', variants: [] } : m;
+  return { ...(walk(fields) as Record<string, unknown>), media: kept };
 }
 
 /** Медиа снимка в виде для сайта. alt и размеры – из снимка, адреса строятся; у очищенного – заглушка без адресов. */
