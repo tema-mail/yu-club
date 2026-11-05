@@ -9,6 +9,8 @@ import {
   type PayrollPeriod, type PayrollReport, type PayrollStatement, type ReportRow, type StatementStatus,
 } from '../lib/shifts.ts';
 import { rub } from './CashJournal.tsx';
+import PayoutDialog from './PayoutDialog.tsx';
+import PenaltyForm from './PenaltyForm.tsx';
 
 export interface PayBranch { id: string; name: string; cityId: string; cityName: string; timezone: string }
 export interface PayrollTableProps {
@@ -22,7 +24,7 @@ export interface PayrollTableProps {
 interface Unresolved { shiftId: string; staffId?: string; branchId?: string; reason: string }
 const ENTRY: Record<string, string> = { 'payroll.accrual': 'Начисление', 'payroll.penalty': 'Штраф', 'payroll.bonus': 'Премия', 'payroll.correction': 'Корректировка', 'payroll.payout': 'Выплата' };
 
-export default function PayrollTable({ initialPeriods, branches, today, penaltiesEnabled, can }: PayrollTableProps) {
+export default function PayrollTable({ initialPeriods, branches, today, penaltiesEnabled, isOwner, can }: PayrollTableProps) {
   const [periods, setPeriods] = useState(initialPeriods);
   const [periodId, setPeriodId] = useState(initialPeriods.find((p) => p.status === 'open')?.id ?? initialPeriods[0]?.id ?? '');
   const [cityId, setCityId] = useState('');
@@ -239,7 +241,7 @@ export default function PayrollTable({ initialPeriods, branches, today, penaltie
         <p class="yc-alert yc-alert--error" role="alert" data-testid="pay-error">{error}</p>
         {unresolved && (
           <div class="yc-alert yc-alert--error" role="alert" data-testid="close-unresolved">
-            <strong>Период не закрыт: сначала решите {unresolved.list.length + unresolved.extra.length} смен.</strong>
+            <strong>Период не закрыт. Нерешённых смен: {unresolved.list.length + unresolved.extra.length}.</strong>
             <ul class="yc-sh-list">
               {unresolved.list.map((u) => (
                 <li key={u.shiftId} data-testid="unresolved-item">
@@ -268,7 +270,7 @@ export default function PayrollTable({ initialPeriods, branches, today, penaltie
           <div class="yc-pay-tile" data-testid="total-topay"><span class="yc-field__hint">К выплате</span><strong>{rub(t.toPayKop)}</strong></div>
           <div class="yc-pay-tile" data-testid="total-issues">
             <span class="yc-field__hint">Требуют внимания</span>
-            <strong>{t.unclosedShifts} смен без решения</strong>
+            <strong>Смен без решения: {t.unclosedShifts}</strong>
             <span class="yc-field__hint">Пустых интервалов: {t.emptyIntervals}</span>
           </div>
         </section>
@@ -313,7 +315,7 @@ export default function PayrollTable({ initialPeriods, branches, today, penaltie
                                   : <p class="yc-alert yc-alert--error">Не настроена ставка оплаты.</p>}
                                 {detail.branches.length > 0 && (
                                   <ul class="yc-sh-list" data-testid="detail-branches">
-                                    {detail.branches.map((b) => <li key={b.branchId}>{branchOf(b.branchId)?.name ?? 'Филиал'}: {b.workedShifts} смен, {fmtMinutes(b.paidMinutes)}, начислено {rub(b.accruedKop)}, прогноз {rub(b.forecastKop)}</li>)}
+                                    {detail.branches.map((b) => <li key={b.branchId}>{branchOf(b.branchId)?.name ?? 'Филиал'}: отработано смен {b.workedShifts}, {fmtMinutes(b.paidMinutes)}, начислено {rub(b.accruedKop)}, прогноз {rub(b.forecastKop)}</li>)}
                                   </ul>
                                 )}
                                 <h3 class="yc-field__label">Смены</h3>
@@ -396,7 +398,21 @@ export default function PayrollTable({ initialPeriods, branches, today, penaltie
   /** Ведомость сотрудника в детализации: статусы по K18 §9. */
   function statementBlock(r: ReportRow) {
     const s = statementOf(r.staffId);
-    if (!s) return <p class="yc-empty" data-testid="no-statement">Ведомости ещё нет: {closed ? 'сотрудник не попал в закрытие периода.' : 'нажмите «Рассчитать ведомости».'}</p>;
+    const zoneBranches = branches.filter((b) => r.branches.some((x) => x.branchId === b.id));
+    const penalties = (
+      <PenaltyForm key={`${r.staffId}-${periodId}`} staffId={r.staffId} staffName={r.name} periodId={periodId} statementId={s?.id ?? null}
+        shifts={(detail?.detail?.shifts ?? []).map((x) => ({ id: x.id, label: fmtDate(x.localDate) }))}
+        branches={(zoneBranches.length > 0 ? zoneBranches : branches).map((b) => ({ id: b.id, name: b.name }))} today={today} enabled={penaltiesEnabled}
+        canPenalty={can.penalty} canCorrect={can.correct} isOwner={isOwner} closed={closed} onChange={refresh} />
+    );
+    if (!s) {
+      return (
+        <>
+          <p class="yc-empty" data-testid="no-statement">Ведомости ещё нет: {closed ? 'сотрудник не попал в закрытие периода.' : 'нажмите «Рассчитать ведомости».'}</p>
+          {penalties}
+        </>
+      );
+    }
     return (
       <div class="yc-pay-statement" data-testid="statement">
         <h3 class="yc-field__label">Ведомость: <span class={`yc-badge ${STATEMENT_STATUS[s.status].cls}`} data-testid="statement-status">{STATEMENT_STATUS[s.status].text}</span></h3>
@@ -415,7 +431,8 @@ export default function PayrollTable({ initialPeriods, branches, today, penaltie
           {can.review && s.status === 'disputed' && <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => void setStatus(s, 'calculated')}>Вернуть в расчёт</button>}
         </div>
         {s.status === 'checked' && !closed && <p class="yc-field__hint">«Готова к выплате» – после закрытия периода: выплачивать по меняющимся итогам нельзя.</p>}
-        {/* S3-75 */}
+        <PayoutDialog key={s.id} statement={s} staffName={r.name} branches={branches.map((b) => ({ id: b.id, name: b.name }))} today={today} canPaid={can.paid} canExpense={can.expense} onChange={refresh} />
+        {penalties}
       </div>
     );
   }

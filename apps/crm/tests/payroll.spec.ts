@@ -35,7 +35,7 @@ test('Владелец: подпись, прогноз отдельно от ф�
   await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link', { name: 'Зарплата' })).toBeVisible();
   await expect(page.getByTestId('payroll-note')).toContainText('Управленческий расчёт, не бухгалтерия');
   await expect(page.getByTestId('total-forecast')).toContainText('в журнал не пишется');
-  await expect(page.getByTestId('total-issues')).toContainText('смен без решения');
+  await expect(page.getByTestId('total-issues')).toContainText('Смен без решения');
   await expect(page.getByTestId('total-penalties')).toHaveCount(0); // флаг штрафов выключен
 
   const r = row(page, 's-admin');
