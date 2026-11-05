@@ -19,7 +19,9 @@ import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvi
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { registerGiftGrant } from './modules/events/gift-booking.ts';
 import { registerEventSources } from './modules/events/resources.ts';
+import { giftCrmRoutes, giftPublicRoutes } from './modules/events/routes.gifts.ts';
 import { eventCrmRoutes } from './modules/events/routes.crm.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
@@ -69,6 +71,7 @@ function registerModuleHooks(): void {
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
   registerEventSources(); // K6, K20 §4: блокировка видит мероприятие по строке занятости (S3-52)
+  registerGiftGrant(); // K5, K20 §8.2: подарочный ресурс открывается только правом подарка
   hooksRegistered = true;
 }
 
@@ -255,6 +258,16 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         }),
       { prefix: '/api/crm/v1' },
     );
+    // K20 №376–379: подарок имениннику, праздничный календарь
+    void app.register(
+      async (scope) =>
+        giftCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
     // K15 №24–28: бонусный счёт и товары за баллы; зона клиента – через брони (clientBranchLinks)
     void app.register(
       async (scope) =>
@@ -281,6 +294,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(async (scope) => notificationPublicRoutes(scope, { clients, ...push }), { prefix: '/api/public/v1' });
     // ЛК «Мои сертификаты» (K16 §8): только чтение, CERT_PEPPER не нужен
     void app.register(async (scope) => certificatePublicRoutes(scope, clients), { prefix: '/api/public/v1' });
+    // K20 П1–П2: «Мой подарок» – не сертификат: свой адрес и свой номер
+    void app.register(async (scope) => giftPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     // K15 §11: баллы в ЛК – баланс, история, резерв на своё удержание, каталог
     void app.register(async (scope) => loyaltyPublicRoutes(scope, { clients, bookings: paymentBookingProvider }), { prefix: '/api/public/v1' });
     void app.register(
