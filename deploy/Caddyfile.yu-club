@@ -21,6 +21,11 @@ yu-club.168.113.179.49.nip.io {
 	}
 	# Предпросмотр черновиков и внутренний API – только по внутренней сети (CRM → сайт → API, K22 §11, S4-07):
 	# на публичном домене их нет. Токен предпросмотра по ссылке бесполезен.
+	# Закрытые вложения Э3 (S3-94, K19 §9): только API с правом на объект. Каталог в Caddy не смонтирован; любой такой адрес – 404, не вход в CRM.
+	@attachments path /attachments /attachments/* /data/attachments /data/attachments/*
+	handle @attachments {
+		respond 404
+	}
 	@internal path /preview /preview/* /api/internal/*
 	handle @internal {
 		respond 404
@@ -57,6 +62,11 @@ yu-crm.168.113.179.49.nip.io {
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
+	}
+	# Закрытые вложения Э3 (S3-94, K19 §9): только API с правом на объект. Каталог в Caddy не смонтирован; любой такой адрес – 404, не вход в CRM.
+	@attachments path /attachments /attachments/* /data/attachments /data/attachments/*
+	handle @attachments {
+		respond 404
 	}
 	# Тело запроса – 2 МБ на всё, кроме загрузки файлов (S4-09): медиа CMS (K11 №224) и вложения Э3 (№350) – 11 МБ
 	# (лимит части 10 МБ режет API, Q-96). Прокси CRM передаёт тело в API потоком.

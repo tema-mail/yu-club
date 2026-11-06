@@ -69,6 +69,22 @@ afterAll(async () => {
 });
 
 describe('отчёты по HTTP (S4-70)', () => {
+  it('№240, №241: «Уведомления и публикации» подключён – цифры и детализация, показ по праву; Администратор – 403 (S4-74)', async () => {
+    await db.client.query(
+      `INSERT INTO app.notifications (client_id, branch_id, category, kind, source, title, body, planned_at, status, dedupe_key, created_at, sent_at) VALUES ($1, $2, 'service', 'booking_confirmed', 'system', 'т', 'т', '2026-10-10T05:00:00Z', 'sent_to_provider', 'comms-http', '2026-10-10T05:00:00Z', '2026-10-10T05:00:00Z')`,
+      [ids.client, ids.a],
+    );
+    const r = await get('owner', `/reports/comms?${QS}`);
+    expect(r.statusCode).toBe(200);
+    expect(r.json().metrics.serviceSentToProvider).toMatchObject({ state: 'ok', value: 1 });
+    expect(r.json().metrics.siteViews).toEqual({ state: 'unavailable', reason: 'source_not_ready' });
+    const detail = await get('director', `/reports/comms/detail?${QS}&metric=serviceSentToProvider&segment=branch:${ids.a}`);
+    expect(detail.json().total).toMatchObject({ value: 1 });
+    expect(detail.json().rows[0]).toMatchObject({ status: 'sent_to_provider', category: 'service' });
+    expect((await get('director', `/reports/comms?${QS}&branchIds=${ids.b}`)).statusCode).toBe(404);
+    expect((await get('admin', `/reports/comms?${QS}`)).statusCode).toBe(403);
+  });
+
   it('№240: отчёт с реальными числами, computedAt, dayRule; неизвестный – REPORT_UNKNOWN; Э3 – source_not_ready', async () => {
     const r = await get('owner', `/reports/bookings?${QS}`);
     expect(r.statusCode).toBe(200);

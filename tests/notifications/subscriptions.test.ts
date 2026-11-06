@@ -175,6 +175,10 @@ describe('настройки уведомлений', () => {
       [c.id, await createTestBooking(db.client, { clientId: c.id, branchId: (await createTestBranch(db.client)).id }), `r:${randomUUID()}`, `s:${randomUUID()}`],
     );
     const key = randomUUID();
+    await db.client.query(
+      `INSERT INTO app.content_pages (key, document_version, status, draft, draft_updated_at, draft_updated_by, created_by, created_at)
+       VALUES ('advertising-consent', 'advertising-consent-2026-11-01', 'published', '{}', now(), gen_random_uuid(), gen_random_uuid(), now())`,
+    );
     const input = { remindersEnabled: false, marketingEnabled: true };
     const r = await updateNotificationSettings(pool, clock, c.id, input, key, c.meta);
     expect(r).toMatchObject({ status: 200, replayed: false, body: { remindersEnabled: false, marketingEnabled: true } });
@@ -184,7 +188,7 @@ describe('настройки уведомлений', () => {
     const consents = await db.client.query('SELECT kind, granted, document_version, source FROM journal.client_consents WHERE client_id = $1 ORDER BY id', [c.id]);
     expect(consents.rows).toEqual([
       { kind: 'reminders', granted: false, document_version: null, source: 'account' },
-      { kind: 'marketing', granted: true, document_version: 'marketing-2026-11', source: 'account' },
+      { kind: 'marketing', granted: true, document_version: 'advertising-consent-2026-11-01', source: 'account' },
     ]);
     const n = await db.client.query('SELECT category, status FROM app.notifications WHERE client_id = $1 ORDER BY category', [c.id]);
     expect(n.rows).toEqual([

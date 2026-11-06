@@ -3,9 +3,8 @@
 // остаток по последнему событию каждого сертификата, область – филиал продажи. Подарок имениннику – право на услугу из rpt_events (K20), до Э3
 // показатель недоступен (приёмка 14). Детализация погашения: дата, сумма, клиент (маска), сеанс, сотрудник, остаток после.
 import type { Tx } from '../../core/audit.ts';
-import { formatLocal } from '../../core/time.ts';
 import {
-  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, metricDef, noData, okMetric, pageByKey, prevPeriod, resolveBranches, unavailable, windowsOf,
+  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, localAt, metricDef, noData, okMetric, pageByKey, prevPeriod, resolveBranches, unavailable, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
 
@@ -146,7 +145,7 @@ export async function certificatesDetail(
   const rows: CertificateDetailRow[] = page.rows.map((r) => ({
     certificateId: r.certificate_id,
     number: r.number,
-    atLocal: formatLocal(r.at, zones.get(r.branch_id)!, 'datetime'),
+    atLocal: localAt(env, r.at, zones.get(r.branch_id)!),
     op: r.op,
     branchId: r.branch_id,
     client: r.client_id ? (clients.get(`${r.client_id}:${r.branch_id}`) ?? null) : null,

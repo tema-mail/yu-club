@@ -1,14 +1,19 @@
 // Процесс worker целиком (apps/api/src/worker.ts → startWorkerTasks): подписки уведомлений регистрируются
 // до outbox-воркера, событие booking.confirmed из outbox через pg-boss доходит до обработчика
 // и даёт плановые строки «подтверждено» + два напоминания. Без ручного processEvent – как на стенде.
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import pg from 'pg';
 import { PgBoss } from 'pg-boss';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import { createFileStore, type FileStore } from '../apps/api/src/core/files.ts';
 import { clearSubscriptions, listSubscriptions } from '../apps/api/src/core/outbox.ts';
 import type { Clock } from '../apps/api/src/core/time.ts';
 import { confirmHold } from '../apps/api/src/modules/booking/confirm.ts';
 import { createHold } from '../apps/api/src/modules/booking/hold.ts';
 import { runOccupancyCommand } from '../apps/api/src/modules/booking/occupancy.ts';
+import { createReportsPool } from '../apps/api/src/modules/reports/framework.ts';
 import { startWorkerTasks, type WorkerTasks } from '../apps/api/src/worker.ts';
 import { createTestDatabase, type TestDatabase } from './helpers/pg.ts';
 
@@ -19,6 +24,9 @@ let db: TestDatabase;
 let pool: pg.Pool;
 let boss: PgBoss;
 let tasks: WorkerTasks | undefined;
+let reports: pg.Pool;
+let exportDir: string;
+let exportStore: FileStore;
 const errors: unknown[] = [];
 
 async function one<T = { id: string }>(sql: string, params: unknown[] = []): Promise<T> {
@@ -33,12 +41,17 @@ beforeAll(async () => {
   boss.on('error', (err) => errors.push(err));
   await boss.start();
   clearSubscriptions();
+  reports = createReportsPool(db.reportsUrl);
+  exportDir = await mkdtemp(join(tmpdir(), 'yu-worker-export-'));
+  exportStore = createFileStore({ root: exportDir });
 }, 60_000);
 
 afterAll(async () => {
   await tasks?.stop();
   await boss?.stop({ graceful: false });
   clearSubscriptions();
+  await reports?.end();
+  await rm(exportDir, { recursive: true, force: true });
   await pool?.end();
   await db?.drop();
 });
@@ -52,7 +65,7 @@ it('booking.confirmed из outbox → worker планирует подтверж
   const pc = (await one(`INSERT INTO app.resources (branch_id, resource_type, name) VALUES ($1, 'pc', 'ПК-1') RETURNING id`, [branchId])).id;
   await db.client.query(`INSERT INTO app.resource_units (resource_id, unit_id, valid_from) VALUES ($1, $2, '2026-01-01')`, [pc, unit.id]);
 
-  tasks = await startWorkerTasks({ pool, boss, vapid: null, clock, outboxIntervalMs: 300, pollingIntervalSeconds: 0.5, dispatcherIntervalMs: 500, logger: { error: (obj) => void errors.push(obj) } });
+  tasks = await startWorkerTasks({ pool, boss, vapid: null, clock, outboxIntervalMs: 300, pollingIntervalSeconds: 0.5, dispatcherIntervalMs: 500, logger: { error: (obj) => void errors.push(obj) }, exports: { reports, store: exportStore, intervalMs: 200 } });
 
   const clientId = (await one(`INSERT INTO app.clients (phone_e164, status, created_by_type) VALUES ('+79130000001', 'active', 'system') RETURNING id`)).id;
   const start = new Date('2026-11-16T07:00:00Z');
@@ -79,6 +92,17 @@ it('booking.confirmed из outbox → worker планирует подтверж
   expect(await dayBefore()).toBe('skipped_booking_changed');
   expect(errors).toEqual([]);
 }, 60_000);
+
+it('экспорт подключён: задача из очереди становится файлом (K24 §7)', async () => {
+  const staff = (await one(`INSERT INTO app.staff (first_name, last_name, email, role, password_hash) VALUES ('В', 'В', 'owner@worker.test', 'owner', 'x') RETURNING id`)).id;
+  const job = (await one(`INSERT INTO app.report_exports (staff_id, report, format, params, params_hash, detail, masked) VALUES ($1, 'bookings', 'csv', '{"from":"2026-10-01","to":"2026-10-31"}', 'worker', false, true) RETURNING id`, [staff])).id;
+  const status = async () => (await db.client.query<{ status: string; file_key: string | null; error_code: string | null }>(`SELECT status, file_key, error_code FROM app.report_exports WHERE id = $1`, [job])).rows[0]!;
+  const until = Date.now() + 15_000;
+  while (['queued', 'running'].includes((await status()).status) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+  const done = await status();
+  expect(done).toMatchObject({ status: 'ready', error_code: null });
+  expect((await exportStore.read(done.file_key!)).toString()).toContain('Бронирования и посещаемость');
+}, 30_000);
 
 it('подписки уведомлений на события брони зарегистрированы worker', () => {
   expect(listSubscriptions().map((s) => s.name)).toEqual(

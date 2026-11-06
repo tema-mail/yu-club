@@ -4,10 +4,9 @@
 // на прошлую дату – Σ записей до даты. Запись без филиала (ручная корректировка) видна только в сетевой области. Баллы не деньги (приёмка 9).
 import type { Tx } from '../../core/audit.ts';
 import { resolveSettings } from '../../core/settings.ts';
-import { formatLocal } from '../../core/time.ts';
 import type { BranchInfo } from '../network/index.ts';
 import {
-  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, metricDef, noData, okMetric, pageLimit, prevPeriod, resolveBranches, uuidCursor, windowsOf,
+  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, localAt, metricDef, noData, okMetric, pageLimit, prevPeriod, resolveBranches, uuidCursor, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
 
@@ -203,7 +202,7 @@ export async function loyaltyDetail(
     const tz = zoneById.get(branchId) ?? fallback?.timezone;
     return {
       entryId: String(r.entry_id), clientId: r.client_id, client: clients.get(`${r.client_id}:${branchId}`) ?? null,
-      atLocal: tz ? formatLocal(r.at, tz, 'datetime') : r.at.toISOString(),
+      atLocal: tz ? localAt(env, r.at, tz) : r.at.toISOString(),
       type: r.original_type, isReversal: r.entry_type === 'reversal', spendKind: r.spend_kind, value: Number(r.amount_centi),
       ref: r.ref_type && r.ref_id ? { type: r.ref_type, id: r.ref_id } : null, authorType: r.author_type,
     };

@@ -72,7 +72,7 @@ interface ConfirmResultDto { checkoutId: string; bookings: BookingDto[] }
 |---|---|---|---|---|
 | 1 | `GET /cities` | все | – | `200 { items: CityDto[] }` – города с хотя бы одним `active`/`temporarily_closed` филиалом |
 | 2 | `GET /branches?city={slug}` | все | `city` необязателен | `200 { items: BranchDto[] }` |
-| 3 | `GET /branches/{branchId}` | все | – | `200 BranchDto & { hoursToday: { start: 'HH:mm'; end: 'HH:mm' }[] }` – расширение: часы сегодня по местному времени филиала (openIntervals с исключениями календаря; пусто – сегодня закрыт); `preparing`/`archived` → `404` |
+| 3 | `GET /branches/{branchId}` | все | – | `200 BranchDto & { hoursToday: { start: 'HH:mm'; end: 'HH:mm' }[]; weeklyHours: { weekday: 1–7; open; close }[] }` – расширение: часы сегодня по местному времени филиала (openIntervals с исключениями календаря; пусто – сегодня закрыт); `preparing`/`archived` → `404` |
 | 4 | `GET /branches/{branchId}/resources?zone=` | все | `zone` – `pc`/`vr`/`ps` | `200 { items: ResourceDto[] }` |
 | 5 | `GET /branches/{branchId}/availability?date=&resourceIds=` | все | `date` LocalDate обязателен; `resourceIds` – через запятую, ≤ 50, иначе все | `200 AvailabilityDto` за ≤ 2 с (17 §4.1) |
 | 6 | `POST /holds` | visitor / client | `{ branchId, items: [{ resourceId, start, end }] }` (1..10 позиций) | `201 HoldDto` – **все или ничего** для первой порции |

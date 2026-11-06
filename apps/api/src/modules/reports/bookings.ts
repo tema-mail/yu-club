@@ -1,8 +1,7 @@
 // S4-63. Отчёт «Бронирования и посещаемость» (K24 §3.2, 14 §5). Источники – rpt_bookings, rpt_booking_reschedules, rpt_visits,
 // rpt_no_shows; у каждого показателя своя дата (dateBasis): создание, сеанс, перенос. Отмена относится к дате сеанса (решение K24),
 // неявка – только явно отмеченная; «ожидают решения» – на момент запроса (K11 №3). Гость – в «состоялось», не в «уникальных» (приёмка 12).
-import { formatLocal } from '../../core/time.ts';
-import { loadMaskedClients, metricDef, runDetail, runMetrics, type MaskedClient, type Metric, type MetricDef, type MetricSpec, type ReportEnv, type ReportParams, type ReportResult } from './framework.ts';
+import { loadMaskedClients, localAt, metricDef, runDetail, runMetrics, type MaskedClient, type Metric, type MetricDef, type MetricSpec, type ReportEnv, type ReportParams, type ReportResult } from './framework.ts';
 
 export const BOOKINGS_ACTION = 'reports.ops.view';
 
@@ -134,7 +133,7 @@ export async function bookingsDetail(
     out.push({
       bookingId: r.booking_id,
       number: Number(r.number),
-      startLocal: formatLocal(r.start_at, branch.timezone, 'datetime'),
+      startLocal: localAt(env, r.start_at, branch.timezone),
       branchId: r.branch_id,
       branchName: branch.name,
       client: clients.get(`${r.client_id}:${r.branch_id}`) ?? null,
@@ -145,7 +144,7 @@ export async function bookingsDetail(
       priceKop: Number(r.price_kop),
       payment: { state: live.length ? 'paid' : 'unpaid', methods: live.map((x) => x.method), paidKop: live.reduce((s, x) => s + Number(x.amount_kop), 0) },
       reasonCode: r.cancel_reason_code ?? noShow.get(r.booking_id) ?? null,
-      cancelledAt: r.cancelled_at ? r.cancelled_at.toISOString() : null,
+      cancelledAt: r.cancelled_at ? (env.fileDates ? localAt(env, r.cancelled_at, branch.timezone) : r.cancelled_at.toISOString()) : null,
       metricValue: src.planned_minutes ?? null,
     });
   }

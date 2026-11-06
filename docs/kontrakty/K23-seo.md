@@ -108,7 +108,7 @@
 | № | Метод и путь | Успех |
 |---|---|---|
 | K5 №216 | `GET /redirects/resolve?path=` (публичный, без сессии; `path` ≤ 300, только путь) | `200 { location: string } \| 404`; `Cache-Control: public, max-age=60` |
-| K5 №217 | `GET /seo/sitemap-entries` (публичный, сайт) | `200 { items: [{ path, lastmod \| null }] }` – индексируемые сущности контента (игры, публикации, страницы); факты городов, филиалов и комнат сайт берёт из K5 №1–4, как сейчас |
+| K5 №217 | `GET /seo/sitemap-entries` (публичный, сайт) | `200 { items: [{ path, title \| null, lastmod \| null }] }` – индексируемые сущности контента (игры, публикации, страницы; `title` – подпись в `/sitemap/`) и даты живых страниц филиалов и комнат (только `lastmod`); факты городов, филиалов и комнат сайт берёт из K5 №1–4, как сейчас |
 | K11 №236 | `GET /content/slug-suggest?type=&title=` | `200 { slug }` – черновой транслит |
 | K11 №237 | `GET /content/slug-check?entityType=&parent=&slug=&excludeId=` | `200 { ok, code?: 'SLUG_TAKEN' \| 'SLUG_RESERVED' \| 'SLUG_INVALID' \| 'SLUG_IN_HISTORY', suggestion? }` |
 | K11 №238 | `GET /seo/history?entityType=&entityId=` | `200 { items: [{ oldSlug, createdAt }] }` – для вкладки «Адрес» в CRM |

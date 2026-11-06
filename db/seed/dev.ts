@@ -1,7 +1,7 @@
 // S0-18. Тестовые данные Э0: 2 города, 3 филиала в разных зонах, демо-значения справочников,
 // сотрудники трёх ролей с назначениями. Ресурсы, тарифы, исключения графика, демо-клиенты – S1-28 (db/seed/resources.ts):
 // CLI ниже запускает его следом за засевом Э0, тем же окружением, затем Э2 (db/seed/commerce.ts: касса, категории,
-// сертификаты, баллы, оплаченные и неоплаченные брони) – если задан CERT_PEPPER.
+// сертификаты, баллы, оплаченные и неоплаченные брони) – если задан CERT_PEPPER, затем Э3 (db/seed/club.ts: смены, оборудование, ремонт, подарок, праздник).
 // Повторный запуск не плодит дубли: всё ищется по коду/email и создаётся, только если нет.
 // Демо-данные помечены (19 §10.1): коды городов и филиалов с префиксом demo-, email @demo.yu-club.test,
 // комментарий DEMO_MARK; код демо-причин – demo_*. На прод не попадают: при APP_ENV/NODE_ENV = production
@@ -18,6 +18,7 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { systemClock, type Clock } from '../../apps/api/src/core/time.ts';
 import { createBranch, createCity, setBranchStatus } from '../../apps/api/src/modules/network/commands.ts';
 import { assertPasswordStrength, hashPassword, withTx, type Pool } from '../../apps/api/src/modules/staff/auth.ts';
+import { seedClub } from './club.ts';
 import { certificateLines, seedCommerce } from './commerce.ts';
 import { seedResources } from './resources.ts';
 
@@ -164,7 +165,7 @@ async function cli(): Promise<void> {
   const password = process.env.SEED_PASSWORD;
   if (!url) throw new Error('Нужен DATABASE_URL (рантайм-учётка yu_app)');
   if (!password) throw new Error('Нужен SEED_PASSWORD в окружении (пароль демо-сотрудников, не аргументом)');
-  const pool = new pg.Pool({ connectionString: url, options: '-c search_path=app,journal', max: 2 }); // 2: seedCommerce держит одно соединение под advisory-lock, запросы идут по второму (при 1 – вечное ожидание)
+  const pool = new pg.Pool({ connectionString: url, options: '-c search_path=app,journal', max: 3 }); // 3: seedCommerce и seedClub держит одно соединение под advisory-lock, запросы идут по второму (при 1 – вечное ожидание)
   try {
     const r = await seedDev(pool, { env: process.env, password });
     console.log(`Засев Э0: создано ${JSON.stringify(r.created)}; вход: director@${DEMO_EMAIL_DOMAIN}, admin@${DEMO_EMAIL_DOMAIN}`);
@@ -178,6 +179,8 @@ async function cli(): Promise<void> {
     } else {
       console.log('Засев Э2 пропущен: нет CERT_PEPPER (нужен для продажи демо-сертификатов)');
     }
+    const e3 = await seedClub(pool, { env: process.env });
+    console.log(`Засев Э3: создано ${JSON.stringify(e3.created)}`);
   } finally {
     await pool.end();
   }

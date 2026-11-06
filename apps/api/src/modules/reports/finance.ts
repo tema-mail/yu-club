@@ -4,10 +4,9 @@
 // начальный остаток, внесённый в периоде, – в остатке на начало, как в K17 §9. Баллы и сертификаты – не деньги: отдельный блок
 // из rpt_payments. Слова «прибыль» в подписях нет (приёмка 24).
 import type { Tx } from '../../core/audit.ts';
-import { formatLocal } from '../../core/time.ts';
 import type { BranchInfo } from '../network/index.ts';
 import {
-  metricDef, noData, okMetric, prevPeriod, resolveBranches, runDetail, runMetrics, windowsOf,
+  localAt, metricDef, noData, okMetric, prevPeriod, resolveBranches, runDetail, runMetrics, windowsOf,
   type BranchWindow, type Metric, type MetricDef, type MetricSpec, type ReportEnv, type ReportParams, type ReportResult,
 } from './framework.ts';
 
@@ -219,7 +218,7 @@ export async function financeDetail(
     return {
       id: (isOp ? r.operation_id : r.payment_id) as string,
       number: isOp ? Number(r.number) : null,
-      occurredLocal: formatLocal(at, branch.timezone, 'datetime'),
+      occurredLocal: localAt(env, at, branch.timezone),
       branchId: branch.id,
       branchName: branch.name,
       kind: (isOp ? r.original_kind : r.method) as string,

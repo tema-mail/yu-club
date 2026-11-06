@@ -7,6 +7,7 @@
 // S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts). S2-60/61: касса – mock-finance.ts (по finance/routes.crm.ts).
 // S2-67/68: сертификаты – mock-certificates.ts (по certificates/routes.crm.ts). S2-65/66: баллы – mock-loyalty.ts (по loyalty/routes.crm.ts).
 // S2-63/64: оплата сеанса – mock-payments.ts (по finance/routes.payments.ts). S2-62: смена – mock-shifts.ts (по finance/shift.ts).
+// S3-70…75: смены сотрудников и зарплата – mock-shifts-staff.ts (по shifts/routes.crm.ts и routes.payroll.ts).
 // Запуск: MOCK_PORT=4010 node tests/mock-api.ts; CRM: API_URL=http://127.0.0.1:4010.
 // Учётки (пароль у всех один – MOCK_PASSWORD): owner@yu.test, director@yu.test, admin@yu.test.
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
@@ -19,6 +20,8 @@ import { registerLoyalty, resetLoyalty } from './mock-loyalty.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
 import { registerPayments, resetPayments } from './mock-payments.ts';
 import { registerShifts, resetShifts } from './mock-shifts.ts';
+import { registerPayroll } from './mock-payroll.ts';
+import { registerShiftsStaff, resetShiftsStaff, SHIFT_ACTIONS } from './mock-shifts-staff.ts';
 import { registerSettings, resetSettings } from './mock-settings.ts';
 import { registerStaff, resetStaff, staffTimelineVisible, type StaffRecord } from './mock-staff.ts';
 
@@ -102,6 +105,8 @@ const staff: MockStaff[] = [
   { id: 's-admin', email: 'admin@yu.test', password: MOCK_PASSWORD, firstName: 'Анна', lastName: 'Админова', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], phone: '+79130000001' },
   { id: 's-admin-tsk', email: 'tomsk@yu.test', password: MOCK_PASSWORD, firstName: 'Тимур', lastName: 'Томский', role: 'admin', cityIds: [], branchIds: ['b-tsk-lenina'] },
   // После засева/сброса: сервер пускает только в session, password, logout (K12).
+  // Администратор двух филиалов двух городов (TC-15, S3-72).
+  { id: 's-two', email: 'two@yu.test', password: MOCK_PASSWORD, firstName: 'Дарья', lastName: 'Двухфилиальная', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny', 'b-tsk-lenina'] },
   { id: 's-fresh', email: 'fresh@yu.test', password: MOCK_PASSWORD, firstName: 'Фёдор', lastName: 'Новиков', role: 'admin', cityIds: [], branchIds: ['b-nsk-krasny'], mustChangePassword: true },
 ];
 
@@ -169,7 +174,7 @@ function writeAudit(s: MockStaff, objectType: string, objectId: string, action: 
 
 // ---- общее для маршрутов S0-15
 
-const can = (s: MockStaff, action: string) => ACTIONS[s.role].includes(action);
+const can = (s: MockStaff, action: string) => ACTIONS[s.role].includes(action) || SHIFT_ACTIONS[s.role].includes(action);
 const forbidden = (reply: FastifyReply) => fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав');
 const notFound = (reply: FastifyReply) => fail(reply, 404, 'NOT_FOUND', 'Не найдено');
 type Issue = { path: string; message: string };
@@ -688,7 +693,7 @@ export function buildMock() {
 
   app.get(`${P}/me`, async (req) => {
     const s = currentStaff(req)!;
-    return { staff: { ...publicStaff(s), mustChangePassword: s.mustChangePassword === true }, access: access(s), actions: ACTIONS[s.role] };
+    return { staff: { ...publicStaff(s), mustChangePassword: s.mustChangePassword === true }, access: access(s), actions: [...ACTIONS[s.role], ...SHIFT_ACTIONS[s.role]] };
   });
 
   app.post('/__test/reset', async () => {
@@ -706,6 +711,7 @@ export function buildMock() {
     resetLoyalty();
     resetPayments();
     resetShifts();
+    resetShiftsStaff();
     resetEvents(branches);
     return { ok: true };
   });
@@ -753,6 +759,11 @@ export function buildMock() {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
     ownerCookie: () => `yu_staff=${serviceToken}`,
   });
+  registerPayroll(app, P, registerShiftsStaff(app, P, {
+    current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, staff: () => staff,
+    audit: (x, t, id, a, b, c, r) => writeAudit(x as MockStaff, t, id, a, b, c, r), ownerCookie: () => `yu_staff=${serviceToken}`,
+  }));
+  resetShiftsStaff();
   registerStaff(app, P, {
     staff, current: (req) => currentStaff(req)!, access, can, fail, audit: writeAudit,
     endSessions: (id) => { for (const [t, sid] of sessions) if (sid === id) sessions.delete(t); },
