@@ -1,6 +1,6 @@
 // S3-83, TC-13 в интерфейсе: правила праздника до сохранения, сервер – окончательно; перенос двигает все ресурсы или ничего (EVENT_MOVE_RESOURCES_INVALID);
 // мероприятие видно в календаре филиала занятостью, обычная бронь на это время – SLOT_TAKEN.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { eventIdOf, key, login, noHorizontalScroll, open, openEvent, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
 

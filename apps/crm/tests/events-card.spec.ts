@@ -1,5 +1,5 @@
 // S3-81: карточка мероприятия. 9 вкладок и финсводка 11 §11.3 отдельными показателями; Администратор без сумм себестоимости; чужой филиал – 404; 1440 и 390.
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { eventIdOf, login, noHorizontalScroll, openEvent, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
 

@@ -1,5 +1,5 @@
 // S3-86: справочники Э3. Приёмка: архив вместо удаления; Директору – только чтение (исполнителей правит по K1). 1440 и 390, Администратору раздела нет.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { key, login, noHorizontalScroll, open, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
 

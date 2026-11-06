@@ -1,5 +1,5 @@
 // S3-82: состав, пакет и чек-лист мероприятия. Приёмка: изменение пакета в заказе не меняет шаблон; удалённая строка видна с причиной; план – только при event.money.view.
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { eventIdOf, key, login, noHorizontalScroll, openEvent, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
 

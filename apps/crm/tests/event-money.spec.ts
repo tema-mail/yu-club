@@ -1,5 +1,5 @@
 // S3-84: деньги мероприятия. Приёмка: двойной клик – одна операция; привязка показывает только непривязанные расходы; операция – одна строка журнала кассы.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { eventIdOf, key, login, noHorizontalScroll, openEvent, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
 

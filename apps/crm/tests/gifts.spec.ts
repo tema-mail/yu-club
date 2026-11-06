@@ -1,5 +1,5 @@
 // S3-85: подарок имениннику. Приёмка: условия дословно; выходные и праздники не предлагаются; подарок не в блоке сертификатов. Отмена – окном внутри записи.
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { eventIdOf, key, login, noHorizontalScroll, open, openEvent, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
 

@@ -1,6 +1,6 @@
 // S3-81 на моке mock-events.ts (строго по apps/api/src/modules/events/routes.crm.ts): список 11 §11.1 с фильтрами и суммами только при
 // event.money.view, создание без брони и профиля. Администратор – только остаток к оплате, ни одной суммы себестоимости. 1440 и 390.
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { login, noHorizontalScroll, open, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
 
@@ -8,7 +8,7 @@ test.describe.configure({ mode: 'serial' });
 test.beforeAll(async ({ request }) => resetMock(request));
 test.afterAll(async ({ request }) => { await request.post(`${MOCK}/__test/reset`); });
 
-const rows = (page: import('@playwright/test').Page) => page.getByTestId('event-list').locator('tbody tr');
+const rows = (page: import('../../../tests/support/e2e.ts').Page) => page.getByTestId('event-list').locator('tbody tr');
 
 test('Владелец: все колонки 11 §11.1, суммы раздельно, фильтры', async ({ page }) => {
   await login(page, 'owner@yu.test');
