@@ -1,0 +1,216 @@
+---
+// Оборудование (S3-76, K19 №331–332; 10 §13.1–13.2): /equipment – список зоны с фильтрами 10 §13.1, /equipment/new – постановка на
+// учёт, /equipment/{id} – карточка с 7 вкладками. Доступ – equipment.view (все роли); чужое – 404 (K1). Список серверный:
+// фильтры обычной формой GET, «Показать ещё» – курсором. Комнаты и единицы – подписи и фильтр, по всей зоне сотрудника.
+import Crm from '../../layouts/Crm.astro';
+import EquipmentCard from '../../islands/EquipmentCard.tsx';
+import EquipmentForm from '../../islands/EquipmentForm.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+import { EQUIPMENT_BADGE, EQUIPMENT_STATUS, fmtAt, ruDate, type CategoryDto, type EquipmentDto, type EquipmentStatus } from '../../lib/equipment.ts';
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const [key = '', extra] = (Astro.params.path ?? '').split('/');
+const q = Astro.url.searchParams;
+
+let notFound = extra !== undefined || !can('equipment.view');
+let card: EquipmentDto | null = null;
+let list: { items: EquipmentDto[]; nextCursor: string | null } | null = null;
+let listError = '';
+const filters = {
+  cityId: q.has('cityId') ? (q.get('cityId') ?? '') : ctx.kind === 'city' ? ctx.cityId : '',
+  branchId: q.has('branchId') ? (q.get('branchId') ?? '') : ctx.kind === 'branch' ? ctx.branch.id : '',
+  categoryId: q.get('categoryId') ?? '',
+  status: q.get('status') ?? '',
+  roomId: q.get('roomId') ?? '',
+  serial: q.get('serial')?.trim() ?? '',
+  hasOpenRepair: q.get('hasOpenRepair') ?? '',
+};
+const warrantyDays = q.get('warrantyDays') ?? '';
+const creating = key === 'new';
+if (creating && !can('equipment.manage')) notFound = true;
+if (!notFound && key && !creating) {
+  try {
+    card = await serverCall<EquipmentDto>(cookie, `/equipment/${encodeURIComponent(key)}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFound = true;
+  }
+} else if (!notFound && !creating) {
+  const p = new URLSearchParams({ limit: '50' });
+  for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+  if (/^\d{1,3}$/.test(warrantyDays)) p.set('warrantyExpiresBefore', new Date(Date.now() + Number(warrantyDays) * 86_400_000).toISOString().slice(0, 10));
+  const cursor = q.get('cursor');
+  if (cursor) p.set('cursor', cursor);
+  try {
+    list = await serverCall(cookie, `/equipment?${p}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 400) throw e;
+    listError = 'Фильтр не подошёл – проверьте серийный номер (до 200 символов) и повторите.';
+    list = { items: [], nextCursor: null };
+  }
+}
+if (notFound) Astro.response.status = 404;
+
+// Подписи: категории, комнаты и единицы всех филиалов зоны (история мест может уходить в другой филиал)
+const categories = notFound ? [] : (await serverCall<{ items: CategoryDto[] }>(cookie, '/equipment-categories')).items;
+const categoryNames = Object.fromEntries(categories.map((c) => [c.id, c.name]));
+const branchNames = Object.fromEntries(branches.map((b) => [b.id, b.name]));
+type Named = { id: string; name: string; roomId?: string | null };
+const places = async (branchId: string, kind: 'rooms' | 'units'): Promise<Named[]> => {
+  try {
+    return (await serverCall<{ items: Named[] }>(cookie, `/branches/${encodeURIComponent(branchId)}/${kind}${kind === 'rooms' ? '?limit=100' : ''}`)).items;
+  } catch (e) {
+    if (e instanceof ApiError && [403, 404].includes(e.status)) return [];
+    throw e;
+  }
+};
+const roomsByBranch: Record<string, Named[]> = {};
+const unitsByBranch: Record<string, Named[]> = {};
+if (!notFound) {
+  await Promise.all(branches.map(async (b) => {
+    const [rooms, units] = await Promise.all([places(b.id, 'rooms'), places(b.id, 'units')]);
+    roomsByBranch[b.id] = rooms;
+    unitsByBranch[b.id] = units;
+  }));
+}
+const roomNames = Object.fromEntries(Object.values(roomsByBranch).flat().map((r) => [r.id, r.name]));
+const unitNames = Object.fromEntries(Object.values(unitsByBranch).flat().map((u) => [u.id, u.name]));
+const placeLabel = (e: EquipmentDto) => [e.placement.roomId ? roomNames[e.placement.roomId] ?? 'Комната' : null, e.placement.unitId ? unitNames[e.placement.unitId] ?? 'Единица' : null].filter(Boolean).join(' · ') || 'Склад филиала';
+const cityOf = (branchId: string) => branches.find((b) => b.id === branchId)?.cityName ?? '';
+const tz = (branchId: string) => branches.find((b) => b.id === branchId)?.timezone ?? 'Asia/Novosibirsk';
+const cities = [...new Map(branches.map((b) => [b.cityId, b.cityName])).entries()];
+const roomOptions = Object.entries(roomsByBranch).flatMap(([b, rooms]) => rooms.map((r) => ({ id: r.id, label: branches.length > 1 ? `${branchNames[b]} – ${r.name}` : r.name })));
+
+const staffNames: Record<string, string> = {};
+if (card && can('staff.view')) {
+  let cursor: string | null = null;
+  for (let page = 0; page < 20; page++) {
+    const c: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+    const r: { items: Array<{ id: string; firstName: string; lastName: string }>; nextCursor: string | null } = await serverCall(cookie, `/staff?limit=100${c}`);
+    for (const s of r.items) staffNames[s.id] = `${s.firstName} ${s.lastName}`;
+    if (!r.nextCursor) break;
+    cursor = r.nextCursor;
+  }
+}
+const nextLink = () => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) p.set(k, v);
+  if (warrantyDays) p.set('warrantyDays', warrantyDays);
+  p.set('cursor', list?.nextCursor ?? '');
+  return `/equipment?${p}`;
+};
+---
+<Crm title={card ? `${card.inventoryNumber} – оборудование` : creating ? 'Постановка на учёт' : 'Оборудование'}>
+  {notFound ? (
+    <div class="yc-head"><h1>Не найдено</h1><p>Такого оборудования нет или оно вне вашей зоны.</p><a href="/equipment">К списку оборудования</a></div>
+  ) : card ? (
+    <>
+      <p class="yc-crumbs"><a href="/equipment">Оборудование</a> / {card.inventoryNumber}</p>
+      <EquipmentCard
+        client:load
+        initial={card}
+        timezone={tz(card.placement.branchId)}
+        categories={categories}
+        branches={branches.map((b) => ({ id: b.id, name: b.name, timezone: b.timezone }))}
+        roomsByBranch={roomsByBranch}
+        unitsByBranch={unitsByBranch}
+        categoryNames={categoryNames}
+        branchNames={branchNames}
+        roomNames={roomNames}
+        unitNames={unitNames}
+        staffNames={staffNames}
+        meId={me.staff.id}
+        actions={me.actions}
+      />
+    </>
+  ) : creating ? (
+    <>
+      <p class="yc-crumbs"><a href="/equipment">Оборудование</a> / Постановка на учёт</p>
+      <div class="yc-head"><h1>Поставить на учёт</h1><p>Инвентарный номер выдаст система. Каждая единица с серийным номером – отдельная карточка.</p></div>
+      <section class="yc-panel yc-eq">
+        <EquipmentForm
+          client:load
+          categories={categories}
+          branches={branches.map((b) => ({ id: b.id, name: b.name }))}
+          defaultBranchId={ctx.kind === 'branch' ? ctx.branch.id : branches[0]?.id ?? ''}
+          roomsByBranch={roomsByBranch}
+          unitsByBranch={unitsByBranch}
+          canFinancial={can('equipment.financial.edit')}
+        />
+      </section>
+    </>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>Оборудование</h1>
+        <p>Каждая единица – своя карточка с инвентарным номером. Статус не закрывает ресурс: это делает только блокировка, которую подтверждает сотрудник.</p>
+      </div>
+      {can('equipment.manage') && <div class="yc-eq__actions"><a class="yc-btn" href="/equipment/new">Поставить на учёт</a></div>}
+      <section class="yc-panel" aria-labelledby="eq-filter">
+        <h2 id="eq-filter">Фильтры</h2>
+        <form class="yc-eq__filters" method="get" action="/equipment">
+          {cities.length > 1 && (
+            <label class="yc-field"><span class="yc-field__label">Город</span>
+              <select class="yc-input" name="cityId"><option value="">Все города</option>{cities.map(([id, name]) => <option value={id} selected={filters.cityId === id}>{name}</option>)}</select>
+            </label>
+          )}
+          {branches.length > 1 && (
+            <label class="yc-field"><span class="yc-field__label">Филиал</span>
+              <select class="yc-input" name="branchId"><option value="">Все филиалы зоны</option>{branches.map((b) => <option value={b.id} selected={filters.branchId === b.id}>{b.name}</option>)}</select>
+            </label>
+          )}
+          <label class="yc-field"><span class="yc-field__label">Категория</span>
+            <select class="yc-input" name="categoryId"><option value="">Все категории</option>{categories.map((c) => <option value={c.id} selected={filters.categoryId === c.id}>{c.name}</option>)}</select>
+          </label>
+          <label class="yc-field"><span class="yc-field__label">Статус</span>
+            <select class="yc-input" name="status"><option value="">Любой</option>{(Object.keys(EQUIPMENT_STATUS) as EquipmentStatus[]).map((s) => <option value={s} selected={filters.status === s}>{EQUIPMENT_STATUS[s]}</option>)}</select>
+          </label>
+          <label class="yc-field"><span class="yc-field__label">Комната</span>
+            <select class="yc-input" name="roomId"><option value="">Любая</option>{roomOptions.map((r) => <option value={r.id} selected={filters.roomId === r.id}>{r.label}</option>)}</select>
+          </label>
+          <label class="yc-field"><span class="yc-field__label">Серийный номер</span>
+            <input class="yc-input" type="search" name="serial" value={filters.serial} maxlength={200} />
+          </label>
+          <label class="yc-field"><span class="yc-field__label">Гарантия истекает</span>
+            <select class="yc-input" name="warrantyDays"><option value="">Не важно</option>{[30, 90, 365].map((d) => <option value={String(d)} selected={warrantyDays === String(d)}>{`в ближайшие ${d} дней`}</option>)}</select>
+          </label>
+          <label class="yc-field"><span class="yc-field__label">Открытый ремонт</span>
+            <select class="yc-input" name="hasOpenRepair"><option value="">Не важно</option><option value="true" selected={filters.hasOpenRepair === 'true'}>Есть</option><option value="false" selected={filters.hasOpenRepair === 'false'}>Нет</option></select>
+          </label>
+          <button class="yc-btn yc-btn--ghost" type="submit">Найти</button>
+        </form>
+      </section>
+      {listError && <p class="yc-alert yc-alert--error" role="alert">{listError}</p>}
+      <section class="yc-panel" aria-label="Список оборудования">
+        {list && list.items.length === 0 ? (
+          <p class="yc-empty" data-testid="eq-empty">Оборудования по этим условиям нет.</p>
+        ) : (
+          <table class="yc-table" data-testid="eq-list">
+            <thead><tr><th>Инв. номер</th><th>Наименование</th><th>Категория</th><th>Модель</th><th>Серийный</th><th>Город, филиал</th><th>Комната</th><th>Статус</th><th>Гарантия до</th><th>Последний ремонт</th></tr></thead>
+            <tbody>
+              {list?.items.map((e) => (
+                <tr data-testid={`eq-${e.inventoryNumber}`}>
+                  <td class="yc-table__main"><a href={`/equipment/${e.id}`}>{e.inventoryNumber}</a></td>
+                  <td data-label="Наименование">{e.name}</td>
+                  <td data-label="Категория">{categoryNames[e.categoryId] ?? '–'}</td>
+                  <td data-label="Модель">{e.model ?? '–'}</td>
+                  <td data-label="Серийный">{e.serialNumber ?? '–'}</td>
+                  <td data-label="Филиал">{cityOf(e.placement.branchId)}, {branchNames[e.placement.branchId] ?? 'Филиал'}</td>
+                  <td data-label="Комната">{placeLabel(e)}</td>
+                  <td data-label="Статус">
+                    <span class={`yc-badge yc-badge--${EQUIPMENT_BADGE[e.status]}`}>{EQUIPMENT_STATUS[e.status]}</span>
+                    {e.openRepairsCount > 0 && <span class="yc-badge yc-badge--decide yc-badge--system">Ремонтов: {e.openRepairsCount}</span>}
+                  </td>
+                  <td data-label="Гарантия до">{ruDate(e.warrantyUntil)}</td>
+                  <td data-label="Последний ремонт">{fmtAt(e.lastRepairAt, tz(e.placement.branchId))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {list?.nextCursor && <div class="yc-list__more"><a class="yc-btn yc-btn--ghost" href={nextLink()}>Показать ещё</a></div>}
+      </section>
+    </>
+  )}
+</Crm>

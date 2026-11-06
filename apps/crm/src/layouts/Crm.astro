@@ -28,6 +28,8 @@ const MENU: MenuItem[] = [
   { href: '/shifts', label: 'Расписание сотрудников', action: 'shift.view', active: (p) => p === '/shifts' || (p.startsWith('/shifts/') && p !== '/shifts/my') },
   { href: '/payroll', label: 'Зарплата', action: 'payroll.view', active: (p) => p.startsWith('/payroll') },
   { href: '/resources', label: 'Ресурсы', action: 'resources.view', active: (p) => p.startsWith('/resources') },
+  { href: '/equipment', label: 'Оборудование', action: 'equipment.view', active: (p) => p.startsWith('/equipment') },
+  { href: '/repairs', label: 'Ремонт', action: 'equipment.view', active: (p) => p.startsWith('/repairs') },
   { href: '/network/branches', label: 'Сеть', action: 'network.branch.update', active: (p) => p.startsWith('/network') },
   { href: '/dictionaries', label: 'Справочники', action: 'dictionary.manage', active: (p) => p.startsWith('/dictionaries') },
   { href: '/settings', label: 'Настройки', action: 'settings.branch.manage', active: (p) => p.startsWith('/settings') },
