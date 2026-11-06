@@ -117,7 +117,8 @@ test('привязка ручного расхода: окно выбора оп
   await expect(form.getByTestId('link-sum')).toContainText('сумма должна совпасть');
   await expect(submit).toBeDisabled();
   // Прямой вызов мимо окна: та же сумма, другая категория – отказ сервера.
-  const foreignOp = await page.request.post('/api/crm/v1/branches/b-nsk-krasny/finance/expense', { data: { method: 'card', amountKop: 290_000, categoryId: top.id, subcategoryId: other.id, comment: 'Не зарплата', occurredAt: new Date(Date.now() - 60_000).toISOString() }, headers: key() });
+  const foreignOp = await page.request.post('/api/crm/v1/branches/b-nsk-krasny/finance/expense', { data: { method: 'cash', amountKop: 290_000, categoryId: top.id, subcategoryId: other.id, comment: 'Не зарплата', occurredAt: new Date(Date.now() - 60_000).toISOString() }, headers: key() });
+  expect(foreignOp.ok(), await foreignOp.text()).toBe(true);
   const foreignId = ((await foreignOp.json()) as { id: string }).id;
   const denied = await page.request.post('/api/crm/v1/payroll/statements/st-admin/payout-expense/link', { data: { operationIds: [foreignId] }, headers: key() });
   expect([denied.status(), ((await denied.json()) as { error: { details: { reason: string } } }).error.details.reason]).toEqual([422, 'category']);
