@@ -1,7 +1,7 @@
 // Экран «Настройки» (K7 «HTTP CRM») на моке mock-settings.ts: Владелец меняет окно записи филиала и видит «свой уровень»,
 // возвращает к наследованию через окно (старое – в истории), max < default – понятный отказ; Директор – ключи Владельца
 // только смотрит, чужой филиал – 404; Администратору раздел недоступен. 390 px – без горизонтальной прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

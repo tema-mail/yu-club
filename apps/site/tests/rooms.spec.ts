@@ -1,7 +1,7 @@
 // e2e карточек комнат (S1-21) на моке tests/mock-resources.ts: страница комнаты из ресурсов филиала, крошки и canonical,
 // без вместимости (12 §7.1), 404 на архивную и несуществующую комнату, 301 с /rooms/, переход в расписание с предвыбором
 // зоны и комнаты, пустое состояние филиала без комнат, закрытый клуб без записи, sitemap на бою, 390 без прокрутки.
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, PROD_PORT, STAGE_PORT } from '../playwright.config.ts';
 
 test.use({ baseURL: `http://localhost:${STAGE_PORT}` });

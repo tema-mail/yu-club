@@ -113,7 +113,7 @@ export interface AuditRequestMeta {
 
 // ---- маскирование
 
-export const PD_KEYS: Readonly<Record<string, 'phone' | 'email' | 'name' | 'date'>> = {
+export const PD_KEYS: Readonly<Record<string, 'phone' | 'email' | 'name' | 'date' | 'text'>> = {
   phone: 'phone',
   phoneE164: 'phone',
   guestPhone: 'phone',
@@ -122,6 +122,9 @@ export const PD_KEYS: Readonly<Record<string, 'phone' | 'email' | 'name' | 'date
   lastName: 'name',
   guestName: 'name',
   birthDate: 'date',
+  employmentStart: 'date', // K18 §2: даты работы сотрудника
+  employmentEnd: 'date',
+  managerComment: 'text', // свободный текст о человеке: в журнале только факт изменения
 };
 // Новое поле с ПДн в карточке = строка в PD_KEYS того же коммита (ревью проверяет).
 export const SECRET_KEYS: readonly string[] = [
@@ -153,7 +156,7 @@ const PD_MAP = new Map(Object.entries(PD_KEYS).map(([k, v]) => [normKey(k), v]))
 const MASK = '***';
 const MAX_DEPTH = 32;
 
-function maskPd(kind: 'phone' | 'email' | 'name' | 'date', value: unknown): unknown {
+function maskPd(kind: 'phone' | 'email' | 'name' | 'date' | 'text', value: unknown): unknown {
   if (value === null || value === undefined) return value; // факт «пусто» не секрет
   if (typeof value !== 'string') return MASK;
   if (value === '') return '';
@@ -172,6 +175,8 @@ function maskPd(kind: 'phone' | 'email' | 'name' | 'date', value: unknown): unkn
       return `${[...value][0]}***`;
     case 'date':
       return '****-**-**';
+    case 'text':
+      return MASK;
   }
 }
 

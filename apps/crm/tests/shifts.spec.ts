@@ -1,6 +1,6 @@
 // «Расписание сотрудников» (S3-71) на моке mock-shifts-staff.ts: день/неделя/месяц, по филиалу и по сотруднику, пустые интервалы при частично закрытом дне,
 // время по зоне филиала (браузер в другой зоне), конфликт подсвечен и не сохранён, сотрудник не назначен, права и зоны. 1440 и 390 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';
@@ -109,9 +109,15 @@ test('Администратор: расписание видит, создав�
   await expect(page.getByRole('button', { name: 'Новая смена' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'По сотруднику' })).toHaveCount(0);
   await gotoDay(page, dayOf(1));
-  await expect(day(page, dayOf(1)).getByTestId('shift-item').first()).toContainText('Коллега');
-  const list = (await (await page.request.get(`/api/crm/v1/shifts?branchIds=b-nsk-krasny&from=${dayOf(-1)}&to=${dayOf(1)}`)).json()) as { items: Array<{ plannedAccrualKop: unknown; factAccrualKop: unknown }> };
+  await expect(day(page, dayOf(1)).getByTestId('shift-staff').first()).toHaveText('Фёдор Новиков'); // K18 §12: видит, кто работает
+  const raw = await (await page.request.get(`/api/crm/v1/shifts?branchIds=b-nsk-krasny&from=${dayOf(-1)}&to=${dayOf(1)}`)).text();
+  const list = JSON.parse(raw) as { items: Array<{ staffName: string; plannedAccrualKop: unknown; factAccrualKop: unknown }> };
   expect(list.items.length).toBeGreaterThan(0);
+  expect(list.items.map((x) => x.staffName)).toContain('Фёдор Новиков');
+  for (const secret of ['fresh@yu.test', '+7913', 'hourlyKop', 'attendanceFeeKop']) expect(raw).not.toContain(secret); // ни контактов, ни ставок
+  await open(page, '/shifts/sh-fresh-next');
+  await expect(page.locator('dd', { hasText: 'Фёдор Новиков' })).toHaveCount(1);
+  await open(page, '/shifts');
   for (const x of list.items) expect([x.plannedAccrualKop, x.factAccrualKop]).toEqual([null, null]); // суммы не уходят даже в ответе
   expect((await page.request.get(`/api/crm/v1/shifts?branchIds=b-tsk-lenina&from=${dayOf(0)}&to=${dayOf(1)}`)).status()).toBe(404);
   const denied = await page.request.post('/api/crm/v1/shifts', { data: { staffId: 's-fresh', branchId: 'b-nsk-krasny', start: new Date().toISOString(), end: new Date().toISOString() }, headers: { 'idempotency-key': crypto.randomUUID() } });

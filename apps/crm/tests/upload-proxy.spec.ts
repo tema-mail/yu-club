@@ -2,7 +2,7 @@
 // Без браузера: маршрут вызывается напрямую, «API» – отдельный процесс node (его буферы не попадают в замер памяти).
 // Лимиты Caddy (2 МБ везде, 11 МБ на загрузку медиа №224 и вложений №350) этим тестом не проверяются – только caddy validate
 // и curl на стенде (deploy/Caddyfile.yu-club).
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';

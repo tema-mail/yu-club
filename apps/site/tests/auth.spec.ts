@@ -1,6 +1,6 @@
 // e2e входа клиента и ЛК (S1-17) на моке по apps/api/src/modules/clients/routes.public.ts.
 // Адрес – localhost, а не 127.0.0.1: кука yu_client от API с флагом Secure, браузер принимает её по http только на localhost.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, PROD_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { MOCK_CODE } from './mock-api.ts';
 

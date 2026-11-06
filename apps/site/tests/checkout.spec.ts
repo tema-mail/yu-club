@@ -2,7 +2,7 @@
 // CLIENT_OVERLAP – понятная фраза, сводка с ценой из ответа, двойное «Подтвердить» – одна бронь и один ключ,
 // экран успеха с переходом в ЛК; каждое из 12 состояний tz/01 §15.1 показывает свою фразу; 390 и 1440 без прокрутки.
 // Ошибки сервера подменяются через /__test/fail-next (следующий вызов операции мока отвечает заданным кодом).
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { ERROR_STATES, UI_STATES, type UiState } from '../src/lib/booking.ts';
 import { MOCK_CODE } from './mock-api.ts';

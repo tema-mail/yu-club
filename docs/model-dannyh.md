@@ -1250,6 +1250,7 @@ CREATE TABLE app.loyalty_goods_orders (           -- выдача только �
 | 0309 | events | `birthday_gifts`, `gift_uses` | один подарок клиенту в 365 дней (`EXCLUDE`); одна живая запись по подарку (`gift_uses_one_live`) |
 | 0310 | core/permissions | `staff_grants` | действие из закрытого списка `DELEGABLE` (CHECK), зона city/branch (CHECK как `staff_assignments`) |
 | 0311 | модули Э3 + finance | представления `rpt_events`, `rpt_event_money`, `rpt_repair_money`, `rpt_shifts`, `rpt_shift_gaps`, `rpt_payroll`, `rpt_equipment`, `rpt_repairs` (поля – K20 §11); CHECK `reconcile_discrepancies.check_name` – полный список | читаются ролью отчётов, а не таблицы модулей (ADR 0002) |
+| 0312 | finance | `finance_categories.code = 'salary'` у посева «Персонал» – «Зарплата» | код неизменен (триггер 0210); по нему расход выплаты и привязка ручного расхода, K18 §9 |
 
 ### 0301 – finance_links (finance)
 

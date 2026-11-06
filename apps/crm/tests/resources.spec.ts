@@ -1,7 +1,7 @@
 // Проверка S1-24 (план 6.2), комнаты и места: создание, правка, архив через окно (комнату с местами – нельзя),
 // составная конфигурация (VR-комната = VR1 + VR2 + PS4) со снимком состава; смена состава при будущей брони –
 // список затронутых из dryRun и отказ; чужой филиал и запись чужого филиала – 404; Администратор только смотрит.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

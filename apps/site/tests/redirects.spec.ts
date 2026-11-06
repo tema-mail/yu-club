@@ -1,6 +1,6 @@
 // S4-53: нормализация и 301 по истории (K23 §1, §5) на собранном сайте. Каждый старый адрес – один переход и без петель: цель сама не редиректит;
 // параметры сохраняются; несуществующее – 404 с кодом 404; API молчит – 503; файлы, токены и не-GET не трогаются.
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '../../../tests/support/e2e.ts';
 import { PREVIEW_SECRET, PROD_PORT } from '../playwright.config.ts';
 
 const PROD = `http://127.0.0.1:${PROD_PORT}`;

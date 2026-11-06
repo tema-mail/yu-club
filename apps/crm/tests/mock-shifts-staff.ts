@@ -12,7 +12,7 @@ export type StatementStatus = 'draft' | 'calculated' | 'checked' | 'ready' | 'pa
 export interface Staffish { id: string; role: string }
 interface Zone { network: boolean; cityIds: string[]; branchIds: string[] }
 interface BranchLite { id: string; cityId: string; timezone: string; name: string; weeklyHours: Array<{ weekday: number; open: string | null; close: string | null }> }
-interface StaffLite extends Staffish { firstName: string; lastName: string; branchIds: string[]; cityIds: string[]; status?: string }
+interface StaffLite extends Staffish { firstName: string; lastName: string; branchIds: string[]; cityIds: string[]; status?: string; rowVersion?: number; planningStatus?: 'available' | 'on_leave' }
 
 export interface ShiftsStaffMockDeps {
   current: (req: FastifyRequest) => Staffish;
@@ -273,6 +273,11 @@ export function registerShiftsStaff(app: FastifyInstance, P: string, deps: Shift
     return x;
   };
   const staffOf = (id: string) => deps.staff().find((x) => x.id === id);
+  /** Чтения смен (routes.crm.ts withNames): имя и фамилия – без контактов и ставок. */
+  const withName = (s: Staffish, x: Shift) => {
+    const t = staffOf(x.staffId);
+    return { ...out(s, x), staffName: t ? `${t.firstName} ${t.lastName}` : '' };
+  };
   const staffBranches = (t: StaffLite) => deps.branches().filter((b) => t.branchIds.includes(b.id) || t.cityIds.includes(b.cityId)).map((b) => b.id);
   const reasonOf = (v: unknown, field = 'reason') => {
     const t = typeof v === 'string' ? v.trim() : '';
@@ -386,7 +391,7 @@ export function registerShiftsStaff(app: FastifyInstance, P: string, deps: Shift
     const items = shifts
       .filter((x) => x.localDate >= range.from && x.localDate <= range.to && view(s, x) && (ids.length === 0 || ids.includes(x.branchId)) && (!q.staffId || x.staffId === q.staffId) && (!q.status || x.status === q.status))
       .sort((a, b) => a.start.localeCompare(b.start));
-    return { items: items.map((x) => out(s, x)) };
+    return { items: items.map((x) => withName(s, x)) };
   }));
   app.get(`${P}/shifts/coverage`, read((s, req) => {
     const q = req.query as Record<string, string | undefined>;
@@ -431,7 +436,7 @@ export function registerShiftsStaff(app: FastifyInstance, P: string, deps: Shift
   app.get(`${P}/shifts/:id`, read((s, req) => {
     const x = shifts.find((y) => y.id === (req.params as { id: string }).id);
     if (!x || !view(s, x)) throw notFound();
-    return out(s, x);
+    return withName(s, x);
   }));
   app.get(`${P}/shifts/:id/timeline`, async (req, reply) => {
     const s = deps.current(req);
@@ -609,10 +614,12 @@ export function registerShiftsStaff(app: FastifyInstance, P: string, deps: Shift
     if (prev !== status) {
       if (status === 'on_leave') leave.add(t.id);
       else leave.delete(t.id);
+      t.planningStatus = status;
+      t.rowVersion = (t.rowVersion ?? 1) + 1;
       deps.audit(s, 'staff', t.id, 'staff.planning_changed', { planningStatus: prev }, { planningStatus: status });
     }
     const future = status === 'on_leave' ? shifts.filter((x) => x.staffId === t.id && x.status === 'planned' && Date.parse(x.start) > Date.now()) : [];
-    return { planningStatus: status, futureShiftsNeedingDecision: future.map((x) => out(s, x)) };
+    return { planningStatus: status, rowVersion: t.rowVersion ?? 1, futureShiftsNeedingDecision: future.map((x) => out(s, x)) };
   }));
 
   return { deps, branchOf, tzOf, inZ, can, assertCan, owner, viewer, read, command, send, staffOf, staffBranches, reasonOf, dateRange, coverageOf };

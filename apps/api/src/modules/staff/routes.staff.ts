@@ -3,6 +3,8 @@
 // Права: staff.view – список; запреты поверх роли – assertCanManageStaff (K1, ADR 0005 п.9).
 // Владельца здесь не создают (только seed-owner). Временный пароль генерирует сервер и отдаёт один раз.
 // Чужой сотрудник и сотрудник вне зоны – NOT_FOUND, как несуществующий. Отказ – в аудит (writeDenied).
+// Карточка (GET /staff/:id) добавляет поля K18 §2; список их не отдаёт. Комментарий руководителя – только тому, кто вправе править сотрудника
+// (про себя его не читает никто, кроме Владельца); правка – K18 №319 в модуле shifts.
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -130,6 +132,41 @@ const zoneOf = (s: StaffItem) => ({
   cityIds: s.assignments.flatMap((a) => (a.cityId ? [a.cityId] : [])),
 });
 
+export interface StaffCard extends StaffItem {
+  employmentStart: string | null;
+  employmentEnd: string | null;
+  planningStatus: 'available' | 'on_leave';
+  managerComment: string | null;
+}
+
+/** Правит ли вызывающий этого сотрудника: те же запреты, что у правки (K1). Здесь отказ – не событие аудита, это чтение. */
+function canManage(ctx: AccessContext, s: StaffItem): boolean {
+  try {
+    assertCanManageStaff(ctx, 'update_profile', { staffId: s.id, role: s.role, ...zoneOf(s) });
+    return true;
+  } catch (err) {
+    if (err instanceof AppError) return false;
+    throw err;
+  }
+}
+
+async function loadCard(db: Db, ctx: AccessContext, s: StaffItem): Promise<StaffCard> {
+  const r = await db.query<{ employment_start: string | null; employment_end: string | null; planning_status: StaffCard['planningStatus']; manager_comment: string | null }>(
+    `SELECT to_char(employment_start, 'YYYY-MM-DD') AS employment_start, to_char(employment_end, 'YYYY-MM-DD') AS employment_end, planning_status, manager_comment
+       FROM app.staff WHERE id = $1`,
+    [s.id],
+  );
+  const x = r.rows[0];
+  if (!x) throw notFound();
+  return {
+    ...s,
+    employmentStart: x.employment_start,
+    employmentEnd: x.employment_end,
+    planningStatus: x.planning_status,
+    managerComment: canManage(ctx, s) ? x.manager_comment : null,
+  };
+}
+
 /** Курсор списка: (фамилия, имя, id) последнего элемента – base64url JSON. */
 function encodeCursor(s: StaffItem): string {
   return Buffer.from(JSON.stringify([s.lastName, s.firstName, s.id])).toString('base64url');
@@ -232,7 +269,7 @@ export async function staffAdminRoutes(app: FastifyInstance, deps: StaffDeps): P
   app.get('/staff/:staffId', async (request, reply) => {
     const { access } = await auth(request, reply);
     const { staffId } = parse(params, request.params);
-    return visible(access, staffId);
+    return loadCard(deps.pool, access, await visible(access, staffId));
   });
 
   app.post('/staff', async (request, reply) => {

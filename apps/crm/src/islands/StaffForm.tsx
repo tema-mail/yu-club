@@ -2,7 +2,7 @@
 // (имя, телефон, роль, назначения) по rowVersion, блокировка/разблокировка через окно с причиной, история.
 // Временный пароль сервер отдаёт один раз – показываем его сразу после создания с «Скопировать» и предупреждением.
 // Права здесь лишь прячут лишнее; решает сервер (K1: Директор – только Администраторов своей зоны).
-import { useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall, type StaffRole } from '../lib/api.ts';
 import EntityCard, { type CardField } from './EntityCard.tsx';
 
@@ -12,6 +12,11 @@ export interface StaffItem {
   mustChangePassword: boolean; lastLoginAt: string | null; rowVersion: number;
   assignments: Array<{ id: string; scopeType: 'city' | 'branch'; cityId: string | null; branchId: string | null; validFrom: string; validTo: string | null }>;
 }
+/** GET /staff/{id}: поля K18 §2 есть только в карточке. managerComment без права править сотрудника – null. */
+export interface StaffCard extends StaffItem { employmentStart: string | null; employmentEnd: string | null; planningStatus: 'available' | 'on_leave'; managerComment: string | null }
+/** rowVersion один на карточку, а правят её два острова (эта форма и StaffRates): кто сохранил, сообщает новую версию. */
+export const STAFF_VERSION_EVENT = 'yc-staff:version';
+export const announceStaffVersion = (rowVersion: number) => window.dispatchEvent(new CustomEvent(STAFF_VERSION_EVENT, { detail: { rowVersion } }));
 export interface ZoneBranch { id: string; name: string; cityId: string; cityName: string }
 
 export interface StaffFormProps {
@@ -65,6 +70,15 @@ export default function StaffForm(props: StaffFormProps) {
   const [reason, setReason] = useState('');
   const [blockError, setBlockError] = useState('');
   const [historyKey, setHistoryKey] = useState(0);
+
+  useEffect(() => {
+    const onVersion = (e: Event) => {
+      setStaff((s) => (s ? { ...s, rowVersion: Math.max(s.rowVersion, (e as CustomEvent<{ rowVersion: number }>).detail.rowVersion) } : s)); // ответы могут прийти не по порядку
+      setHistoryKey((k) => k + 1);
+    };
+    window.addEventListener(STAFF_VERSION_EVENT, onVersion);
+    return () => window.removeEventListener(STAFF_VERSION_EVENT, onVersion);
+  }, []);
 
   const cities = [...new Map(branches.map((b) => [b.cityId, b.cityName])).entries()];
   const cityName = (id: string) => cities.find(([c]) => c === id)?.[1] ?? id;
@@ -124,7 +138,7 @@ export default function StaffForm(props: StaffFormProps) {
         markClean(f);
         setStaff(saved);
         setStatus({ ok: true, text: 'Сохранено.' });
-        setHistoryKey((k) => k + 1);
+        announceStaffVersion(saved.rowVersion);
       }
     } catch (err) {
       const issues = err instanceof ApiError ? (err.details?.issues as Array<{ path: string; message: string }> | undefined) : undefined;
@@ -164,7 +178,7 @@ export default function StaffForm(props: StaffFormProps) {
       setReason('');
       dialog.current?.close();
       setStatus({ ok: true, text: op === 'block' ? 'Сотрудник заблокирован.' : 'Сотрудник разблокирован.' });
-      setHistoryKey((k) => k + 1);
+      announceStaffVersion(saved.rowVersion);
     } catch (err) {
       setBlockError(err instanceof ApiError && err.code === 'VERSION_CONFLICT' ? CONFLICT : `Не получилось: ${errorText(err)}.`);
     } finally {
@@ -210,6 +224,8 @@ export default function StaffForm(props: StaffFormProps) {
     { kind: 'text', name: 'branchIds', label: 'Филиалы', labels: Object.fromEntries(branches.map((b) => [b.id, b.name])) },
     { kind: 'text', name: 'cityIds', label: 'Города', labels: Object.fromEntries(cities) },
     { kind: 'text', name: 'sessionsEnded', label: 'Завершено сессий' },
+    { kind: 'text', name: 'employmentStart', label: 'Начало работы' }, { kind: 'text', name: 'employmentEnd', label: 'Конец работы' },
+    { kind: 'text', name: 'managerComment', label: 'Комментарий руководителя' },
   ];
 
   return (

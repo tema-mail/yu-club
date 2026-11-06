@@ -1,7 +1,7 @@
 // Проверка S0-14 (план 6.1): вход/выход, неверный пароль без утечки, Администратор видит только свои филиалы,
 // прямая ссылка на чужой филиал – отказ (404 от API), несохранённая форма при смене контекста – предупреждение.
 // Работает на моке API (tests/mock-api.ts), бэкенд не нужен.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const SHOTS = process.env.SCREENSHOT_DIR ?? 'test-results/screens';

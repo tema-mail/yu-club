@@ -1,5 +1,5 @@
 // S4-54: мета на собранных страницах (K23 §4): шаблоны title, description, H1 один на страницу; canonical и og:url без параметров; индекс по единому решению.
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '../../../tests/support/e2e.ts';
 import { PROD_PORT } from '../playwright.config.ts';
 
 const PROD = `http://127.0.0.1:${PROD_PORT}`;

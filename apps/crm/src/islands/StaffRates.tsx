@@ -2,10 +2,12 @@
 // же датой и ссылкой corrects, причина обязательна. Нет ставки на сегодня – «Не настроена ставка оплаты», это не ноль. Менять ставки – только Владелец
 // (payroll.rate.manage), Директор видит историю своей зоны; решает сервер. «Временно не работает» – не статус входа: новые смены запрещены,
 // запланированные не отменяются, а показываются списком «требуют решения». Суммы – целые копейки, ввод разбирается строкой (lib/shifts.ts).
-import { useRef, useState } from 'preact/hooks';
-import { browserCall } from '../lib/api.ts';
+// Даты работы и комментарий руководителя (K18 §2, №319): правка окном по rowVersion, комментарий виден только тому, кто вправе править сотрудника (canWork).
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { ApiError, browserCall } from '../lib/api.ts';
 import { fmtDate, kopToInput, parseKopZero, shiftError, type ShiftDto, type StaffRate } from '../lib/shifts.ts';
 import { rub } from './CashJournal.tsx';
+import { announceStaffVersion, STAFF_VERSION_EVENT } from './StaffForm.tsx';
 
 export type PlanningStatus = 'available' | 'on_leave';
 export interface StaffRatesProps {
@@ -14,20 +16,26 @@ export interface StaffRatesProps {
   initialRates: StaffRate[] | null;
   canManage: boolean;
   canPlanning: boolean;
-  /** Текущее значение из журнала staff.planning_changed; null – прочитать не удалось. */
-  initialPlanning: PlanningStatus | null;
-  /** Даты работы: начало и конец действующих назначений (K1 staff_assignments). */
-  workFrom: string | null;
-  workTo: string | null;
+  initialPlanning: PlanningStatus;
+  initialWork: WorkFields;
+  rowVersion: number;
+  /** Вправе править этого сотрудника: видит комментарий и кнопку правки; решает сервер. */
+  canWork: boolean;
   today: string;
   staffNames: Record<string, string>;
 }
+export interface WorkFields { employmentStart: string | null; employmentEnd: string | null; managerComment: string | null }
 interface Draft { corrects: string | null; validFrom: string; hourly: string; fee: string; reason: string }
 
-export default function StaffRates({ staffId, initialRates, canManage, canPlanning, initialPlanning, workFrom, workTo, today, staffNames }: StaffRatesProps) {
+export default function StaffRates({ staffId, initialRates, canManage, canPlanning, initialPlanning, initialWork, rowVersion, canWork, today, staffNames }: StaffRatesProps) {
   const [rates, setRates] = useState(initialRates);
   const [draft, setDraft] = useState<Draft>({ corrects: null, validFrom: today, hourly: '', fee: '', reason: '' });
   const [planning, setPlanning] = useState(initialPlanning);
+  const [work, setWork] = useState(initialWork);
+  const [workDraft, setWorkDraft] = useState(initialWork);
+  const [version, setVersion] = useState(rowVersion);
+  const [workError, setWorkError] = useState('');
+  const workDlg = useRef<HTMLDialogElement>(null);
   const [pending, setPending] = useState<ShiftDto[]>([]);
   const [affected, setAffected] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -40,6 +48,31 @@ export default function StaffRates({ staffId, initialRates, canManage, canPlanni
   const enc = encodeURIComponent;
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
 
+  useEffect(() => {
+    const onVersion = (e: Event) => setVersion((v) => Math.max(v, (e as CustomEvent<{ rowVersion: number }>).detail.rowVersion)); // ответы могут прийти не по порядку
+    window.addEventListener(STAFF_VERSION_EVENT, onVersion);
+    return () => window.removeEventListener(STAFF_VERSION_EVENT, onVersion);
+  }, []);
+  const saveWork = async (e: Event) => {
+    e.preventDefault();
+    if (busy) return;
+    const { employmentStart, employmentEnd } = workDraft;
+    if (employmentStart && employmentEnd && employmentEnd < employmentStart) return setWorkError('Конец работы раньше начала.');
+    setBusy(true);
+    setWorkError('');
+    try {
+      const res = await browserCall<{ rowVersion: number }>(`/staff/${enc(staffId)}/employment`, { method: 'PATCH', body: { rowVersion: version, employmentStart, employmentEnd, managerComment: workDraft.managerComment } });
+      announceStaffVersion(res.rowVersion);
+      const card = await browserCall<WorkFields>(`/staff/${enc(staffId)}`);
+      setWork({ employmentStart: card.employmentStart, employmentEnd: card.employmentEnd, managerComment: card.managerComment });
+      setPlanNotice('Сохранено.');
+      workDlg.current?.close();
+    } catch (err) {
+      setWorkError(err instanceof ApiError && err.code === 'VERSION_CONFLICT' ? 'Карточку уже изменил другой сотрудник. Обновите страницу и внесите правку заново.' : shiftError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   const openNew = () => {
     setDraft({ corrects: null, validFrom: today, hourly: '', fee: '', reason: '' });
     setDlgError('');
@@ -81,8 +114,9 @@ export default function StaffRates({ staffId, initialRates, canManage, canPlanni
     setBusy(true);
     setError('');
     try {
-      const res = await browserCall<{ planningStatus: PlanningStatus; futureShiftsNeedingDecision: ShiftDto[] }>(`/staff/${enc(staffId)}/planning`, { method: 'PATCH', body: { planningStatus: next } });
+      const res = await browserCall<{ planningStatus: PlanningStatus; rowVersion: number; futureShiftsNeedingDecision: ShiftDto[] }>(`/staff/${enc(staffId)}/planning`, { method: 'PATCH', body: { planningStatus: next } });
       setPlanning(res.planningStatus);
+      announceStaffVersion(res.rowVersion);
       setPending(res.futureShiftsNeedingDecision);
       setPlanNotice(res.planningStatus === 'on_leave' ? 'Отмечено: временно не работает. Новые смены запрещены.' : 'Сотрудник снова доступен для планирования.');
     } catch (err) {
@@ -104,19 +138,22 @@ export default function StaffRates({ staffId, initialRates, canManage, canPlanni
         <h2 id="work-title">Работа и планирование</h2>
         <dl class="yc-props">
           <dt>Даты работы</dt>
-          <dd data-testid="work-dates">{workFrom ? `с ${fmtDate(workFrom)}` : 'назначений нет'}{workTo ? ` по ${fmtDate(workTo)}` : ''}</dd>
+          <dd data-testid="work-dates">{work.employmentStart ? `с ${fmtDate(work.employmentStart)}` : 'начало не указано'}{work.employmentEnd ? ` по ${fmtDate(work.employmentEnd)}` : ''}</dd>
           <dt>Планирование</dt>
           <dd data-testid="planning-status">
             {planning === 'on_leave' && <span class="yc-badge yc-badge--temporarily_closed">Временно не работает</span>}
             {planning === 'available' && <span class="yc-badge yc-badge--active">Доступен для смен</span>}
-            {planning === null && <span class="yc-badge">Нет данных</span>}
           </dd>
+          {canWork && <><dt>Комментарий руководителя</dt><dd data-testid="manager-comment">{work.managerComment ?? 'нет'}</dd></>}
         </dl>
-        {canPlanning && (
-          <div>
-            <button type="button" class="yc-btn yc-btn--ghost" onClick={() => planDlg.current?.showModal()}>
-              {planning === 'on_leave' ? 'Вернуть в планирование' : 'Временно не работает'}
-            </button>
+        {(canPlanning || canWork) && (
+          <div class="yc-bk__actions">
+            {canPlanning && (
+              <button type="button" class="yc-btn yc-btn--ghost" onClick={() => planDlg.current?.showModal()}>
+                {planning === 'on_leave' ? 'Вернуть в планирование' : 'Временно не работает'}
+              </button>
+            )}
+            {canWork && <button type="button" class="yc-btn yc-btn--ghost" onClick={() => { setWorkDraft(work); setWorkError(''); workDlg.current?.showModal(); }}>Изменить даты и комментарий</button>}
           </div>
         )}
         <p class="yc-alert yc-alert--ok" role="status" data-testid="planning-notice">{planNotice}</p>
@@ -201,6 +238,30 @@ export default function StaffRates({ staffId, initialRates, canManage, canPlanni
           <div class="yc-dialog__actions">
             <button type="button" class="yc-btn yc-btn--ghost" onClick={() => rateDlg.current?.close()}>Отмена</button>
             <button type="submit" class="yc-btn" disabled={busy}>Сохранить ставку</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog ref={workDlg} class="yc-dialog" aria-labelledby="work-dlg-title">
+        <form class="yc-dialog__body" novalidate onSubmit={saveWork} data-testid="work-form">
+          <h2 id="work-dlg-title">Даты работы и комментарий</h2>
+          <div class="yc-field">
+            <label class="yc-field__label" for="work-start">Начало работы</label>
+            <input id="work-start" class="yc-input" type="date" value={workDraft.employmentStart ?? ''} onInput={(e) => setWorkDraft((d) => ({ ...d, employmentStart: (e.currentTarget as HTMLInputElement).value || null }))} />
+          </div>
+          <div class="yc-field">
+            <label class="yc-field__label" for="work-end">Конец работы</label>
+            <input id="work-end" class="yc-input" type="date" value={workDraft.employmentEnd ?? ''} onInput={(e) => setWorkDraft((d) => ({ ...d, employmentEnd: (e.currentTarget as HTMLInputElement).value || null }))} />
+          </div>
+          <div class="yc-field">
+            <label class="yc-field__label" for="work-comment">Комментарий руководителя</label>
+            <textarea id="work-comment" class="yc-input" rows={3} maxLength={2000} value={workDraft.managerComment ?? ''} onInput={(e) => setWorkDraft((d) => ({ ...d, managerComment: (e.currentTarget as HTMLTextAreaElement).value || null }))} />
+            <p class="yc-field__hint">Сотрудник его не видит. В журнал попадает только факт правки, не текст.</p>
+          </div>
+          <p class="yc-alert yc-alert--error" role="alert">{workError}</p>
+          <div class="yc-dialog__actions">
+            <button type="button" class="yc-btn yc-btn--ghost" onClick={() => workDlg.current?.close()}>Отмена</button>
+            <button type="submit" class="yc-btn" disabled={busy}>Сохранить</button>
           </div>
         </form>
       </dialog>

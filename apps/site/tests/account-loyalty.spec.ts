@@ -1,7 +1,7 @@
 // e2e ЛК «Баллы» (S2-70) на моке tests/mock-commerce.ts (K15 §11): баланс, доступно, резерв, ближайшее истечение,
 // история с «не возвращено», каталог; при −50 – текст 07 §9.2, а кабинет и история доступны (07 §9.3);
 // пустой счёт; «Мои записи» и «Уведомления» на месте; 390 px без горизонтальной прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { LIMIT_TEXT } from '../src/lib/booking.ts';
 import { MOCK_CODE, resourceId } from './mock-api.ts';

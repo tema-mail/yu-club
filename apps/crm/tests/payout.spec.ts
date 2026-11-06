@@ -1,6 +1,6 @@
 // Штрафы, корректировки, выплата, расход (S3-75) на моке: TC-19 в интерфейсе – повтор нажатия даёт один расход, второй – PAYOUT_EXPENSE_EXISTS; штрафов нет при выключенном флаге
 // (и сервер FEATURE_DISABLED), при включённом – подпись «юридическая допустимость не проверена», отмена и правка окном внутри записи; Директор – только с филиалом; корректировка – Владелец.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';
@@ -80,6 +80,63 @@ test('TC-19: отметка выплаты и «Создать расход» с
   expect(body.error.details.operationIds).toHaveLength(1);
 });
 
+test('привязка ручного расхода: окно выбора операции кассы, сумма должна совпасть, второго расхода нет', async ({ page, request }) => {
+  expect((await request.post(`${MOCK}/__test/reset`)).ok()).toBe(true);
+  await login(page, 'owner@yu.test');
+  const cats = (await (await page.request.get('/api/crm/v1/finance/categories?kind=expense')).json()) as { items: Array<{ id: string; name: string; children: Array<{ id: string; name: string }> }> };
+  const top = cats.items.find((c) => c.name === 'Персонал')!;
+  const sub = top.children.find((c) => c.name === 'Зарплата')!;
+  const other = top.children.find((c) => c.name === 'Выплаты за смены')!;
+  const expense = async (amountKop: number, comment: string) => {
+    const r = await page.request.post('/api/crm/v1/branches/b-nsk-krasny/finance/expense', { data: { method: 'card', amountKop, categoryId: top.id, subcategoryId: sub.id, comment, occurredAt: new Date(Date.now() - 60_000).toISOString() }, headers: key() });
+    expect(r.ok(), await r.text()).toBe(true);
+    return ((await r.json()) as { id: string }).id;
+  };
+  const wrong = await expense(10_000, 'Аванс наличными');
+  await expense(290_000, 'Зарплата Анне вручную');
+  // Выдали из кассы другого филиала, ранним утром по его часам (в UTC это ещё вчера).
+  const tsk = await page.request.post('/api/crm/v1/branches/b-tsk-lenina/finance/expense', { data: { method: 'cash', amountKop: 5_000, categoryId: top.id, subcategoryId: sub.id, comment: 'Ночная выдача', occurredAt: new Date(`${dayOf(0)}T01:00:00+07:00`).toISOString() }, headers: key() });
+  expect(tsk.ok(), await tsk.text()).toBe(true);
+
+  await open(page, '/payroll');
+  await pickClosed(page);
+  await row(page, 's-admin').getByRole('button', { name: 'Детализация' }).click();
+  await expect(page.getByRole('button', { name: 'Привязать из кассы' })).toHaveCount(0); // до выплаты привязывать нечего
+  await page.getByRole('button', { name: 'Отметить выплату' }).click();
+  await page.getByTestId('paid-form').getByRole('button', { name: 'Подтвердить выплату' }).click();
+  await expect(page.getByTestId('statement-status')).toContainText('Выплачена');
+
+  await page.getByRole('button', { name: 'Привязать из кассы' }).click();
+  const form = page.getByTestId('link-form');
+  await expect(form.getByTestId('link-op')).toHaveCount(3); // только «Зарплата», в том числе из кассы другого филиала: коммунальные и закупки из засева не предлагаются
+  await expect(form.getByTestId('link-op').filter({ hasText: 'Ю Клуб на Ленина' })).toHaveCount(1);
+  await expect(form.getByTestId('link-op').filter({ hasText: 'Ночная выдача' })).toContainText(dayOf(0).split('-').reverse().join('.')); // дата – по суткам филиала, а не UTC
+  const submit = form.getByRole('button', { name: 'Привязать', exact: true });
+  await expect(submit).toBeDisabled();
+  await form.getByTestId('link-op').filter({ hasText: 'Аванс наличными' }).getByRole('checkbox').check();
+  await expect(form.getByTestId('link-sum')).toContainText('сумма должна совпасть');
+  await expect(submit).toBeDisabled();
+  // Прямой вызов мимо окна: та же сумма, другая категория – отказ сервера.
+  const foreignOp = await page.request.post('/api/crm/v1/branches/b-nsk-krasny/finance/expense', { data: { method: 'cash', amountKop: 290_000, categoryId: top.id, subcategoryId: other.id, comment: 'Не зарплата', occurredAt: new Date(Date.now() - 60_000).toISOString() }, headers: key() });
+  expect(foreignOp.ok(), await foreignOp.text()).toBe(true);
+  const foreignId = ((await foreignOp.json()) as { id: string }).id;
+  const denied = await page.request.post('/api/crm/v1/payroll/statements/st-admin/payout-expense/link', { data: { operationIds: [foreignId] }, headers: key() });
+  expect([denied.status(), ((await denied.json()) as { error: { details: { reason: string } } }).error.details.reason]).toEqual([422, 'category']);
+  const mismatch = await page.request.post('/api/crm/v1/payroll/statements/st-admin/payout-expense/link', { data: { operationIds: [wrong] }, headers: key() });
+  expect([mismatch.status(), ((await mismatch.json()) as { error: { code: string } }).error.code]).toEqual([422, 'PAYOUT_AMOUNT_MISMATCH']);
+  await form.getByTestId('link-op').filter({ hasText: 'Аванс наличными' }).getByRole('checkbox').uncheck();
+  await form.getByTestId('link-op').filter({ hasText: 'Зарплата Анне вручную' }).getByRole('checkbox').check();
+  await submit.click();
+  await expect(form).toBeHidden();
+  await expect(page.getByTestId('payout-notice')).toContainText('Расход привязан');
+  await expect(page.getByTestId('payout-notice')).toContainText('2 900,00 ₽');
+
+  // Привязанный расход и есть расход этой выплаты: новый не создаётся.
+  await page.getByRole('button', { name: 'Создать расход' }).click();
+  await page.getByTestId('expense-form').getByRole('button', { name: 'Создать расход' }).click();
+  await expect(page.getByTestId('payout-error')).toContainText('уже создан');
+});
+
 test('закрытый период: статусы до выплаты, только корректировка в открытом периоде', async ({ page }) => {
   await login(page, 'owner@yu.test');
   await open(page, '/payroll');
@@ -113,6 +170,7 @@ test('Директор: корректировки и выплаты нет, с�
   await expect(page.getByTestId('payroll-detail')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Корректировка' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Создать расход' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Привязать из кассы' })).toHaveCount(0);
   expect((await page.request.post('/api/crm/v1/payroll/corrections', { data: { staffId: 's-admin', amountKop: 100, ref: { type: 'payroll_statement', id: 'st-admin' }, reason: 'x' }, headers: key() })).status()).toBe(403);
   expect((await page.request.post('/api/crm/v1/payroll/statements/st-admin/paid', { data: { rowVersion: 1, actualPayoutDate: dayOf(0) }, headers: key() })).status()).toBe(403);
 });
@@ -167,6 +225,11 @@ for (const [w, h] of [[1440, 900], [390, 844]] as const) {
     await row(page, 's-admin').getByRole('button', { name: 'Детализация' }).click();
     await page.getByRole('button', { name: 'Отметить выплату' }).click();
     await page.screenshot({ path: `${SHOTS}/s3-75-payout-${w}.png`, fullPage: true });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(w);
+    await page.getByTestId('paid-form').getByRole('button', { name: 'Подтвердить выплату' }).click();
+    await page.getByRole('button', { name: 'Привязать из кассы' }).click();
+    await expect(page.getByTestId('link-empty')).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/s3-75-payout-link-${w}.png` });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(w);
     await ctx.close();
   });

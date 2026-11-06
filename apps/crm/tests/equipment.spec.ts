@@ -1,6 +1,6 @@
 // S3-76: «Оборудование» – список с фильтрами 10 §13.1, карточка с 7 вкладками 10 §13.2. Администратор не видит вкладку учёток,
 // списанное – только чтение, чужое – 404, 390 px без горизонтальной прокрутки, кнопки ≥44 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const QUEST = 'e0000000-0000-4000-8000-000000000001';

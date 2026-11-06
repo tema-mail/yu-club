@@ -1,6 +1,6 @@
 // S4-43: страница предпросмотра сайта (K22 §11). Без секрета – 404; с секретом – плашка «Черновик», noindex, no-store, <base href> на сайт;
 // в тексте черновика сырой <script> и javascript: вырезаны; ни один тег скрипта не попадает в HTML; неверный токен – 404.
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { PREVIEW_SECRET, PROD_PORT, STAGE_PORT } from '../playwright.config.ts';
 
 const STAGE = `http://127.0.0.1:${STAGE_PORT}`;

@@ -1,7 +1,7 @@
 // Проверка S1-24 (план 6.2, TC-17), график и исключения: перед сокращением часов – список затронутых броней,
 // автоотмены нет; подтверждение с confirmedAffected; 409 AFFECTED_CHANGED – понятное сообщение и новый список;
 // отмена исключения через окно; Администратор только смотрит; чужой филиал – 404; 390 px без прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

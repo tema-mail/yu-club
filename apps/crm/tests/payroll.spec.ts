@@ -1,6 +1,6 @@
 // «Зарплата» (S3-74) на моке: постоянная подпись, прогноз отдельно от факта, детализация = итог, фильтры, статусы, закрытие: список причин со ссылками на смены, закрытый период – только
 // корректировки, новый период встык. Права: Директор – своя зона без закрытия, Администратору – 404/403. 1440 и 390 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

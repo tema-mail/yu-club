@@ -9,6 +9,7 @@ export interface StaffRecord {
   id: string; email: string; password: string; firstName: string; lastName: string; role: Role;
   cityIds: string[]; branchIds: string[]; mustChangePassword?: boolean;
   phone?: string | null; status?: 'active' | 'blocked' | 'archived'; rowVersion?: number; lastLoginAt?: string | null;
+  employmentStart?: string | null; employmentEnd?: string | null; planningStatus?: 'available' | 'on_leave'; managerComment?: string | null;
 }
 interface Zone { network: boolean; cityIds: string[]; branchIds: string[] }
 type Issue = { path: string; message: string };
@@ -107,7 +108,41 @@ export function registerStaff(app: FastifyInstance, P: string, d: StaffMockDeps)
     const me = auth(req, reply);
     if (!me) return reply;
     const s = visible(me, (req.params as { staffId: string }).staffId);
-    return s ? item(s) : notFound(reply);
+    if (!s) return notFound(reply);
+    // Карточка K18 §2: комментарий – только тому, кто вправе править сотрудника (loadCard в routes.staff.ts).
+    const canRead = allowed(me, 'update_profile', { id: s.id, roles: [s.role], branchIds: s.branchIds, cityIds: s.cityIds }) === true;
+    return { ...item(s), employmentStart: s.employmentStart ?? null, employmentEnd: s.employmentEnd ?? null, planningStatus: s.planningStatus ?? 'available', managerComment: canRead ? (s.managerComment ?? null) : null };
+  });
+
+  // K18 №319 (shifts/plan.ts setEmployment): вне зоны – 404, нет права – 403, значения в аудите маскируются.
+  app.patch(`${P}/staff/:staffId/employment`, async (req, reply) => {
+    const me = d.current(req);
+    if (!req.headers['idempotency-key']) return d.fail(reply, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Нужен заголовок Idempotency-Key');
+    const b = (req.body ?? {}) as { rowVersion?: unknown; employmentStart?: string | null; employmentEnd?: string | null; managerComment?: string | null };
+    const isDate = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v));
+    if (typeof b.rowVersion !== 'number') return invalid(reply, [{ path: 'rowVersion', message: 'Нужна версия' }]);
+    if (!isDate(b.employmentStart) || !isDate(b.employmentEnd)) return invalid(reply, [{ path: 'employmentStart', message: 'Дата – ГГГГ-ММ-ДД' }]);
+    if (typeof b.managerComment === 'string' && b.managerComment.length > 2000) return invalid(reply, [{ path: 'managerComment', message: 'Слишком длинно' }]);
+    const s = visible(me, (req.params as { staffId: string }).staffId);
+    if (!s) return notFound(reply);
+    const ok = allowed(me, 'update_profile', { id: s.id, roles: [s.role], branchIds: s.branchIds, cityIds: s.cityIds });
+    if (ok === 'zone') return notFound(reply);
+    if (!ok) return forbidden(reply);
+    if (b.rowVersion !== (s.rowVersion ?? 1)) return d.fail(reply, 409, 'VERSION_CONFLICT', 'Карточка изменилась, обновите форму', { rowVersion: s.rowVersion ?? 1 });
+    const start = b.employmentStart === undefined ? (s.employmentStart ?? null) : b.employmentStart;
+    const end = b.employmentEnd === undefined ? (s.employmentEnd ?? null) : b.employmentEnd;
+    const comment = b.managerComment === undefined ? (s.managerComment ?? null) : b.managerComment?.trim() || null;
+    if (start && end && end < start) return d.fail(reply, 400, 'VALIDATION_FAILED', 'Дата окончания работы раньше даты начала', { field: 'employmentEnd' });
+    if (start !== (s.employmentStart ?? null) || end !== (s.employmentEnd ?? null) || comment !== (s.managerComment ?? null)) {
+      // В журнале – только изменённые поля и маска (K2 PD_KEYS).
+      const after: Record<string, string | null> = {};
+      if (start !== (s.employmentStart ?? null)) after.employmentStart = start && '****-**-**';
+      if (end !== (s.employmentEnd ?? null)) after.employmentEnd = end && '****-**-**';
+      if (comment !== (s.managerComment ?? null)) after.managerComment = comment && '***';
+      Object.assign(s, { employmentStart: start, employmentEnd: end, managerComment: comment, rowVersion: (s.rowVersion ?? 1) + 1 });
+      d.audit(me, 'staff', s.id, 'staff.employment_changed', {}, after);
+    }
+    return { rowVersion: s.rowVersion ?? 1 };
   });
 
   app.post(`${P}/staff`, async (req, reply) => {

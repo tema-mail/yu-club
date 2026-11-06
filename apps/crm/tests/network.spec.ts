@@ -1,7 +1,7 @@
 // Проверка S0-15 (план 6.1), экраны сети: Владелец создаёт филиал и видит запись истории; список грузится порциями;
 // удаление – только окном «в архив» внутри записи, архив – отдельный фильтр; пустое и ошибочное состояния;
 // Директор без городов и без создания; несохранённая карточка – предупреждение. Мок: MOCK_PAGE_SIZE=2.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

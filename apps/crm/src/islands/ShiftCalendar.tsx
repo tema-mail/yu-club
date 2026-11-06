@@ -1,7 +1,7 @@
 // «Расписание сотрудников» (S3-71, 05 §12.2, K18 №301–302, №307): календарь по филиалу или по сотруднику, день/неделя/месяц, фильтр по статусу, пустые интервалы
 // покрытия (видны и у частично закрытого дня), создание смены. Конфликт времени (SHIFT_OVERLAP) подсвечивает смену и не сохраняется: гарантия – база на сервере.
 // Время – по зоне филиала смены, не браузера. Администратор видит, кто работает, без сумм; сумм здесь нет ни у кого – они в карточке смены и в «Зарплате».
-// Имён коллег Администратору API не отдаёт (GET /staff – только staff.view): показываем «Коллега», себя – по имени.
+// Администратору /staff закрыт: имя коллеги приходит в самой смене (staffName, имя и фамилия – K18 №301), без контактов и ставок.
 import { useEffect, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { addDays, fmtDay, inZone, zonedIso } from '../lib/booking.ts';
@@ -47,7 +47,7 @@ export default function ShiftCalendar({ branches, staff, meId, meName, initialBr
   const [busy, setBusy] = useState(false);
   const enc = encodeURIComponent;
   const tzOf = (id: string) => branches.find((b) => b.id === id)?.timezone ?? 'UTC';
-  const nameOf = (id: string) => (id === meId ? meName : (staff.find((s) => s.id === id)?.name ?? 'Коллега'));
+  const nameOf = (s: ShiftDto) => (s.staffId === meId ? meName : (staff.find((x) => x.id === s.staffId)?.name ?? s.staffName ?? ''));
   const branchName = (id: string) => branches.find((b) => b.id === id)?.name ?? 'Филиал';
   const hm = (iso: string, tz: string) => inZone(iso, tz).hm;
 
@@ -136,7 +136,7 @@ export default function ShiftCalendar({ branches, staff, meId, meName, initialBr
           {list.map((s) => (
             <li key={s.id} class={`yc-sh-item${conflict === s.id ? ' yc-sh-item--conflict' : ''}`} data-testid="shift-item" data-shift={s.id}>
               <a class="yc-sh-item__time" href={`/shifts/${enc(s.id)}`}>{hm(s.plannedStart, s.timezone)}–{hm(s.plannedEnd, s.timezone)}</a>
-              {canStaffCard ? <a href={`/staff/${enc(s.staffId)}`}>{nameOf(s.staffId)}</a> : <span>{nameOf(s.staffId)}</span>}
+              {canStaffCard ? <a href={`/staff/${enc(s.staffId)}`}>{nameOf(s)}</a> : <span data-testid="shift-staff">{nameOf(s)}</span>}
               {by === 'staff' && <span class="yc-field__hint">{branchName(s.branchId)}</span>}
               <span class={`yc-badge ${SHIFT_STATUS[s.status].cls}`}>{SHIFT_STATUS[s.status].text}</span>
               {s.flags.outsideHours && <span class="yc-field__hint">вне графика</span>}

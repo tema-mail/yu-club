@@ -1,7 +1,7 @@
 // Продажа сертификата (S2-68) на моке mock-certificates.ts: предупреждение R-03, номер и код ОДИН раз (скопировать,
 // печать, «код больше не покажем»), двойной клик – один сертификат, после закрытия и обновления кода нет нигде,
 // повтор того же ключа API отдаёт pin: null; Администратор не продаёт (кнопки нет, API – 403); 1440 и 390 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

@@ -2,7 +2,7 @@
 // сохранения и в журнале; двойной клик – одна операция; расход больше остатка – понятный отказ с числами;
 // Администратор вносит расход без предпросмотра (запроса нет) и не видит остатков даже в отказе; закрытый месяц
 // не принимает операцию; 390 px – форма без горизонтальной прокрутки, кнопки ≥ 44 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

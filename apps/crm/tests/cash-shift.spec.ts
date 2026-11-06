@@ -3,7 +3,7 @@
 // needs_resolution; при включённом флаге наличные без открытой смены – CASH_SHIFT_REQUIRED, в смене – с её shift_id.
 // Директор решает (причина обязательна): «исправить ошибку» – корректировка на разницу, «принять пересчёт» – расход
 // «Недостача кассы» / доход «Излишек кассы»; Администратор решать не может (403). 390 и 1440 px.
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

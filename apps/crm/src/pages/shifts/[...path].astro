@@ -33,7 +33,7 @@ if (isCard && !notFound) {
   }
 }
 
-/** Имена – только с staff.view (Владелец, Директор): Администратору API список не отдаёт. */
+/** Список – только с staff.view (Владелец, Директор); Администратору имя коллеги приходит в самой смене (staffName). */
 async function staffList() {
   const list: Array<{ id: string; name: string }> = [];
   if (!can('staff.view')) return list;
@@ -56,7 +56,7 @@ const staffNames = Object.fromEntries(staff.map((x) => [x.id, x.name]));
 const title = notFound ? 'Не найдено' : shift ? `Смена ${fmtDate(shift.localDate)}` : isMy ? 'Моё расписание' : 'Расписание сотрудников';
 const inZoneOf = (id: string) => branches.some((b) => b.id === id);
 const shiftOwn = shift?.staffId === me.staff.id;
-const staffName = shift ? (shiftOwn ? fullName : (staffNames[shift.staffId] ?? 'Коллега')) : '';
+const staffName = shift ? (shiftOwn ? fullName : (staffNames[shift.staffId] ?? shift.staffName ?? '')) : '';
 const cardMoney = shift ? can('payroll.view') && inZoneOf(shift.branchId) : false;
 const cardCorrect = shift ? can('shift.attendance.correct') && inZoneOf(shift.branchId) : false;
 const cardEdit = shift ? can(shiftOwn ? 'shift.plan.own' : 'shift.manage') && inZoneOf(shift.branchId) : false;

@@ -40,11 +40,13 @@ export function writeDenied(db: Db, meta: AuditRequestMeta, input: Omit<AuditInp
  *    дата рождения – '****-**-**'. В аудите остаётся ИМЯ поля и факт изменения, не значение.
  *  Правило по явному списку ключей, не по угадыванию содержимого. Экспортируется для тестов. */
 export function redact(value: unknown): unknown;
-export const PD_KEYS: Readonly<Record<string, 'phone' | 'email' | 'name' | 'date'>> = {
+export const PD_KEYS: Readonly<Record<string, 'phone' | 'email' | 'name' | 'date' | 'text'>> = {
   phone: 'phone', phoneE164: 'phone', guestPhone: 'phone',
   email: 'email',
   firstName: 'name', lastName: 'name', guestName: 'name',
   birthDate: 'date',
+  employmentStart: 'date', employmentEnd: 'date',
+  managerComment: 'text',              // свободный текст о человеке: '***', в журнале только факт изменения
 };
 // Новое поле с ПДн в карточке = строка в PD_KEYS того же коммита (ревью проверяет).
 export const SECRET_KEYS: readonly string[] = [

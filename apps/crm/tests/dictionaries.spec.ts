@@ -1,7 +1,7 @@
 // Проверка S0-15 (план 6.1), справочники: системный код не удаляется и не меняется; пользовательская причина – архив;
 // создание и правка с записью истории; Администратор и Директор не видят экран и получают 404 (страница) / 403 (API).
 // Маршруты мока – точно по apps/api/src/modules/dictionaries/routes.ts.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

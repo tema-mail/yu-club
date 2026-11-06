@@ -1,5 +1,9 @@
 // e2e CRM без бэкенда: мок API (tests/mock-api.ts) + собранная CRM, смотрящая в мок через API_URL.
 import { defineConfig, devices } from '@playwright/test';
+import { fixE2eClock } from '../../tests/support/e2e.ts';
+
+// Весь прогон – в одном зафиксированном «сейчас»: засевы от текущего времени не зависят от часа запуска (tests/support/e2e.ts).
+fixE2eClock();
 
 const MOCK_PORT = 4012;
 const CRM_PORT = 4332;

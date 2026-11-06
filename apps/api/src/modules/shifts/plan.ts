@@ -10,9 +10,9 @@ import { writeAudit, type AuditRequestMeta, type Db } from '../../core/audit.ts'
 import { AppError } from '../../core/errors.ts';
 import type { Tx } from '../../core/ledger.ts';
 import { publish } from '../../core/outbox.ts';
-import { assertCan, can, type AccessContext } from '../../core/permissions.ts';
+import { assertCan, assertCanManageStaff, can, type AccessContext, type StaffRole } from '../../core/permissions.ts';
 import { resolveSettings } from '../../core/settings.ts';
-import { branchDay, contains, fromPgRange, instantToLocal, systemClock, toPgRange, type Clock, type Interval, type LocalDate } from '../../core/time.ts';
+import { branchDay, contains, fromPgRange, instantToLocal, parseLocalDate, systemClock, toPgRange, type Clock, type Interval, type LocalDate } from '../../core/time.ts';
 import { getBranch, openIntervals, type BranchInfo } from '../network/index.ts';
 import { accrualParts, isUuid, lockPeriodsShared, notFound, requireReason, type PeriodLock } from './rates.ts';
 
@@ -390,7 +390,7 @@ export async function setPlanningStatus(
   raw: { planningStatus?: unknown },
   meta: AuditRequestMeta,
   clock: Clock = systemClock,
-): Promise<{ planningStatus: 'available' | 'on_leave'; futureShiftsNeedingDecision: ShiftDto[] }> {
+): Promise<{ planningStatus: 'available' | 'on_leave'; rowVersion: number; futureShiftsNeedingDecision: ShiftDto[] }> {
   if (!isUuid(staffId)) throw notFound();
   const status = raw.planningStatus;
   if (status !== 'available' && status !== 'on_leave') throw new AppError('VALIDATION_FAILED', 400, 'planningStatus – available или on_leave', { field: 'planningStatus' });
@@ -403,17 +403,82 @@ export async function setPlanningStatus(
   } else {
     assertCan(ctx, 'staff.planning_status', { network: true });
   }
-  const before = await tx.query<{ planning_status: string }>(`SELECT planning_status FROM app.staff WHERE id = $1 FOR NO KEY UPDATE`, [staffId]);
+  const before = await tx.query<{ planning_status: string; row_version: number }>(`SELECT planning_status, row_version FROM app.staff WHERE id = $1 FOR NO KEY UPDATE`, [staffId]);
   const prev = before.rows[0]!.planning_status;
+  let rowVersion = before.rows[0]!.row_version;
   const now = clock.now();
   if (prev !== status) {
-    await tx.query(`UPDATE app.staff SET planning_status = $2, row_version = row_version + 1 WHERE id = $1`, [staffId, status]);
+    rowVersion += 1;
+    await tx.query(`UPDATE app.staff SET planning_status = $2, row_version = $3 WHERE id = $1`, [staffId, status, rowVersion]);
     await writeAudit(tx, meta, { action: 'staff.planning_changed', object: { type: 'staff', id: staffId }, before: { planningStatus: prev }, after: { planningStatus: status } }, clock);
   }
   const future = status === 'on_leave'
     ? await tx.query<ShiftRow>(`${SHIFT_SELECT} WHERE s.staff_id = $1 AND s.status = 'planned' AND lower(s.period) > $2 ORDER BY lower(s.period)`, [staffId, now])
     : { rows: [] as ShiftRow[] };
-  return { planningStatus: status, futureShiftsNeedingDecision: await shiftDtos(tx, future.rows, clock) };
+  return { planningStatus: status, rowVersion, futureShiftsNeedingDecision: await shiftDtos(tx, future.rows, clock) };
+}
+
+const CalendarDate = z.string().refine((v) => {
+  try {
+    parseLocalDate(v);
+    return true;
+  } catch {
+    return false;
+  }
+}, 'Дата – ГГГГ-ММ-ДД');
+const employmentSchema = z.object({
+  rowVersion: z.number().int().min(1),
+  employmentStart: CalendarDate.nullable().optional(),
+  employmentEnd: CalendarDate.nullable().optional(),
+  managerComment: z.string().max(2000).nullable().optional(),
+});
+
+/** K18 №319: даты работы и комментарий руководителя по rowVersion. Права – как у правки карточки (assertCanManageStaff): Директор – только Администраторов
+ *  своей зоны, Директора и Владельца – Владелец; вне зоны – 404. В аудите staff.employment_changed значения маскируются (K2 PD_KEYS). Ответ – только версия:
+ *  он хранится в идемпотентности 72 часа, копия комментария пережила бы его очистку; новые значения читают из GET /staff/{id}. */
+export async function setEmployment(tx: Tx, ctx: AccessContext, staffId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<{ rowVersion: number }> {
+  if (!isUuid(staffId)) throw notFound();
+  const body = parse(employmentSchema, raw);
+  const row = (
+    await tx.query<{ role: StaffRole; employment_start: string | null; employment_end: string | null; manager_comment: string | null; row_version: number }>(
+      `SELECT role, to_char(employment_start, 'YYYY-MM-DD') AS employment_start, to_char(employment_end, 'YYYY-MM-DD') AS employment_end, manager_comment, row_version
+         FROM app.staff WHERE id = $1 FOR NO KEY UPDATE`,
+      [staffId],
+    )
+  ).rows[0];
+  if (!row) throw notFound();
+  const a = await tx.query<{ city_id: string | null; branch_id: string | null }>('SELECT city_id, branch_id FROM app.staff_assignments WHERE staff_id = $1 AND revoked_at IS NULL', [staffId]);
+  const branchIds = a.rows.flatMap((x) => (x.branch_id ? [x.branch_id] : []));
+  const cityIds = a.rows.flatMap((x) => (x.city_id ? [x.city_id] : []));
+  // Видимость – как у карточки: вне зоны (или без назначений) сотрудника для вызывающего нет; право – потом.
+  if (!ctx.network && staffId !== ctx.actor.staffId) {
+    const inZone = branchIds.length + cityIds.length > 0 && branchIds.every((b) => ctx.branchIds.has(b)) && cityIds.every((c) => ctx.cityIds.has(c));
+    if (!inZone) throw notFound();
+  }
+  assertCanManageStaff(ctx, 'update_profile', { staffId, role: row.role, branchIds, cityIds });
+  if (row.row_version !== body.rowVersion) throw new AppError('VERSION_CONFLICT', 409, 'Карточка изменилась, обновите форму', { rowVersion: row.row_version });
+
+  const start = body.employmentStart === undefined ? row.employment_start : body.employmentStart;
+  const end = body.employmentEnd === undefined ? row.employment_end : body.employmentEnd;
+  const comment = body.managerComment === undefined ? row.manager_comment : body.managerComment?.trim() || null;
+  if (start && end && end < start) throw new AppError('VALIDATION_FAILED', 400, 'Дата окончания работы раньше даты начала', { field: 'employmentEnd' });
+
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  const diff = (key: string, was: unknown, next: unknown) => {
+    if (was !== next) {
+      before[key] = was;
+      after[key] = next;
+    }
+  };
+  diff('employmentStart', row.employment_start, start);
+  diff('employmentEnd', row.employment_end, end);
+  diff('managerComment', row.manager_comment, comment);
+  if (Object.keys(after).length === 0) return { rowVersion: row.row_version };
+  const rowVersion = row.row_version + 1;
+  await tx.query(`UPDATE app.staff SET employment_start = $2, employment_end = $3, manager_comment = $4, row_version = $5 WHERE id = $1`, [staffId, start, end, comment, rowVersion]);
+  await writeAudit(tx, meta, { action: 'staff.employment_changed', object: { type: 'staff', id: staffId }, before, after }, clock);
+  return { rowVersion };
 }
 
 /** Действующие филиалы сотрудника (назначения branch и city). */

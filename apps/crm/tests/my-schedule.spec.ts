@@ -1,6 +1,6 @@
 // «Моё расписание» (S3-72) на моке: свои смены, TC-15 в интерфейсе (Администратор двух филиалов планирует в обоих, пересечение через филиалы – отказ), снять будущую,
 // срок 24 часа, двойной клик «Пришёл» – одна отметка, уход, баннер чужой правки с «ознакомлен», без сумм. 1440 и 390 px.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

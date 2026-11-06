@@ -1,7 +1,7 @@
 // S3-80: карточка ремонта. TC-12 в интерфейсе: бронь в списке, не отменена молча; блокировка только после подтверждения; отмена из
 // списка – команда клубом (сервисное уведомление по K4 booking.cancelled проверяет сквозной S3-97 на стенде), новая запись на период –
 // RESOURCE_BLOCKED. План, статусы, согласование, закрытие со stillBlocked, расход без двойного учёта.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const OVERDUE = 'a0000000-0000-4000-8000-000000000001';

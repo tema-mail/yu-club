@@ -1,14 +1,16 @@
 // Выплата по ведомости (S3-75, K18 §9, №314–315, TC-19, R-15): отметка «Выплачен» (только Владелец, только ready и закрытый период) и отдельная кнопка «Создать расход» с подтверждением.
 // Автоматического расхода нет. Второй расход сервер не проводит (PAYOUT_EXPENSE_EXISTS): показываем это текстом, кнопка занята на время запроса. Разбивку по филиалам считает сервер.
+// Ручной расход «Зарплата», уже внесённый в кассе, не дублируем: «Привязать из кассы» (№315 link, сумма выбранного = к выплате).
 import { useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { fmtDate, shiftError, type PayrollStatement } from '../lib/shifts.ts';
 import { rub } from './CashJournal.tsx';
+import PayoutLinkDialog from './PayoutLinkDialog.tsx';
 
 export interface PayoutDialogProps {
   statement: PayrollStatement;
   staffName: string;
-  branches: Array<{ id: string; name: string }>;
+  branches: Array<{ id: string; name: string; timezone: string }>;
   today: string;
   canPaid: boolean;
   canExpense: boolean;
@@ -82,6 +84,9 @@ export default function PayoutDialog({ statement: s, staffName, branches, today,
       <div class="yc-bk__actions">
         {canPaid && s.status === 'ready' && <button type="button" class="yc-btn" onClick={() => { setComment(''); setError(''); setDate(today); paidDlg.current?.showModal(); }}>Отметить выплату</button>}
         {canExpense && s.status === 'paid' && toPay > 0 && <button type="button" class="yc-btn yc-btn--ghost" onClick={() => { setComment(''); setError(''); expDlg.current?.showModal(); }}>Создать расход</button>}
+        {canExpense && s.status === 'paid' && toPay > 0 && (
+          <PayoutLinkDialog statement={s} staffName={staffName} branches={branches} today={today} onLinked={async (text) => { setError(''); setNotice(text); await onChange(); }} />
+        )}
       </div>
       <p class="yc-alert yc-alert--ok" role="status" data-testid="payout-notice">{notice}</p>
       <p class="yc-alert yc-alert--error" role="alert" data-testid="payout-error">{error}</p>

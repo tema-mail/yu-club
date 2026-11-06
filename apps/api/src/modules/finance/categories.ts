@@ -20,6 +20,8 @@ export interface FinanceCategory {
   sortOrder: number;
   status: CategoryStatus;
   rowVersion: number;
+  /** Неизменный код системной категории (0210, 0312); у ручных – null. */
+  code: string | null;
 }
 
 export interface CategoryNode extends FinanceCategory {
@@ -34,9 +36,10 @@ interface CategoryRow {
   sort_order: number;
   status: CategoryStatus;
   row_version: number;
+  code: string | null;
 }
 
-const COLUMNS = 'id, kind, parent_id, name, sort_order, status, row_version';
+const COLUMNS = 'id, kind, parent_id, name, sort_order, status, row_version, code';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const toCategory = (r: CategoryRow): FinanceCategory => ({
@@ -47,6 +50,7 @@ const toCategory = (r: CategoryRow): FinanceCategory => ({
   sortOrder: r.sort_order,
   status: r.status,
   rowVersion: r.row_version,
+  code: r.code,
 });
 
 // ---- права: справочник сетевой – цель { network: true }; отказ – в аудит отдельной транзакцией (ADR 0005 п.8)

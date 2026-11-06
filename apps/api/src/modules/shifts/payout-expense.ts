@@ -68,12 +68,9 @@ async function lockAllPlaces(tx: Tx, branchIds: string[]): Promise<void> {
 }
 
 async function salaryCategory(db: Db): Promise<{ categoryId: string; subcategoryId: string }> {
-  const r = await db.query<{ id: string; parent_id: string }>(
-    `SELECT sub.id, sub.parent_id FROM app.finance_categories sub JOIN app.finance_categories c ON c.id = sub.parent_id
-      WHERE c.kind = 'expense' AND c.name = 'Персонал' AND c.parent_id IS NULL AND sub.name = 'Зарплата'`,
-  );
+  const r = await db.query<{ id: string; parent_id: string }>(`SELECT id, parent_id FROM app.finance_categories WHERE code = 'salary'`);
   const row = r.rows[0];
-  if (!row) throw new Error('payout-expense: нет посева категории «Персонал / Зарплата» (0202)');
+  if (!row) throw new Error('payout-expense: нет категории с кодом salary (0312)');
   return { categoryId: row.parent_id, subcategoryId: row.id };
 }
 
@@ -145,16 +142,18 @@ export async function createPayoutExpense(
 
 const linkSchema = z.object({ operationIds: z.array(z.string()).min(1).max(50) });
 
-/** Привязать ручной расход «Зарплата», внесённый в кассе раньше: сумма должна совпасть, второго расхода нет (K18 §9). */
+/** Привязать ручной расход «Зарплата», внесённый в кассе раньше: только подкатегория с кодом salary, сумма должна совпасть, второго расхода нет (K18 §9). */
 export async function linkPayoutExpense(tx: Tx, ctx: AccessContext, statementId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<{ operations: FinanceOperationDto[] }> {
   const parsed = linkSchema.safeParse(raw ?? {});
   if (!parsed.success) throw new AppError('VALIDATION_FAILED', 400, 'Нужен список операций operationIds');
   const row = await lockPaidStatement(tx, ctx, statementId);
+  const { subcategoryId: salaryId } = await salaryCategory(tx);
   const found: FinanceOperationDto[] = [];
   for (const id of [...new Set(parsed.data.operationIds)]) {
     const op = await getOperation(tx, id);
     if (!op) throw notFound();
     assertCan(ctx, 'payroll.payout.expense', { branchId: op.branchId });
+    if (op.subcategoryId !== salaryId) throw new AppError('OPERATION_LINK_INVALID', 422, 'Привязать можно только расход категории «Персонал» – «Зарплата»', { reason: 'category', operationId: op.id });
     found.push(op);
   }
   await lockAllPlaces(tx, found.map((o) => o.branchId));

@@ -2,7 +2,7 @@
 // резерв на удержание и его отражение в балансе, смена состава снимает резерв с фразой, баллов мало – выбор
 // недоступен без доплаты, комната целиком баллами не оплачивается, отмена выбора снимает резерв,
 // при −50 текст 07 §9.2 до выбора слота, 390 px без горизонтальной прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { ERROR_STATES, LIMIT_TEXT } from '../src/lib/booking.ts';
 import { RESERVE_DROPPED } from '../src/islands/Checkout.tsx';

@@ -1,7 +1,7 @@
 // Проверка S0-15c (план 6.1), экран «Сотрудники»: Директор создаёт только Администратора (опции «Директор» нет),
 // временный пароль – один раз с «Скопировать»; Администратору экран недоступен (404); блокировка через окно
 // с причиной – и заблокированный не входит; устаревший rowVersion – понятное сообщение; 1440 и 390 без прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';

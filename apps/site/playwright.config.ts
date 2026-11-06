@@ -1,6 +1,10 @@
 // e2e сайта без бэкенда: мок публичного API (tests/mock-api.ts) + собранный сайт, смотрящий в мок через API_URL.
 // Режим стенда (APP_ENV=stage): noindex везде. Бой проверяется вторым сервером на том же моке (APP_ENV=prod).
 import { defineConfig, devices } from '@playwright/test';
+import { fixE2eClock } from '../../tests/support/e2e.ts';
+
+// Весь прогон – в одном зафиксированном «сейчас»: засевы от текущего времени не зависят от часа запуска (tests/support/e2e.ts).
+fixE2eClock();
 
 export const MOCK_PORT = 4022;
 export const STAGE_PORT = 4342;

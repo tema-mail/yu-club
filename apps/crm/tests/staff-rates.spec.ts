@@ -1,6 +1,6 @@
 // Карточка сотрудника (S3-70) на моке mock-shifts-staff.ts: история ставок, «Не настроена ставка», новая ставка и исправление (копейки без потерь),
 // «Временно не работает» со списком смен «требуют решения», права: Директор видит историю без кнопки и получает 403 от сервера, чужой город – 404, Администратору – 404.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';
@@ -104,6 +104,41 @@ test('«Временно не работает»: смены не отменен
   await page.getByRole('button', { name: 'Вернуть в планирование' }).click();
   await page.getByRole('button', { name: 'Подтвердить' }).click();
   await expect(page.getByTestId('planning-status')).toContainText('Доступен');
+});
+
+test('даты работы и комментарий: настоящие поля карточки, правка окном, rowVersion един на карточку', async ({ page }) => {
+  await login(page, 'director@yu.test');
+  await open(page, '/staff/s-fresh');
+  await expect(page.getByTestId('manager-comment')).toHaveText('нет');
+  await page.getByRole('button', { name: 'Изменить даты и комментарий' }).click();
+  const form = page.getByTestId('work-form');
+  await form.getByLabel('Конец работы').fill('2025-01-01');
+  await form.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(form.getByRole('alert')).toContainText('раньше начала');
+  await form.getByLabel('Начало работы').fill('2026-03-02');
+  await form.getByLabel('Конец работы').fill('2026-12-31');
+  await form.getByLabel('Комментарий руководителя').fill('Сильный на кассе');
+  await form.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(form).toBeHidden();
+  await expect(page.getByTestId('work-dates')).toHaveText('с 02.03.2026 по 31.12.2026');
+  await expect(page.getByTestId('manager-comment')).toHaveText('Сильный на кассе');
+  // Форма карточки получила новую версию: сохранение не упирается в «карточку изменили».
+  await page.getByLabel('Телефон').fill('+7 913 111-22-33');
+  await page.getByRole('button', { name: 'Сохранить', exact: true }).first().click();
+  await expect(page.getByText('Сохранено.').first()).toBeVisible();
+  await open(page, '/staff/s-fresh');
+  await expect(page.getByTestId('work-dates')).toHaveText('с 02.03.2026 по 31.12.2026');
+  await expect(page.getByTestId('manager-comment')).toHaveText('Сильный на кассе');
+  const card = (await (await page.request.get('/api/crm/v1/staff/s-fresh')).json()) as { rowVersion: number; planningStatus: string; employmentStart: string; managerComment: string };
+  expect([card.planningStatus, card.employmentStart, card.managerComment]).toEqual(['available', '2026-03-02', 'Сильный на кассе']);
+  const stale = await page.request.patch('/api/crm/v1/staff/s-fresh/employment', { data: { rowVersion: card.rowVersion - 1, managerComment: 'x' }, headers: headers() });
+  expect(stale.status()).toBe(409);
+  // Комментарий о себе Директор не читает, правки нет; чужой город – 404.
+  await open(page, '/staff/s-director');
+  await expect(page.getByTestId('manager-comment')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Изменить даты и комментарий' })).toHaveCount(0);
+  expect((await page.request.patch('/api/crm/v1/staff/s-director/employment', { data: { rowVersion: 1, managerComment: 'x' }, headers: headers() })).status()).toBe(403);
+  expect((await page.request.patch('/api/crm/v1/staff/s-admin-tsk/employment', { data: { rowVersion: 1, managerComment: 'x' }, headers: headers() })).status()).toBe(404);
 });
 
 for (const [w, h] of [[1440, 900], [390, 844]] as const) {
