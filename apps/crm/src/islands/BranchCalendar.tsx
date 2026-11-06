@@ -5,8 +5,10 @@
 // В режиме browse смена даты и вида – переход по адресу (?date=&view=): рабочий стол страницы считается на ту же дату.
 // S2-64: у пришедших и завершённых – отметка оплаты первой строкой (короткая бронь обрезает хвост) (K10 №23 POST /bookings/payment-status): «к оплате» или «оплачено».
 // Нет права на статусы оплаты или ошибка – календарь работает без отметки.
+// S3-83: мероприятия видны занятостью (ссылка на карточку) и в режиме выбора слота; API календаря их не отдаёт – строки из /events и карточек (lib/events.ts).
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { browserCall } from '../lib/api.ts';
+import { ApiError, browserCall } from '../lib/api.ts';
+import { loadCalendarEvents, type CalendarEventItem } from '../lib/events.ts';
 import {
   MAX_DAYS, STATUS_LABEL, addDays, bookingApi, bookingError, fmtDay, fmtRange, hmOf, inZone, isLocalDate, today as todayIn, zonedMs,
   type CalendarDto, type CalendarItem,
@@ -99,6 +101,8 @@ export default function BranchCalendar(props: BranchCalendarProps) {
   const [skipFirst, setSkipFirst] = useState(!!props.initial);
   const [retry, setRetry] = useState(0);
   const [pay, setPay] = useState<PayMap>(new Map());
+  const [events, setEvents] = useState<CalendarEventItem[]>([]);
+  const [eventsError, setEventsError] = useState(false);
 
   const from = date;
   const to = view === 'week' ? addDays(date, MAX_DAYS - 1) : date;
@@ -124,6 +128,23 @@ export default function BranchCalendar(props: BranchCalendarProps) {
     if (!data || !data.items.some(visited)) return setPay(new Map());
     let alive = true;
     loadPay(data.items).then((m) => alive && setPay(m), () => alive && setPay(new Map()));
+    return () => {
+      alive = false;
+    };
+  }, [data]);
+
+  useEffect(() => {
+    if (!data || data.resources.length === 0) return setEvents([]);
+    let alive = true;
+    setEventsError(false);
+    loadCalendarEvents(branchId, from, to, tz, data.resources.map((r) => r.id)).then(
+      (x) => alive && setEvents(x),
+      (e) => {
+        if (!alive) return;
+        setEvents([]);
+        setEventsError(!(e instanceof ApiError && e.status === 403));
+      },
+    );
     return () => {
       alive = false;
     };
@@ -169,10 +190,11 @@ export default function BranchCalendar(props: BranchCalendarProps) {
           <button type="button" class="yc-link" onClick={() => setRetry((n) => n + 1)}>Повторить</button>
         </p>
       )}
+      {eventsError && <p class="yc-alert yc-alert--error" role="alert" data-testid="calendar-events-error">Мероприятия не загрузились: занятость комнат показана не вся. Обновите страницу.</p>}
       {data && data.resources.length === 0 && <p class="yc-empty">В филиале нет ресурсов для записи. Добавьте их в разделе «Ресурсы».</p>}
       {data && data.resources.length > 0 && (view === 'day'
-        ? <DayGrid data={data} date={date} tz={tz} nowLocal={nowLocal} mode={mode} onSlot={props.onSlot} highlight={props.highlightId} pay={pay} />
-        : <WeekGrid data={data} from={from} to={to} tz={tz} onDay={(d) => show(d, 'day')} highlight={props.highlightId} pay={pay} />)}
+        ? <DayGrid data={data} date={date} tz={tz} nowLocal={nowLocal} mode={mode} onSlot={props.onSlot} highlight={props.highlightId} pay={pay} events={events} />
+        : <WeekGrid data={data} from={from} to={to} tz={tz} onDay={(d) => show(d, 'day')} highlight={props.highlightId} pay={pay} events={events} />)}
       <ul class="yc-cal__legend" aria-label="Обозначения">
         <li><i class="yc-cal__key yc-cal__item--confirmed" />подтверждена</li>
         <li><i class="yc-cal__key yc-cal__item--arrived" />пришёл</li>
@@ -180,6 +202,7 @@ export default function BranchCalendar(props: BranchCalendarProps) {
         <li><strong>к оплате</strong>&nbsp;– пришёл, оплата не проведена</li>
         <li><i class="yc-cal__key yc-cal__item--hold" />оформляется на сайте</li>
         <li><i class="yc-cal__key yc-cal__item--block" />блокировка</li>
+        <li><i class="yc-cal__key" style={EVENT_STYLE} />мероприятие</li>
       </ul>
     </section>
   );
@@ -187,10 +210,12 @@ export default function BranchCalendar(props: BranchCalendarProps) {
 
 interface DayProps {
   data: CalendarDto; date: string; tz: string; nowLocal: { date: string; minutes: number };
-  mode: 'browse' | 'pick'; onSlot: BranchCalendarProps['onSlot']; highlight?: string; pay: PayMap;
+  mode: 'browse' | 'pick'; onSlot: BranchCalendarProps['onSlot']; highlight?: string; pay: PayMap; events: CalendarEventItem[];
 }
 
-function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight, pay }: DayProps) {
+const EVENT_STYLE = { background: 'var(--yc-accent-bg)', color: 'var(--yc-accent)', borderColor: 'var(--yc-accent)' };
+
+function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight, pay, events }: DayProps) {
   // Видимый отрезок: часы работы дня, расширенные до броней вне часов; по умолчанию 10–22.
   const range = useMemo(() => {
     const spans = [...data.openIntervals, ...data.items].map((x) => [minutesIn(x.start, date, tz), minutesIn(x.end, date, tz)] as const).filter(([s, e]) => e > s);
@@ -272,6 +297,16 @@ function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight, pay }: Day
                     ? <a class={itemClass(i, highlight)} style={style} href={`/bookings/${encodeURIComponent(i.id)}`} aria-label={itemLabel(i, tz, pay)} data-testid="cal-item">{body}</a>
                     : <span class={itemClass(i, highlight)} style={style} role="img" aria-label={itemLabel(i, tz, pay)} data-testid="cal-item">{body}</span>;
                 })}
+                {events.filter((ev) => ev.resourceIds.includes(r.id) && minutesIn(ev.end, date, tz) > minutesIn(ev.start, date, tz)).map((ev) => {
+                  const s = minutesIn(ev.start, date, tz);
+                  const e = minutesIn(ev.end, date, tz);
+                  return (
+                    <a class="yc-cal__item" style={{ ...EVENT_STYLE, left: `${x(s)}px`, width: `${Math.max(x(e) - x(s), 6)}px` }} href={`/events/${ev.id}`} aria-label={`Мероприятие ${ev.number}, ${fmtRange(ev.start, ev.end, tz)}, ${ev.title}`} data-testid="cal-event">
+                      <span class="yc-cal__item-time">{fmtRange(ev.start, ev.end, tz, false)}</span>
+                      <span class="yc-cal__item-text">{ev.number} {ev.title}</span>
+                    </a>
+                  );
+                })}
                 {isToday && nowLocal.minutes >= range.start && nowLocal.minutes <= range.end && (
                   <span class="yc-cal__now" style={{ left: `${x(nowLocal.minutes)}px` }} aria-hidden="true" />
                 )}
@@ -284,7 +319,7 @@ function DayGrid({ data, date, tz, nowLocal, mode, onSlot, highlight, pay }: Day
   );
 }
 
-function WeekGrid({ data, from, to, tz, onDay, highlight, pay }: { data: CalendarDto; from: string; to: string; tz: string; onDay: (d: string) => void; highlight?: string; pay: PayMap }) {
+function WeekGrid({ data, from, to, tz, onDay, highlight, pay, events }: { data: CalendarDto; from: string; to: string; tz: string; onDay: (d: string) => void; highlight?: string; pay: PayMap; events: CalendarEventItem[] }) {
   const days: string[] = [];
   for (let d = from; d <= to; d = addDays(d, 1)) days.push(d);
   const hoursOf = (d: string) => {
@@ -314,10 +349,18 @@ function WeekGrid({ data, from, to, tz, onDay, highlight, pay }: { data: Calenda
               </th>
               {days.map((d) => {
                 const items = data.items.filter((i) => i.resourceIds.includes(r.id) && minutesIn(i.end, d, tz) > minutesIn(i.start, d, tz));
+                const evs = events.filter((ev) => ev.resourceIds.includes(r.id) && minutesIn(ev.end, d, tz) > minutesIn(ev.start, d, tz));
                 return (
                   <td data-testid={`week-${r.id}-${d}`}>
-                    {items.length === 0 ? <span class="yc-cal__free">свободно</span> : (
+                    {items.length === 0 && evs.length === 0 ? <span class="yc-cal__free">свободно</span> : (
                       <ul class="yc-cal__chips">
+                        {evs.map((ev) => (
+                          <li>
+                            <a class="yc-cal__item" style={EVENT_STYLE} href={`/events/${ev.id}`} aria-label={`Мероприятие ${ev.number}, ${fmtRange(ev.start, ev.end, tz)}, ${ev.title}`} data-testid="cal-event">
+                              <span class="yc-cal__item-time">{fmtRange(ev.start, ev.end, tz, false)}</span> <span class="yc-cal__item-text">{ev.number} {ev.title}</span>
+                            </a>
+                          </li>
+                        ))}
                         {items.map((i) => (
                           <li>
                             {i.kind === 'booking'

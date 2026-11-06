@@ -1,0 +1,205 @@
+---
+// Мероприятия (S3-81, K20 №361–362, 11 §11): /events – список с колонками и фильтрами 11 §11.1 (серверный, фильтры – обычной формой GET,
+// «Показать ещё» – курсором); /events/{id} – карточка с 9 вкладками 11 §11.2. Без event.money.view сервер отдаёт только dueKop: колонок
+// сумм нет вовсе, в разметку ничего не попадает. Чужой филиал – 404 (K1). Период фильтра – даты по зоне филиала контекста (K8).
+import '../../styles/events.css';
+import Crm from '../../layouts/Crm.astro';
+import EventCard from '../../islands/EventCard.tsx';
+import EventForm, { type PickedClient } from '../../islands/EventForm.tsx';
+import { rub } from '../../islands/CashJournal.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+import { zonedIso } from '../../lib/booking.ts';
+import { EVENT_BADGE, EVENT_STATUS, fullMoney, periodText, type EventCardDto, type EventRow, type EventStatus, type EventType } from '../../lib/events.ts';
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const [key = '', extra] = (Astro.params.path ?? '').split('/');
+const q = Astro.url.searchParams;
+let notFoundPage = extra !== undefined || !can('event.view');
+let card: EventCardDto | null = null;
+if (!notFoundPage && key) {
+  try {
+    card = await serverCall<EventCardDto>(cookie, `/events/${encodeURIComponent(key)}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFoundPage = true;
+  }
+}
+if (notFoundPage) Astro.response.status = 404;
+
+const contextBranch = ctx.kind === 'branch' ? ctx.branch : branches[0];
+const tz = contextBranch?.timezone ?? 'Asia/Novosibirsk';
+const filters = {
+  from: q.get('from') ?? '', to: q.get('to') ?? '', branchId: q.get('branchId') ?? (ctx.kind === 'branch' ? ctx.branch.id : ''), typeId: q.get('typeId') ?? '', status: q.get('status') ?? '',
+  customer: q.get('customer')?.trim() ?? '', responsibleId: q.get('responsibleId') ?? '', hasDue: q.get('hasDue') ?? '',
+};
+const isDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v);
+const nextDay = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+
+let list: { items: EventRow[]; nextCursor: string | null } = { items: [], nextCursor: null };
+let listError = '';
+let types: EventType[] = [];
+const staff: Array<{ id: string; name: string }> = [];
+if (!notFoundPage && !card) {
+  const p = new URLSearchParams({ limit: '50' });
+  if (isDate(filters.from)) p.set('from', zonedIso(filters.from, '00:00', tz));
+  if (isDate(filters.to)) p.set('to', zonedIso(nextDay(filters.to), '00:00', tz));
+  for (const k of ['branchId', 'typeId', 'status', 'customer', 'responsibleId', 'hasDue'] as const) if (filters[k]) p.set(k, filters[k]);
+  const cursor = q.get('cursor');
+  if (cursor) p.set('cursor', cursor);
+  try {
+    list = await serverCall(cookie, `/events?${p}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 400) throw e;
+    listError = 'Фильтр не подошёл – проверьте заказчика (от 1 до 100 символов) и даты.';
+  }
+}
+if (!notFoundPage) {
+  types = (await serverCall<{ items: EventType[] }>(cookie, '/event-types')).items;
+  if (can('staff.view')) {
+    let c: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const s: string = c ? `&cursor=${encodeURIComponent(c)}` : '';
+      const r: { items: Array<{ id: string; firstName: string; lastName: string }>; nextCursor: string | null } = await serverCall(cookie, `/staff?limit=100${s}`);
+      for (const x of r.items) staff.push({ id: x.id, name: `${x.firstName} ${x.lastName}` });
+      if (!r.nextCursor) break;
+      c = r.nextCursor;
+    }
+  }
+}
+const typeName = (id: string) => types.find((t) => t.id === id)?.name ?? '–';
+const branchName = (id: string) => branches.find((b) => b.id === id)?.name ?? '–';
+const staffName = (id: string | null) => (id ? (id === me.staff.id ? `${me.staff.firstName} ${me.staff.lastName}` : (staff.find((s) => s.id === id)?.name ?? 'Назначен')) : '–');
+const seesMoney = list.items.some((e) => fullMoney(e.money)) || can('event.money.view');
+
+const linkWith = (patch: Record<string, string>) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries({ ...filters, ...patch })) if (v) p.set(k, v);
+  const s = p.toString();
+  return `/events${s ? `?${s}` : ''}`;
+};
+const nextUrl = list.nextCursor ? `${linkWith({})}${linkWith({}).includes('?') ? '&' : '?'}cursor=${encodeURIComponent(list.nextCursor)}` : '';
+
+// Создание из карточки клиента: /events?new=1&clientId=…
+let preset: PickedClient | null = null;
+const presetId = q.get('clientId');
+if (presetId && !notFoundPage) {
+  try {
+    const c = await serverCall<{ id: string; firstName: string | null; lastName: string | null; phoneMasked: string }>(cookie, `/clients/${encodeURIComponent(presetId)}`);
+    preset = { id: c.id, name: `${[c.lastName, c.firstName].filter(Boolean).join(' ') || 'Без имени'}, ${c.phoneMasked}` };
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+  }
+}
+const canCreate = !notFoundPage && !card && can('event.manage') && branches.length > 0;
+const title = notFoundPage ? 'Не найдено' : card ? `Мероприятие ${card.number}` : 'Мероприятия';
+
+// Правила праздника до сохранения: настройки филиала, при отказе чтения – значения K20 §17; окончательно решает сервер.
+const party = { minMinutes: 120, maxGuests: 10 };
+const partyBranch = card?.branchId ?? contextBranch?.id;
+if (!notFoundPage && partyBranch && can('settings.branch.manage')) {
+  try {
+    const st = await serverCall<{ items: Array<{ key: string; value: unknown }> }>(cookie, `/settings?scope=branch&id=${encodeURIComponent(partyBranch)}`);
+    const v = (k: string) => st.items.find((i) => i.key === k)?.value;
+    if (typeof v('event.party.min_minutes') === 'number') party.minMinutes = v('event.party.min_minutes') as number;
+    if (typeof v('event.party.max_guests') === 'number') party.maxGuests = v('event.party.max_guests') as number;
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+  }
+}
+---
+<Crm title={title}>
+  {notFoundPage ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такого мероприятия нет или оно вне вашей зоны доступа.</p>
+      <p><a href="/events">К мероприятиям</a></p>
+    </div>
+  ) : card ? (
+    <>
+      <div class="yc-head">
+        <p class="yc-crumbs"><a href="/events">Мероприятия</a> / {card.number}</p>
+        <h1>{card.title}</h1>
+      </div>
+      <EventCard client:load initial={card} typeName={typeName(card.typeId)} branchName={branchName(card.branchId)} branches={branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId }))}
+        actions={me.actions} staff={staff} minMinutes={party.minMinutes} maxGuests={party.maxGuests} />
+    </>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>Мероприятия</h1>
+        <p>Праздники, дни рождения и групповые посещения. Время – по зоне филиала мероприятия.</p>
+      </div>
+      {canCreate && (
+        <div class="yc-tabs">
+          <EventForm client:load types={types} branches={branches.map((b) => ({ id: b.id, name: b.name, timezone: b.timezone }))} defaultBranchId={contextBranch!.id} staff={staff}
+            maxGuests={party.maxGuests} autoOpen={q.get('new') === '1'} preset={preset} />
+        </div>
+      )}
+      <section class="yc-panel" aria-label="Фильтры">
+        <form class="yc-ev__filters" method="get" action="/events">
+          <label class="yc-field"><span class="yc-field__label">С даты</span><input class="yc-input" type="date" name="from" value={filters.from} /></label>
+          <label class="yc-field"><span class="yc-field__label">По дату</span><input class="yc-input" type="date" name="to" value={filters.to} /></label>
+          {branches.length > 1 && (
+            <label class="yc-field"><span class="yc-field__label">Филиал</span>
+              <select class="yc-input" name="branchId"><option value="">Все филиалы зоны</option>{branches.map((b) => <option value={b.id} selected={filters.branchId === b.id}>{b.name}</option>)}</select></label>
+          )}
+          <label class="yc-field"><span class="yc-field__label">Тип</span>
+            <select class="yc-input" name="typeId"><option value="">Любой</option>{types.map((t) => <option value={t.id} selected={filters.typeId === t.id}>{t.name}</option>)}</select></label>
+          <label class="yc-field"><span class="yc-field__label">Статус</span>
+            <select class="yc-input" name="status"><option value="">Любой</option>{(Object.keys(EVENT_STATUS) as EventStatus[]).map((s) => <option value={s} selected={filters.status === s}>{EVENT_STATUS[s]}</option>)}</select></label>
+          <label class="yc-field"><span class="yc-field__label">Заказчик: имя или телефон</span><input class="yc-input" type="search" name="customer" maxlength={100} value={filters.customer} /></label>
+          {staff.length > 0 && (
+            <label class="yc-field"><span class="yc-field__label">Ответственный</span>
+              <select class="yc-input" name="responsibleId"><option value="">Любой</option>{staff.map((s) => <option value={s.id} selected={filters.responsibleId === s.id}>{s.name}</option>)}</select></label>
+          )}
+          <label class="yc-field"><span class="yc-field__label">Неоплаченный остаток</span>
+            <select class="yc-input" name="hasDue"><option value="">Неважно</option><option value="true" selected={filters.hasDue === 'true'}>Есть</option><option value="false" selected={filters.hasDue === 'false'}>Нет</option></select></label>
+          <button class="yc-btn yc-btn--ghost" type="submit">Найти</button>
+        </form>
+      </section>
+      {listError && <p class="yc-alert yc-alert--error" role="alert">{listError}</p>}
+      <section class="yc-panel" aria-label="Список мероприятий">
+        {list.items.length === 0 ? <p class="yc-empty" data-testid="event-empty">Мероприятий не найдено.</p> : (
+          <div class="yc-ev__scroll" tabindex="0" aria-label="Мероприятия, прокрутка внутри блока">
+            <table class="yc-ev__table" data-testid="event-list">
+              <thead>
+                <tr>
+                  <th>Номер и название</th><th>Тип</th><th>Дата и время</th><th>Филиал</th><th>Заказчик</th><th>Участников</th><th>Статус</th>
+                  {seesMoney && <th>Плановая стоимость</th>}
+                  {seesMoney && <th>Поступило</th>}
+                  <th>Остаток к оплате</th>
+                  {seesMoney && <th>Факт. расходы</th>}
+                  <th>Ответственный</th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.items.map((e) => (
+                  <tr data-testid={`event-${e.number}`}>
+                    <td><a class="yc-ev__link" href={`/events/${e.id}`}>{e.number}</a><br />{e.title}</td>
+                    <td>{typeName(e.typeId)}</td>
+                    <td>{periodText(e.plannedStart, e.plannedEnd, e.timezone)}</td>
+                    <td>{branchName(e.branchId)}</td>
+                    <td>{e.customer.name}<br /><span class="yc-ev__muted">{e.customer.phoneMasked}</span></td>
+                    <td class="yc-ev__num">{e.participantsCount ?? '–'}</td>
+                    <td>
+                      <span class={`yc-badge yc-badge--${EVENT_BADGE[e.status]}`}>{EVENT_STATUS[e.status]}</span>
+                      {e.requestHoldRemind && <><br /><span class="yc-ev__warn" data-testid="hold-remind">Комната скоро снимется</span></>}
+                    </td>
+                    {seesMoney && <td class="yc-ev__num">{fullMoney(e.money) ? rub(e.money.agreedKop) : '–'}</td>}
+                    {seesMoney && <td class="yc-ev__num">{fullMoney(e.money) ? rub(e.money.receivedKop) : '–'}</td>}
+                    <td class="yc-ev__num" data-testid="event-due">{rub(e.money.dueKop)}</td>
+                    {seesMoney && <td class="yc-ev__num">{fullMoney(e.money) ? rub(e.money.factCostKop) : '–'}</td>}
+                    <td>{staffName(e.responsibleStaffId)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {nextUrl && <p><a class="yc-btn yc-btn--ghost" href={nextUrl}>Показать ещё</a></p>}
+      </section>
+    </>
+  )}
+</Crm>
+

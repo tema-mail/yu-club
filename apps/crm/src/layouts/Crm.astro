@@ -13,6 +13,8 @@ interface MenuItem {
   href: string;
   label: string;
   action: string;
+  /** Есть и при этом праве: у Директора справочники Э3 (S3-86). */
+  also?: string;
   active: (path: string) => boolean;
 }
 
@@ -20,6 +22,7 @@ const MENU: MenuItem[] = [
   { href: '/schedule', label: 'Расписание', action: 'schedule.view', active: (p) => p.startsWith('/schedule') || p.startsWith('/bookings') },
   { href: '/', label: 'Филиалы', action: 'network.view', active: (p) => p === '/' || p.startsWith('/branches/') },
   { href: '/clients', label: 'Клиенты', action: 'client.view.basic', active: (p) => p.startsWith('/clients') },
+  { href: '/events', label: 'Мероприятия', action: 'event.view', active: (p) => p.startsWith('/events') },
   { href: '/finance', label: 'Финансы', action: 'finance.view.day', active: (p) => p.startsWith('/finance') },
   { href: '/certificates', label: 'Сертификаты', action: 'certificate.view', active: (p) => p.startsWith('/certificates') },
   { href: '/goods', label: 'Товары за баллы', action: 'loyalty.view', active: (p) => p.startsWith('/goods') },
@@ -31,14 +34,14 @@ const MENU: MenuItem[] = [
   { href: '/equipment', label: 'Оборудование', action: 'equipment.view', active: (p) => p.startsWith('/equipment') },
   { href: '/repairs', label: 'Ремонт', action: 'equipment.view', active: (p) => p.startsWith('/repairs') },
   { href: '/network/branches', label: 'Сеть', action: 'network.branch.update', active: (p) => p.startsWith('/network') },
-  { href: '/dictionaries', label: 'Справочники', action: 'dictionary.manage', active: (p) => p.startsWith('/dictionaries') },
+  { href: '/dictionaries', label: 'Справочники', action: 'dictionary.manage', also: 'repair.executor.manage', active: (p) => p.startsWith('/dictionaries') },
   { href: '/settings', label: 'Настройки', action: 'settings.branch.manage', active: (p) => p.startsWith('/settings') },
 ];
 
 const { title } = Astro.props;
 const { me, branches, ctx } = Astro.locals;
 const path = Astro.url.pathname;
-const menu = MENU.filter((m) => me.actions.includes(m.action));
+const menu = MENU.filter((m) => me.actions.includes(m.action) || (m.also !== undefined && me.actions.includes(m.also)));
 
 // Группы переключателя: «Вся сеть» – только Владельцу; «Весь город» – при назначении на город; филиалы – вся зона.
 const groups: ContextGroup[] = [];

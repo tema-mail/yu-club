@@ -5,10 +5,13 @@
 // без права блока нет вовсе, и в разметку ничего не попадает. Клиент вне зоны – 404, как несуществующий (K1).
 // Записи, посещения и согласия появятся с бронированием (S1-07…S1-10): API их пока не отдаёт – и экран не показывает.
 // Бонусный счёт (S2-65, K15 №24) – при loyalty.view; корректировка, выдача и возврат – по правам из /me.
+// Подарок имениннику (S3-85, K20 №376) – отдельным блоком при event.view, не среди сертификатов.
 // Экспорта нет: маршрута выгрузки в API нет, Администратору он не положен вовсе (client.export – только Владелец).
+import '../../styles/events.css';
 import Crm from '../../layouts/Crm.astro';
 import EntityList from '../../islands/EntityList.tsx';
 import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import GiftPanel from '../../islands/GiftPanel.tsx';
 import LoyaltyBlock from '../../islands/LoyaltyBlock.tsx';
 import type { LoyaltyCard } from '../../lib/loyalty.ts';
 import { ApiError, serverCall } from '../../lib/api.ts';
@@ -121,6 +124,13 @@ const seesAll = me.access.network;
         <LoyaltyBlock client:load clientId={client.id} initial={loyalty} timezone={timezone}
           branches={branches.map((b) => ({ id: b.id, name: b.name }))} defaultBranchId={ctx.kind === 'branch' ? ctx.branch.id : null}
           canAdjust={can('loyalty.adjust')} canBelowLimit={can('loyalty.adjust_below_limit')} canIssue={can('loyalty.goods.issue')} />
+      )}
+      {can('event.view') && (
+        <>
+          <GiftPanel client:load mode="client" clientId={client.id} actions={me.actions} branches={branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId }))}
+            defaultBranchId={ctx.kind === 'branch' ? ctx.branch.id : null} />
+          {can('event.manage') && <p><a class="yc-btn yc-btn--ghost" href={`/events?new=1&clientId=${encodeURIComponent(client.id)}`}>Новое мероприятие для клиента</a></p>}
+        </>
       )}
       <EntityCard client:load historyOnly fields={historyFields} values={{}}
         history={{ objectType: 'client', objectId: client.id, timezone, omit: historyOmit }} />

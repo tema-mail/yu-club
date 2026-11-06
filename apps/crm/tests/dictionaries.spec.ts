@@ -29,7 +29,7 @@ const rows = (page: Page, kind = 'reasons') => page.getByTestId(`dict-${kind}`).
 
 test('Владелец: меню и системный код причины – не удаляется и не меняется', async ({ page }) => {
   await login(page, 'owner@yu.test');
-  await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Расписание', 'Филиалы', 'Клиенты', 'Финансы', 'Сертификаты', 'Товары за баллы', 'Сотрудники', 'Моё расписание', 'Расписание сотрудников', 'Зарплата', 'Ресурсы', 'Оборудование', 'Ремонт', 'Сеть', 'Справочники', 'Настройки']);
+  await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Расписание', 'Филиалы', 'Клиенты', 'Мероприятия', 'Финансы', 'Сертификаты', 'Товары за баллы', 'Сотрудники', 'Моё расписание', 'Расписание сотрудников', 'Зарплата', 'Ресурсы', 'Оборудование', 'Ремонт', 'Сеть', 'Справочники', 'Настройки']);
   await page.getByRole('link', { name: 'Справочники' }).click();
   await expect(page).toHaveURL(/\/dictionaries\/reasons$/);
   await expect(rows(page)).toHaveCount(10);
@@ -109,11 +109,12 @@ test('типы ресурсов: без создания и архива, шаг
   await expect(page.getByTestId('history')).toContainText('Шаг записи, минут: 15 → 30');
 });
 
-test('Администратор и Директор: экрана справочников нет, прямая ссылка – 404, изменение – 403', async ({ page, browser }) => {
+test('Администратор и Директор: прежних справочников нет, прямая ссылка – 404, изменение – 403', async ({ page, browser }) => {
   for (const [p, email] of [[page, 'admin@yu.test'], [await (await browser.newContext()).newPage(), 'director@yu.test']] as const) {
     await login(p, email);
-    await expect(p.getByRole('navigation', { name: 'Разделы' }).getByRole('link', { name: 'Справочники' })).toHaveCount(0);
-    for (const url of ['/dictionaries', '/dictionaries/reasons', `/dictionaries/reasons/${SYSTEM_REASON}`, '/dictionaries/space-types/new']) {
+    // S3-86: Директору раздел виден ради справочников Э3 (только чтение), Администратору – нет
+    await expect(p.getByRole('navigation', { name: 'Разделы' }).getByRole('link', { name: 'Справочники' })).toHaveCount(email === 'director@yu.test' ? 1 : 0);
+    for (const url of [...(email === 'admin@yu.test' ? ['/dictionaries'] : []), '/dictionaries/reasons', `/dictionaries/reasons/${SYSTEM_REASON}`, '/dictionaries/space-types/new']) {
       const r = await p.goto(url);
       expect(r?.status(), `${email} ${url}`).toBe(404);
       await expect(p.getByTestId('not-found')).toBeVisible();

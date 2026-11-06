@@ -139,12 +139,12 @@ export const crm = {
 };
 
 /** Вызов из браузера (острова, скрипты страниц): тот же источник, кука уходит сама.
- *  Изменяющие запросы получают Idempotency-Key (ADR 0004). */
-export async function browserCall<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+ *  Изменяющие запросы получают Idempotency-Key (ADR 0004); key – один ключ на попытку формы: двойной клик – одна операция. */
+export async function browserCall<T>(path: string, init: { method?: string; body?: unknown; key?: string } = {}): Promise<T> {
   const method = init.method ?? 'GET';
   const headers: Record<string, string> = { accept: 'application/json' };
   if (init.body !== undefined) headers['content-type'] = 'application/json';
-  if (method !== 'GET') headers['idempotency-key'] = crypto.randomUUID();
+  if (method !== 'GET') headers['idempotency-key'] = init.key ?? crypto.randomUUID();
   let res: Response;
   try {
     res = await fetch(`${API_PREFIX}${path}`, {
