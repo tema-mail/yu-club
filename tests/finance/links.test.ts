@@ -11,7 +11,7 @@ import { verifyBalance } from '../../apps/api/src/core/ledger.ts';
 import type { AccessContext, StaffRole } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { postMoneyOperation, recordExpense, recordIncome, type FinanceOperationDto } from '../../apps/api/src/modules/finance/cashbox.ts';
-import { reverseOperation } from '../../apps/api/src/modules/finance/corrections.ts';
+import { correctOperation, reverseOperation } from '../../apps/api/src/modules/finance/corrections.ts';
 import { createLinkedOperation, linkOperation, linksOf, refundIncome, unlink } from '../../apps/api/src/modules/finance/links.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -137,6 +137,40 @@ describe('linkOperation', () => {
     const err = await fails(link(op.id, { type: 'event', id: randomUUID() }, 'expense'), 'OPERATION_ALREADY_LINKED');
     expect(err.details).toMatchObject({ ref: repair, role: 'expense' });
     await fails(link(op.id, { type: 'payroll_statement', id: randomUUID() }, 'payout_expense'), 'OPERATION_ALREADY_LINKED');
+  });
+
+  it('ревизия: исправление №45 связанной операции – OPERATION_ALREADY_LINKED, ни сторно, ни новой операции; сторно №44 и исправление после отвязки работают', async () => {
+    const b = await newBranch();
+    const op = await expense(b, 700);
+    const event = { type: 'event' as const, id: randomUUID() };
+    await link(op.id, event, 'expense');
+    const fix = (operationId: string, key = randomUUID()) =>
+      tx((t) => correctOperation(t, owner, { operationId, reason: 'ошибка суммы', replacement: { kind: 'expense', method: 'cash', amountKop: 800, categoryId: otherCategory, occurredAt: AT, comment: 'исправлено' } }, meta(owner), { idempotencyKey: key, clock }));
+    const err = await fails(fix(op.id), 'OPERATION_ALREADY_LINKED');
+    expect(err.details).toMatchObject({ ref: event, role: 'expense' });
+    const count = async () => Number((await db.client.query('SELECT count(*) AS n FROM journal.finance_operations WHERE branch_id = $1', [b])).rows[0].n);
+    const before = await count();
+    await fails(fix(op.id), 'OPERATION_ALREADY_LINKED');
+    expect(await count()).toBe(before);
+    expect((await linksOf(pool, event)).map((l) => l.operation.id)).toEqual([op.id]);
+    await tx((t) => unlink(t, owner, { operationId: op.id, reason: 'не то мероприятие' }, meta(owner), clock));
+    const done = await fix(op.id);
+    expect(done.replacement.amountKop).toBe(800);
+  });
+
+  it('ревизия: 20 гонок «привязка против исправления» – либо связь без сторно, либо сторно без связи; двойного учёта нет', async () => {
+    const b = await newBranch();
+    for (let i = 0; i < 20; i++) {
+      const op = await expense(b, 100);
+      const event = { type: 'event' as const, id: randomUUID() };
+      const [linked, fixed] = await Promise.allSettled([
+        link(op.id, event, 'expense'),
+        tx((t) => correctOperation(t, owner, { operationId: op.id, reason: 'гонка', replacement: { kind: 'expense', method: 'cash', amountKop: 200, categoryId: otherCategory, occurredAt: AT, comment: 'гонка' } }, meta(owner), { idempotencyKey: randomUUID(), clock })),
+      ]);
+      expect([linked.status, fixed.status].filter((x) => x === 'fulfilled')).toHaveLength(1);
+      const live = await linksOf(pool, event);
+      expect(live.length).toBe(linked.status === 'fulfilled' ? 1 : 0);
+    }
   });
 
   it('20 параллельных привязок одной операции к разным объектам → ровно одна связь (индекс базы)', async () => {

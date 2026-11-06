@@ -69,7 +69,7 @@ describe('0010: защита в базе', () => {
   it('сид: системные типы ресурсов с шагами 01 §4, причины «Другое» во всех доменах', async () => {
     const t = await db.client.query('SELECT code, step_minutes, is_system FROM app.dict_resource_types ORDER BY sort_order');
     expect(t.rows.map((r) => [r.code, r.step_minutes])).toEqual([
-      ['pc', 30], ['vr_seat', 15], ['room_whole', 15], ['ps_room', 30], ['composite', 15],
+      ['pc', 30], ['vr_seat', 15], ['room_whole', 15], ['ps_room', 30], ['composite', 15], ['gift_vr', 5],
     ]);
     expect(t.rows.every((r) => r.is_system)).toBe(true);
     const o = await db.client.query("SELECT count(*)::int AS n FROM app.dict_reasons WHERE code = 'other' AND is_system");
@@ -100,7 +100,7 @@ describe('маршруты: права только Владельцу', () => {
   it('чтение – любой сотрудник; статусы отдаются с переходами', async () => {
     const r = await req('admin', 'GET', '/resource-types');
     expect(r.statusCode).toBe(200);
-    expect(r.json().items).toHaveLength(5);
+    expect(r.json().items).toHaveLength(6);
     const s = await req('admin', 'GET', '/statuses?domain=booking');
     expect(s.json().items).toHaveLength(6);
     expect(s.json().transitions).toContainEqual({ domain: 'booking', from: 'confirmed', to: 'arrived' });

@@ -5,7 +5,8 @@
 // (modules/booking/hold.ts), сгорание сертификатов раз в 5 мин (modules/certificates/lifecycle.ts) и диспетчер
 // запланированных уведомлений Web Push раз в 30 с (modules/notifications/sender.ts) и ночную сверку 16 §14 раз в сутки
 // (modules/reports/reconcile.ts, 03:30 по RECONCILE_TIMEZONE; ручной запуск – командой из того же файла),
-// проверку смен без отметки раз в 15 мин (modules/shifts/attendance.ts, K18 §5).
+// проверку смен без отметки раз в 15 мин (modules/shifts/attendance.ts, K18 §5),
+// файлы экспорта отчётов и их уборку (modules/reports/export.ts, K24 §7) – если задан REPORTS_DATABASE_URL.
 // SIGTERM/SIGINT: перестаём брать новое, ждём текущие задачи pg-boss, закрываем пулы, код выхода 0.
 //
 // Окружение: DATABASE_URL – рантайм yu_app (данные модулей); PGBOSS_DATABASE_URL – роль yu_boss, владелец
@@ -21,6 +22,7 @@ import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/
 import { systemClock, type Clock, type LocalTime, type TimeZone } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
 import { startCertificateExpiry } from './modules/certificates/lifecycle.ts';
+import { registerContentHandlers } from './modules/content/handlers.ts';
 import { startMediaGc } from './modules/content/media.ts';
 import { bookingLookup, paymentBookingProvider } from './modules/booking/providers.ts';
 import { paymentLookup } from './modules/finance/payment.ts';
@@ -29,8 +31,14 @@ import { startLoyaltyExpiry } from './modules/loyalty/adjust.ts';
 import { registerPenaltyHandlers } from './modules/loyalty/penalty.ts';
 import { registerReserveHandlers } from './modules/loyalty/reserve.ts';
 import { startCampaignRunner } from './modules/notifications/campaign-runner.ts';
+import { registerGiftHandlers } from './modules/events/gift-booking.ts';
+import { startGiftExpiry } from './modules/events/gifts.ts';
+import { startRequestHoldExpiry } from './modules/events/resources.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
+import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
+import { startExportGc, startExportRunner } from './modules/reports/export.ts';
+import { createReportsPool, type ReportsPool } from './modules/reports/framework.ts';
 import { scheduleFromEnv, startNightlyReconcile, type ReconcileLogger } from './modules/reports/reconcile.ts';
 import { registerPayrollHandlers } from './modules/shifts/accrual.ts';
 import { startShiftReview } from './modules/shifts/attendance.ts';
@@ -67,6 +75,8 @@ export async function startWorkerTasks(opts: {
   campaignIntervalMs?: number;
   /** UNSUBSCRIBE_SECRET: без него рекламные строки не уходят (K21 §7). */
   unsubscribeSecret?: string | null;
+  requestHoldIntervalMs?: number;
+  giftExpiryIntervalMs?: number;
   logger?: WorkerLogger;
   /** Ночная сверка (S2-80): время и зона расписания, частота проверки «пора ли»; по умолчанию 03:30 Europe/Moscow, раз в минуту. */
   reconcile?: { at?: LocalTime; timeZone?: TimeZone; intervalMs?: number; logger?: ReconcileLogger };
@@ -74,6 +84,8 @@ export async function startWorkerTasks(opts: {
   payments?: PaymentLookup;
   /** Медиатека CMS: ночная уборка «сирот» content:media-gc (K22 §8). Нет – задача не запускается. */
   mediaStore?: FileStore;
+  /** Экспорт отчётов: пул yu_reports и каталог EXPORT_DIR (K24 §7, §9). Нет – задачи стоят в очереди, файлы не считаются. */
+  exports?: { reports: ReportsPool; store: FileStore; intervalMs?: number };
 }): Promise<WorkerTasks> {
   const clock = opts.clock ?? systemClock;
   const logger = opts.logger ?? { error: (obj: Record<string, unknown>, msg: string) => log('error', msg, obj) };
@@ -83,6 +95,8 @@ export async function startWorkerTasks(opts: {
   const payments = opts.payments ?? paymentLookup;
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
   registerAccrualHandlers({ bookings: paymentBookingProvider, payments, clock });
+  registerContentHandlers({ clock }); // история адресов K23 §5: смена слага города, филиала, комнаты
+  registerGiftHandlers({ clock }); // K20 §8.2: жизненный цикл записи по подарку
   registerPayrollHandlers({ clock }); // K18 §6: начисление зарплаты по факту смены и новой ставке
   const outbox = await startOutboxWorker({
     pool: opts.pool,
@@ -104,6 +118,20 @@ export async function startWorkerTasks(opts: {
     clock,
     intervalMs: opts.certificateIntervalMs ?? 5 * 60_000,
     onError: (err) => logger.error({ err: errText(err) }, 'certificates:expire: проход упал'),
+  });
+  // K20 §4: комната под необработанную заявку – снятие по истечении срока раз в 5 минут
+  const requestHolds = startRequestHoldExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.requestHoldIntervalMs ?? 5 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'events:request-hold-expire: проход упал'),
+  });
+  // K20 §8.1: истечение подарков раз в 10 минут
+  const gifts = startGiftExpiry({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.giftExpiryIntervalMs ?? 10 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'events.gift_expire: проход упал'),
   });
   // K18 §5: смена без отметки после review_grace – needs_review
   const shiftReview = startShiftReview({
@@ -152,14 +180,34 @@ export async function startWorkerTasks(opts: {
         },
       })
     : null;
+  const exportRunner = opts.exports
+    ? startExportRunner(
+        {
+          pool: opts.pool,
+          reports: opts.exports.reports,
+          store: opts.exports.store,
+          clock,
+          network: { branchesOfCities: branchIdsOfCities, timezonesOf },
+          log: (err) => logger.error({ err: errText(err) }, 'reports:export: сбой задачи'),
+        },
+        { intervalMs: opts.exports.intervalMs ?? 5_000 },
+      )
+    : null;
+  const exportGc = opts.exports
+    ? startExportGc({ pool: opts.pool, store: opts.exports.store, clock, onError: (err) => logger.error({ err: errText(err) }, 'reports:export-gc: проход упал') })
+    : null;
   return {
     outbox,
     reconcile,
     stop: async () => {
+      exportGc?.stop();
+      await exportRunner?.stop();
       mediaGc?.stop();
       reconcile.stop();
       holds.stop();
       certificates.stop();
+      requestHolds.stop();
+      gifts.stop();
       shiftReview.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
@@ -187,6 +235,7 @@ async function main(): Promise<void> {
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   const schedule = scheduleFromEnv();
+  const reportsPool = config.REPORTS_DATABASE_URL ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX) : null;
   const tasks = await startWorkerTasks({
     pool,
     boss,
@@ -194,6 +243,7 @@ async function main(): Promise<void> {
     reconcile: schedule,
     unsubscribeSecret: config.UNSUBSCRIBE_SECRET ?? null,
     mediaStore: createFileStore({ root: config.MEDIA_DIR }),
+    ...(reportsPool ? { exports: { reports: reportsPool, store: createFileStore({ root: config.EXPORT_DIR }) } } : {}),
   });
   log('info', 'запущен: уведомления по событиям брони, outbox (pg-boss), истечение удержаний 15 с, партий баллов 10 мин, сгорание сертификатов 5 мин, отправка 30 с, сверка раз в сутки', {
     version: config.GIT_SHA,
@@ -215,6 +265,7 @@ async function main(): Promise<void> {
     try {
       await tasks.stop();
       await boss.stop({ graceful: true, timeout: 20_000 });
+      await reportsPool?.end();
       await pool.end();
       log('info', 'остановлен');
       process.exit(0);

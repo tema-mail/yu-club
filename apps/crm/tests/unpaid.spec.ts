@@ -47,7 +47,8 @@ test('пришедший без оплаты – в списке; после о�
   const row = list.getByTestId('unpaid-row');
   await expect(row).toHaveCount(1);
   // время по зоне филиала (Новосибирск), хотя браузер в Москве
-  await expect(row).toContainText(`№${card.number} · ${hm(card.start)}–${hm(card.end)} · ПК 2`);
+  // бронь около полуночи переходит на следующие сутки – тогда перед концом стоит дата
+  await expect(row).toContainText(new RegExp(`№${card.number} · ${hm(card.start)}–(\\d\\d\\.\\d\\d )?${hm(card.end)} · ПК 2`));
   await expect(row).toContainText('к оплате 300,00 ₽');
   const calItem = page.getByTestId('cal-lane-res-pc2').getByTestId('cal-item');
   await expect(calItem.getByTestId('cal-pay')).toHaveText('к оплате');

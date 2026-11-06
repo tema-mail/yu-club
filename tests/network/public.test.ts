@@ -115,7 +115,9 @@ describe('K5 №3–4: филиал и его ресурсы', () => {
     const get = async (k: string) => (await app.inject({ method: 'GET', url: `${P}/branches/${ids[k]}` })).json();
     const k = await get('krasny');
     expect(k.hoursToday).toEqual([{ start: '10:00', end: '22:00' }]);
-    expect(sorted(k)).toEqual([...BRANCH_KEYS, 'hoursToday'].sort());
+    expect(sorted(k)).toEqual([...BRANCH_KEYS, 'hoursToday', 'weeklyHours'].sort());
+    expect(k.weeklyHours).toHaveLength(7); // K23 §6: все дни действующего графика, сокращённый день календаря сюда не входит
+    expect(k.weeklyHours[0]).toEqual({ weekday: 1, open: '10:00', close: '22:00' });
     expect((await get('lenina')).hoursToday).toEqual([{ start: '10:00', end: '18:00' }]); // сокращённый день 14.11
     expect((await get('akadem')).hoursToday).toEqual([]);
     const list = (await app.inject({ method: 'GET', url: `${P}/branches` })).json().items;

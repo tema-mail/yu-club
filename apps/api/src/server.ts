@@ -13,6 +13,7 @@ import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from '.
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
+import { registerEventSummaries } from './modules/equipment/items.ts';
 import { equipmentCrmRoutes } from './modules/equipment/routes.crm.ts';
 import { registerEquipmentAttachmentOwners, repairCrmRoutes } from './modules/equipment/routes.repairs.ts';
 import { mediaRoutes } from './modules/content/routes.media.ts';
@@ -21,11 +22,21 @@ import { publicationCrmRoutes } from './modules/content/routes.crm.publications.
 import { contentInternalRoutes } from './modules/content/routes.internal.ts';
 import { contentPublicRoutes } from './modules/content/routes.public.ts';
 import { bookingCrmRoutes } from './modules/booking/routes.crm.ts';
+import { createReportsPool } from './modules/reports/framework.ts';
+import { reportsExportRoutes } from './modules/reports/routes.crm.export.ts';
+import { reportsCrmRoutes } from './modules/reports/routes.crm.ts';
 import { bookingPublicRoutes } from './modules/booking/routes.public.ts';
 import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvider } from './modules/booking/providers.ts';
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { eventSummaries } from './modules/events/events.ts';
+import { registerGiftGrant } from './modules/events/gift-booking.ts';
+import { ensureGiftResource } from './modules/events/gift-resource.ts';
+import { registerEventSources } from './modules/events/resources.ts';
+import { giftCrmRoutes, giftPublicRoutes } from './modules/events/routes.gifts.ts';
+import { eventCrmRoutes } from './modules/events/routes.crm.ts';
+import { eventPublicRoutes } from './modules/events/routes.public.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
 import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
@@ -65,6 +76,8 @@ export interface ServerDeps {
   certificates?: { pepper: string };
   /** Вложения Э3 (K19 №350): адаптер диска с корнем ATTACHMENTS_DIR вне веб-корня. Нет – маршруты не подключаются. */
   attachments?: { store: FileStore };
+  /** Пул отчётов K24 §9 под ролью yu_reports. Нет – маршруты отчётов не подключаются (нужен и staff). */
+  reports?: { pool: pg.Pool; /** Каталог EXPORT_DIR (K24 §7). Нет – маршрутов экспорта нет. */ exportStore?: FileStore };
   /** CMS (K22): медиатека – адаптер диска с корнем MEDIA_DIR и квотой. Нет – маршруты медиа не подключаются. */
   content?: { mediaStore: FileStore; previewSecret?: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
@@ -79,6 +92,9 @@ function registerModuleHooks(): void {
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
   registerEquipmentAttachmentOwners(); // K19 §9: вложения оборудования и ремонта
+  registerEventSources(); // K6, K20 §4: блокировка видит мероприятие по строке занятости (S3-52)
+  registerEventSummaries(eventSummaries); // K19 §18: номер, статус и время затронутого мероприятия в предложении блокировки
+  registerGiftGrant(); // K5, K20 §8.2: подарочный ресурс открывается только правом подарка
   hooksRegistered = true;
 }
 
@@ -217,6 +233,10 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         resourcesRoutes(scope, {
           pool: staff.pool,
           usage: bookingsProvider,
+          // K20 §8.2: новое VR-место может сделать комнату VR-комнатой – подарочный ресурс и тариф 0 ₽ появляются сами
+          onResourceCreated: async (tx, ctx, resource, meta, clock) => {
+            if (resource.type === 'vr_seat') await ensureGiftResource(tx, ctx, resource.branchId, meta, clock);
+          },
           ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
         }),
@@ -304,6 +324,34 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
         { prefix: '/api/crm/v1' },
       );
     }
+    // K24 §10: отчёты – только с пулом yu_reports (REPORTS_DATABASE_URL)
+    if (deps.reports) {
+      const reports = deps.reports.pool;
+      void app.register(
+        async (scope) =>
+          reportsCrmRoutes(scope, {
+            pool: staff.pool,
+            reports,
+            ...(staff.clock ? { clock: staff.clock } : {}),
+            authenticate: (request, reply) => authenticate(staff, request, reply),
+          }),
+        { prefix: '/api/crm/v1' },
+      );
+      // K24 §7, K11 №243–247: экспорт – файл считает worker, здесь постановка и скачивание
+      const exportStore = deps.reports.exportStore;
+      if (exportStore) {
+        void app.register(
+          async (scope) =>
+            reportsExportRoutes(scope, {
+              pool: staff.pool,
+              store: exportStore,
+              ...(staff.clock ? { clock: staff.clock } : {}),
+              authenticate: (request, reply) => authenticate(staff, request, reply),
+            }),
+          { prefix: '/api/crm/v1' },
+        );
+      }
+    }
     // K21 §11, K11 №201–212: кампании, журнал отправок, шаблоны, сводка клиента
     void app.register(
       async (scope) =>
@@ -313,6 +361,26 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
           network: staff.network ?? networkLookup,
           bookings: bookingLookup,
           unsubscribeSecret: deps.notifications?.unsubscribeSecret ?? null,
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    // K20 №361–370: мероприятия
+    void app.register(
+      async (scope) =>
+        eventCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
+      { prefix: '/api/crm/v1' },
+    );
+    // K20 №376–379: подарок имениннику, праздничный календарь
+    void app.register(
+      async (scope) =>
+        giftCrmRoutes(scope, {
+          pool: staff.pool,
+          ...(staff.clock ? { clock: staff.clock } : {}),
           authenticate: (request, reply) => authenticate(staff, request, reply),
         }),
       { prefix: '/api/crm/v1' },
@@ -369,6 +437,10 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     void app.register(async (scope) => notificationPublicRoutes(scope, { clients, bookings: bookingLookup, ...push }), { prefix: '/api/public/v1' });
     // ЛК «Мои сертификаты» (K16 §8): только чтение, CERT_PEPPER не нужен
     void app.register(async (scope) => certificatePublicRoutes(scope, clients), { prefix: '/api/public/v1' });
+    // K20 П1–П2: «Мой подарок» – не сертификат: свой адрес и свой номер
+    void app.register(async (scope) => giftPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
+    // K20 П3–П5: мои мероприятия, заявка на праздник и сведения для /birthday/
+    void app.register(async (scope) => eventPublicRoutes(scope, clients), { prefix: '/api/public/v1' });
     // K15 §11: баллы в ЛК – баланс, история, резерв на своё удержание, каталог
     void app.register(async (scope) => loyaltyPublicRoutes(scope, { clients, bookings: paymentBookingProvider }), { prefix: '/api/public/v1' });
     void app.register(
@@ -398,6 +470,8 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
 export function depsFromConfig(config: Config): { deps: ServerDeps; close: () => Promise<void>; sender?: SenderDeps } {
   if (!config.DATABASE_URL) return { deps: {}, close: async () => {} };
   const pool = new pg.Pool({ connectionString: config.DATABASE_URL, options: '-c search_path=app,journal', max: 10 });
+  // без обработчика ошибка простаивающего соединения роняет процесс API (как в worker.ts)
+  pool.on('error', (err) => console.error('пул yu_app: ошибка простаивающего соединения', err.message));
   const deps: ServerDeps = { network: { pool } };
   // Пара VAPID проверяется здесь: несовпадение ключей – ошибка запуска, а не тихий отказ всех отправок.
   const vapid =
@@ -420,7 +494,13 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
   }
   // Диспетчер уведомлений работает и без VAPID: строки получают статус «нет канала» и остаются в ЛК.
   // sender здесь – только для предупреждения о VAPID при старте; отправляет worker (startWorkerTasks, с bookingLookup)
-  return { deps, close: () => pool.end(), sender: { pool, vapid } };
+  const reportsPool = config.REPORTS_DATABASE_URL ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX) : null;
+  if (reportsPool) deps.reports = { pool: reportsPool, exportStore: createFileStore({ root: config.EXPORT_DIR }) };
+  const close = async () => {
+    await reportsPool?.end();
+    await pool.end();
+  };
+  return { deps, close, sender: { pool, vapid } };
 }
 
 async function main(): Promise<void> {

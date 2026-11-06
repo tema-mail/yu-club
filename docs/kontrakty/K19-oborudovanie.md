@@ -351,7 +351,7 @@ CREATE TABLE app.equipment_warranties (id uuid PK, kind text NOT NULL CHECK (kin
 
 ## 18. Решения реализации (S3-30…S3-39)
 
-- **`affectedEvents`:** поля `number`, `status`, `start`, `end` – от модуля events: он вызывает `registerEventSummaries` (`equipment/items.ts`) при старте, equipment его не импортирует (ADR 0002). До регистрации приходит только `eventId`, остальные поля `null`.
+- **`affectedEvents`:** поля `number`, `status`, `start`, `end` – от модуля events (`eventSummaries`, время – `plannedStart`/`plannedEnd`): `registerModuleHooks` в `server.ts` передаёт её в `registerEventSummaries` (`equipment/items.ts`), equipment events не импортирует (ADR 0002). До регистрации приходит только `eventId`, остальные поля `null`.
 - **Выход из `lost`:** любой, а не только `lost → in_service`, – право `equipment.write_off` и причина: иначе Директор обошёл бы запрет переводом через другой статус.
 - **`reserve`, `lost`, `written_off` при смене статуса** покидают единицу и комнату: текущая строка размещения закрывается, новая – на уровне филиала; бронь не трогается.
 - **Перемещение:** будущие занятия считаются от «сейчас», а не от `at`: прошедшая бронь решения не требует, даже если перемещение датировано задним числом; `at` в будущем – отказ. `details` у `EQUIPMENT_MOVE_HAS_BOOKINGS` содержит ещё `holdIds`.

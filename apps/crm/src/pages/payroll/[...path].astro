@@ -1,0 +1,48 @@
+---
+// «Зарплата» (S3-74, K18 №311–318): /payroll при payroll.view (Владелец, Директор своей зоны). Администратору – 404, как несуществующей странице: сумм он не видит (Q-108).
+// Флаг штрафов payroll.penalties_enabled читаем из настроек: уровень сети – Владельцу, Директору – через филиал своей зоны (наследование). Решает всё равно сервер (FEATURE_DISABLED).
+import Crm from '../../layouts/Crm.astro';
+import PayrollTable from '../../islands/PayrollTable.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+import { today as todayIn } from '../../lib/booking.ts';
+import type { PayrollPeriod } from '../../lib/shifts.ts';
+
+const { me, cookie, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const segments = (Astro.params.path ?? '').split('/').filter(Boolean);
+const notFound = segments.length > 0 || !can('payroll.view') || branches.length === 0;
+if (notFound) Astro.response.status = 404;
+
+let periods: PayrollPeriod[] = [];
+let penaltiesEnabled = false;
+if (!notFound) {
+  periods = (await serverCall<{ items: PayrollPeriod[] }>(cookie, '/payroll/periods')).items;
+  try {
+    const scope = me.access.network ? 'scope=network' : `scope=branch&id=${encodeURIComponent(branches[0]!.id)}`;
+    const r = await serverCall<{ items: Array<{ key: string; value: unknown }> }>(cookie, `/settings?${scope}`);
+    penaltiesEnabled = r.items.find((i) => i.key === 'payroll.penalties_enabled')?.value === true;
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![403, 404].includes(e.status)) throw e;
+  }
+}
+const zone = branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName, timezone: b.timezone }));
+const title = notFound ? 'Не найдено' : 'Зарплата';
+---
+<Crm title={title}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такой записи нет или она вне вашей зоны доступа. Проверьте ссылку.</p>
+      <p><a href="/">На главную</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head"><h1>{title}</h1></div>
+      <PayrollTable client:load initialPeriods={periods} branches={zone} today={todayIn(branches[0]!.timezone)} penaltiesEnabled={penaltiesEnabled} isOwner={me.staff.role === 'owner'}
+        can={{
+          periodManage: can('payroll.period.manage'), review: can('payroll.statement.review'), ready: can('payroll.statement.ready'), paid: can('payroll.payout.mark'),
+          expense: can('payroll.payout.expense'), correct: can('payroll.correct'), penalty: can('payroll.penalty.manage'),
+        }} />
+    </>
+  )}
+</Crm>

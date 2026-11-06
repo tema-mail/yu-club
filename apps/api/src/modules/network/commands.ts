@@ -6,10 +6,26 @@
 import { z } from 'zod';
 import { diffFields, writeAudit, type AuditAction, type AuditObjectType, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
+import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { branchScopeSql, can, roleAllows, scopeFilter, type AccessContext, type Action } from '../../core/permissions.ts';
 import { isValidTimeZone, systemClock, todayIn, type Clock, type TimeZone } from '../../core/time.ts';
+import { RESERVED_CITY_SLUGS, SLUG_RE } from '../../../../../packages/contracts/src/paths.ts';
 import { BRANCH_COLUMNS, BRANCH_FROM, isUuid, toBranchInfo, type BranchInfo, type BranchRow, type BranchStatus } from './index.ts';
+
+/** K4 «События этапа 4»: смена слага – в транзакции команды; историю адресов пишет content (K23 §5), network от него не зависит. */
+export interface SlugChangedPayload {
+  id: string;
+  parentId: string | null;
+  oldSlug: string;
+  newSlug: string;
+}
+declare module '../../core/outbox.ts' {
+  interface EventRegistry {
+    'city.slug_changed': SlugChangedPayload;
+    'branch.slug_changed': SlugChangedPayload;
+  }
+}
 
 // ---- отказы
 
@@ -65,6 +81,15 @@ function tzOf(s: string): TimeZone {
 }
 
 const SLUG = z.string().regex(/^[a-z0-9-]{1,64}$/);
+const CITY_SLUG_MAX = 40;
+
+/** Слаг адреса (K23 §3): маска с дефисом только между словами; у города – длина и зарезервированные слова карты сайта (п.2.8, CHECK 0405). */
+function assertSlug(slug: string, city: boolean): void {
+  if (!SLUG_RE.test(slug)) throw new AppError('SLUG_INVALID', 422, 'Адрес: латиница и цифры, дефис только между словами', { rule: 'mask' });
+  if (!city) return;
+  if (slug.length > CITY_SLUG_MAX) throw new AppError('SLUG_INVALID', 422, `Адрес города длиннее ${CITY_SLUG_MAX} знаков`, { rule: 'length', max: CITY_SLUG_MAX });
+  if ((RESERVED_CITY_SLUGS as readonly string[]).includes(slug)) throw new AppError('SLUG_RESERVED', 422, 'Это слово занято адресом раздела сайта', { slug });
+}
 const CODE = z.string().trim().min(1).max(64);
 const NAME = z.string().trim().min(1).max(200);
 const TEXT = z.string().max(4000).nullable();
@@ -161,6 +186,7 @@ async function cityVisible(db: Db, ctx: AccessContext, cityId: string): Promise<
 export async function createCity(tx: Tx, ctx: AccessContext, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<CityInfo> {
   guardNetwork(ctx, 'network.city.manage', 'city.created', null);
   const input = parse(cityCreate, raw);
+  assertSlug(input.slug, true);
   const tz = tzOf(input.timezone);
   const r = await tx
     .query<CityInfo>(
@@ -179,6 +205,7 @@ export async function updateCity(tx: Tx, ctx: AccessContext, cityId: string, raw
   const cur = await lockCity(tx, cityId);
   if (!cur) throw notFound();
   checkVersion(cur.rowVersion, input.rowVersion);
+  if (input.slug !== undefined && input.slug !== cur.slug) assertSlug(input.slug, true);
   const next = {
     slug: input.slug ?? cur.slug,
     name: input.name ?? cur.name,
@@ -194,6 +221,9 @@ export async function updateCity(tx: Tx, ctx: AccessContext, cityId: string, raw
     )
     .catch(taken);
   const city = r.rows[0]!;
+  if (city.slug !== cur.slug) {
+    await publish(tx as OutboxTx, { type: 'city.slug_changed', aggregateType: 'city', aggregateId: city.id, aggregateVersion: city.rowVersion, branchId: null, payload: { id: city.id, parentId: null, oldSlug: cur.slug, newSlug: city.slug }, occurredAt: clock.now() });
+  }
   const d = diffFields({ ...cur, rowVersion: 0 }, { ...city, rowVersion: 0 });
   if (Object.keys(d.after).length > 0) await writeAudit(tx, meta, { action: 'city.updated', object: { type: 'city', id: city.id }, cityId: city.id, ...d }, clock);
   return city;
@@ -313,6 +343,7 @@ export async function createBranch(tx: Tx, ctx: AccessContext, raw: unknown, met
     deny((await cityVisible(tx, ctx, city.id)) ? 'FORBIDDEN' : 'NOT_FOUND', 'network.branch.create', d);
   }
   if (city.status === 'archived') throw new AppError('CITY_ARCHIVED', 409, 'Город в архиве');
+  assertSlug(input.slug, false);
   const tz = input.timezone === undefined ? city.timezone : tzOf(input.timezone);
   const r = await tx
     .query<{ id: string }>(
@@ -351,6 +382,7 @@ export async function updateBranch(tx: Tx, ctx: AccessContext, branchId: string,
   const input = parse(branchPatch, raw);
   if (cur.status === 'archived') throw new AppError('BRANCH_ARCHIVED', 409, 'Филиал в архиве');
   checkVersion(cur.rowVersion, input.rowVersion);
+  if (input.slug !== undefined && input.slug !== cur.slug) assertSlug(input.slug, false);
   const pick = <K extends keyof typeof input & keyof BranchCard>(k: K) => (input[k] === undefined ? cur[k] : input[k]);
   await tx
     .query(
@@ -360,6 +392,9 @@ export async function updateBranch(tx: Tx, ctx: AccessContext, branchId: string,
     )
     .catch(taken);
   const next = (await loadCard(tx, cur.id, false))!;
+  if (next.slug !== cur.slug) {
+    await publish(tx as OutboxTx, { type: 'branch.slug_changed', aggregateType: 'branch', aggregateId: next.id, aggregateVersion: next.rowVersion, branchId: next.id, payload: { id: next.id, parentId: next.cityId, oldSlug: cur.slug, newSlug: next.slug }, occurredAt: clock.now() });
+  }
   await auditBranch(tx, meta, clock, 'branch.updated', cur, next);
   return next;
 }

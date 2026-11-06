@@ -1,3 +1,4 @@
+// S4-58: №236–238 слаги – черновой транслит, проверка, история адреса (K23 §8). Только чтение подсказок, право content.view.
 // S4-39. API CRM каталога и страниц K11 №219–223, №228 (K22 §13): игры и доступность, страницы комнат, филиалов и страницы по ключу, блоки главной.
 // Строка страницы создаётся при первом сохранении (адрес фиксирован, отдельного «создать» нет). Права – в определениях сущностей и ensure-функциях.
 import type { FastifyInstance } from 'fastify';
@@ -9,10 +10,15 @@ import { blockDef, BLOCK_TYPES, ensureBlock, reorderBlocks } from './blocks.ts';
 import { uuid } from './common.ts';
 import { gameDef, GAME_DIRECTIONS, setGameBranch } from './games.ts';
 import { assertRole } from './media.ts';
+import { checkSlug, slugDraft, slugHistory, SLUG_MAX_OF, type SlugEntity } from './paths.ts';
 import { assertPageKey, branchPageDef, ensureBranchPage, ensurePage, ensureRoomPage, pageDef, roomPageDef } from './pages.ts';
 import { commandRunner, entityActionRoutes, parseInput, type ContentCrmDeps } from './routes.crm.publications.ts';
 import { createEntity, draftDto, listVersions, loadEntity, saveDraft, type EntityRow, type EntityType } from './versions.ts';
 
+const SLUG_ENTITIES = ['city', 'branch', 'room', 'game', 'publication'] as const satisfies readonly SlugEntity[];
+const suggestQuery = z.object({ type: z.enum(['game', 'publication']), title: z.string().min(1).max(300) });
+const checkQuery = z.object({ entityType: z.enum(SLUG_ENTITIES), parent: z.string().max(64).default(''), slug: z.string().max(200), excludeId: uuid.optional() });
+const historyQuery = z.object({ entityType: z.enum(SLUG_ENTITIES), entityId: uuid });
 const cityQuery = z.object({ cityId: uuid.optional() });
 const availabilityBody = z.strictObject({ available: z.boolean(), note: z.string().max(120).nullable().optional() });
 const blockBody = z.strictObject({ blockType: z.enum(BLOCK_TYPES), cityId: uuid.nullable().optional(), rowVersion: z.number().int().min(1).optional(), draft: z.unknown() });
@@ -34,6 +40,28 @@ export async function catalogCrmRoutes(app: FastifyInstance, deps: ContentCrmDep
   async function versionsOf(type: EntityType, row: EntityRow | undefined) {
     return { items: row ? await listVersions(db, type, row.id) : [] };
   }
+
+  // ---- №236–238 слаги (K23 §8)
+
+  app.get('/content/slug-suggest', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    assertRole(access, 'content.view');
+    const q = parseInput(suggestQuery, request.query);
+    return { slug: slugDraft(q.title, SLUG_MAX_OF[q.type]) };
+  });
+
+  app.get('/content/slug-check', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    assertRole(access, 'content.view');
+    return checkSlug(db, parseInput(checkQuery, request.query));
+  });
+
+  app.get('/seo/history', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    assertRole(access, 'content.view');
+    const q = parseInput(historyQuery, request.query);
+    return { items: await slugHistory(db, q.entityType, q.entityId) };
+  });
 
   // ---- №219 игры
 

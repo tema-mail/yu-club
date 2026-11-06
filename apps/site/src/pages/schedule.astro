@@ -3,6 +3,7 @@
 // ?branch={город}/{филиал} или из выбора посетителя (кука yu_branch); ?zone= и ?room= (адрес комнаты, S1-21) – фильтры.
 // canonical – без параметров. Неизвестная комната – фильтр просто не включается.
 // Клуб не выбран – список клубов. Временно закрытый – плашка без записи (12 §4.3). Сетка и удержание – остров Schedule.
+import { breadcrumbLd } from '../lib/jsonld.ts';
 import Schedule from '../islands/Schedule.tsx';
 import Site from '../layouts/Site.astro';
 import { ApiError, ZONE_ORDER, branchRooms, findBranch, parseBranchCookie, site, type BranchDetailDto, type ResourceDto, type ZoneCode } from '../lib/api.ts';
@@ -30,10 +31,11 @@ if (found && found.branch.status === 'active') {
 }
 if (failed) Astro.response.status = 503;
 const branch = detail ?? found?.branch;
+const crumbs = [breadcrumbLd(Astro.locals.origin, [{ name: 'Главная', path: '/' }, { name: 'Расписание', path: '/schedule/' }])];
 const roomParam = Astro.url.searchParams.get('room');
 const room = roomParam ? (branchRooms(resources).find((r) => r.slug === roomParam) ?? null) : null;
 ---
-<Site title={branch ? `Расписание и запись – ${branch.name}` : 'Расписание и онлайн-запись – Ю-Клуб'} description="Свободное время в клубах Ю-Клуб: игровые ПК, VR и PlayStation. Выберите клуб, день и время – запись онлайн за минуту.">
+<Site jsonLd={crumbs} title={branch ? `Расписание и запись – ${branch.name}` : 'Расписание и онлайн-запись – Ю-Клуб'} description="Свободное время в клубах Ю-Клуб: игровые ПК, VR и PlayStation. Выберите клуб, день и время – запись онлайн за минуту.">
   <ol class="yu-crumbs" aria-label="Навигация">
     <li><a href="/">Главная</a></li>
     <li aria-current="page">Расписание</li>

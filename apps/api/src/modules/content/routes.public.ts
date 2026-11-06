@@ -1,3 +1,4 @@
+// S4-53: №216 разрешение старого адреса и №217 записи карты сайта (K23 §5, §8).
 // S4-37. Публичный API контента K5 №207–215 (K22 §12): без сессии, только живые версии. Ответы – Cache-Control: public, max-age=60 и
 // ETag по live_version_id вошедших сущностей (рассчитаны на сервер сайта). DTO без draft, автора и created_by – поля перечислены явно в модулях.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -9,6 +10,7 @@ import { systemClock, type Clock } from '../../core/time.ts';
 import { getHomeBlocks } from './blocks.ts';
 import { GAME_DIRECTIONS, getGamePage, listGames } from './games.ts';
 import { getBranchPage, getPage, getRoomPage, legalVersions } from './pages.ts';
+import { resolveLegacyPath, sitemapEntries } from './paths.ts';
 import { getPublicationPage, listPublications, PUBLICATION_TYPES } from './publications.ts';
 
 export interface ContentPublicDeps {
@@ -32,6 +34,8 @@ const pubQuery = z.object({ branch: id });
 const gamesQuery = z.object({ direction: z.enum(GAME_DIRECTIONS).optional(), branch: id });
 const gameParams = z.object({ direction: z.enum(GAME_DIRECTIONS), slug: z.string().max(200) });
 const pageQuery = z.object({ city: id });
+/** Только путь этого сайта: без хоста, параметров и доли (K23 §8). */
+const resolveQuery = z.object({ path: z.string().max(300).regex(/^\/(?![/\\])[^\s\\?#]*$/) });
 
 /** Кэш: тело + ETag по версиям вошедших сущностей; совпал If-None-Match – 304 без тела. */
 function cached(request: FastifyRequest, reply: FastifyReply, versionIds: readonly string[], body: unknown) {
@@ -130,5 +134,21 @@ export async function contentPublicRoutes(app: FastifyInstance, deps: ContentPub
   app.get('/content/legal-versions', async (request, reply) => {
     const versions = await legalVersions(db);
     return cached(request, reply, Object.values(versions).map((v) => v ?? '-'), versions);
+  });
+
+  // №216 старый адрес → текущий канонический одним переходом; не найдено – 404 (кэш тот же: посетитель с мусорным адресом не нагружает базу)
+  app.get('/redirects/resolve', async (request, reply) => {
+    const { path } = parse(resolveQuery, request.query);
+    const hit = await resolveLegacyPath(db, path, clock.now());
+    void reply.header('cache-control', 'public, max-age=60');
+    if (!hit) throw notFound();
+    return { location: hit.location };
+  });
+
+  // №217 индексируемые сущности контента для sitemap.xml и /sitemap/ (факты городов, филиалов и комнат сайт берёт из K5 №1–4)
+  app.get('/seo/sitemap-entries', async (_request, reply) => {
+    const items = await sitemapEntries(db, clock.now());
+    void reply.header('cache-control', 'public, max-age=60');
+    return { items };
   });
 }

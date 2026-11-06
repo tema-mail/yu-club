@@ -1,0 +1,36 @@
+---
+// HTML-карта /sitemap/ (K23 §7, правило владельца «ЧПУ и карта сайта сразу»): те же адреса, что в sitemap.xml, по разделам – общий список lib/sitemap.ts.
+// API недоступен – 503 и честное сообщение, а не урезанный список.
+import Site from '../layouts/Site.astro';
+import { breadcrumbLd } from '../lib/jsonld.ts';
+import { metaFor } from '../lib/seo.ts';
+import { loadSitemap, type SitemapSection } from '../lib/sitemap.ts';
+
+const { network, origin } = Astro.locals;
+let sections: SitemapSection[] | null = null;
+if (network) {
+  try {
+    sections = await loadSitemap(network);
+  } catch (e) {
+    console.error('site: карта сайта не собралась', e);
+  }
+}
+if (!sections) Astro.response.status = 503;
+const meta = metaFor({ page: 'info', title: 'Карта сайта', text: 'Все разделы сайта Ю-Клуб: клубы, комнаты, расписание и документы.' });
+---
+<Site title={meta.title} description={meta.description} jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Карта сайта', path: '/sitemap/' }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация">
+    <li><a href="/">Главная</a></li>
+    <li aria-current="page">Карта сайта</li>
+  </ol>
+  <h1>{meta.h1}</h1>
+  {!sections && <p class="yu-notice" role="alert">Список страниц сейчас недоступен. Обновите страницу через минуту.</p>}
+  {sections?.map((s) => (
+    <section class="yu-section">
+      <h2>{s.title}</h2>
+      <ul class="yu-footer__list" data-testid="sitemap-list">
+        {s.items.map((i) => <li><a href={i.path}>{i.title}</a></li>)}
+      </ul>
+    </section>
+  ))}
+</Site>

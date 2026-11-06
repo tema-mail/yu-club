@@ -10,4 +10,7 @@ export const auditActions = [
   'staff.role_changed',
   'staff.scope_changed',
   'staff.created',
+  // K2 «Э3», делегирование (S3-89)
+  'staff.grant.created',
+  'staff.grant.revoked',
 ] as const;

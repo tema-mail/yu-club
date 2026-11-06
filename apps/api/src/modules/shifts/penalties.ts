@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { writeAudit, type AuditAction, type AuditRequestMeta, type Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { lockAccounts, post, reversePosting, type Tx } from '../../core/ledger.ts';
-import { assertCan, can, roleAllows, type AccessContext } from '../../core/permissions.ts';
+import { assertCan, branchScopeSql, can, hasAction, roleAllows, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { parseLocalDate, systemClock, type Clock, type LocalDate, type TimeZone } from '../../core/time.ts';
 import { getBranch } from '../network/index.ts';
@@ -272,14 +272,11 @@ export async function amendPenalty(
 
 /** №316: записи в зоне payroll.view; без филиала – только Владельцу (K18 §10). */
 export async function listPenalties(db: Db, ctx: AccessContext, q: { staffId?: string; periodId?: string }): Promise<{ items: PenaltyDto[] }> {
-  if (!roleAllows(ctx.role, 'payroll.view')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'payroll.view' });
+  if (!hasAction(ctx, 'payroll.view')) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'payroll.view' });
   if ((q.staffId !== undefined && !isUuid(q.staffId)) || (q.periodId !== undefined && !isUuid(q.periodId))) throw notFound();
   const params: unknown[] = [];
   const where: string[] = [];
-  if (!ctx.network) {
-    params.push([...ctx.branchIds]);
-    where.push(`x.branch_id = ANY($${params.length}::uuid[])`);
-  }
+  if (!ctx.network) where.push(branchScopeSql('x.branch_id', scopeFilter(ctx, 'payroll.view'), params));
   if (q.staffId) {
     params.push(q.staffId);
     where.push(`x.staff_id = $${params.length}`);
