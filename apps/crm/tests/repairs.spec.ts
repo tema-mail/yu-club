@@ -1,6 +1,6 @@
 // S3-79: «Ремонт» – список с «просроченным планом» и фильтрами 10 §13.3, форма регистрации 10 §13.4; после сохранения – карточка с
 // предложением блокировки, ресурс не закрыт. Чужое – 404, 390 px без прокрутки.
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
 const TOMSK_REPAIR = 'a0000000-0000-4000-8000-000000000003';
