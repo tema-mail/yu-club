@@ -12,8 +12,6 @@ type Staffish = { id: string; role: string };
 type BranchLite = ReturnType<EventsMockDeps['branches']>[number];
 interface GiftRec { id: string; number: string; clientId: string; basisEventId: string | null; issuedOn: string; validUntil: string; issueBranchId: string; terms: Rec; status: string; bookingId: string | null; cancelReason: string | null; rowVersion: number }
 interface HolidayRec { id: string; scope: 'network' | 'city'; cityId: string | null; date: string; name: string; status: 'active' | 'cancelled' }
-interface Category { id: string; name: string; sortOrder: number; status: 'active' | 'archived' }
-interface Executor { id: string; kind: string; name: string; staffId: string | null; contactPerson: string | null; phone: string | null; email: string | null; address: string | null; inn: string | null; comment: string | null; status: 'active' | 'archived'; rowVersion: number }
 export interface GiftTools {
   command: (op: string, status: number, run: (s: Staffish, p: Record<string, string>, body: Rec) => unknown) => (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
   read: (run: (s: Staffish, req: FastifyRequest) => unknown) => (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
@@ -28,8 +26,6 @@ export interface GiftTools {
 
 let gifts: GiftRec[] = [];
 let holidays: HolidayRec[] = [];
-let categories: Category[] = [];
-let executors: Executor[] = [];
 let giftSeq = 40;
 
 const notFound = () => new Fail(404, 'NOT_FOUND', 'Не найдено');
@@ -57,12 +53,10 @@ export function resetGifts(weekday: (n: number) => string): void {
     { id: randomUUID(), scope: 'network', cityId: null, date: weekday(7), name: 'Праздник сети', status: 'active' },
     { id: randomUUID(), scope: 'city', cityId: 'c-tsk', date: weekday(14), name: 'День города Томск', status: 'active' },
   ];
-  categories = [{ id: randomUUID(), name: 'VR-шлемы', sortOrder: 10, status: 'active' }, { id: randomUUID(), name: 'Приставки', sortOrder: 20, status: 'active' }, { id: randomUUID(), name: 'Старая мебель', sortOrder: 30, status: 'archived' }];
-  executors = [{ id: randomUUID(), kind: 'contractor', name: 'ВР-Сервис', staffId: null, contactPerson: 'Игорь', phone: '+79130001122', email: null, address: null, inn: null, comment: null, status: 'active', rowVersion: 1 }];
 }
 
 export function registerGifts(app: FastifyInstance, P: string, d: EventsMockDeps, t: GiftTools): void {
-  const { command, read, canAt, manage, reasonOf, eventBusy, assertVersion, idOf } = t;
+  const { command, read, canAt, manage, reasonOf, eventBusy, idOf } = t;
   const anyZone = (s: Staffish) => {
     if (!d.can(s, 'event.view')) throw forbidden('event.view');
   };
@@ -197,58 +191,4 @@ export function registerGifts(app: FastifyInstance, P: string, d: EventsMockDeps
     h.status = 'cancelled';
     return h;
   }));
-
-  // ---- №337, №349 справочники оборудования (если их не поставил мок оборудования)
-
-  const orphan = (method: 'GET' | 'POST' | 'PATCH', url: string) => !app.hasRoute({ method, url });
-  const view = (s: Staffish) => {
-    if (!d.can(s, 'equipment.view')) throw forbidden('equipment.view');
-  };
-  if (orphan('GET', `${P}/equipment-categories`)) {
-    app.get(`${P}/equipment-categories`, read((s) => {
-      view(s);
-      return { items: [...categories].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)) };
-    }));
-    app.post(`${P}/equipment-categories`, command('category.create', 201, (s, _p, body) => {
-      manage(s, 'equipment.category.manage');
-      const name = typeof body.name === 'string' ? body.name.trim() : '';
-      if (!name) throw zodFail('name');
-      if (categories.some((c) => c.name === name)) throw invalid('Категория с таким названием уже есть', 'name');
-      const c: Category = { id: randomUUID(), name, sortOrder: (body.sortOrder as number | undefined) ?? 0, status: 'active' };
-      categories.push(c);
-      return c;
-    }));
-    app.patch(`${P}/equipment-categories/:id`, command('category.update', 200, (s, p, body) => {
-      manage(s, 'equipment.category.manage');
-      const c = categories.find((x) => x.id === p.id);
-      if (!c) throw notFound();
-      if (typeof body.name === 'string' && body.name.trim() !== c.name && categories.some((x) => x.name === body.name && x.id !== c.id)) throw invalid('Категория с таким названием уже есть', 'name');
-      Object.assign(c, typeof body.name === 'string' ? { name: body.name.trim() } : {}, body.sortOrder !== undefined ? { sortOrder: body.sortOrder } : {}, body.status ? { status: body.status } : {});
-      return c;
-    }));
-  }
-  if (orphan('GET', `${P}/repair-executors`)) {
-    app.get(`${P}/repair-executors`, read((s, req) => {
-      view(s);
-      const q = req.query as { includeArchived?: string };
-      return { items: executors.filter((x) => q.includeArchived === 'true' || x.status === 'active').sort((a, b) => a.name.localeCompare(b.name)) };
-    }));
-    app.post(`${P}/repair-executors`, command('executor.create', 201, (s, _p, body) => {
-      manage(s, 'repair.executor.manage');
-      const name = typeof body.name === 'string' ? body.name.trim() : '';
-      if (!name || !['staff', 'contractor', 'service_center', 'manufacturer'].includes(String(body.kind))) throw zodFail('name');
-      const x: Executor = { id: randomUUID(), kind: String(body.kind), name, staffId: null, contactPerson: (body.contactPerson as string | null | undefined) ?? null, phone: (body.phone as string | null | undefined) ?? null, email: (body.email as string | null | undefined) ?? null, address: null, inn: null, comment: (body.comment as string | null | undefined) ?? null, status: 'active', rowVersion: 1 };
-      executors.push(x);
-      return x;
-    }));
-    app.patch(`${P}/repair-executors/:id`, command('executor.update', 200, (s, p, body) => {
-      manage(s, 'repair.executor.manage');
-      const x = executors.find((y) => y.id === p.id);
-      if (!x) throw notFound();
-      assertVersion(x, body);
-      for (const f of ['kind', 'name', 'contactPerson', 'phone', 'email', 'comment', 'status'] as const) if (body[f] !== undefined) Object.assign(x, { [f]: body[f] });
-      x.rowVersion++;
-      return x;
-    }));
-  }
 }

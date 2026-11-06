@@ -393,6 +393,24 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
     role(s, 'equipment.view');
     return { items: db.categories };
   }));
+  app.post(`${P}/equipment-categories`, command('category.create', 201, (s, _id, b) => {
+    role(s, 'equipment.category.manage');
+    const name = text(b.name);
+    if (!name) throw invalid('name');
+    if (db.categories.some((c) => c.name === name)) throw invalid('name', 'Категория с таким названием уже есть');
+    const c = { ...db.categories[0]!, id: randomUUID(), name, sortOrder: (b.sortOrder as number | undefined) ?? 0, status: 'active' };
+    db.categories.push(c);
+    return c;
+  }));
+  app.patch(`${P}/equipment-categories/:id`, command('category.update', 200, (s, id, b) => {
+    role(s, 'equipment.category.manage');
+    const c = db.categories.find((x) => x.id === id);
+    if (!c) throw notFound();
+    const name = text(b.name);
+    if (name && db.categories.some((x) => x.name === name && x.id !== id)) throw invalid('name', 'Категория с таким названием уже есть');
+    Object.assign(c, name ? { name } : {}, b.sortOrder !== undefined ? { sortOrder: b.sortOrder } : {}, b.status !== undefined ? { status: b.status } : {});
+    return c;
+  }));
 
   // №348 гарантии
   app.get(`${P}/equipment/:id/warranties`, read((s, id) => {
@@ -704,6 +722,13 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
     if (!['staff', 'contractor', 'service_center', 'manufacturer'].includes(String(b.kind)) || !text(b.name)) throw invalid('name');
     const e: Executor = { id: randomUUID(), kind: String(b.kind), name: text(b.name)!, staffId: (b.staffId as string) ?? null, contactPerson: text(b.contactPerson), phone: text(b.phone), email: text(b.email), address: text(b.address), inn: text(b.inn), comment: text(b.comment), status: 'active', rowVersion: 1 };
     db.executors.push(e);
+    return e;
+  }));
+  app.patch(`${P}/repair-executors/:id`, command('executor.update', 200, (s, id, b) => {
+    role(s, 'repair.executor.manage');
+    const e = db.executors.find((x) => x.id === id);
+    if (!e) throw notFound();
+    for (const f of ['kind', 'name', 'contactPerson', 'phone', 'email', 'comment', 'status'] as const) if (b[f] !== undefined) (e as unknown as Rec)[f] = b[f];
     return e;
   }));
 
