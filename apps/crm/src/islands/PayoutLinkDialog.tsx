@@ -1,5 +1,5 @@
 // Привязка ручного расхода к выплаченной ведомости (K18 §9, №315 link): кнопка и окно выбора операции кассы. Показываем расходы категории «Персонал» – «Зарплата»
-// за период по филиалу на выбор: деньги могли выдать из кассы не того филиала, где начислено. Категории нет (переименовали, в архиве) – ошибка, а не все расходы подряд. Сумма выбранного должна совпасть с выплатой, иначе кнопка закрыта (решает всё равно сервер: PAYOUT_AMOUNT_MISMATCH, OPERATION_ALREADY_LINKED).
+// за период по филиалу на выбор: деньги могли выдать из кассы не того филиала, где начислено. Категория в архиве – ошибка, а не все расходы подряд. Сумма выбранного должна совпасть с выплатой, иначе кнопка закрыта (решает всё равно сервер: PAYOUT_AMOUNT_MISMATCH, OPERATION_ALREADY_LINKED).
 // Второго расхода привязка не создаёт, после неё «Создать расход» отвечает «уже создан».
 import { useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
@@ -14,7 +14,7 @@ export interface PayoutLinkDialogProps {
   today: string;
   onLinked: (notice: string) => Promise<void> | void;
 }
-interface CategoryNode { id: string; name: string; children?: CategoryNode[] }
+interface CategoryNode { id: string; code: string | null; children?: CategoryNode[] }
 
 const LOOKBACK_DAYS = 45;
 const MAX_PAGES = 10;
@@ -54,9 +54,9 @@ export default function PayoutLinkDialog({ statement: s, staffName, branches, to
     setOps(null);
     try {
       const cats = await browserCall<{ items: CategoryNode[] }>('/finance/categories?kind=expense');
-      const salary = cats.items.find((c) => c.name === 'Персонал')?.children?.find((c) => c.name === 'Зарплата');
+      const salary = cats.items.flatMap((c) => c.children ?? []).find((c) => c.code === 'salary'); // по коду: имя можно переименовать
       const q = new URLSearchParams({ kind: 'expense', from: start, to: end, limit: '200' });
-      if (!salary) throw new ApiError(0, 'NO_SALARY_CATEGORY', 'В справочнике нет активной категории «Персонал» – «Зарплата»: верните её, затем привязывайте расход.');
+      if (!salary) throw new ApiError(0, 'NO_SALARY_CATEGORY', 'Категория «Персонал» – «Зарплата» в архиве: верните её, затем привязывайте расход.');
       q.set('categoryId', salary.id);
       const pages = await Promise.all(branches.map((b) => allPages(b.id, q)));
       if (mine !== request.current) return; // уже спросили другой период

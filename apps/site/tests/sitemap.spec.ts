@@ -1,6 +1,6 @@
 // S4-56: три вывода совпадают по каждому адресу – meta robots, sitemap.xml, /sitemap/. Стенд – пустая карта. Черновик и архив в карту не попадают
 // (их не отдаёт API), адрес без страницы тоже. Город с одним филиалом и готовящийся филиал – нет.
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, PROD_PORT } from '../playwright.config.ts';
 
 const PROD = `http://127.0.0.1:${PROD_PORT}`;

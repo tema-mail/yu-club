@@ -273,8 +273,11 @@ export function registerShiftsStaff(app: FastifyInstance, P: string, deps: Shift
     return x;
   };
   const staffOf = (id: string) => deps.staff().find((x) => x.id === id);
-  /** Чтения смен (routes.crm.ts withNames): только имя – без фамилии, контактов и ставок. */
-  const withName = (s: Staffish, x: Shift) => ({ ...out(s, x), staffName: staffOf(x.staffId)?.firstName ?? '' });
+  /** Чтения смен (routes.crm.ts withNames): имя и фамилия – без контактов и ставок. */
+  const withName = (s: Staffish, x: Shift) => {
+    const t = staffOf(x.staffId);
+    return { ...out(s, x), staffName: t ? `${t.firstName} ${t.lastName}` : '' };
+  };
   const staffBranches = (t: StaffLite) => deps.branches().filter((b) => t.branchIds.includes(b.id) || t.cityIds.includes(b.cityId)).map((b) => b.id);
   const reasonOf = (v: unknown, field = 'reason') => {
     const t = typeof v === 'string' ? v.trim() : '';

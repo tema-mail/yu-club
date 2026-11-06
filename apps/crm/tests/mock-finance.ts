@@ -32,7 +32,7 @@ interface Op {
   receiptIssued: boolean | null; occurredAt: string; recordedAt: string; authorId: string | null; balanceAfterKop: number;
   reversedBy: string | null; reversalOf: string | null; shiftId: string | null; postingId: string;
 }
-interface Category { id: string; kind: 'income' | 'expense'; parentId: string | null; name: string; sortOrder: number; status: 'active' | 'archived'; rowVersion: number }
+interface Category { id: string; kind: 'income' | 'expense'; parentId: string | null; name: string; sortOrder: number; status: 'active' | 'archived'; rowVersion: number; code?: string | null }
 
 class Fail extends Error {
   readonly status: number;
@@ -80,6 +80,8 @@ let systemCategories: Record<'cash_shortage' | 'cash_surplus', string> = { cash_
 let shiftGate: (branchId: string) => string | null | undefined = () => undefined;
 /** Операция кассы для привязки к чужому объекту (finance/links.ts). */
 export const financeOperation = (id: string) => ops.find((o) => o.id === id);
+/** Подкатегория с кодом salary (0312). */
+export const salaryCategoryId = () => categories.find((c) => c.code === 'salary')?.id ?? null;
 
 export function setShiftGate(gate: (branchId: string) => string | null | undefined): void {
   shiftGate = gate;
@@ -165,7 +167,7 @@ export function resetFinance(branches: BranchLite[]): void {
   categories = [];
   SEED_CATEGORIES.forEach(([name, subs], i) => {
     const top: Category = { id: randomUUID(), kind: 'expense', parentId: null, name, sortOrder: (i + 1) * 10, status: 'active', rowVersion: 1 };
-    categories.push(top, ...subs.map((s, j) => ({ id: randomUUID(), kind: 'expense' as const, parentId: top.id, name: s, sortOrder: (j + 1) * 10, status: 'active' as const, rowVersion: 1 })));
+    categories.push(top, ...subs.map((s, j) => ({ id: randomUUID(), kind: 'expense' as const, parentId: top.id, name: s, sortOrder: (j + 1) * 10, status: 'active' as const, rowVersion: 1, code: s === 'Зарплата' ? 'salary' : null })));
   });
   // 0210: системные, в конце уровня
   const shortage: Category = { id: randomUUID(), kind: 'expense', parentId: null, name: 'Недостача кассы', sortOrder: 1000, status: 'active', rowVersion: 1 };

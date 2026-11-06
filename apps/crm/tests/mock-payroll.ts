@@ -3,7 +3,7 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { addDays, inZone } from '../src/lib/booking.ts';
-import { financeOperation } from './mock-finance.ts';
+import { financeOperation, salaryCategoryId } from './mock-finance.ts';
 import {
   accrualOf, assertOpen, computeTotals, DATE_RE, dto, entries, expenses, Fail, forbidden, invalid, nextSeq, notFound, penalties, periodOf, periods, rateAt, shifts, statements, TZ, unresolved,
   type Entry, type Penalty, type Period, type Rec, type ShiftsHelpers, type Staffish, type Statement, type StatementStatus,
@@ -168,6 +168,7 @@ export function registerPayroll(app: FastifyInstance, P: string, h: ShiftsHelper
       if (!op) throw notFound();
       assertCan(s, 'payroll.payout.expense', op.branchId);
       if (op.kind !== 'expense' || op.reversedBy) throw new Fail(422, 'OPERATION_LINK_INVALID', 'Операция не подходит или сторнирована', { reason: op.reversedBy ? 'reversed' : 'role' });
+      if (op.subcategoryId !== salaryCategoryId()) throw new Fail(422, 'OPERATION_LINK_INVALID', 'Привязать можно только расход категории «Персонал» – «Зарплата»', { reason: 'category', operationId: op.id });
       return op;
     });
     if (expenses.has(st.id)) throw new Fail(409, 'PAYOUT_EXPENSE_EXISTS', 'Расход по этой выплате уже создан', { operationIds: expenses.get(st.id) });

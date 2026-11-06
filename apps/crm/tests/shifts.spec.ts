@@ -109,14 +109,14 @@ test('Администратор: расписание видит, создав�
   await expect(page.getByRole('button', { name: 'Новая смена' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'По сотруднику' })).toHaveCount(0);
   await gotoDay(page, dayOf(1));
-  await expect(day(page, dayOf(1)).getByTestId('shift-staff').first()).toHaveText('Фёдор'); // K18 §12: видит, кто работает, – только имя
+  await expect(day(page, dayOf(1)).getByTestId('shift-staff').first()).toHaveText('Фёдор Новиков'); // K18 §12: видит, кто работает
   const raw = await (await page.request.get(`/api/crm/v1/shifts?branchIds=b-nsk-krasny&from=${dayOf(-1)}&to=${dayOf(1)}`)).text();
   const list = JSON.parse(raw) as { items: Array<{ staffName: string; plannedAccrualKop: unknown; factAccrualKop: unknown }> };
   expect(list.items.length).toBeGreaterThan(0);
-  expect(list.items.map((x) => x.staffName)).toContain('Фёдор');
-  for (const secret of ['Новиков', 'fresh@yu.test', '+7913', 'hourlyKop', 'attendanceFeeKop']) expect(raw).not.toContain(secret); // ни контактов, ни ставок
+  expect(list.items.map((x) => x.staffName)).toContain('Фёдор Новиков');
+  for (const secret of ['fresh@yu.test', '+7913', 'hourlyKop', 'attendanceFeeKop']) expect(raw).not.toContain(secret); // ни контактов, ни ставок
   await open(page, '/shifts/sh-fresh-next');
-  await expect(page.locator('dd', { hasText: 'Фёдор' })).toHaveCount(1);
+  await expect(page.locator('dd', { hasText: 'Фёдор Новиков' })).toHaveCount(1);
   await open(page, '/shifts');
   for (const x of list.items) expect([x.plannedAccrualKop, x.factAccrualKop]).toEqual([null, null]); // суммы не уходят даже в ответе
   expect((await page.request.get(`/api/crm/v1/shifts?branchIds=b-tsk-lenina&from=${dayOf(0)}&to=${dayOf(1)}`)).status()).toBe(404);

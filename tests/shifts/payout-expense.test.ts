@@ -169,6 +169,26 @@ describe('linkPayoutExpense', () => {
     tx((t) => recordExpense(t, owner, { branchId, method: 'cash', amountKop, ...salary, occurredAt: AT, comment: 'зарплата вручную' }, meta(), { idempotencyKey: randomUUID(), clock }));
   const link = (st: string, operationIds: string[]) => tx((t) => linkPayoutExpense(t, owner, st, { operationIds }, meta(), clock));
 
+  it('категория – по коду salary: та же сумма в другой подкатегории – отказ; переименование «Зарплаты» привязку и расход не ломает', async () => {
+    const st = await statement(41_000, [{ branchId: a, accruedKop: 41_000 }]);
+    const other = await db.client.query<{ id: string }>(`SELECT id FROM app.finance_categories WHERE parent_id = $1 AND code IS NULL LIMIT 1`, [salary.categoryId]);
+    const foreign = await tx((t) => recordExpense(t, owner, { branchId: a, method: 'cash', amountKop: 41_000, categoryId: salary.categoryId, subcategoryId: other.rows[0]!.id, occurredAt: AT, comment: 'не зарплата' }, meta(), { idempotencyKey: randomUUID(), clock }));
+    await expect(link(st, [foreign.id])).rejects.toMatchObject({ code: 'OPERATION_LINK_INVALID', details: { reason: 'category' } });
+    expect(await linksOf(pool, { type: 'payroll_statement', id: st })).toEqual([]);
+
+    await db.client.query(`UPDATE app.finance_categories SET name = 'Оплата труда' WHERE id = $1`, [salary.subcategoryId]);
+    try {
+      const op = await manual(a, 41_000);
+      expect((await link(st, [op.id])).operations.map((o) => o.id)).toEqual([op.id]);
+      const st2 = await statement(42_000, [{ branchId: a, accruedKop: 42_000 }]);
+      expect((await create(st2)).operations[0]!.subcategoryId).toBe(salary.subcategoryId);
+    } finally {
+      await db.client.query(`UPDATE app.finance_categories SET name = 'Зарплата' WHERE id = $1`, [salary.subcategoryId]);
+    }
+    // Код неизменен: триггер 0210 защищает и посев 0312.
+    await expect(db.client.query(`UPDATE app.finance_categories SET code = NULL WHERE id = $1`, [salary.subcategoryId])).rejects.toMatchObject({ code: '23514' });
+  });
+
   it('сумма совпала – привязан, второго расхода нет; другая сумма – PAYOUT_AMOUNT_MISMATCH', async () => {
     const st = await statement(40_000, [{ branchId: a, accruedKop: 40_000 }]);
     const wrong = await manual(a, 39_000);

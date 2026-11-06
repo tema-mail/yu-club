@@ -33,7 +33,7 @@ if (isCard && !notFound) {
   }
 }
 
-/** Полные имена – только с staff.view (Владелец, Директор); Администратору имя коллеги приходит в самой смене (staffName). */
+/** Список – только с staff.view (Владелец, Директор); Администратору имя коллеги приходит в самой смене (staffName). */
 async function staffList() {
   const list: Array<{ id: string; name: string }> = [];
   if (!can('staff.view')) return list;

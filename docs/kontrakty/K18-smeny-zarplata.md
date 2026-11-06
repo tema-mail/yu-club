@@ -203,7 +203,7 @@ export function createPayoutExpense(tx, ctx, statementId, input: { place: MoneyP
 ```
 
 - Автоматического расхода нет: кнопка «Создать расход» с подтверждением после `paid` – по умолчанию, ждёт заказчика (Q-64 / R-15). Зарплата – расход только при фактической выплате (06 §2 п.6, K17 §4).
-- Расход – K17 `recordExpense`: категория «Персонал», подкатегория «Зарплата» (посев 0202), `ref { type: 'staff', id: staffId }`, связь `finance_operation_links (ref_type 'payroll_statement', role 'payout_expense')` в той же транзакции (K17 §14).
+- Расход – K17 `recordExpense`: категория «Персонал», подкатегория «Зарплата» (посев 0202, неизменный код `salary`, 0312), `ref { type: 'staff', id: staffId }`, связь `finance_operation_links (ref_type 'payroll_statement', role 'payout_expense')` в той же транзакции (K17 §14).
 - `split='by_branch'` (по умолчанию, ждёт заказчика, Q-109): по одной операции на филиал из `byBranch` пропорционально `accruedKop`, остаток копеек – филиалу с наибольшей долей; сумма операций = `toPayKop`. Иначе – одной операцией из выбранного филиала. Блокировки: **один** вызов `lockAccounts` по местам денег всех филиалов разбивки, отсортированным по id (не по одному на филиал – две выплаты с пересекающимися филиалами иначе ловят взаимную блокировку).
 - **Без двойного расхода**: живая связь `payout_expense` у ведомости уже есть → `PAYOUT_EXPENSE_EXISTS` с id операций. Сторно такого расхода в кассе (K17) гасит связь, и расход можно создать заново. Ручной расход «Зарплата», внесённый в кассе раньше, можно **привязать** вместо создания (`linkPayoutExpense`, сумма должна совпасть) – тогда второго расхода нет.
 
@@ -295,7 +295,7 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 
 | # | Метод и путь | Право | Успех |
 |---|---|---|---|
-| 301 | `GET /shifts?branchIds=&staffId=&from=&to=&status=` | `shift.view` / `shift.view.own` | `200 { items: ShiftDto[] }` (≤ 31 день); без `payroll.view` – `plannedAccrualKop`, `factAccrualKop` = `null`. В чтениях (этот список и `GET /shifts/{id}`) есть `staffName` – только имя: Администратор видит, кто работает (§12), без фамилии, контактов и ставок |
+| 301 | `GET /shifts?branchIds=&staffId=&from=&to=&status=` | `shift.view` / `shift.view.own` | `200 { items: ShiftDto[] }` (≤ 31 день); без `payroll.view` – `plannedAccrualKop`, `factAccrualKop` = `null`. В чтениях (этот список и `GET /shifts/{id}`) есть `staffName` – имя и фамилия: Администратор видит, кто работает (§12), без контактов и ставок |
 | 302 | `POST /shifts` | `shift.plan.own` (сам) / `shift.manage` | `201 ShiftDto` |
 | 303 | `PATCH /shifts/{id}` | то же | `200 ShiftDto` |
 | 304 | `POST /shifts/{id}/cancel` | то же | `200` |
@@ -309,7 +309,7 @@ CREATE TABLE journal.payroll_accruals (id bigint IDENTITY PK, shift_id uuid NOT 
 | 312 | `POST /payroll/periods/{id}/calculate` | `payroll.statement.review` | `200 PayrollStatementDto[]` |
 | 313 | `GET /payroll/statements/{id}`, `POST /payroll/statements/{id}/status` | `payroll.view` / по статусу | `200` |
 | 314 | `POST /payroll/statements/{id}/paid` | `payroll.payout.mark` | `200` |
-| 315 | `POST /payroll/statements/{id}/payout-expense`, `POST .../payout-expense/link` | `payroll.payout.expense` | `201 { operations }` |
+| 315 | `POST /payroll/statements/{id}/payout-expense`, `POST .../payout-expense/link` | `payroll.payout.expense` | `201 { operations }`; link: операция не подкатегории `salary` – `422 OPERATION_LINK_INVALID` (`reason: 'category'`) |
 | 316 | `GET /payroll/penalties?staffId=&periodId=`, `POST /payroll/penalties`, `POST /payroll/penalties/{id}/cancel`, `POST /payroll/penalties/{id}/amend` | `payroll.view` / `payroll.penalty.manage` | `200` / `201` |
 | 317 | `POST /payroll/corrections` | `payroll.correct` | `201` |
 | 318 | `GET /payroll/report?...` | `payroll.view` | `200` (§10) |

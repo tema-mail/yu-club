@@ -1,6 +1,6 @@
 // S4-57: robots.txt по таблице K23 §7. Бой – закрыты ЛК, вход, API, предпросмотр, Clean-param фильтров, ссылка на карту; стенд – Disallow: / и noindex.
 // Файл .spec.ts: это проверка на собранном сайте в обоих режимах (план называет robots.test.ts, vitest сайт не поднимает).
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../../../tests/support/e2e.ts';
 import { PROD_PORT } from '../playwright.config.ts';
 
 test('бой: ровно таблица K23 §7, индексация открыта', async ({ request }) => {

@@ -12,7 +12,7 @@ export interface ShiftDto {
   /** null – нет ставки или нет права payroll.view (не ноль). */
   plannedAccrualKop: number | null; factAccrualKop: number | null;
   factVersion: number; comment: string | null; createdBy: string; rowVersion: number;
-  /** Только имя; есть в чтениях (№301, GET /shifts/{id}), в ответах команд нет. */
+  /** Имя и фамилия; есть в чтениях (№301, GET /shifts/{id}), в ответах команд нет. */
   staffName?: string;
 }
 export interface Interval { start: string; end: string }

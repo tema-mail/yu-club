@@ -1,8 +1,8 @@
 // S3-14. K18 №301–310: CRM-маршруты смен на /api/crm/v1 – тонкий слой (ADR 0002 п.7): разбор пути → команда в транзакции под
 // Idempotency-Key (ADR 0004) → ответ. Права – K1 по филиалу: вне зоны – 404 с телом несуществующего, в зоне без права – 403 и
 // запись отказа в аудит отдельной транзакцией (ADR 0005 п.8). Суммы (plannedAccrualKop, factAccrualKop) – только с payroll.view
-// на филиал смены (K18 §14 №301), в том числе в ответах команд и сохранённых ответах идемпотентности. Чтения смен несут staffName – только имя:
-// Администратор видит, кто работает (K18 §12), но контактов, фамилии и ставок коллег не получает (/staff ему закрыт).
+// на филиал смены (K18 §14 №301), в том числе в ответах команд и сохранённых ответах идемпотентности. Чтения смен несут staffName – имя и фамилия:
+// Администратор видит, кто работает (K18 §12), тёзок различает, но контактов и ставок коллег не получает (/staff ему закрыт).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type pg from 'pg';
 import { z } from 'zod';
@@ -58,11 +58,11 @@ function parseRange(from: string, to: string): { from: LocalDate; to: LocalDate 
 
 export type ShiftView = ShiftDto & { staffName: string };
 
-/** Имя сотрудника смены (без фамилии и контактов). Вызывать только для смен, которые вызывающий уже вправе видеть. */
+/** Имя и фамилия сотрудника смены (без контактов и ставок). Вызывать только для смен, которые вызывающий уже вправе видеть. */
 async function withNames(db: Db, items: ShiftDto[]): Promise<ShiftView[]> {
   if (items.length === 0) return [];
-  const r = await db.query<{ id: string; first_name: string }>(`SELECT id, first_name FROM app.staff WHERE id = ANY($1::uuid[])`, [[...new Set(items.map((d) => d.staffId))]]);
-  const names = new Map(r.rows.map((x) => [x.id, x.first_name]));
+  const r = await db.query<{ id: string; name: string }>(`SELECT id, first_name || ' ' || last_name AS name FROM app.staff WHERE id = ANY($1::uuid[])`, [[...new Set(items.map((d) => d.staffId))]]);
+  const names = new Map(r.rows.map((x) => [x.id, x.name]));
   return items.map((d) => ({ ...d, staffName: names.get(d.staffId) ?? '' }));
 }
 

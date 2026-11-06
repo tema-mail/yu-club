@@ -195,7 +195,7 @@ describe('смены по HTTP', () => {
     await req('owner', 'PATCH', `/staff/${ids.other}/planning`, { planningStatus: 'available' });
   });
 
-  it('K18 §12: Администратор видит имя коллеги в расписании – только имя, без контактов и ставок; чужой филиал – 404', async () => {
+  it('K18 §12: Администратор видит имя и фамилию коллеги в расписании, без контактов и ставок; чужой филиал – 404', async () => {
     await db.client.query(`UPDATE app.staff SET first_name = 'Дарья', last_name = 'Секретова', phone_e164 = '+79130000099' WHERE id = $1`, [ids.director]);
     const date = '2026-11-27' as LocalDate;
     const shift = await newShift('owner', 'director', 'lenina', '10:00', '12:00', date);
@@ -204,13 +204,13 @@ describe('смены по HTTP', () => {
     const r = await req('admin', 'GET', `/shifts?branchIds=${ids.lenina}&from=${date}&to=${date}`);
     expect(r.statusCode).toBe(200);
     const item = (r.json().items as Array<{ id: string; staffName: string; plannedAccrualKop: unknown }>).find((s) => s.id === shift.id);
-    expect(item?.staffName).toBe('Дарья');
+    expect(item?.staffName).toBe('Дарья Секретова');
     expect(item?.plannedAccrualKop).toBeNull();
-    for (const secret of ['Секретова', '+79130000099', 'director@yu.test', 'hourlyKop', 'attendanceFeeKop']) expect(r.body).not.toContain(secret);
+    for (const secret of ['+79130000099', 'director@yu.test', 'hourlyKop', 'attendanceFeeKop']) expect(r.body).not.toContain(secret);
 
     const card = await req('admin', 'GET', `/shifts/${shift.id}`);
-    expect(card.json().staffName).toBe('Дарья');
-    expect(card.body).not.toContain('Секретова');
+    expect(card.json().staffName).toBe('Дарья Секретова');
+    expect(card.body).not.toContain('+79130000099');
 
     expect((await req('admin', 'GET', `/shifts?branchIds=${ids.marksa}&from=${date}&to=${date}`)).statusCode).toBe(404);
     expect((await req('admin', 'GET', `/shifts/${foreign.id}`)).statusCode).toBe(404);

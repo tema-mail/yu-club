@@ -86,6 +86,7 @@ test('привязка ручного расхода: окно выбора оп
   const cats = (await (await page.request.get('/api/crm/v1/finance/categories?kind=expense')).json()) as { items: Array<{ id: string; name: string; children: Array<{ id: string; name: string }> }> };
   const top = cats.items.find((c) => c.name === 'Персонал')!;
   const sub = top.children.find((c) => c.name === 'Зарплата')!;
+  const other = top.children.find((c) => c.name === 'Выплаты за смены')!;
   const expense = async (amountKop: number, comment: string) => {
     const r = await page.request.post('/api/crm/v1/branches/b-nsk-krasny/finance/expense', { data: { method: 'card', amountKop, categoryId: top.id, subcategoryId: sub.id, comment, occurredAt: new Date(Date.now() - 60_000).toISOString() }, headers: key() });
     expect(r.ok(), await r.text()).toBe(true);
@@ -115,6 +116,11 @@ test('привязка ручного расхода: окно выбора оп
   await form.getByTestId('link-op').filter({ hasText: 'Аванс наличными' }).getByRole('checkbox').check();
   await expect(form.getByTestId('link-sum')).toContainText('сумма должна совпасть');
   await expect(submit).toBeDisabled();
+  // Прямой вызов мимо окна: та же сумма, другая категория – отказ сервера.
+  const foreignOp = await page.request.post('/api/crm/v1/branches/b-nsk-krasny/finance/expense', { data: { method: 'card', amountKop: 290_000, categoryId: top.id, subcategoryId: other.id, comment: 'Не зарплата', occurredAt: new Date(Date.now() - 60_000).toISOString() }, headers: key() });
+  const foreignId = ((await foreignOp.json()) as { id: string }).id;
+  const denied = await page.request.post('/api/crm/v1/payroll/statements/st-admin/payout-expense/link', { data: { operationIds: [foreignId] }, headers: key() });
+  expect([denied.status(), ((await denied.json()) as { error: { details: { reason: string } } }).error.details.reason]).toEqual([422, 'category']);
   const mismatch = await page.request.post('/api/crm/v1/payroll/statements/st-admin/payout-expense/link', { data: { operationIds: [wrong] }, headers: key() });
   expect([mismatch.status(), ((await mismatch.json()) as { error: { code: string } }).error.code]).toEqual([422, 'PAYOUT_AMOUNT_MISMATCH']);
   await form.getByTestId('link-op').filter({ hasText: 'Аванс наличными' }).getByRole('checkbox').uncheck();
