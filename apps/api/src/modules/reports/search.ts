@@ -2,14 +2,14 @@
 // Тип без права в ответе отсутствует (не «0 найдено»); клиент вне зоны не находится даже по точному телефону – факт существования
 // не раскрывается. Все запросы – одной READ ONLY транзакцией основного пула, statement_timeout 2 с: поиску нужны клиенты и сотрудники,
 // которых роль yu_reports не видит, бронь и касса – те же rpt_*. Поиск по телефону – в аудит с маской номера (видно перебор), отдельной записью.
-// S4-79: группы Э3 – мероприятие (номер EV-…, дата проведения, заказчик через найденных клиентов) и оборудование (инвентарный и серийный
+// S4-79: группы Э3 – мероприятие (номер EV-…, дата проведения, заказчик: найденные клиенты, имя и телефон E.164 из мероприятия) и оборудование (инвентарный и серийный
 // номер) по rpt_events и rpt_equipment в зоне event.view / equipment.view: оборудование вне зоны не находится.
 import type { AuditRequestMeta, Db, Tx } from '../../core/audit.ts';
 import { writeAudit } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { roleAllows, type AccessContext } from '../../core/permissions.ts';
 import { formatLocal, parseLocalDate, todayIn, type Clock, type LocalDate } from '../../core/time.ts';
-import { searchClients } from '../clients/index.ts';
+import { normalizePhone, searchClients } from '../clients/index.ts';
 import { getBranches, type BranchInfo } from '../network/index.ts';
 import { searchStaffByName } from '../staff/index.ts';
 import { maskClient, resolveBranches, where, windowsOf, withReportTx, type MaskedClient, type ReportsPool } from './framework.ts';
@@ -130,15 +130,29 @@ function numberLike(q: string, prefix: string): string {
   return m ? `${prefix}-${m[1]!.replace(/^0+(?=\d)/, '').padStart(6, '0')}` : q.toUpperCase();
 }
 
-/** Мероприятия: номер, дата проведения (по зоне филиала) или заказчик среди найденных клиентов. */
+/** Телефон запроса в E.164 или null: «+7 (913) 123-45-67», «8913…» → «+79131234567». */
+function phoneOf(q: string): string | null {
+  if (!PHONE_LIKE_RE.test(q) || q.replace(/\D/g, '').length < 10) return null;
+  try {
+    return normalizePhone(q);
+  } catch {
+    return null;
+  }
+}
+
+/** Мероприятия: номер, дата проведения (по зоне филиала), заказчик среди найденных клиентов или поля заказчика самого мероприятия
+ * (имя, телефон в E.164) – заказчик без брони тоже находится. Окно – зона event.view: мероприятие вне зоны не раскрывается. */
 async function eventGroup(tx: Tx, ctx: AccessContext, q: string, clientIds: string[], clock: Clock): Promise<SearchGroup | null> {
   if (!roleAllows(ctx.role, 'event.view')) return null;
   const branches = await resolveBranches(tx, ctx, 'event.view');
   if (branches.length === 0) return { type: 'event', items: [], more: false };
   const date = queryDate(q, clock, branches[0]?.timezone);
+  const phone = phoneOf(q);
   const parts: Array<{ sql: string; values?: unknown[] }> = [{ sql: 'upper(t.number) = ?', values: [numberLike(q, 'EV')] }];
   if (clientIds.length) parts.push({ sql: 't.customer_client_id = ANY(?::uuid[])', values: [clientIds] });
   if (date) parts.push({ sql: 't.held_on = ?::date', values: [date] });
+  if (phone) parts.push({ sql: 'EXISTS (SELECT 1 FROM app.events e WHERE e.id = t.event_id AND e.customer_phone_e164 = ?)', values: [phone] });
+  else if (!date && !PHONE_LIKE_RE.test(q)) parts.push({ sql: `EXISTS (SELECT 1 FROM app.events e WHERE e.id = t.event_id AND e.customer_name ILIKE ?)`, values: [`%${escapeLike(q)}%`] });
   const w = where({ view: 'app.rpt_events', conds: [{ sql: parts.map((p) => p.sql).join(' OR '), values: parts.flatMap((p) => p.values ?? []) }] }, windowsOf(branches, { from: todayIn(clock, branches[0]!.timezone), to: todayIn(clock, branches[0]!.timezone) }));
   const rows = (
     await tx.query<{ event_id: string; number: string; branch_id: string; held_on: string | null; status: string }>(
@@ -223,7 +237,7 @@ export async function globalSearch(
       const staff = phoneLike || isDate ? null : await staffGroup(tx, ctx, q);
       if (staff) out.push(staff);
       else if (roleAllows(ctx.role, 'staff.view')) out.push({ type: 'staff', items: [], more: false });
-      const events = phoneLike && !NUMBER_RE.test(q) ? null : await eventGroup(tx, ctx, q, clients?.ids ?? [], deps.clock);
+      const events = phoneLike && !NUMBER_RE.test(q) && !phoneOf(q) ? null : await eventGroup(tx, ctx, q, clients?.ids ?? [], deps.clock);
       if (events) out.push(events);
       else if (roleAllows(ctx.role, 'event.view')) out.push({ type: 'event', items: [], more: false });
       const equipment = phoneLike && !NUMBER_RE.test(q) ? null : await equipmentGroup(tx, ctx, q, deps.clock);

@@ -111,4 +111,14 @@ describe('поиск: мероприятия и оборудование', () =>
     expect((await search(fx.owner(), 'inv-2'))('equipment')!.items.map((i) => i.inventoryNo)).toEqual(['INV-000002']);
     expect((await search(fx.director([b]), 'EV-1'))('event')!.items).toEqual([]);
   });
+
+  it('мероприятие по заказчику без брони: имя и телефон в любом виде; вне зоны не раскрывается', async () => {
+    const numbers = async (ctx: AccessContext, q: string) => (await search(ctx, q))('event')!.items.map((i) => i.number).sort();
+    expect(await numbers(fx.owner(), 'заказчик')).toEqual(['EV-000001', 'EV-000002']);
+    expect(await numbers(fx.director([b]), 'Заказ')).toEqual(['EV-000002']);
+    expect(await numbers(fx.owner(), '+7 999 000-00-00')).toEqual(['EV-000001', 'EV-000002']);
+    expect(await numbers(fx.director([b]), '+7 (999) 000-00-00')).toEqual(['EV-000002']);
+    expect(await numbers(fx.admin([a]), '89990000000')).toEqual(['EV-000001']);
+    expect(await numbers(fx.director([b]), '+7 999 000-00-01')).toEqual([]);
+  });
 });
