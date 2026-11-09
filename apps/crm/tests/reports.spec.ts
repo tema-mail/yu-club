@@ -97,7 +97,7 @@ test('тяжёлый отчёт с длинным периодом – по кн
   await open(page, '/reports/utilization?from=2026-09-01&to=2026-10-31');
   await expect(page.getByTestId('needs-run')).toBeVisible();
   await expect(page.getByTestId('cards')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Сформировать' }).click();
+  await page.getByRole('button', { name: 'Сформировать', exact: true }).click();
   await expect(card(page, 'actualLoad').getByTestId('value')).toContainText('%');
   await open(page, '/reports/bookings?from=2026-01-01&to=2026-11-10');
   await expect(page.getByTestId('report-error')).toContainText('Период длиннее 92 дней');
