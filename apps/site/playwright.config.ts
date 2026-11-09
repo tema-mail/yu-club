@@ -27,7 +27,9 @@ export default defineConfig({
     },
     {
       command: 'npm run build && node dist/server/entry.mjs',
-      env: { HOST: '127.0.0.1', PORT: String(STAGE_PORT), API_URL: `http://127.0.0.1:${MOCK_PORT}`, APP_ENV: 'stage', PREVIEW_SECRET },
+      env: { HOST: '127.0.0.1', PORT: String(STAGE_PORT), API_URL: `http://127.0.0.1:${MOCK_PORT}`, APP_ENV: 'stage', PREVIEW_SECRET,
+        // Стенд e2e без кэша контента: переключатели мока видны сразу; ETag/304 всё равно работает. Кэш 60 с – на бою и в tests/site/content-cache.test.ts.
+        CONTENT_CACHE_TTL_SECONDS: '0' },
       url: `http://127.0.0.1:${STAGE_PORT}/robots.txt`,
       reuseExistingServer: false,
       timeout: 120_000,

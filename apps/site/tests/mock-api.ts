@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import * as K from '../../../packages/contracts/src/booking.ts';
 import { MOCK_CODE, UUID, clients, fail, readCookie, registerClientAuth, sessions } from './mock-clients.ts';
 import { registerCommerce } from './mock-commerce.ts';
+import { registerContent } from './mock-content.ts';
 import { registerEvents } from './mock-events.ts';
 import { registerResources, resourceId, seedResources } from './mock-resources.ts';
 
@@ -132,6 +133,11 @@ export function buildMock() {
   });
 
   registerResources(app, P, (id) => publicBranches().some((b) => b.id === id), fail);
+  registerContent(app, P, { // контент Э4 (K5 №207–215) – tests/mock-content.ts
+    branchCity: (id) => branches.find((b) => b.id === id)?.cityId,
+    cityBranches: (id) => branches.filter((b) => b.cityId === id).map((b) => b.id),
+    fail,
+  });
 
 
   registerClientAuth(app, P, (clientId, cookie) => attachVisitorHolds(clientId, visitorOf(cookie))); // хук входа K9 → booking (server.ts)
