@@ -88,7 +88,7 @@ describe('TC-12: поломка шлема VR1 (K19 §17)', () => {
     // Статус ресурса не тронут (K19 §1 п.2) и ремонт показывает блокировку; аудит связи
     expect((await w.db.client.query<{ status: string }>(`SELECT status FROM app.resources WHERE id = $1`, [w.resources.VR1])).rows[0]!.status).toBe('active');
     const card = await getRepair(w.pool, admin, reg.repair.id);
-    expect(card.blocks).toEqual([{ blockId: done.blockId, active: true, period: { start: new Date(period.start).toISOString(), end: new Date(period.end).toISOString() }, liftedAt: null }]);
+    expect(card.blocks).toEqual([{ blockId: done.blockId, active: true, period: { start: new Date(period.start).toISOString(), end: new Date(period.end).toISOString() }, liftedAt: null, rowVersion: 1 }]);
     expect((await w.db.client.query(`SELECT 1 FROM journal.audit_events WHERE action = 'repair.block_linked' AND object_id = $1`, [reg.repair.id])).rowCount).toBe(1);
   });
 

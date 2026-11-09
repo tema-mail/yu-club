@@ -118,7 +118,7 @@ export interface RepairDto {
   actualCostKop: number | null; noCost: boolean; completedAt: string | null;
   finalEquipmentStatus: EquipmentStatus | null; acceptedBy: string | null;
   previousRepairId: string | null;             // повтор (10 §10.2)
-  blocks: Array<{ blockId: string; active: boolean; period: Interval; liftedAt: string | null }>;
+  blocks: Array<{ blockId: string; active: boolean; period: Interval; liftedAt: string | null; rowVersion: number }>; // rowVersion блокировки – для снятия K11 №14
   payment: { paidKop: number; status: 'unpaid' | 'partially_paid' | 'paid' | 'overpaid' | 'no_cost'; lastPaidAt: string | null; operationIds: string[] };
   rowVersion: number;
 }

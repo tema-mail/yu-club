@@ -76,7 +76,7 @@ export interface RepairDto {
   finalEquipmentStatus: EquipmentStatus | null;
   acceptedBy: string | null;
   previousRepairId: string | null;
-  blocks: Array<{ blockId: string; active: boolean; period: { start: string; end: string }; liftedAt: string | null }>;
+  blocks: Array<{ blockId: string; active: boolean; period: { start: string; end: string }; liftedAt: string | null; rowVersion: number }>;
   payment: { paidKop: number; status: RepairPaymentStatus; lastPaidAt: string | null; operationIds: string[] };
   rowVersion: number;
 }
@@ -145,8 +145,8 @@ export async function repairPayment(db: Db | Tx, row: Pick<RepairRow, 'id' | 'no
 }
 
 export async function toRepairDto(db: Db | Tx, r: RepairRow): Promise<RepairDto> {
-  const blocks = await db.query<{ block_id: string; status: string; s: Date; e: Date; lifted_at: Date | null }>(
-    `SELECT b.id AS block_id, b.status, lower(b.period) AS s, upper(b.period) AS e, b.lifted_at
+  const blocks = await db.query<{ block_id: string; status: string; s: Date; e: Date; lifted_at: Date | null; row_version: number }>(
+    `SELECT b.id AS block_id, b.status, lower(b.period) AS s, upper(b.period) AS e, b.lifted_at, b.row_version
        FROM app.repair_blocks rb JOIN app.resource_blocks b ON b.id = rb.block_id WHERE rb.repair_id = $1 ORDER BY rb.linked_at, b.id`,
     [r.id],
   );
@@ -180,7 +180,7 @@ export async function toRepairDto(db: Db | Tx, r: RepairRow): Promise<RepairDto>
     finalEquipmentStatus: r.final_equipment_status,
     acceptedBy: r.accepted_by,
     previousRepairId: r.previous_repair_id,
-    blocks: blocks.rows.map((b) => ({ blockId: b.block_id, active: b.status === 'active', period: { start: b.s.toISOString(), end: b.e.toISOString() }, liftedAt: b.lifted_at?.toISOString() ?? null })),
+    blocks: blocks.rows.map((b) => ({ blockId: b.block_id, active: b.status === 'active', period: { start: b.s.toISOString(), end: b.e.toISOString() }, liftedAt: b.lifted_at?.toISOString() ?? null, rowVersion: b.row_version })),
     payment: await repairPayment(db, r),
     rowVersion: r.row_version,
   };

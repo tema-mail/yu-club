@@ -84,6 +84,16 @@ describe('TC-12 по API (K19 §17)', () => {
     expect(body.blocks[0]).toMatchObject({ blockId: blocked.json().blockId, active: true });
     expect(body.downtime.hasBlocks).toBe(true);
     expect(body.timeline.map((t: { action: string }) => t.action)).toEqual(expect.arrayContaining(['repair.registered', 'repair.block_linked']));
+
+    // rowVersion блокировки в карточке: снятие идёт с настоящей версией, устаревшая – 409 без обхода
+    const blockId = blocked.json().blockId as string;
+    expect(body.blocks[0].rowVersion).toBe(1);
+    await w.db.client.query('UPDATE app.resource_blocks SET row_version = row_version + 1 WHERE id = $1', [blockId]);
+    expect((await req('admin', 'GET', `/repairs/${repair.id}`)).json().blocks[0].rowVersion).toBe(2);
+    const stale = await req('admin', 'POST', `/blocks/${blockId}/lift`, { rowVersion: 1 });
+    expect(stale.statusCode).toBe(409);
+    expect((await req('admin', 'POST', `/blocks/${blockId}/lift`, { rowVersion: 2 })).statusCode).toBe(200);
+    expect((await req('admin', 'GET', `/repairs/${repair.id}`)).json().blocks[0]).toMatchObject({ active: false, rowVersion: 3 });
   });
 
   it('ремонт без места: предложение пустое, не ошибка', async () => {
