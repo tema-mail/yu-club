@@ -155,6 +155,14 @@ export function where(spec: MetricSpec, windows: readonly BranchWindow[]): { sql
   const params: unknown[] = [windows.map((w) => w.branchId), windows.map((w) => w.start), windows.map((w) => w.end)];
   const on = [spec.nullableBranch ? `(w.branch_id = t.${branchCol} OR (w.branch_id IS NULL AND t.${branchCol} IS NULL))` : `w.branch_id = t.${branchCol}`];
   if (spec.date) on.push(`t.${spec.date} >= w.s`, `t.${spec.date} < w.e`);
+  // Те же границы ещё раз – филиалы списком и общий охват окон (S4-131): следуют из соединения с w и строк не меняют, но дают
+  // планировщику условие по индексу (филиал, дата). Без них соединение с unnest – полный просмотр источника на каждый показатель.
+  const hull: string[] = [];
+  if (!spec.nullableBranch) hull.push(`t.${branchCol} = ANY($1::uuid[])`);
+  if (spec.date && windows.length > 0) {
+    params.push(new Date(Math.min(...windows.map((x) => x.start.getTime()))), new Date(Math.max(...windows.map((x) => x.end.getTime()))));
+    hull.push(`t.${spec.date} >= $${params.length - 1}::timestamptz`, `t.${spec.date} < $${params.length}::timestamptz`);
+  }
   const conds = (spec.conds ?? []).map((c) => {
     let i = 0;
     return `(${c.sql.replace(/\?/g, () => {
@@ -163,7 +171,7 @@ export function where(spec: MetricSpec, windows: readonly BranchWindow[]): { sql
     })})`;
   });
   return {
-    sql: `${spec.view} t JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON ${on.join(' AND ')}${conds.length ? ` WHERE ${conds.join(' AND ')}` : ''}`,
+    sql: `${spec.view} t JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON ${on.join(' AND ')} WHERE ${[...hull, ...conds].join(' AND ') || 'true'}`,
     params,
   };
 }
@@ -288,13 +296,29 @@ function decodeCursor(c: string, withDate: boolean): [string | null, string] {
 }
 
 /** Страница строк показателя. count_distinct – по строке на значение col. Сумма всех страниц = aggregate (одно условие). */
+/** Итог показателя в снимке отчёта (withReportTx): снимок REPEATABLE READ READ ONLY не меняется, поэтому итог одного условия
+ *  считается один раз на снимок – экспорт листает сотни страниц и не пересчитывает итог на каждой (S4-131). Вне снимка – без кэша. */
+const snapshotTotals = new WeakMap<object, Map<string, RawValue>>();
+
+async function totalOf(db: Db | Tx, def: MetricDef, windows: readonly BranchWindow[]): Promise<RawValue> {
+  const cache = snapshotTotals.get(db);
+  if (!cache || windows.length === 0) return aggregate(db, def, windows);
+  const w = where(def.spec, windows);
+  const key = JSON.stringify([aggSql(def), w.sql, w.params]);
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const v = await aggregate(db, def, windows);
+  cache.set(key, v);
+  return v;
+}
+
 export async function detailPage<R extends pg.QueryResultRow>(
   db: Db | Tx,
   def: MetricDef,
   windows: readonly BranchWindow[],
   opts: { cursor?: string | undefined; limit?: number | undefined } = {},
 ): Promise<DetailPage<R>> {
-  const total = await aggregate(db, def, windows);
+  const total = await totalOf(db, def, windows);
   const limit = pageLimit(opts);
   if (windows.length === 0) return { rows: [], total, nextCursor: null };
   if (!IDENT_RE.test(def.idCol)) throw new Error('reports: недопустимое имя столбца');
@@ -309,7 +333,8 @@ export async function detailPage<R extends pg.QueryResultRow>(
     params.push(i);
     if (date) {
       params.push(d);
-      cursorSql = `(t.${date}, t.${id}::text) > ($${params.length}::timestamptz, $${params.length - 1})`;
+      // первое условие следует из второго и строк не меняет: даёт индексу дату, с которой листать (S4-131)
+      cursorSql = `t.${date} >= $${params.length}::timestamptz AND (t.${date}, t.${id}::text) > ($${params.length}::timestamptz, $${params.length - 1})`;
     } else {
       cursorSql = `t.${id}::text > $${params.length}`;
     }
@@ -506,10 +531,13 @@ export async function withReportTx<T>(pool: ReportsPool, fn: (tx: Tx) => Promise
   const tx: Tx = {
     query: <R extends pg.QueryResultRow>(text: string, values?: unknown[]) => (stopped ? Promise.reject(stopError()) : c.query<R>(text, values)),
   };
+  snapshotTotals.set(tx, new Map());
   try {
     await tx.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     await tx.query(`SET LOCAL statement_timeout = ${Math.trunc(timeoutMs)}`);
     await tx.query(`SET LOCAL work_mem = '16MB'`);
+    // без параллельных процессов: отчёт занимает одно ядро базы, а не три – подтверждение брони и оплата не ждут процессор (17 §6, S4-131)
+    await tx.query(`SET LOCAL max_parallel_workers_per_gather = 0`);
     const out = await fn(tx);
     await c.query('COMMIT');
     return out;
