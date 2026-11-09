@@ -43,9 +43,14 @@ function session(req: FastifyRequest): string | null {
 
 export function registerNotifications(app: FastifyInstance, P: string) {
   seed();
-  app.post('/__test/inbox-reset', async () => {
+  // { marketing: true } – у Алины включена «Реклама» (для отписки по ссылке).
+  app.post('/__test/inbox-reset', async (req) => {
     seed();
     calls.length = 0;
+    if ((req.body as { marketing?: unknown } | undefined)?.marketing === true) {
+      const a = clients.find((c) => c.phone === '+79131234567')!;
+      a.prefs = { remindersEnabled: a.prefs?.remindersEnabled ?? true, marketingEnabled: true };
+    }
     return { ok: true };
   });
   app.get('/__test/inbox-calls', async () => calls);

@@ -1,0 +1,69 @@
+---
+// S4-125. /unsubscribe/?t=… – отписка от рекламы без входа (K21 §4, K5 №205–206). Открытие страницы ничего не меняет: сервер только
+// проверяет ссылку (GET /unsubscribe/check), отписывает кнопка – POST /unsubscribe через прокси сайта (X-Requested-With, свой Origin).
+// Закрыта от поиска всегда; имени и телефона на странице нет. Срок ссылки истёк (410) – предлагаем войти и выключить рекламу в настройках.
+import Site from '../layouts/Site.astro';
+import { API_PREFIX, apiBase } from '../lib/api.ts';
+
+Astro.response.headers.set('x-robots-tag', 'noindex, nofollow');
+Astro.response.headers.set('cache-control', 'no-store');
+const t = Astro.url.searchParams.get('t') ?? '';
+type State = 'subscribed' | 'already' | 'invalid' | 'expired' | 'unavailable';
+let state: State = 'invalid';
+if (t) {
+  try {
+    const res = await fetch(`${apiBase()}${API_PREFIX}/unsubscribe/check?t=${encodeURIComponent(t)}`, { headers: { accept: 'application/json' }, redirect: 'manual' });
+    if (res.ok) state = ((await res.json()) as { marketingEnabled: boolean }).marketingEnabled ? 'subscribed' : 'already';
+    else if (res.status === 410) state = 'expired';
+    else if (res.status === 400) state = 'invalid';
+    else state = 'unavailable';
+  } catch (e) {
+    console.error('site: проверка ссылки отписки не ответила', e);
+    state = 'unavailable';
+  }
+}
+if (state === 'unavailable') Astro.response.status = 503;
+---
+<Site title="Отписка от рекламы – Ю-Клуб" noindex>
+  <section class="yu-auth" aria-labelledby="unsub-title" data-testid="unsubscribe" data-state={state}>
+    <h1 id="unsub-title">Отписка от рекламы</h1>
+    {state === 'subscribed' && (
+      <>
+        <p class="yu-body" id="unsub-text">Нажмите кнопку – и мы перестанем присылать рекламу и акции. Сообщения о ваших записях будут приходить как раньше.</p>
+        <button class="yu-btn" type="button" id="unsub-button" data-t={t}>Отписаться от рекламы</button>
+        <p class="yu-alert" role="alert" id="unsub-error"></p>
+      </>
+    )}
+    {state === 'already' && <p class="yu-body" role="status">Вы уже отписаны от рекламы. Сообщения о записях приходят как раньше.</p>}
+    {state === 'invalid' && <p class="yu-notice" role="status">Ссылка для отписки недействительна. Выключить рекламу можно в <a href="/login/?next=/account/">личном кабинете</a>.</p>}
+    {state === 'expired' && <p class="yu-notice" role="status">Срок ссылки истёк. <a href="/login/?next=/account/">Войдите в кабинет</a> и выключите рекламу в настройках уведомлений.</p>}
+    {state === 'unavailable' && <p class="yu-notice" role="alert">Сервис временно недоступен. <a href="">Обновите страницу</a> через минуту.</p>}
+  </section>
+
+  <script>
+    const button = document.getElementById('unsub-button') as HTMLButtonElement | null;
+    const error = document.getElementById('unsub-error');
+    const text = document.getElementById('unsub-text');
+    button?.addEventListener('click', async () => {
+      button.disabled = true;
+      if (error) error.textContent = '';
+      try {
+        const res = await fetch('/api/public/v1/unsubscribe/', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', accept: 'application/json', 'x-requested-with': 'yu-site' },
+          body: JSON.stringify({ t: button.dataset.t }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        if (text) {
+          text.textContent = 'Готово: вы отписаны от рекламы и акций. Сообщения о записях будут приходить как раньше.';
+          text.setAttribute('role', 'status');
+        }
+        button.remove();
+      } catch {
+        if (error) error.textContent = 'Не получилось отписаться. Проверьте связь и нажмите ещё раз.';
+        button.disabled = false;
+      }
+    });
+  </script>
+</Site>

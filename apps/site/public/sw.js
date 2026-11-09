@@ -1,6 +1,9 @@
 // Service worker сайта Ю-Клуб: только Web Push (S1-16, Q-30). Кэша страниц нет – данные всегда с сервера.
 // Тело push – JSON { title, body, url, tag, id } от API (modules/notifications/sender.ts), уже расшифрованное браузером.
 // tag = Topic уведомления: повтор того же этапа заменяет показанное, а не дублирует.
+// S4-125 (K21 §3, §4): переход добавляет ?n=<id> – страница отмечает прочтение (UnreadBadge); у рекламы – кнопка «Отписаться от акций»
+// (actions + unsubscribeUrl от sender.ts): POST /unsubscribe с X-Requested-With: yu-site (браузер ставит свой Origin – прокси сайта пропускает);
+// не вышло – открываем страницу /unsubscribe/?t=… с кнопкой.
 /* global self, clients, URL, fetch, atob */
 'use strict';
 
@@ -36,14 +39,59 @@ self.addEventListener('push', (event) => {
     tag: typeof data.tag === 'string' ? data.tag : undefined,
     renotify: false,
     lang: 'ru',
-    data: { url: sameOriginPath(data.url) },
+    data: {
+      url: sameOriginPath(data.url),
+      id: typeof data.id === 'string' ? data.id : null,
+      unsubscribeUrl: typeof data.unsubscribeUrl === 'string' ? sameOriginPath(data.unsubscribeUrl) : null,
+    },
   };
+  if (Array.isArray(data.actions) && options.data.unsubscribeUrl) {
+    options.actions = data.actions.filter((a) => a && a.action === 'unsubscribe').map((a) => ({ action: 'unsubscribe', title: String(a.title || 'Отписаться от акций') }));
+  }
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
+/** Отписка из push: токен – параметр t адреса отписки. true – отписан. */
+async function unsubscribe(unsubscribeUrl) {
+  const t = new URL(unsubscribeUrl, self.location.origin).searchParams.get('t');
+  if (!t) return false;
+  try {
+    const res = await fetch(`${API}/unsubscribe/`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', accept: 'application/json', 'x-requested-with': 'yu-site' },
+      body: JSON.stringify({ t }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Адрес перехода с ?n=<id>: страница ЛК отметит прочтение. */
+function withRead(path, id) {
+  if (!id) return path;
+  const u = new URL(path, self.location.origin);
+  u.searchParams.set('n', id);
+  return u.pathname + u.search + u.hash;
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const path = sameOriginPath(event.notification.data && event.notification.data.url);
+  const data = event.notification.data || {};
+  if (event.action === 'unsubscribe' && data.unsubscribeUrl) {
+    event.waitUntil(
+      (async () => {
+        if (await unsubscribe(data.unsubscribeUrl)) {
+          await self.registration.showNotification('Ю-Клуб', { body: 'Вы отписались от рекламы и акций. Сообщения о записях будут приходить.', lang: 'ru', tag: 'unsubscribed' });
+        } else {
+          await clients.openWindow(data.unsubscribeUrl);
+        }
+      })(),
+    );
+    return;
+  }
+  const path = withRead(sameOriginPath(data.url), data.id);
   event.waitUntil(
     (async () => {
       const all = await clients.matchAll({ type: 'window', includeUncontrolled: true });
