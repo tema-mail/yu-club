@@ -20,6 +20,7 @@ import { EVENT_ACTIONS, registerEvents, resetEvents } from './mock-events.ts';
 import { registerFinance, resetFinance } from './mock-finance.ts';
 import { registerLoyalty, resetLoyalty } from './mock-loyalty.ts';
 import { registerNotifications } from './mock-notifications.ts';
+import { registerReports } from './mock-reports.ts';
 import { opsObjectBranch, registerOps, resetOps } from './mock-ops.ts';
 import { registerPayments, resetPayments } from './mock-payments.ts';
 import { registerShifts, resetShifts } from './mock-shifts.ts';
@@ -785,6 +786,7 @@ export function buildMock() {
   resetEvents(branches);
   registerEvents(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients });
   registerNotifications(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients, grant: (r, a) => { ACTIONS[r] = [...new Set([...ACTIONS[r], ...a])]; } });
+  registerReports(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients, staff: () => staff, grant: (r, a) => { ACTIONS[r] = [...new Set([...ACTIONS[r], ...a])]; } });
   for (const r of ['owner', 'director', 'admin'] as const) ACTIONS[r] = [...new Set([...ACTIONS[r], ...CONTENT_ACTIONS[r]])]; // S4-84…89: контент – mock-content.ts (сброс – его хук)
   registerContent(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches });
   return app;
