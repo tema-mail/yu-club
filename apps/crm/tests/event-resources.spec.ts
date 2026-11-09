@@ -1,5 +1,5 @@
 // S3-83, TC-13 в интерфейсе: правила праздника до сохранения, сервер – окончательно; перенос двигает все ресурсы или ничего (EVENT_MOVE_RESOURCES_INVALID);
-// мероприятие видно в календаре филиала занятостью, обычная бронь на это время – SLOT_TAKEN.
+// мероприятие видно в календаре филиала занятостью (одним запросом calendar-events), обычная бронь на это время – SLOT_TAKEN.
 import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { eventIdOf, key, login, noHorizontalScroll, open, openEvent, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
@@ -89,9 +89,13 @@ test('Календарь филиала: мероприятие видно за�
   await login(page, 'admin@yu.test');
   const party = await card(page, 'EV-000124');
   const date = nskDate(party.plannedStart);
+  const calls: string[] = []; // мероприятия – одним запросом календаря, без /events и карточек
+  page.on('request', (r) => calls.push(new URL(r.url()).pathname));
   await open(page, `/schedule?date=${date}&view=day`);
   const room = page.getByTestId('cal-lane-res-vrroom').getByTestId('cal-event').filter({ hasText: 'EV-000124' });
   await expect(room).toHaveAttribute('aria-label', /EV-000124/);
+  expect(calls.filter((x) => x.endsWith('/calendar-events')).length).toBeGreaterThan(0);
+  expect(calls.filter((x) => x.startsWith(`${API}/events`) || x.startsWith(`${API}/resources/`))).toEqual([]);
   await expect(page.getByTestId('cal-lane-res-vr1').getByTestId('cal-event').first()).toBeVisible(); // VR1 внутри комнаты
   await expect(page.getByTestId('cal-lane-res-pc2').getByTestId('cal-event')).toHaveCount(0);
   const booked = await page.request.post(`${API}/branches/b-nsk-krasny/bookings`, { headers: key(), data: { resourceId: 'res-vr1', start: party.plannedStart, end: new Date(Date.parse(party.plannedStart) + 15 * 60_000).toISOString(), client: { phone: '+79131112233', firstName: 'Гость' } } });

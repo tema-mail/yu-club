@@ -5,7 +5,7 @@
 // В режиме browse смена даты и вида – переход по адресу (?date=&view=): рабочий стол страницы считается на ту же дату.
 // S2-64: у пришедших и завершённых – отметка оплаты первой строкой (короткая бронь обрезает хвост) (K10 №23 POST /bookings/payment-status): «к оплате» или «оплачено».
 // Нет права на статусы оплаты или ошибка – календарь работает без отметки.
-// S3-83: мероприятия видны занятостью (ссылка на карточку) и в режиме выбора слота; API календаря их не отдаёт – строки из /events и карточек (lib/events.ts).
+// S3-83: мероприятия видны занятостью (ссылка на карточку) и в режиме выбора слота – одним запросом /branches/{id}/calendar-events (lib/events.ts).
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { loadCalendarEvents, type CalendarEventItem } from '../lib/events.ts';
@@ -137,7 +137,7 @@ export default function BranchCalendar(props: BranchCalendarProps) {
     if (!data || data.resources.length === 0) return setEvents([]);
     let alive = true;
     setEventsError(false);
-    loadCalendarEvents(branchId, from, to, tz, data.resources.map((r) => r.id)).then(
+    loadCalendarEvents(branchId, from, to).then(
       (x) => alive && setEvents(x),
       (e) => {
         if (!alive) return;
