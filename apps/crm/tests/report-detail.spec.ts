@@ -62,3 +62,27 @@ test('390 px: таблица записей прокручивается вну�
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   if (process.env.CRM_SHOTS) await page.screenshot({ path: `${process.env.CRM_SHOTS}/report-detail-390.png`, fullPage: true });
 });
+
+test('график загрузки: точные значения по наведению, фокусу и касанию, цвет подписан, сегмент открывает записи дня', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, `/reports/utilization?${P}`);
+  const chart = page.getByTestId('chart');
+  await expect(chart.getByTestId('legend').locator('li')).toHaveText(['Голубой – забронировано', 'Синий – использовано']);
+  await expect(chart.locator('g[role=button]')).toHaveCount(10);
+  await chart.getByTestId('bar-2026-11-05').hover();
+  const tip = chart.getByTestId('chart-tip');
+  await expect(tip).toContainText('05.11.2026');
+  await expect(tip).toContainText(/Синий – использовано: \d/);
+  await chart.getByTestId('bar-2026-11-03').focus();
+  await expect(tip).toContainText('03.11.2026');
+  await chart.getByTestId('bar-2026-11-04').dispatchEvent('click'); // касание: сначала значения, переход – кнопкой
+  await expect(tip).toContainText('04.11.2026');
+  await expect(detail(page)).toHaveCount(0);
+  const used = (await tip.locator('span > span', { hasText: 'Синий – использовано' }).textContent())!.split(': ')[1]!.trim();
+  await tip.getByRole('button', { name: 'Единицы за этот день' }).click();
+  await expect(detail(page)).toContainText('Использовано: записи – 04.11.2026');
+  await expect(detail(page).getByTestId('detail-total')).toContainText(`Итог: ${used}`);
+  await chart.locator('summary').click();
+  await expect(chart.getByTestId('chart-table').locator('tbody tr')).toHaveCount(10);
+  if (process.env.CRM_SHOTS) await page.screenshot({ path: `${process.env.CRM_SHOTS}/report-chart-1440.png`, fullPage: true });
+});

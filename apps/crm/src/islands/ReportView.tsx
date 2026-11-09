@@ -5,6 +5,7 @@
 // Смена города сбрасывает филиал, смена филиала – зависимые фильтры. Сравнение при нулевой базе – «–», недоступное – словами.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, API_PREFIX } from '../lib/api.ts';
+import ReportChart from './ReportChart.tsx';
 import ReportDetail from './ReportDetail.tsx';
 import {
   BOOKING_STATUS_LABEL, METHOD_LABEL, RESOURCE_TYPE_LABEL, dateBasisOf, daysIn, fmtAt, fmtDelta, fmtMetric, fmtPeriod, metricTitle, presets, reportError, todayIn,
@@ -66,6 +67,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
   const [useExport, setUseExport] = useState(false);
   const [metric, setMetric] = useState(initialMetric);
   const [applied, setApplied] = useState<ReportFilters>(initial);
+  const [segment, setSegment] = useState<{ key: string; label: string }>({ key: '', label: '' });
   const seq = useRef(0);
   const ctrl = useRef<AbortController | null>(null);
 
@@ -83,6 +85,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
     ctrl.current = c;
     const mine = ++seq.current;
     setResult(null);
+    setSegment({ key: '', label: '' });
     setError('');
     setUseExport(false);
     if (next.from > next.to) {
@@ -92,7 +95,9 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
     }
     setState('loading');
     try {
-      const r = await getJson<ReportResult>(`/reports/${report.key}?${reportQuery(next)}`, c.signal);
+      const p = reportQuery(next);
+      if (report.key === 'utilization') p.set('series', 'day'); // график по дням (K11 №240 series)
+      const r = await getJson<ReportResult>(`/reports/${report.key}?${p}`, c.signal);
       if (mine !== seq.current) return; // ответ на прежние фильтры – не показываем
       setApplied(next);
       setResult(r);
@@ -133,7 +138,8 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
   }, []);
 
   const pick = (key: string) => {
-    const m = key === metric ? '' : key;
+    const m = key === metric && !segment.key ? '' : key;
+    setSegment({ key: '', label: '' });
     setMetric(m);
     syncUrl(f, m);
   };
@@ -234,8 +240,17 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
               </tbody>
             </table>
           </div>
+          {result.series && result.series.points.length > 1 && (
+            <ReportChart title="Загрузка по дням" unit="minutes" buckets={result.series.points.map((x) => ({ key: x.bucket, label: x.bucket.slice(8), period: fmtPeriod({ from: x.bucket, to: x.bucket }) }))}
+              series={[
+                { key: 'booked', label: 'забронировано', color: '#7aa2e8', colorName: 'Голубой', values: result.series.points.map((x) => x.bookedMin) },
+                { key: 'used', label: 'использовано', color: '#1f4fb8', colorName: 'Синий', values: result.series.points.map((x) => x.usedMin) },
+              ]}
+              pickLabel="Единицы за этот день"
+              onPick={(day, label) => { setMetric('used'); setSegment({ key: `day:${day}`, label }); syncUrl(f, 'used'); }} />
+          )}
           {metric && Object.hasOwn(result.metrics, metric) && (
-            <ReportDetail report={report.key} filters={applied} metric={metric} segment="" segmentLabel="" card={result.metrics[metric]} onClose={() => pick(metric)} />
+            <ReportDetail report={report.key} filters={applied} metric={metric} segment={segment.key} segmentLabel={segment.label} card={result.metrics[metric]} onClose={() => { setSegment({ key: '', label: '' }); setMetric(''); syncUrl(f, ''); }} />
           )}
         </>
       )}
