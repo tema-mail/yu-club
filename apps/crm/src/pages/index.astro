@@ -1,19 +1,24 @@
 ---
 // Филиалы текущего контекста: вся сеть или город. Контекст «филиал» сразу ведёт в карточку филиала.
+// S4-94: над списком – рабочий стол руководителя (13 §6.2–6.3) при праве на отчёты; у Владельца – предупреждения.
 import Crm from '../layouts/Crm.astro';
+import Dashboard from '../islands/Dashboard.tsx';
 import { BRANCH_STATUS_LABEL } from '../lib/api.ts';
 
-const { branches, ctx } = Astro.locals;
+const { branches, ctx, me } = Astro.locals;
 if (ctx.kind === 'branch') return Astro.redirect(`/branches/${encodeURIComponent(ctx.branch.id)}`);
 
 const list = ctx.kind === 'city' ? branches.filter((b) => b.cityId === ctx.cityId) : branches;
 const heading = ctx.kind === 'city' ? `Филиалы: ${ctx.cityName}` : 'Филиалы сети';
+const desk = me.actions.includes('reports.ops.view') || me.actions.includes('reports.finance.view');
+const timezone = list[0]?.timezone ?? branches[0]?.timezone ?? 'Asia/Novosibirsk';
 ---
 <Crm title={heading}>
   <div class="yc-head">
     <h1>{heading}</h1>
     {list.length > 0 && <p>Доступно филиалов: {list.length}</p>}
   </div>
+  {desk && <Dashboard client:load cityId={ctx.kind === 'city' ? ctx.cityId : ''} timezone={timezone} warnings={me.access.network} />}
   <section class="yc-panel" aria-label="Список филиалов">
     {list.length === 0 ? (
       <p class="yc-empty">Вам пока не назначен ни один филиал. Обратитесь к директору или владельцу сети.</p>
@@ -36,3 +41,15 @@ const heading = ctx.kind === 'city' ? `Филиалы: ${ctx.cityName}` : 'Фи�
     )}
   </section>
 </Crm>
+
+<style is:global>
+  .rp-cards{ list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fill, minmax(11rem, 1fr)); gap:var(--yc-sp-xs); }
+  .rp-card{ height:100%; display:grid; gap:var(--yc-sp-3xs); align-content:start; padding:var(--yc-sp-xs); background:var(--yc-surface);
+    border:1px solid var(--yc-line); border-radius:var(--yc-r-m); color:inherit; }
+  .rp-card:hover{ border-color:var(--yc-accent); }
+  .rp-card:focus-visible{ outline:2px solid var(--yc-accent); outline-offset:2px; }
+  .rp-card__title{ font-size:var(--yc-fs-xs); font-weight:600; }
+  .rp-card__value{ font-size:var(--yc-fs-l); font-weight:700; overflow-wrap:anywhere; }
+  .rp-card--muted .rp-card__value{ font-size:var(--yc-fs-s); font-weight:600; color:var(--yc-muted); }
+  .rp-card__delta, .rp-card__basis{ font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+</style>

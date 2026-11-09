@@ -3,6 +3,7 @@
 // В меню – только разделы, у которых есть экран; новые пункты добавляет шаг, который делает экран.
 import '../styles/crm.css';
 import ContextSwitcher, { type ContextGroup } from '../islands/ContextSwitcher.tsx';
+import GlobalSearch from '../islands/GlobalSearch.tsx';
 import { ROLE_LABEL } from '../lib/api.ts';
 
 interface Props {
@@ -35,6 +36,7 @@ const MENU: MenuItem[] = [
   { href: '/equipment', label: 'Оборудование', action: 'equipment.view', active: (p) => p.startsWith('/equipment') },
   { href: '/repairs', label: 'Ремонт', action: 'equipment.view', active: (p) => p.startsWith('/repairs') },
   { href: '/content', label: 'Контент', action: 'content.view', active: (p) => p.startsWith('/content') },
+  { href: '/reports', label: 'Отчёты', action: 'reports.ops.view', active: (p) => p.startsWith('/reports') },
   { href: '/network/branches', label: 'Сеть', action: 'network.branch.update', active: (p) => p.startsWith('/network') },
   { href: '/dictionaries', label: 'Справочники', action: 'dictionary.manage', also: 'repair.executor.manage', active: (p) => p.startsWith('/dictionaries') },
   { href: '/settings', label: 'Настройки', action: 'settings.branch.manage', active: (p) => p.startsWith('/settings') },
@@ -73,8 +75,9 @@ const fullName = `${me.staff.firstName} ${me.staff.lastName}`;
     <a class="yc-skip" href="#main">К содержимому</a>
     <header class="yc-top">
       <a class="yc-brand" href="/">Ю Клуб · CRM</a>
-      <div class="yc-top__ctx">
+      <div class="yc-top__ctx" style="display:flex;flex-wrap:wrap;gap:var(--yc-sp-2xs);align-items:center;max-width:none">
         {groups.length > 0 && <ContextSwitcher client:load groups={groups} current={current} />}
+        {me.actions.includes('search.global') && <GlobalSearch client:load />}
       </div>
       <div class="yc-user">
         <span class="yc-user__who" data-testid="staff-who">
