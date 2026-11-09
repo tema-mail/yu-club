@@ -33,7 +33,8 @@ export const METRIC_TITLES: Record<string, string> = {
   clientsPositive: 'Клиенты с плюсовым балансом', clientsNegative: 'Клиенты с минусом', clientsAtThreshold: 'Клиенты у порога', clientsBlocked: 'Заблокировано оплат баллами', totalBalance: 'Итоговый баланс',
   // 3.8
   salesCount: 'Продано, шт.', salesAmount: 'Продано на сумму', redeemedAmount: 'Погашено на сумму', redeemReturnedAmount: 'Возвращено погашений', expiredCount: 'Сгорело, шт.',
-  expiredAmount: 'Сгорело на сумму', cancelledCount: 'Отменено, шт.', activeCount: 'Действующие, шт.', activeBalance: 'Остаток действующих', partiallyRedeemed: 'Погашены частично', birthdayGift: 'Подарки на день рождения',
+  expiredAmount: 'Сгорело на сумму', cancelledCount: 'Отменено, шт.', activeCount: 'Действующие, шт.', activeBalance: 'Остаток действующих', partiallyRedeemed: 'Погашены частично', birthdayGift: 'Подарки имениннику: выдано',
+  birthdayGiftUsed: 'Подарки имениннику: использовано', birthdayGiftExpired: 'Подарки имениннику: сгорело',
 };
 
 // 3.11: показатели уведомлений по категориям собираются из двух частей

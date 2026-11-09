@@ -375,9 +375,8 @@ const REPORTS: Record<string, ReportDef> = {
   },
   certificates: {
     action: 'reports.finance.view',
-    labels: { birthdayGift: 'Появится после модуля мероприятий', redeemed: 'Погашение не является поступлением денег' },
+    labels: { birthdayGift: 'Подарок имениннику – право на услугу, не деньги', redeemed: 'Погашение не является поступлением денег' },
     defs: () => ({ salesCount: { unit: 'count', src: 'finance', date: 'occurredAt', where: (r) => r.source === 'certificate_sale' } }),
-    post: (m) => ({ ...m, birthdayGift: { state: 'unavailable', reason: 'source_not_ready' } }),
     project: (r, env, value) => ({ id: r.id, branchName: bName(env, r.branchId), value }),
     columns: ['id', 'branchName', 'value'],
   },

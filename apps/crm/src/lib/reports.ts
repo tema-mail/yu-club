@@ -118,7 +118,8 @@ export const METRIC_TITLES: Record<string, string> = {
   clientsPositive: 'Клиенты с плюсовым балансом', clientsNegative: 'Клиенты с минусом', clientsAtThreshold: 'Клиенты у порога', clientsBlocked: 'Заблокировано оплат баллами', totalBalance: 'Итоговый баланс',
   salesCount: 'Продано, шт.', salesAmount: 'Продано на сумму', redeemedAmount: 'Погашено на сумму', redeemReturnedAmount: 'Возвращено погашений', expiredCount: 'Сгорело, шт.',
   expiredAmount: 'Сгорело на сумму', cancelledCount: 'Отменено, шт.', activeCount: 'Действующие, шт.', activeBalance: 'Остаток действующих', partiallyRedeemed: 'Погашены частично',
-  birthdayGift: 'Подарки на день рождения', campaignsCount: 'Рекламные кампании', campaignsReach: 'Охват кампаний', optOuts: 'Отказы от рекламы',
+  birthdayGift: 'Подарки имениннику: выдано', birthdayGiftUsed: 'Подарки имениннику: использовано', birthdayGiftExpired: 'Подарки имениннику: сгорело',
+  campaignsCount: 'Рекламные кампании', campaignsReach: 'Охват кампаний', optOuts: 'Отказы от рекламы',
   siteViews: 'Просмотры на сайте', siteClicks: 'Переходы с сайта',
 };
 export const metricTitle = (key: string): string => METRIC_TITLES[key] ?? key;
