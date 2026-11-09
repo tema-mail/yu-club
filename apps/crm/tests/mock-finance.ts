@@ -80,6 +80,11 @@ let systemCategories: Record<'cash_shortage' | 'cash_surplus', string> = { cash_
 let shiftGate: (branchId: string) => string | null | undefined = () => undefined;
 /** Операция кассы для привязки к чужому объекту (finance/links.ts). */
 export const financeOperation = (id: string) => ops.find((o) => o.id === id);
+/** Живые связи операций с объектами (finance_operation_links, K17 §14): их ведут моки мероприятий, ремонтов и зарплаты. */
+export interface OpLinkRef { type: 'event' | 'repair' | 'payroll_statement'; id: string; role: 'income' | 'refund' | 'expense' | 'payout_expense' }
+const linkSources = new Map<string, (operationId: string) => OpLinkRef | null>();
+export const setLinkSource = (name: OpLinkRef['type'], f: (operationId: string) => OpLinkRef | null) => linkSources.set(name, f);
+const linkOf = (operationId: string) => [...linkSources.values()].map((f) => f(operationId)).find((x) => x) ?? null;
 /** Подкатегория с кодом salary (0312). */
 export const salaryCategoryId = () => categories.find((c) => c.code === 'salary')?.id ?? null;
 
@@ -266,7 +271,7 @@ export function registerFinance(app: FastifyInstance, P: string, deps: FinanceMo
         .filter((o) => cms === null || Date.parse(o.occurredAt) > cms || (Date.parse(o.occurredAt) === cms && o.number > cnum!));
       const items = all.slice(0, limit);
       const last = items.at(-1);
-      return { items: items.map((o) => shape(s, o)), nextCursor: all.length > limit && last ? `${Date.parse(last.occurredAt)}:${last.number}` : null, from, to };
+      return { items: items.map((o) => ({ ...shape(s, o), link: linkOf(o.id) })), nextCursor: all.length > limit && last ? `${Date.parse(last.occurredAt)}:${last.number}` : null, from, to };
     } catch (e) {
       return send(reply, e);
     }

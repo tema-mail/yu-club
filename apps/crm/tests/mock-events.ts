@@ -8,7 +8,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
 import { bookingFacts, bookingBusy, setCalendarEventRows, setExternalBusy } from './mock-booking.ts';
 import { giftIdsOfEvent, registerGifts, resetGifts } from './mock-gifts.ts';
-import { financeCommands, getFinanceOp, recordMoney } from './mock-finance.ts';
+import { financeCommands, getFinanceOp, recordMoney, setLinkSource } from './mock-finance.ts';
 import { opsHoursOn, opsState } from './mock-ops.ts';
 
 type Rec = Record<string, unknown>;
@@ -549,6 +549,7 @@ export function registerEvents(app: FastifyInstance, P: string, d: EventsMockDep
   const eventBusy = (branchId: string, units: string[], s: number, e: number, self: string[] = []) =>
     allEventUnits().some((r) => !self.includes(r.id) && r.branchId === branchId && r.start < e && r.end > s && r.unitIds.some((u) => units.includes(u)));
   setExternalBusy((branchId, units, s, e) => eventBusy(branchId, units, s, e));
+  setLinkSource('event', (opId) => { for (const e of events) for (const l of e.links) if (l.operationId === opId) return { type: 'event', id: e.id, role: l.role }; return null; });
   setCalendarEventRows(() => events.filter((e) => !['cancelled', 'not_held'].includes(e.status)).flatMap((e) => e.resources.filter((r) => r.status === 'active').map((r) => ({ id: e.id, number: e.number, title: e.title, status: e.status, branchId: e.branchId, resourceId: r.resourceId, unitIds: r.unitIds, start: r.start, end: r.end }))));
 
   function place(e: Ev, resourceId: string, s: number, en: number, self: string[] = []): string[] {
