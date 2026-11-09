@@ -9,6 +9,10 @@ export type GiftStatus = 'issued' | 'reserved' | 'used' | 'expired';
 /** Элемент П1 (routes.gifts.ts, /me/gifts). */
 export interface MyGiftDto { id: string; number: string; issuedOn: string; validUntil: string; status: GiftStatus; terms: GiftTermsView; bookingId: string | null }
 
+/** Режим подарка в расписании живёт в sessionStorage вкладки: если клуб ещё не выбран, /schedule/ сначала покажет список клубов,
+ *  а их ссылки ?gift= не несут – расписание выбранного клуба берёт id отсюда. */
+export const GIFT_STORE_KEY = 'yu_gift';
+
 export const giftApi = {
   list: () => browserCall<{ items: MyGiftDto[] }>('/me/gifts'),
 };
@@ -56,7 +60,7 @@ export default function MyGift() {
               <ul class="yu-body" data-testid="gift-terms">
                 {giftTermLines(g.terms, daysBetween(g.issuedOn, g.validUntil)).map((l) => <li key={l}>{l}</li>)}
               </ul>
-              {g.status === 'issued' && <a class="yu-btn" href={`/schedule/?gift=${encodeURIComponent(g.id)}`} data-testid="gift-book">Записаться</a>}
+              {g.status === 'issued' && <a class="yu-btn" href={`/schedule/?gift=${encodeURIComponent(g.id)}`} onClick={() => sessionStorage.setItem(GIFT_STORE_KEY, g.id)} data-testid="gift-book">Записаться</a>}
               {g.status === 'reserved' && <p class="yu-mybookings__meta">По подарку есть запись – она в разделе «Мои записи».</p>}
             </li>
           ))}

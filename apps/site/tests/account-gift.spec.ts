@@ -55,6 +55,12 @@ test('действующий – условия, срок и «Записать�
   await expect(page.getByTestId('my-gift')).not.toContainText('GF-000150'); // подарок Петра
   await expect(page.getByTestId('certificate')).toHaveCount(3);
   await expect(page.getByTestId('certificates')).not.toContainText('GF-');
+
+  // «Записаться» запоминает подарок во вкладке: клуб ещё не выбран – /schedule/ покажет список клубов без ?gift=
+  await active.getByRole('link', { name: 'Записаться' }).click();
+  await expect(page.getByTestId('schedule-branches')).toBeVisible();
+  const id = new URL(page.url()).searchParams.get('gift');
+  expect(await page.evaluate(() => sessionStorage.getItem('yu_gift'))).toBe(id);
 });
 
 test('чужой подарок: окна и удержание – 404, как несуществующий', async ({ page, browser }) => {
