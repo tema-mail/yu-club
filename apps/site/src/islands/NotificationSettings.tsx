@@ -2,7 +2,10 @@
 // Два переключателя: «Напоминания» и «Реклама»; сервисные сообщения приходят всегда. Каждое изменение – PUT
 // с новым Idempotency-Key; ошибка возвращает переключатель и пишет причину. Разрешение браузера – только
 // по нажатию кнопки (enablePush), состояние браузера показываем фразой, а не цветом.
+// S4-126: «Реклама» – со ссылкой на /advertising-consent/; документа нет (K5 №215 – null) – переключателя нет, кроме уже включённой рекламы
+// (выключить можно всегда). Версию в журнал согласий пишет API – живую; нет документа при включении – 409 MARKETING_DOCUMENT_MISSING.
 import { useEffect, useState } from 'preact/hooks';
+import { browserCall } from '../lib/client.ts';
 import { disablePush, enablePush, pushState, saveNotificationSettings, type PushState } from '../lib/push.ts';
 
 interface Props {
@@ -25,8 +28,12 @@ export default function NotificationSettings(props: Props) {
   const [push, setPush] = useState<PushState | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState('');
+  const [adDoc, setAdDoc] = useState<boolean | null>(null);
 
   useEffect(() => {
+    browserCall<{ advertisingConsent: string | null }>('/content/legal-versions')
+      .then((v) => setAdDoc(v.advertisingConsent !== null))
+      .catch(() => setAdDoc(false));
     pushState()
       .then(setPush)
       .catch(() => setPush('not_configured'));
@@ -41,9 +48,13 @@ export default function NotificationSettings(props: Props) {
     try {
       const saved = await saveNotificationSettings(next);
       setPrefs({ remindersEnabled: saved.remindersEnabled, marketingEnabled: saved.marketingEnabled });
-    } catch {
+    } catch (e) {
       setPrefs(before);
-      setError('Не удалось сохранить настройку. Проверьте связь и попробуйте ещё раз.');
+      setError(
+        (e as { code?: string }).code === 'MARKETING_DOCUMENT_MISSING'
+          ? 'Согласие на рекламу пока нельзя дать: текст документа ещё не опубликован.'
+          : 'Не удалось сохранить настройку. Проверьте связь и попробуйте ещё раз.',
+      );
     } finally {
       setSaving(false);
     }
@@ -74,15 +85,19 @@ export default function NotificationSettings(props: Props) {
         />
         <span>Напоминания о сеансе – накануне в 21:00 и за 15 минут до начала</span>
       </label>
-      <label class="yu-check">
-        <input
-          type="checkbox"
-          checked={prefs.marketingEnabled}
-          disabled={saving}
-          onChange={(e) => void change('marketingEnabled', (e.target as HTMLInputElement).checked)}
-        />
-        <span>Реклама и акции – согласен получать рекламные сообщения</span>
-      </label>
+      {(adDoc || prefs.marketingEnabled) && (
+        <label class="yu-check">
+          <input
+            type="checkbox"
+            checked={prefs.marketingEnabled}
+            disabled={saving}
+            onChange={(e) => void change('marketingEnabled', (e.target as HTMLInputElement).checked)}
+          />
+          <span>
+            Реклама и акции – даю <a href="/advertising-consent/" target="_blank" rel="noopener">согласие на получение рекламных сообщений</a>
+          </span>
+        </label>
+      )}
       <p class="yu-alert" role="alert">{error}</p>
 
       <div class="yu-account__push">

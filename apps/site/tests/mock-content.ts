@@ -72,6 +72,8 @@ const BRANCH_PAGES: Record<string, unknown> = {
 };
 
 const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty' };
+/** Живая версия согласия на рекламу (K5 №215) – её же пишет вход и настройки в журнал согласий (mock-clients.ts), как legalVersions в API. */
+export const liveAdvertisingVersion = () => (state.advertisingConsent ? PAGES['advertising-consent']!.documentVersion : null);
 
 function inScope(s: Scope, deps: ContentDeps, q: { city?: string; branch?: string }): boolean {
   if (!q.city && !q.branch) return true;

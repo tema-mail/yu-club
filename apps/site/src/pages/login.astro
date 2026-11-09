@@ -2,7 +2,17 @@
 // Вход и регистрация клиента – один сценарий (K9, карта сайта 3.5): телефон → код из SMS → согласие → вход.
 // Согласие на обработку ПДн – отдельная пустая галочка (152-ФЗ ст. 9); без неё кнопка «Войти» неактивна.
 // С живой сессией middleware сразу уводит на ?next= (или в кабинет). Закрыта от поиска.
+// S4-126: согласие на рекламу – отдельная пустая галочка со ссылкой на /advertising-consent/, только если документ опубликован (K5 №215);
+// версию в журнал согласий пишет API – живую версию страницы, а не присланную сайтом (K9, K22 §7). Документа нет – галочки нет.
 import Site from '../layouts/Site.astro';
+import { content } from '../lib/content.ts';
+
+let advertising: string | null = null;
+try {
+  advertising = (await content.legalVersions()).advertisingConsent;
+} catch (e) {
+  console.error('site: версии документов не загрузились – вход без галочки рекламы', e);
+}
 ---
 <Site title="Вход в личный кабинет – Ю-Клуб" noindex>
   <section class="yu-auth" aria-labelledby="auth-title">
@@ -27,6 +37,12 @@ import Site from '../layouts/Site.astro';
         <input type="checkbox" id="consent" name="consent" />
         <span>Даю <a href="/personal-data-consent/" target="_blank" rel="noopener">согласие на обработку персональных данных</a></span>
       </label>
+      {advertising && (
+        <label class="yu-check">
+          <input type="checkbox" id="marketing" name="marketing" />
+          <span>Согласен получать рекламу и акции – <a href="/advertising-consent/" target="_blank" rel="noopener">согласие на получение рекламных сообщений</a> (необязательно)</span>
+        </label>
+      )}
       <button class="yu-btn" type="submit" id="code-submit" disabled>Войти</button>
       <div class="yu-form__aside">
         <button class="yu-link-btn" type="button" id="resend" disabled>Отправить код ещё раз</button>
@@ -38,7 +54,7 @@ import Site from '../layouts/Site.astro';
   </section>
 
   <script>
-    import { clientAuth, errorText, safeNext } from '../lib/client.ts';
+    import { SIGNED_IN_EVENT, browserCall, clientAuth, errorText, safeNext } from '../lib/client.ts';
 
     const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
     const phoneForm = $<HTMLFormElement>('phone-form');
@@ -163,7 +179,9 @@ import Site from '../layouts/Site.astro';
       codeSubmit.disabled = true;
       codeSubmit.textContent = 'Входим…';
       try {
-        await clientAuth.verify(challengeId, codeInput.value);
+        const marketing = document.getElementById('marketing') as HTMLInputElement | null;
+        await browserCall('/auth/otp/verify', { challengeId, code: codeInput.value, consents: { pdProcessing: true, ...(marketing ? { marketing: marketing.checked } : {}) } });
+        window.dispatchEvent(new CustomEvent(SIGNED_IN_EVENT));
         location.assign(safeNext(new URLSearchParams(location.search).get('next'), location.origin));
       } catch (e) {
         errorBox.textContent = errorText(e);

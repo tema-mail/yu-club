@@ -1,6 +1,7 @@
 // Мок входа клиента и ЛК (K9) для e2e сайта – вынесен из mock-api.ts без изменения поведения.
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
+import { liveAdvertisingVersion } from './mock-content.ts';
 
 export function fail(reply: FastifyReply, status: number, code: string, message: string) {
   return reply.code(status).send({ error: { code, message, requestId: randomUUID() } });
@@ -19,6 +20,8 @@ interface MockClient { id: string; phone: string; firstName: string | null; last
 
 const challenges = new Map<string, Challenge>();
 export const sessions = new Map<string, string>(); // token → clientId
+/** journal.client_consents (K9, K21 §4): реклама – с живой версией документа; GET /__test/consents – для e2e. */
+export const consents: Array<{ clientId: string; kind: 'marketing'; granted: boolean; documentVersion: string | null; source: 'site' | 'account' }> = [];
 export const clients: MockClient[] = [
   { id: randomUUID(), phone: '+79131234567', firstName: 'Алина', lastName: 'Сафронова', status: 'active', consent: true },
   { id: randomUUID(), phone: '+79990000403', firstName: null, lastName: null, status: 'blocked', consent: true },
@@ -96,7 +99,7 @@ export function registerClientAuth(app: FastifyInstance, P: string, onLogin: (cl
   });
 
   app.post(`${P}/auth/otp/verify`, async (req, reply) => {
-    const body = (req.body ?? {}) as { challengeId?: unknown; code?: unknown; consents?: { pdProcessing?: unknown } };
+    const body = (req.body ?? {}) as { challengeId?: unknown; code?: unknown; consents?: { pdProcessing?: unknown; marketing?: unknown } };
     const expired = () => fail(reply, 410, 'OTP_EXPIRED', 'Код недействителен, запросите новый');
     if (typeof body.challengeId !== 'string' || !UUID.test(body.challengeId)) return expired();
     if (typeof body.code !== 'string' || !/^\d{6}$/.test(body.code)) {
@@ -117,9 +120,14 @@ export function registerClientAuth(app: FastifyInstance, P: string, onLogin: (cl
       return fail(reply, 422, 'CONSENT_REQUIRED', 'Нужно согласие на обработку персональных данных');
     }
     const isNew = !client;
+    // otp.ts: реклама только у нового клиента и только с живой версией страницы, присланную сайтом версию не берём.
+    if (isNew && body.consents?.marketing === true && !liveAdvertisingVersion()) return fail(reply, 409, 'MARKETING_DOCUMENT_MISSING', 'Текст согласия на рекламу ещё не опубликован');
     if (!client) {
       client = { id: randomUUID(), phone: ch.phone, firstName: null, lastName: null, status: 'active', consent: true };
       clients.push(client);
+      const marketing = body.consents?.marketing === true;
+      client.prefs = { remindersEnabled: true, marketingEnabled: marketing };
+      if (marketing) consents.push({ clientId: client.id, kind: 'marketing', granted: true, documentVersion: liveAdvertisingVersion(), source: 'site' });
     }
     ch.used = true;
     const token = randomUUID();
@@ -140,6 +148,8 @@ export function registerClientAuth(app: FastifyInstance, P: string, onLogin: (cl
     const token = readCookie(req.headers.cookie, 'yu_client');
     return token ? clients.find((c) => c.id === sessions.get(token)) : undefined;
   };
+
+  app.get('/__test/consents', async () => consents.map((x) => ({ ...x, phone: clients.find((c) => c.id === x.clientId)?.phone ?? null })));
 
   app.get(`${P}/push/vapid-public-key`, async () => ({ publicKey: MOCK_VAPID }));
   app.get('/__test/push-calls', async () => pushCalls);
@@ -180,6 +190,13 @@ export function registerClientAuth(app: FastifyInstance, P: string, onLogin: (cl
     const body = (req.body ?? {}) as { remindersEnabled?: unknown; marketingEnabled?: unknown };
     if (typeof body.remindersEnabled !== 'boolean' || typeof body.marketingEnabled !== 'boolean') return fail(reply, 400, 'VALIDATION_FAILED', 'Неверные данные запроса');
     if (c.phone.endsWith('0500')) return fail(reply, 500, 'INTERNAL', 'Внутренняя ошибка');
+    const was = prefsOf(c).marketingEnabled;
+    if (body.marketingEnabled !== was) {
+      // notifications/index.ts: включение рекламы – с живой версией документа, нет её – 409; выключение – без версии.
+      const version = body.marketingEnabled ? liveAdvertisingVersion() : null;
+      if (body.marketingEnabled && !version) return fail(reply, 409, 'MARKETING_DOCUMENT_MISSING', 'Текст согласия на рекламу ещё не опубликован');
+      consents.push({ clientId: c.id, kind: 'marketing', granted: body.marketingEnabled, documentVersion: version, source: 'account' });
+    }
     c.prefs = { remindersEnabled: body.remindersEnabled, marketingEnabled: body.marketingEnabled };
     return { ...c.prefs, serviceAlwaysOn: true, pushSubscriptions: 0 };
   });
