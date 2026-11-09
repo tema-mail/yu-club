@@ -1,10 +1,14 @@
 // S4-79: источники Э3 в дашборде и поиске. Карточки мероприятий, пустых и незакрытых смен, открытых неисправностей и простоя – из
-// source_not_ready стали числами своих отчётов при тех же фильтрах; набор – по праву роли.
+// source_not_ready стали числами своих отчётов при тех же фильтрах; набор – по праву роли. Поиск: мероприятие по номеру и дате,
+// оборудование по инвентарному и серийному номеру; оборудование вне зоны – пусто.
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
+import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { dashboard } from '../../apps/api/src/modules/reports/dashboard.ts';
 import { equipmentReport } from '../../apps/api/src/modules/reports/equipment.ts';
 import { eventsReport } from '../../apps/api/src/modules/reports/events.ts';
+import { globalSearch } from '../../apps/api/src/modules/reports/search.ts';
 import { staffReport } from '../../apps/api/src/modules/reports/staff.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 import { d, reportFixtures, SYS, type Fx } from '../helpers/reports.ts';
@@ -72,5 +76,31 @@ describe('дашборд: карточки Э3 – числа своих отч�
     expect(keys).toEqual(expect.arrayContaining(['openFaults', 'downtime']));
     for (const k of ['eventsCount', 'emptyIntervals', 'unclosedShifts']) expect(keys).not.toContain(k);
     expect(dash.cards.find((c) => c.key === 'openFaults')!.metric).toMatchObject({ value: 1 });
+  });
+});
+
+describe('поиск: мероприятия и оборудование', () => {
+  const search = async (ctx: AccessContext, q: string) => {
+    const r = await globalSearch({ pool: fx.app, clock: fixedClock('2026-11-20T05:00:00Z') }, ctx, { actor: ctx.actor, access: ctx, source: 'crm', requestId: randomUUID() }, q);
+    return (type: string) => r.groups.find((g) => g.type === type);
+  };
+
+  it('по инвентарному номеру (полному и цифрами) и серийному; вне зоны – пусто', async () => {
+    const owner = await search(fx.owner(), 'INV-000001');
+    expect(owner('equipment')!.items.map((i) => i.inventoryNo)).toEqual(['INV-000001']);
+    expect((await search(fx.owner(), '0002'))('equipment')!.items.map((i) => i.inventoryNo)).toEqual(['INV-000002']);
+    expect((await search(fx.owner(), 'sn-inv-000002'))('equipment')!.items.map((i) => i.branchId)).toEqual([b]);
+    const admin = await search(fx.admin([b]), 'INV-000001');
+    expect(admin('equipment')).toEqual({ type: 'equipment', items: [], more: false });
+    expect((await search(fx.director([b]), 'SN-INV-000001'))('equipment')!.items).toEqual([]);
+  });
+
+  it('мероприятие по номеру и по дате проведения; Директор чужой зоны не находит; без права группы нет', async () => {
+    expect((await search(fx.owner(), 'EV-000001'))('event')!.items.map((i) => i.branchId)).toEqual([a]);
+    expect((await search(fx.owner(), '2026-11-10'))('event')!.items).toHaveLength(2);
+    expect((await search(fx.director([b]), 'EV-000001'))('event')!.items).toEqual([]);
+    expect((await search(fx.director([b]), '10.11'))('event')!.items.map((i) => i.number)).toEqual(['EV-000002']);
+    const viaAdmin = await search(fx.admin([a]), 'EV-000001');
+    expect(viaAdmin('event')!.items.map((i) => i.number)).toEqual(['EV-000001']); // event.view у Администратора есть (K1)
   });
 });

@@ -69,9 +69,9 @@ describe('поиск (S4-75)', () => {
 
   it('тип без права отсутствует в ответе: Администратору нет кассы и сотрудников; Директору – есть', async () => {
     const adm = await search(fx.admin([a]), 'Зоновой');
-    expect(adm.groups.map((g) => g.type)).toEqual(['client', 'booking']);
+    expect(adm.groups.map((g) => g.type)).toEqual(['client', 'booking', 'event', 'equipment']); // event.view и equipment.view у Администратора есть (S4-79)
     const dir = await search(fx.director([a]), 'Зоновой');
-    expect(dir.groups.map((g) => g.type)).toEqual(['client', 'booking', 'finance_operation', 'staff']);
+    expect(dir.groups.map((g) => g.type)).toEqual(['client', 'booking', 'finance_operation', 'staff', 'event', 'equipment']);
   });
 
   it('маска без client.view.full; бронь по номеру – только своя зона; по клиенту и дате', async () => {
