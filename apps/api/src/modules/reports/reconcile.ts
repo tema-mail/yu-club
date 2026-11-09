@@ -146,18 +146,20 @@ async function findE3Discrepancies(db: Queryable): Promise<Discrepancy[]> {
   const out: Discrepancy[] = [];
   const accruals = await db.query<{
     shift_id: string; staff_id: string; branch_id: string; status: string; paid_minutes: number | null; rate_id: string | null; fact_version: number;
-    expected_hourly_kop: string; expected_fee_kop: string; accrued_kop: string;
+    expected_hourly_kop: string; expected_fee_kop: string; accrued_kop: string; fee_min_minutes: number | null;
   }>(
-    `SELECT shift_id, staff_id, branch_id, status, paid_minutes, rate_id, fact_version, expected_hourly_kop, expected_fee_kop, accrued_kop
+    // Порог доплаты за выход в снимке начисления (0414) – ожидаемая сумма одна; у записей до 0414 снимка нет – верны hourly и hourly + fee.
+    `SELECT shift_id, staff_id, branch_id, status, paid_minutes, rate_id, fact_version, expected_hourly_kop, expected_fee_kop, accrued_kop, fee_min_minutes
      FROM app.rpt_payroll_accruals
-     WHERE NOT pending AND accrued_kop NOT IN (expected_hourly_kop, expected_hourly_kop + expected_fee_kop)
+     WHERE NOT pending AND CASE WHEN fee_min_minutes IS NULL THEN accrued_kop NOT IN (expected_hourly_kop, expected_hourly_kop + expected_fee_kop)
+                                ELSE accrued_kop <> expected_hourly_kop + expected_fee_kop END
      ORDER BY shift_id`,
   );
   for (const r of accruals.rows) {
     out.push({
       check: 'payroll_accrual', objectType: 'shift', objectId: r.shift_id, branchId: r.branch_id,
       expected: num(r.expected_hourly_kop) + num(r.expected_fee_kop), actual: num(r.accrued_kop),
-      details: { staffId: r.staff_id, status: r.status, paidMinutes: r.paid_minutes, rateId: r.rate_id, factVersion: r.fact_version, hourlyKop: num(r.expected_hourly_kop), feeKop: num(r.expected_fee_kop) },
+      details: { staffId: r.staff_id, status: r.status, paidMinutes: r.paid_minutes, rateId: r.rate_id, factVersion: r.fact_version, hourlyKop: num(r.expected_hourly_kop), feeKop: num(r.expected_fee_kop), feeMinMinutes: r.fee_min_minutes },
     });
   }
 

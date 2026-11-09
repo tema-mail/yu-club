@@ -293,6 +293,40 @@ describe('смены и зарплата', () => {
     expect(row[0]).toMatchObject({ check_name: 'payroll_accrual', object_type: 'shift' });
   });
 
+  it('пропавшая доплата за выход: по снимку порога – расхождение (до 0414 сверка принимала hourly и hourly + fee)', async () => {
+    const id = await shift('2026-08-04', 90);
+    expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id)).toEqual([]);
+    // Начисление посчитано по порогу 60 (доплата положена), а в K3 её нет: подменяем снимок, сумма та же – 90 000 без 10 000.
+    await db.client.query(`UPDATE journal.payroll_accruals SET fee_min_minutes = 60 WHERE shift_id = $1`, [id]);
+    const old = (await reports.query<{ ok: boolean }>(`SELECT accrued_kop IN (expected_hourly_kop, expected_hourly_kop + attendance_fee_kop) AS ok FROM app.rpt_payroll_accruals WHERE shift_id = $1`, [id])).rows[0]!;
+    expect(old.ok).toBe(true); // прежнее правило расхождения не видело
+    const found = await onlyCheck('payroll_accrual');
+    expect(found.filter((d) => d.objectId === id).map((d) => [d.expected, d.actual, d.details.feeMinMinutes])).toEqual([[100_000, 90_000, 60]]);
+    await db.client.query(`UPDATE journal.payroll_accruals SET fee_min_minutes = 120 WHERE shift_id = $1`, [id]);
+  });
+
+  it('порог сменился после начисления – не расхождение: сверка берёт порог снимка, а не нынешний', async () => {
+    const id = await shift('2026-08-05', 90);
+    const s = await db.client.query<{ id: string }>(
+      `INSERT INTO app.settings_values (key, level, value, valid_from, created_by) VALUES ('payroll.attendance_fee_min_minutes', 'network', '60', '2026-11-01', $1) RETURNING id`,
+      [randomUUID()],
+    );
+    try {
+      expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id)).toEqual([]);
+    } finally {
+      await db.client.query(`DELETE FROM app.settings_values WHERE id = $1`, [s.rows[0]!.id]);
+    }
+  });
+
+  it('строки без снимка (до 0414) – как раньше: верны и hourly, и hourly + fee', async () => {
+    const short = await shift('2026-08-06', 90);
+    const long = await shift('2026-08-07', 180);
+    await db.client.query(`UPDATE journal.payroll_accruals SET fee_min_minutes = NULL WHERE shift_id IN ($1, $2)`, [short, long]);
+    const rows = (await reports.query(`SELECT fee_min_minutes, expected_fee_kop, accrued_kop FROM app.rpt_payroll_accruals WHERE shift_id IN ($1, $2) ORDER BY accrued_kop`, [short, long])).rows;
+    expect(rows).toEqual([{ fee_min_minutes: null, expected_fee_kop: '10000', accrued_kop: '90000' }, { fee_min_minutes: null, expected_fee_kop: '10000', accrued_kop: '190000' }]);
+    expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === short || d.objectId === long)).toEqual([]);
+  });
+
   it('worked по ставке без записи K3 – расхождение', async () => {
     const id = await shift('2026-07-12', 60);
     const saved = await db.client.query<{ paid_minutes: number; status: string }>(`SELECT paid_minutes, status FROM app.staff_shifts WHERE id = $1`, [id]);
