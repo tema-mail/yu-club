@@ -1,0 +1,34 @@
+---
+// Блоки главной (S4-87, K11 №228; 12 §5): уровень сети или города (?cityId=). Сеть правит Владелец, город – Директор своего города; остальные видят.
+import Crm from '../../layouts/Crm.astro';
+import HomeBlocksEditor from '../../islands/HomeBlocksEditor.tsx';
+import { ContentTabs } from '../../lib/content.tsx';
+import '../../styles/content.css';
+
+const { me, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const cities = [...new Map(branches.map((b) => [b.cityId, b.cityName])).entries()];
+const raw = Astro.url.searchParams.get('cityId');
+const cityId = raw && cities.some(([id]) => id === raw) ? raw : null;
+const notFound = !can('content.view') || (raw !== null && raw !== '' && cityId === null);
+if (notFound) Astro.response.status = 404;
+const canEdit = cityId ? can('content.publish') && (me.access.network || me.access.cityIds.includes(cityId)) : can('content.network.manage');
+---
+<Crm title="Главная страница">
+  {notFound ? (
+    <div class="yc-head"><h1>Не найдено</h1><p>Такого города нет в вашей зоне.</p><a href="/content/home">К блокам главной</a></div>
+  ) : (
+    <>
+      <div class="yc-head"><h1>Главная страница</h1><p>Блоки главной. Городской блок, когда опубликован, заменяет сетевой того же типа.</p></div>
+      <ContentTabs path={Astro.url.pathname} />
+      <form class="yc-ct__filters" method="get" action="/content/home">
+        <label class="yc-field"><span class="yc-field__label">Уровень</span>
+          <select class="yc-input" name="cityId"><option value="">Вся сеть</option>{cities.map(([id, n]) => <option value={id} selected={cityId === id}>{n}</option>)}</select>
+        </label>
+        <button class="yc-btn yc-btn--ghost" type="submit">Показать</button>
+      </form>
+      {!canEdit && <p class="yc-ct__muted">{cityId ? 'Блоки города правит Директор города и Владелец.' : 'Сетевые блоки правит Владелец.'}</p>}
+      <HomeBlocksEditor client:load cityId={cityId} canEdit={canEdit} />
+    </>
+  )}
+</Crm>
