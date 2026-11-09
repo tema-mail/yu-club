@@ -10,7 +10,7 @@ import { roleAllows, type AccessContext } from '../../core/permissions.ts';
 import { resolveSettings } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { dashboard } from './dashboard.ts';
-import { parsePeriod, unavailable, withReportTx, DAY_RULE, type ReportEnv, type ReportParams, type ReportsPool } from './framework.ts';
+import { parsePeriod, withReportTx, type ReportEnv, type ReportParams, type ReportsPool } from './framework.ts';
 import { defined, HANDLERS, parseQuery, segmented, type Query, type ReportHandler } from './report-handlers.ts';
 import { globalSearch } from './search.ts';
 import { utilizationCalendar } from './utilization.ts';
@@ -27,16 +27,11 @@ async function periodParams(deps: ReportsCrmDeps, clock: Clock, q: Query): Promi
   return defined({ period: parsePeriod({ from: q.from, to: q.to }, { clock, maxDays: s['reports.interactive_max_days'].value }), cityId: q.cityId, branchIds: q.branchIds });
 }
 
-/** Отчёты, источник которых ещё не выпущен (Э3): 200 с source_not_ready и проверкой права, а не «нет такого». */
-const NOT_READY: Record<string, string> = { events: 'reports.events.view', staff: 'reports.staff.view', equipment: 'reports.equipment.view' };
-
-function assertKnown(report: string, ctx: AccessContext): ReportHandler | null {
+/** Отчёты Э3 (events, staff, equipment) – в общем реестре с S4-76…S4-78: незаглушенных source_not_ready больше нет. */
+function assertKnown(report: string): ReportHandler {
   const h = Object.hasOwn(HANDLERS, report) ? HANDLERS[report] : undefined;
-  if (h) return h;
-  const action = Object.hasOwn(NOT_READY, report) ? NOT_READY[report] : undefined;
-  if (!action) throw new AppError('REPORT_UNKNOWN', 404, 'Нет такого отчёта', { report });
-  if (!roleAllows(ctx.role, action)) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action });
-  return null;
+  if (!h) throw new AppError('REPORT_UNKNOWN', 404, 'Нет такого отчёта', { report });
+  return h;
 }
 
 const RUNS_LIMIT = 50;
@@ -111,9 +106,8 @@ export async function reportsCrmRoutes(app: FastifyInstance, deps: ReportsCrmDep
   // №241
   app.get<{ Params: { report: string } }>('/reports/:report/detail', (request, reply) =>
     run(request, reply, async (env, q) => {
-      const h = assertKnown(request.params.report, env.ctx);
+      const h = assertKnown(request.params.report);
       const p = await periodParams(deps, clock, q);
-      if (!h) return { columns: [], rows: [], total: unavailable('source_not_ready'), nextCursor: null };
       const s = segmented(request.params.report, q, p);
       const d = await h.detail(env, s.q, s.p);
       return { columns: d.columns ?? (d.rows[0] ? Object.keys(d.rows[0]) : []), rows: d.rows, total: d.total, nextCursor: d.nextCursor };
@@ -123,9 +117,8 @@ export async function reportsCrmRoutes(app: FastifyInstance, deps: ReportsCrmDep
   // №240
   app.get<{ Params: { report: string } }>('/reports/:report', (request, reply) =>
     run(request, reply, async (env, q) => {
-      const h = assertKnown(request.params.report, env.ctx);
+      const h = assertKnown(request.params.report);
       const p = await periodParams(deps, clock, q);
-      if (!h) return { metrics: { report: unavailable('source_not_ready') }, dateBasis: {}, dayRule: DAY_RULE, computedAt: clock.now().toISOString() };
       return h.metrics(env, q, p);
     }),
   );

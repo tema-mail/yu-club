@@ -2,7 +2,8 @@
 // Тип без права в ответе отсутствует (не «0 найдено»); клиент вне зоны не находится даже по точному телефону – факт существования
 // не раскрывается. Все запросы – одной READ ONLY транзакцией основного пула, statement_timeout 2 с: поиску нужны клиенты и сотрудники,
 // которых роль yu_reports не видит, бронь и касса – те же rpt_*. Поиск по телефону – в аудит с маской номера (видно перебор), отдельной записью.
-// Группы мероприятий и оборудования появятся после Э3 (S4-79).
+// S4-79: группы Э3 – мероприятие (номер EV-…, дата проведения, заказчик через найденных клиентов) и оборудование (инвентарный и серийный
+// номер) по rpt_events и rpt_equipment в зоне event.view / equipment.view: оборудование вне зоны не находится.
 import type { AuditRequestMeta, Db, Tx } from '../../core/audit.ts';
 import { writeAudit } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
@@ -26,7 +27,7 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MONTH_RE = /^(\d{2})\.(\d{2})$/;
 
 export interface SearchGroup {
-  type: 'client' | 'booking' | 'finance_operation' | 'staff';
+  type: 'client' | 'booking' | 'finance_operation' | 'staff' | 'event' | 'equipment';
   items: Array<Record<string, unknown>>;
   more: boolean;
 }
@@ -123,6 +124,55 @@ async function financeGroup(tx: Tx, ctx: AccessContext, q: string, clock: Clock)
   };
 }
 
+/** Номер с префиксом: «EV-000012», «ev-000012» или просто «12» (как в CRM). */
+const numberLike = (q: string, prefix: string): string => (NUMBER_RE.test(q) ? `${prefix}-${q.padStart(6, '0')}` : q.toUpperCase());
+
+/** Мероприятия: номер, дата проведения (по зоне филиала) или заказчик среди найденных клиентов. */
+async function eventGroup(tx: Tx, ctx: AccessContext, q: string, clientIds: string[], clock: Clock): Promise<SearchGroup | null> {
+  if (!roleAllows(ctx.role, 'event.view')) return null;
+  const branches = await resolveBranches(tx, ctx, 'event.view');
+  if (branches.length === 0) return { type: 'event', items: [], more: false };
+  const date = queryDate(q, clock, branches[0]?.timezone);
+  const parts: Array<{ sql: string; values?: unknown[] }> = [{ sql: 'upper(t.number) = ?', values: [numberLike(q, 'EV')] }];
+  if (clientIds.length) parts.push({ sql: 't.customer_client_id = ANY(?::uuid[])', values: [clientIds] });
+  if (date) parts.push({ sql: 't.held_on = ?::date', values: [date] });
+  const w = where({ view: 'app.rpt_events', conds: [{ sql: parts.map((p) => p.sql).join(' OR '), values: parts.flatMap((p) => p.values ?? []) }] }, windowsOf(branches, { from: todayIn(clock, branches[0]!.timezone), to: todayIn(clock, branches[0]!.timezone) }));
+  const rows = (
+    await tx.query<{ event_id: string; number: string; branch_id: string; held_on: string | null; status: string }>(
+      `SELECT t.event_id, t.number, t.branch_id, to_char(t.held_on, 'YYYY-MM-DD') AS held_on, t.status FROM ${w.sql} ORDER BY t.held_on DESC NULLS LAST, t.number DESC LIMIT ${GROUP_LIMIT + 1}`,
+      w.params,
+    )
+  ).rows;
+  return {
+    type: 'event',
+    items: rows.slice(0, GROUP_LIMIT).map((r) => ({ id: r.event_id, number: r.number, branchId: r.branch_id, heldOn: r.held_on, status: r.status })),
+    more: rows.length > GROUP_LIMIT,
+  };
+}
+
+/** Оборудование: инвентарный или серийный номер, только в зоне equipment.view (вне зоны – пусто, TC-16). */
+async function equipmentGroup(tx: Tx, ctx: AccessContext, q: string, clock: Clock): Promise<SearchGroup | null> {
+  if (!roleAllows(ctx.role, 'equipment.view')) return null;
+  const branches = await resolveBranches(tx, ctx, 'equipment.view');
+  if (branches.length === 0) return { type: 'equipment', items: [], more: false };
+  const today = todayIn(clock, branches[0]!.timezone);
+  const w = where(
+    { view: 'app.rpt_equipment', conds: [{ sql: 'upper(t.inventory_no) = ? OR upper(t.serial_no) = ?', values: [numberLike(q, 'INV'), q.toUpperCase()] }] },
+    windowsOf(branches, { from: today, to: today }),
+  );
+  const rows = (
+    await tx.query<{ equipment_id: string; inventory_no: string; serial_no: string | null; branch_id: string; status: string }>(
+      `SELECT t.equipment_id, t.inventory_no, t.serial_no, t.branch_id, t.status FROM ${w.sql} ORDER BY t.inventory_no LIMIT ${GROUP_LIMIT + 1}`,
+      w.params,
+    )
+  ).rows;
+  return {
+    type: 'equipment',
+    items: rows.slice(0, GROUP_LIMIT).map((r) => ({ id: r.equipment_id, inventoryNo: r.inventory_no, serialNo: r.serial_no, branchId: r.branch_id, status: r.status })),
+    more: rows.length > GROUP_LIMIT,
+  };
+}
+
 /** Сотрудники: Владелец – все, Директор – у кого есть назначение на филиал или город его зоны (TC-16). */
 async function staffGroup(tx: Tx, ctx: AccessContext, q: string): Promise<SearchGroup | null> {
   if (!roleAllows(ctx.role, 'staff.view')) return null;
@@ -170,6 +220,12 @@ export async function globalSearch(
       const staff = phoneLike || isDate ? null : await staffGroup(tx, ctx, q);
       if (staff) out.push(staff);
       else if (roleAllows(ctx.role, 'staff.view')) out.push({ type: 'staff', items: [], more: false });
+      const events = phoneLike && !NUMBER_RE.test(q) ? null : await eventGroup(tx, ctx, q, clients?.ids ?? [], deps.clock);
+      if (events) out.push(events);
+      else if (roleAllows(ctx.role, 'event.view')) out.push({ type: 'event', items: [], more: false });
+      const equipment = phoneLike && !NUMBER_RE.test(q) ? null : await equipmentGroup(tx, ctx, q, deps.clock);
+      if (equipment) out.push(equipment);
+      else if (roleAllows(ctx.role, 'equipment.view')) out.push({ type: 'equipment', items: [], more: false });
       return out;
     },
     { timeoutMs: SEARCH_TIMEOUT_MS, budgetMs: SEARCH_BUDGET_MS, signal: deps.signal },

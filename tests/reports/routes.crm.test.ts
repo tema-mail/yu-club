@@ -85,7 +85,7 @@ describe('отчёты по HTTP (S4-70)', () => {
     expect((await get('admin', `/reports/comms?${QS}`)).statusCode).toBe(403);
   });
 
-  it('№240: отчёт с реальными числами, computedAt, dayRule; неизвестный – REPORT_UNKNOWN; Э3 – source_not_ready', async () => {
+  it('№240: отчёт с реальными числами, computedAt, dayRule; неизвестный – REPORT_UNKNOWN; отчёт Э3 – числами (S4-76)', async () => {
     const r = await get('owner', `/reports/bookings?${QS}`);
     expect(r.statusCode).toBe(200);
     expect(r.json().metrics.visited).toMatchObject({ state: 'ok', value: 2, unit: 'count' });
@@ -94,7 +94,8 @@ describe('отчёты по HTTP (S4-70)', () => {
     expect((await get('owner', `/reports/нет-такого?${QS}`)).json().error.code).toBe('REPORT_UNKNOWN');
     const e3 = await get('owner', `/reports/events?${QS}`);
     expect(e3.statusCode).toBe(200);
-    expect(e3.json().metrics.report).toEqual({ state: 'unavailable', reason: 'source_not_ready' });
+    expect(e3.json().metrics.count).toMatchObject({ state: 'no_data' });
+    expect((await get('owner', `/reports/staff/detail?${QS}&metric=plannedShifts`)).statusCode).toBe(200);
     expect((await get('admin', `/reports/events?${QS}`)).statusCode).toBe(403);
   });
 

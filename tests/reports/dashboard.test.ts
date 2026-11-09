@@ -1,4 +1,4 @@
-// S4-69: сводный дашборд (K24 §3.1). Каждая карточка = значение своего отчёта при тех же фильтрах; карточки Э3 – source_not_ready;
+// S4-69: сводный дашборд (K24 §3.1). Каждая карточка = значение своего отчёта при тех же фильтрах; карточки Э3 – числа (S4-79, e3-sources.test.ts);
 // Администратор не получает денежных карточек; область Директора; прибыли в подписях нет.
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
@@ -67,12 +67,12 @@ describe('дашборд (S4-69)', () => {
     }
   });
 
-  it('карточки Э3 – source_not_ready, с подписью; ни в одной нет слова «прибыль»', async () => {
+  it('карточки Э3 – не source_not_ready, с подписью; ни в одной нет слова «прибыль»', async () => {
     const dash = await fx.run(fx.owner(), (env) => dashboard(env, { period: OCT }));
-    for (const key of ['eventsCount', 'openFaults', 'downtime']) {
+    for (const key of ['eventsCount', 'emptyIntervals', 'unclosedShifts', 'openFaults', 'downtime']) {
       const card = dash.cards.find((c) => c.key === key)!;
-      expect(card.metric).toEqual({ state: 'unavailable', reason: 'source_not_ready' });
-      expect(card.note).toContain('Появится');
+      expect(card.metric, key).not.toEqual({ state: 'unavailable', reason: 'source_not_ready' });
+      expect(card.note, key).toBeTruthy();
     }
     expect(JSON.stringify(dash.cards).toLowerCase()).not.toContain('прибыль');
     expect(dash.cards.find((c) => c.key === 'incomeEvent')!.metric).toMatchObject({ value: 40_000 });
