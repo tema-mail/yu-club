@@ -3,7 +3,7 @@
 // путь из имени файла не принимается; обрыв посреди записи не оставляет файла под итоговым именем;
 // UPDATE содержимого и DELETE от yu_app → 42501; «недействителен» хранит причину; версия вместо замены.
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import pg from 'pg';
@@ -145,6 +145,17 @@ describe('адаптер диска', () => {
     await store.writeAtomic('exports/report.csv', new TextEncoder().encode('v1'));
     await expect(store.writeAtomic('exports/report.csv', broken())).rejects.toThrow('обрыв связи');
     expect((await store.read('exports/report.csv')).toString()).toBe('v1');
+  });
+
+  it('exists: нет файла – false; нет доступа к каталогу – ошибка, а не «файла нет»', async () => {
+    expect(await store.exists('nope/missing.csv')).toBe(false);
+    await mkdir(path.join(root, 'locked'));
+    await chmod(path.join(root, 'locked'), 0o000);
+    try {
+      await expect(store.exists('locked/file.csv')).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      await chmod(path.join(root, 'locked'), 0o700);
+    }
   });
 
   it('лимит – по ходу записи: лишнее на диск не попадает', async () => {

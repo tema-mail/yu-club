@@ -501,7 +501,10 @@ export async function runExportJob(deps: ExportRunDeps, row: ExportRow, signal?:
     await deps.store.remove(fileKey).catch(() => {});
     if (err instanceof AppError && err.code === 'REPORT_CANCELLED') {
       // оборвал не сбой: автор отменил (статус уже cancelled) или worker останавливается – задача вернётся в очередь
-      await deps.pool.query(`UPDATE app.report_exports SET status = 'queued', started_at = NULL WHERE id = $1 AND status = 'running'`, [row.id]);
+      // сбой базы здесь не должен уйти необработанным отказом: строку подберёт failStale
+      await deps.pool
+        .query(`UPDATE app.report_exports SET status = 'queued', started_at = NULL WHERE id = $1 AND status = 'running'`, [row.id])
+        .catch((e: unknown) => deps.log?.(e));
       return;
     }
     if (!(err instanceof AppError)) deps.log?.(err);

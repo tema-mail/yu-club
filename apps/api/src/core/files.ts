@@ -232,7 +232,10 @@ export function createFileStore(opts: { root: string; quota?: RootQuota }): File
         return (await stat(safeJoin(root, relative))).isFile();
       } catch (err) {
         if (err instanceof UnsafePathError) throw err;
-        return false;
+        // «нет файла» – только ENOENT/ENOTDIR; EACCES, EIO, не примонтированный том – сбой, а не отсутствие
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+        throw err;
       }
     },
     read: (relative) => readFile(safeJoin(root, relative)),

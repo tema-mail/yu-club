@@ -277,7 +277,7 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => void shutdown(signal));
   // Необработанный отказ промиса – ошибка в коде задачи, состояние процесса неизвестно. Лог и штатная остановка с кодом 1:
   // Docker (restart: unless-stopped) поднимет worker заново, задачи pg-boss и outbox лежат в базе и повторятся, зависший экспорт
-  // подберёт failStale. Продолжать после неизвестного сбоя опаснее перезапуска: известные источники ловятся на месте.
+  // подберёт failStale. Продолжать после неизвестного сбоя опаснее перезапуска; известные источники экспорта (fail, возврат в очередь) ловятся на месте.
   process.on('unhandledRejection', (err) => {
     log('error', 'необработанный отказ промиса – остановка для перезапуска', { err: errText(err), stack: err instanceof Error ? err.stack : undefined });
     void shutdown('unhandledRejection', 1);
