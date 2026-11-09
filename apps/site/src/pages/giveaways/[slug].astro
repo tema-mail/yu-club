@@ -1,0 +1,41 @@
+---
+// S4-114. /giveaways/{slug}/ (карта сайта 3.3, 12 §8.4): условия, даты, приз и дата итогов – из данных; формы участия нет.
+// Правила – страницей /giveaways/{slug}/rules/ (текст) или ссылкой на PDF в /media/ (S4-115). Нет или не опубликован – 404.
+import PublicationPage from '../../components/PublicationPage.astro';
+import Site from '../../layouts/Site.astro';
+import { content, type PublicationPage as Page } from '../../lib/content.ts';
+import { breadcrumbLd } from '../../lib/jsonld.ts';
+import { chosenBranch, displayZone } from '../../lib/publications.ts';
+import { metaFor } from '../../lib/seo.ts';
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let page: Page | null = null;
+try {
+  page = await content.publication('giveaway', Astro.params.slug ?? '', chosen?.branch.id);
+  if (!page) return Astro.rewrite('/404/');
+} catch (e) {
+  console.error('site: розыгрыш из API не загрузился', e);
+  Astro.response.status = 503;
+}
+const meta = page ? metaFor({ page: 'publication', title: page.title, lead: page.lead }, page.seo) : null;
+const path = page ? `/giveaways/${page.slug}/` : '/giveaways/';
+---
+<Site
+  title={meta?.title ?? 'Розыгрыш временно недоступен – Ю-Клуб'}
+  description={meta?.description}
+  ogImage={meta?.ogImage}
+  ogType={meta?.ogType}
+  index={page ? { kind: 'publication', live: true, indexable: page.indexable, ended: page.state === 'ended' } : { kind: 'closed' }}
+  jsonLd={page ? [breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Розыгрыши', path: '/giveaways/' }, { name: page.title, path }])] : []}
+>
+  {page && meta ? (
+    <PublicationPage page={page} h1={meta.h1} timeZone={displayZone(network, chosen)} />
+  ) : (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Розыгрыш временно недоступен</h1>
+      <p class="yu-body">Сервис не ответил. <a href="">Обновите страницу</a> через минуту.</p>
+    </section>
+  )}
+</Site>
