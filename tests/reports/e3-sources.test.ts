@@ -120,5 +120,8 @@ describe('поиск: мероприятия и оборудование', () =>
     expect(await numbers(fx.director([b]), '+7 (999) 000-00-00')).toEqual(['EV-000002']);
     expect(await numbers(fx.admin([a]), '89990000000')).toEqual(['EV-000001']);
     expect(await numbers(fx.director([b]), '+7 999 000-00-01')).toEqual([]);
+    // ПДн заказчика – только основному пулу: у роли отчётов прав на представление нет (K24 §6)
+    const priv = await db.client.query<{ r: boolean; a: boolean }>(`SELECT has_table_privilege('yu_reports', 'app.rpt_event_customers', 'SELECT') AS r, has_table_privilege('yu_app', 'app.rpt_event_customers', 'SELECT') AS a`);
+    expect(priv.rows[0]).toEqual({ r: false, a: true });
   });
 });

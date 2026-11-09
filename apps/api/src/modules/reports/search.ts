@@ -151,8 +151,8 @@ async function eventGroup(tx: Tx, ctx: AccessContext, q: string, clientIds: stri
   const parts: Array<{ sql: string; values?: unknown[] }> = [{ sql: 'upper(t.number) = ?', values: [numberLike(q, 'EV')] }];
   if (clientIds.length) parts.push({ sql: 't.customer_client_id = ANY(?::uuid[])', values: [clientIds] });
   if (date) parts.push({ sql: 't.held_on = ?::date', values: [date] });
-  if (phone) parts.push({ sql: 'EXISTS (SELECT 1 FROM app.events e WHERE e.id = t.event_id AND e.customer_phone_e164 = ?)', values: [phone] });
-  else if (!date && !PHONE_LIKE_RE.test(q)) parts.push({ sql: `EXISTS (SELECT 1 FROM app.events e WHERE e.id = t.event_id AND e.customer_name ILIKE ?)`, values: [`%${escapeLike(q)}%`] });
+  if (phone) parts.push({ sql: 'EXISTS (SELECT 1 FROM app.rpt_event_customers e WHERE e.event_id = t.event_id AND e.customer_phone_e164 = ?)', values: [phone] });
+  else if (!date && !PHONE_LIKE_RE.test(q)) parts.push({ sql: `EXISTS (SELECT 1 FROM app.rpt_event_customers e WHERE e.event_id = t.event_id AND e.customer_name ILIKE ?)`, values: [`%${escapeLike(q)}%`] });
   const w = where({ view: 'app.rpt_events', conds: [{ sql: parts.map((p) => p.sql).join(' OR '), values: parts.flatMap((p) => p.values ?? []) }] }, windowsOf(branches, { from: todayIn(clock, branches[0]!.timezone), to: todayIn(clock, branches[0]!.timezone) }));
   const rows = (
     await tx.query<{ event_id: string; number: string; branch_id: string; held_on: string | null; status: string }>(
