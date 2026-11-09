@@ -1,9 +1,10 @@
 ---
-// Оболочка CRM: шапка (контекст, сотрудник, выход), меню по правам из GET /me (K11 №1), область экрана.
+// Оболочка CRM: шапка (контекст, лента событий со значком – S4-97, сотрудник, выход), меню по правам из GET /me (K11 №1), область экрана.
 // В меню – только разделы, у которых есть экран; новые пункты добавляет шаг, который делает экран.
 import '../styles/crm.css';
 import ContextSwitcher, { type ContextGroup } from '../islands/ContextSwitcher.tsx';
 import GlobalSearch from '../islands/GlobalSearch.tsx';
+import StaffFeed from '../islands/StaffFeed.tsx';
 import { ROLE_LABEL } from '../lib/api.ts';
 
 interface Props {
@@ -80,6 +81,7 @@ const fullName = `${me.staff.firstName} ${me.staff.lastName}`;
         {me.actions.includes('search.global') && <GlobalSearch client:load />}
       </div>
       <div class="yc-user">
+        <StaffFeed client:load />
         <span class="yc-user__who" data-testid="staff-who">
           <span class="yc-user__name">{fullName}</span>
           <span class="yc-user__role">{ROLE_LABEL[me.staff.role]}</span>
