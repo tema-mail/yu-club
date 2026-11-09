@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, API_PREFIX } from '../lib/api.ts';
 import ReportChart from './ReportChart.tsx';
 import ReportDetail from './ReportDetail.tsx';
+import UtilizationCalendar from './UtilizationCalendar.tsx';
 import {
   BOOKING_STATUS_LABEL, METHOD_LABEL, RESOURCE_TYPE_LABEL, dateBasisOf, daysIn, fmtAt, fmtDelta, fmtMetric, fmtPeriod, metricTitle, presets, reportError, todayIn,
   type Metric, type ReportInfo, type ReportResult,
@@ -67,6 +68,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
   const [useExport, setUseExport] = useState(false);
   const [metric, setMetric] = useState(initialMetric);
   const [applied, setApplied] = useState<ReportFilters>(initial);
+  const [unit, setUnit] = useState('');
   const [segment, setSegment] = useState<{ key: string; label: string }>({ key: '', label: '' });
   const seq = useRef(0);
   const ctrl = useRef<AbortController | null>(null);
@@ -248,6 +250,20 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
               ]}
               pickLabel="Единицы за этот день"
               onPick={(day, label) => { setMetric('used'); setSegment({ key: `day:${day}`, label }); syncUrl(f, 'used'); }} />
+          )}
+          {result.rows && result.rows.length > 0 && (
+            <div class="rp-units" style="display:grid;gap:var(--yc-sp-xs);min-width:0">
+              <label class="yc-field" style="max-width:24rem"><span class="yc-field__label">Календарь загрузки единицы</span>
+                <select class="yc-input" name="unitId" value={unit} onChange={(e) => setUnit((e.target as HTMLSelectElement).value)}>
+                  <option value="">Выберите единицу</option>
+                  {result.rows.map((u) => <option key={u.unitId} value={u.unitId}>{u.unitName} – {u.branchName}</option>)}
+                </select></label>
+              {(() => {
+                const u = result.rows.find((x) => x.unitId === unit);
+                return u ? <UtilizationCalendar key={u.unitId} unitId={u.unitId} unitName={u.unitName} date={applied.to < today ? applied.to : today}
+                  timezone={branches.find((b) => b.id === u.branchId)?.timezone ?? timezone} onClose={() => setUnit('')} /> : null;
+              })()}
+            </div>
           )}
           {metric && Object.hasOwn(result.metrics, metric) && (
             <ReportDetail report={report.key} filters={applied} metric={metric} segment={segment.key} segmentLabel={segment.label} card={result.metrics[metric]} onClose={() => { setSegment({ key: '', label: '' }); setMetric(''); syncUrl(f, ''); }} />
