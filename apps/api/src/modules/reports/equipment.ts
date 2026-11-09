@@ -5,10 +5,11 @@
 // сторнированный – нет), по дате и филиалу операции; это те же операции, что расходы в 3.4, отдельно не складываются. Повторные поломки –
 // ≥ 2 инцидентов одной единицы за reports.repeat_breakdown_days до конца периода (порог в подписи).
 import type { Tx } from '../../core/audit.ts';
+import { AppError } from '../../core/errors.ts';
 import { resolveSettings } from '../../core/settings.ts';
 import {
-  computeMetrics, DAY_RULE, detailPage, localAt, metricDef, noData, okMetric, pageByKey, prevPeriod, resolveBranches, unavailable, windowsOf,
-  type BranchWindow, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
+  computeMetrics, DAY_RULE, detailPage, localAt, metricDef, noData, okMetric, pageByKey, pageLimit, prevPeriod, resolveBranches, unavailable, uuidCursor, windowsOf,
+  type BranchWindow, type Metric, type MetricDef, type PageOpts, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
 
 export const EQUIPMENT_ACTION = 'reports.equipment.view';
@@ -56,10 +57,27 @@ async function downtimeRows(tx: Tx, windows: readonly BranchWindow[], now: Date)
        GROUP BY 1, 2
      )
      SELECT q.unit_id, q.branch_id, (SELECT coalesce(sum(extract(epoch FROM upper(x) - lower(x)) / 60), 0) FROM unnest(q.m) x)::bigint AS minutes
-     FROM q ORDER BY q.unit_id`,
+     FROM q ORDER BY q.unit_id, q.branch_id`,
     [...unnestW(windows), now],
   );
   return r.rows.filter((x) => Number(x.minutes) > 0);
+}
+
+/** Страница простоя: строка – пара единица × филиал (перевезённая за период единица даёт две строки), курсор – «единица:филиал».
+ * Курсор по одной единице терял или повторял вторую строку пары. Ключ – две uuid одной длины: сравнение строк = сравнение пары, как ORDER BY. */
+function downtimePage(rows: readonly DowntimeRow[], opts: PageOpts): { slice: DowntimeRow[]; nextCursor: string | null } {
+  const key = (r: DowntimeRow) => `${r.unit_id}:${r.branch_id}`;
+  let after: string | null = null;
+  if (opts.cursor !== undefined) {
+    const parts = opts.cursor.split(':');
+    if (parts.length !== 2) throw new AppError('REPORT_FILTER_INVALID', 422, 'Неверный курсор', { field: 'cursor' });
+    after = `${uuidCursor(parts[0])}:${uuidCursor(parts[1])}`;
+  }
+  const limit = pageLimit(opts);
+  const from = after === null ? 0 : rows.findIndex((r) => key(r) > after);
+  const start = from < 0 ? rows.length : from;
+  const slice = rows.slice(start, start + limit);
+  return { slice, nextCursor: start + limit < rows.length ? key(slice[slice.length - 1]!) : null };
 }
 
 interface FinishedRow { repair_id: string; equipment_id: string; branch_id: string; started_at: Date | null; finished_at: Date }
@@ -202,7 +220,7 @@ export async function equipmentDetail(
 
   if (metric === 'downtimeMinutes') {
     const all = await downtimeRows(env.tx, windows, env.clock.now());
-    const { slice, nextCursor } = pageByKey(all, (r) => r.unit_id, opts);
+    const { slice, nextCursor } = downtimePage(all, opts);
     const rows = slice.map((r): EquipmentDetailRow => ({ ...blank, id: r.unit_id, branchId: r.branch_id, unitId: r.unit_id, value: Number(r.minutes) }));
     return { rows, total: okMetric(all.reduce((s, r) => s + Number(r.minutes), 0), 'minutes'), nextCursor };
   }

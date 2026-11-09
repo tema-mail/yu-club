@@ -153,3 +153,28 @@ describe('TC-20: детализация = итог', () => {
     }
   });
 });
+
+describe('TC-20: простой единицы, перевезённой за период', () => {
+  it('строки по паре единица × филиал: при листании по одной ни одна не теряется и не повторяется', async () => {
+    const u1 = (await db.client.query<{ id: string }>(`SELECT id FROM app.occupancy_units WHERE code = 'VR1' AND branch_id = $1`, [a])).rows[0]!.id;
+    await fx.block(b, [u1], '2026-10-25T00:00:00Z', '2026-10-25T02:00:00Z'); // VR1 перевезли в филиал Б и там чинили 2 ч
+    const ctx = fx.owner();
+    const total = (await fx.run(ctx, (env) => equipmentReport(env, { period: OCT }))).metrics.downtimeMinutes;
+    expect(val(total)).toBe(36 * 60 + 60 + 120);
+    const seen: string[] = [];
+    let sum = 0;
+    let cursor: string | undefined;
+    do {
+      const page = await fx.run(ctx, (env) => equipmentDetail(env, { period: OCT }, 'downtimeMinutes', { cursor, limit: 1 }));
+      for (const x of page.rows) {
+        seen.push(`${x.unitId}/${x.branchId}`);
+        sum += x.value ?? 0;
+      }
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).toContain(`${u1}/${a}`);
+    expect(seen).toContain(`${u1}/${b}`);
+    expect(sum).toBe(val(total));
+  });
+});
