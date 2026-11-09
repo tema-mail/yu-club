@@ -172,6 +172,8 @@ const ACT: Record<Act, { title: string; button: string; reasonRequired: boolean;
 /** Панель действий черновика: сохранить, опубликовать, снять, архив – с причиной в окне. Кнопки – по allowed (подсказка; защита на сервере). */
 export function DraftActions(props: {
   base: string; // путь сущности API без /draft
+  /** Строка запроса после действия (страница города: ?cityId=). */
+  query?: string;
   allowed: AllowedAction[];
   status: ContentStatus;
   rowVersion: number;
@@ -204,7 +206,7 @@ export function DraftActions(props: {
     setBusy(true);
     try {
       const body = act === 'publish' ? { rowVersion: props.rowVersion, ...(r ? { reason: r } : {}) } : { reason: r };
-      const dto = await browserCall<DraftDto>(`${props.base}/${act}`, { method: 'POST', body, key });
+      const dto = await browserCall<DraftDto>(`${props.base}/${act}${props.query ?? ''}`, { method: 'POST', body, key });
       dialog.current?.close();
       props.onDone(dto, act === 'publish' ? 'Опубликовано: на сайте новая версия.' : act === 'unpublish' ? 'Снято с сайта.' : 'Убрано в архив.');
     } catch (e) {
