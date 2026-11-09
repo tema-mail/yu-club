@@ -552,7 +552,7 @@ function dashboard(env: Env, q: RQ): Rec {
   if (can('reports.events.view')) add('events', [['count', 'Мероприятия', 'По дате проведения']]);
   if (can('reports.staff.view')) add('staff', [['emptyIntervals', 'Пустые смены', REPORTS.staff!.labels!.emptyIntervals], ['unclosedShifts', 'Незакрытые смены', REPORTS.staff!.labels!.unclosedShifts]]);
   if (can('reports.equipment.view')) add('equipment', [['openFaults', 'Открытые неисправности', 'На момент запроса'], ['downtimeMinutes', 'Часы простоя', 'В минутах, пересечения не задваиваются']]);
-  for (const c of cards) if (c.key === 'downtimeMinutes') c.key = 'downtime';
+  for (const c of cards) c.key = c.key === 'downtimeMinutes' ? 'downtime' : c.key === 'count' ? 'eventsCount' : c.key; // ключи карточек dashboard.ts
   return { cards, period: q.period, prevPeriod: prevPeriod(q.period), dayRule: DAY_RULE, computedAt: new Date().toISOString() };
 }
 
