@@ -30,6 +30,7 @@ import { bookingLookup, bookingsProvider, clientBranchLinks, paymentBookingProvi
 import { calendarTargets } from './modules/resources/index.ts';
 import type { NetworkLookup } from './core/permissions.ts';
 import { dictionaryRoutes } from './modules/dictionaries/routes.ts';
+import { registerEventAttachmentOwner } from './modules/events/attachments.ts';
 import { eventSummaries } from './modules/events/events.ts';
 import { registerGiftGrant } from './modules/events/gift-booking.ts';
 import { ensureGiftResource } from './modules/events/gift-resource.ts';
@@ -92,6 +93,7 @@ function registerModuleHooks(): void {
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
   registerEquipmentAttachmentOwners(); // K19 §9: вложения оборудования и ремонта
+  registerEventAttachmentOwner(); // K19 §9, 11 §11.4: документ к расходу мероприятия
   registerEventSources(); // K6, K20 §4: блокировка видит мероприятие по строке занятости (S3-52)
   registerEventSummaries(eventSummaries); // K19 §18: номер, статус и время затронутого мероприятия в предложении блокировки
   registerGiftGrant(); // K5, K20 §8.2: подарочный ресурс открывается только правом подарка
