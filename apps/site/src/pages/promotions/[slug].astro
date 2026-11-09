@@ -1,0 +1,47 @@
+---
+// S4-113. /promotions/{slug}/ (карта сайта 3.3, 12 §8.3): срок, условия, ограничения, клубы, кнопка. Завершённая – по ссылке с плашкой
+// «Акция завершена» и noindex, без кнопки (K22 §3, K23 §2); при режиме API not_found – 404. Цена не пересчитывается – её здесь нет.
+import PublicationPage from '../../components/PublicationPage.astro';
+import Site from '../../layouts/Site.astro';
+import { content, type PublicationPage as Page } from '../../lib/content.ts';
+import { breadcrumbLd, promotionLd } from '../../lib/jsonld.ts';
+import { chosenBranch, displayZone, scopeBranchPaths, scopeCities } from '../../lib/publications.ts';
+import { metaFor } from '../../lib/seo.ts';
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let page: Page | null = null;
+try {
+  page = await content.publication('promotion', Astro.params.slug ?? '', chosen?.branch.id);
+  if (!page) return Astro.rewrite('/404/');
+} catch (e) {
+  console.error('site: акция из API не загрузилась', e);
+  Astro.response.status = 503;
+}
+const meta = page ? metaFor({ page: 'publication', title: page.title, lead: page.lead }, page.seo) : null;
+const path = page ? `/promotions/${page.slug}/` : '/promotions/';
+const ld = page
+  ? [
+      promotionLd(origin, { path, title: page.title, lead: page.lead, publishFrom: page.publishFrom, publishTo: page.publishTo, ended: page.state === 'ended', branchPaths: scopeBranchPaths(page.onlyIn, network), cities: scopeCities(page.onlyIn) }),
+      breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Акции', path: '/promotions/' }, { name: page.title, path }]),
+    ]
+  : [];
+---
+<Site
+  title={meta?.title ?? 'Акция временно недоступна – Ю-Клуб'}
+  description={meta?.description}
+  ogImage={meta?.ogImage}
+  ogType={meta?.ogType}
+  index={page ? { kind: 'publication', live: true, indexable: page.indexable, ended: page.state === 'ended' } : { kind: 'closed' }}
+  jsonLd={ld}
+>
+  {page && meta ? (
+    <PublicationPage page={page} h1={meta.h1} timeZone={displayZone(network, chosen)} />
+  ) : (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Акция временно недоступна</h1>
+      <p class="yu-body">Сервис не ответил. <a href="">Обновите страницу</a> через минуту.</p>
+    </section>
+  )}
+</Site>
