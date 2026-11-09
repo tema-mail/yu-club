@@ -221,7 +221,7 @@ export default function RepairBlockPanel(p: RepairBlockPanelProps) {
           <h3>Мероприятия на этих местах</h3>
           <p class="yc-field__hint">Блокировка их не трогает: перенос или отмена – в карточке мероприятия.</p>
           <ul class="yc-eq__rows">
-            {proposal.affectedEvents.map((ev) => <li class="yc-eq__row" key={ev.eventId}><span><strong>{ev.number ?? `Мероприятие ${ev.eventId.slice(-6)}`}</strong>{ev.start && ev.end ? ` · ${fmtRange(ev.start, ev.end, p.timezone)}` : ''}</span></li>)}
+            {proposal.affectedEvents.map((ev) => <li class="yc-eq__row" key={ev.eventId}><span><a href={`/events/${ev.eventId}`} target="_blank" rel="noopener"><strong>{ev.number ?? `Мероприятие ${ev.eventId.slice(-6)}`}</strong></a>{ev.start && ev.end ? ` · ${fmtRange(ev.start, ev.end, p.timezone)}` : ''}</span></li>)}
           </ul>
         </div>
       )}

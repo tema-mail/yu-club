@@ -50,6 +50,7 @@ test('TC-12: бронь и мероприятие в списке, блокир�
   const affected = page.getByTestId('rp-booking-bk-vrroom');
   await expect(affected.getByTestId('rp-booking-status')).toHaveText('Подтверждена');
   await expect(page.getByTestId('rp-events')).toContainText('M-000042');
+  await expect(page.getByTestId('rp-events').getByRole('link', { name: /M-000042/ })).toHaveAttribute('href', /^\/events\/[0-9a-f-]{36}$/);
   await expect(page.getByTestId('rp-blocks')).toHaveCount(0);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/repair-block-proposal-1440.png`, fullPage: true });
 
