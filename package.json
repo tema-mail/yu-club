@@ -37,6 +37,7 @@
     "load:money": "node tests/load/money-race.ts",
     "load:club": "node tests/load/club-race.ts",
     "gift:ensure": "node db/seed/gift-resources.ts",
-    "test:e2e:stand": "playwright test -c tests/e2e/playwright.config.ts"
+    "test:e2e:stand": "playwright test -c tests/e2e/playwright.config.ts",
+    "load:campaign": "node tests/load/campaign.ts"
   }
 }
