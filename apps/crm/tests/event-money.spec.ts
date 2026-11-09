@@ -189,3 +189,37 @@ test('Документ к расходу (11 §11.4) по API мока: влад
   const ops = ((await (await owner.request.get(`${API}/events/${id}/money`)).json()) as { operations: Array<{ operation: { comment: string }; attachmentId?: string | null }> }).operations;
   expect(ops.filter((o) => o.operation.comment === 'Шары').map((o) => o.attachmentId)).toEqual([a2]); // отказ с чужим документом операции не оставил
 });
+
+test('Документ к расходу на экране: файл в форме расхода, ссылка у расхода, приложить к расходу без документа', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await openEvent(page, 'EV-000124', 'Расходы и себестоимость');
+  const list = page.getByTestId('event-expenses');
+  const rowOf = (comment: string) => list.locator('> li', { hasText: comment });
+  await expect(rowOf('Шары').getByTestId('expense-doc')).toHaveText('Документ к расходу');
+
+  const form = page.getByTestId('expense-form');
+  await form.getByLabel('Сумма, ₽').fill('300');
+  await form.getByLabel(/^Категория/).selectOption({ label: 'Подрядчики и услуги' });
+  await form.getByLabel('Подкатегория').selectOption({ label: 'Аниматор' });
+  await form.getByLabel('Комментарий').fill('Ведущий на час');
+  const file = form.getByLabel('Документ: чек или накладная (необязательно)');
+  await file.setInputFiles({ name: 'заметка.txt', mimeType: 'text/plain', buffer: Buffer.from('текст') });
+  await form.getByRole('button', { name: 'Провести расход' }).click();
+  await expect(form.getByRole('alert')).toContainText('JPG, PNG или PDF');
+  await file.setInputFiles({ name: 'чек-ведущий.pdf', mimeType: 'application/pdf', buffer: PDF });
+  await form.getByRole('button', { name: 'Провести расход' }).click();
+  await expect(page.getByTestId('money-saved')).toContainText('Документ приложен.');
+  const link = rowOf('Ведущий на час').getByTestId('expense-doc');
+  await expect(link).toHaveAttribute('href', /^\/api\/crm\/v1\/attachments\/[0-9a-f-]{36}$/);
+  const got = await page.request.get((await link.getAttribute('href'))!);
+  expect([got.status(), got.headers()['content-disposition']]).toEqual([200, expect.stringMatching(/^attachment;/)]);
+
+  const bare = rowOf('Аниматор, счёт 15');
+  await expect(bare).toContainText('Документа нет');
+  await bare.getByLabel('Приложить документ…').setInputFiles({ name: 'счёт-15.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%15\n') });
+  await expect(page.getByTestId('money-saved')).toContainText('приложен');
+  await expect(bare.getByTestId('expense-doc')).toBeVisible();
+  await expect(bare.getByLabel('Заменить документ…')).toBeAttached();
+  const withDocs = (await money(page)).operations.filter((o) => o.role === 'expense' && (o as { attachmentId?: string | null }).attachmentId);
+  expect(withDocs.length).toBe(3); // Шары, Ведущий на час, Аниматор
+});

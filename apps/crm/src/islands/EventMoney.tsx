@@ -3,14 +3,17 @@
 // работает, если есть право кассы, а список не показывается. Сторно – окном внутри записи (finance.correct). Двойной клик – одна операция: кнопка занята,
 // а ключ Idempotency-Key один на попытку. Рубли ↔ копейки – целыми; время – по зоне филиала (K8).
 // Привязка показывает только расходы филиала без связи: журнал K17 не отдаёт ручную связь с другим объектом – такой случай отклоняет сервер (OPERATION_ALREADY_LINKED).
+// Документ к расходу (11 §11.4): файл – вложение мероприятия (POST /attachments?ownerType=event&docType=check), затем attachmentId в расходе или
+// POST /expense/:operationId/document (замена); скачивание – только через API. Загруженный файл не грузится повторно при новой попытке расхода.
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { browserCall } from '../lib/api.ts';
+import { API_PREFIX, browserCall } from '../lib/api.ts';
 import { inZone } from '../lib/booking.ts';
 import { atText, eventError, fullMoney, kopOf, toIso, type EventLine } from '../lib/events.ts';
+import { MAX_BYTES, mb, TYPES, upload } from './Attachments.tsx';
 import { METHOD_LABEL, rub, type FinanceOperation } from './CashJournal.tsx';
 import { Modal, ReasonDialog, type EventTabProps } from './EventParts.tsx';
 
-interface OpLink { operation: FinanceOperation; role: 'income' | 'refund' | 'expense' | 'payout_expense'; inCost: boolean; lineId: string | null; linkedAt: string }
+interface OpLink { operation: FinanceOperation; role: 'income' | 'refund' | 'expense' | 'payout_expense'; inCost: boolean; lineId: string | null; linkedAt: string; attachmentId?: string | null }
 interface Category { id: string; parentId: string | null; name: string; status: 'active' | 'archived'; kind: 'income' | 'expense'; children?: Category[] }
 type Method = keyof typeof METHOD_LABEL;
 const METHODS = Object.keys(METHOD_LABEL) as Method[];
@@ -20,6 +23,8 @@ function nowParts(tz: string) {
   return { date: z.date, time: z.hm };
 }
 const place = (m: Method) => (m === 'cash' ? 'cash' : 'noncash');
+const DOC_ACCEPT = '.jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf';
+const docProblem = (f: File) => (!TYPES.includes(f.type) ? 'Документ – JPG, PNG или PDF.' : f.size > MAX_BYTES ? `Документ больше ${mb(MAX_BYTES)} – уменьшите файл.` : '');
 
 export default function EventMoney(p: EventTabProps & { mode: 'income' | 'expense' }) {
   const c = p.card;
@@ -41,6 +46,9 @@ export default function EventMoney(p: EventTabProps & { mode: 'income' | 'expens
   const [linking, setLinking] = useState<FinanceOperation | null>(null);
   const [linkForm, setLinkForm] = useState({ line: '', inCost: false });
   const [linkError, setLinkError] = useState('');
+  const [doc, setDoc] = useState<File | null>(null);
+  const uploaded = useRef<{ file: File; id: string } | null>(null);
+  const docInput = useRef<HTMLInputElement>(null);
   const key = useRef(crypto.randomUUID());
   const lines: EventLine[] = c.lines.filter((l) => l.status === 'active');
   const income = p.mode === 'income';
@@ -81,6 +89,9 @@ export default function EventMoney(p: EventTabProps & { mode: 'income' | 'expens
   const done = async (text: string) => {
     key.current = crypto.randomUUID();
     setForm((f) => ({ ...f, amount: '', comment: '', supplier: '', ...nowParts(tz) }));
+    setDoc(null);
+    uploaded.current = null;
+    if (docInput.current) docInput.current.value = '';
     setSaved(text);
     await p.onChanged();
     await load();
@@ -97,17 +108,43 @@ export default function EventMoney(p: EventTabProps & { mode: 'income' | 'expens
     if (!income && !form.category) return setError('Выберите категорию расхода.');
     if (!income && subs.length > 0 && !form.sub) return setError('Выберите подкатегорию.');
     if (!income && !form.comment.trim()) return setError('Укажите комментарий к расходу.');
+    if (!income && doc && docProblem(doc)) return setError(docProblem(doc));
     setBusy(true);
     setError('');
     setSaved('');
     try {
       const body = income
         ? { method: form.method, place: place(form.method), amountKop, occurredAt, comment: form.comment.trim() || null, receiptIssued: form.receipt }
-        : { method: form.method, place: place(form.method), amountKop, categoryId: form.category, subcategoryId: form.sub || null, supplier: form.supplier.trim() || null, lineId: form.line || null, inCost: form.inCost, occurredAt, comment: form.comment.trim() };
+        : { method: form.method, place: place(form.method), amountKop, categoryId: form.category, subcategoryId: form.sub || null, supplier: form.supplier.trim() || null, lineId: form.line || null, inCost: form.inCost, occurredAt, comment: form.comment.trim(), attachmentId: doc ? await docId(doc) : null };
       const op = await browserCall<FinanceOperation>(`/events/${c.id}/${income ? 'income' : 'expense'}`, { method: 'POST', key: key.current, body });
-      await done(`Проведено: ${rub(op.amountKop)}, операция №${op.number} – она же в журнале кассы филиала.`);
+      await done(`Проведено: ${rub(op.amountKop)}, операция №${op.number} – она же в журнале кассы филиала.${doc ? ' Документ приложен.' : ''}`);
     } catch (err) {
       key.current = crypto.randomUUID();
+      setError(eventError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  /** Файл документа → вложение мероприятия; тот же файл при повторной попытке не загружается второй раз. */
+  const docId = async (file: File) => {
+    if (uploaded.current?.file === file) return uploaded.current.id;
+    const q = new URLSearchParams({ ownerType: 'event', ownerId: c.id, docType: 'check', name: file.name });
+    const id = (await upload(file, q)).attachmentId;
+    uploaded.current = { file, id };
+    return id;
+  };
+  const attachTo = async (o: OpLink, file: File | undefined) => {
+    if (!file || busy) return;
+    setSaved('');
+    if (docProblem(file)) return setError(docProblem(file));
+    setBusy(true);
+    setError('');
+    try {
+      const attachmentId = (await upload(file, new URLSearchParams({ ownerType: 'event', ownerId: c.id, docType: 'check', name: file.name }))).attachmentId;
+      await browserCall(`/events/${c.id}/expense/${o.operation.id}/document`, { method: 'POST', body: { attachmentId } });
+      setSaved(`Документ к расходу №${o.operation.number} ${o.attachmentId ? 'заменён' : 'приложен'}.`);
+      await load();
+    } catch (err) {
       setError(eventError(err));
     } finally {
       setBusy(false);
@@ -170,7 +207,12 @@ export default function EventMoney(p: EventTabProps & { mode: 'income' | 'expens
                 {f.comment && <span>{f.comment}</span>}
                 {!income && <span>{o.inCost ? 'В себестоимости' : 'Не в себестоимости'}{lineName(o.lineId) ? ` · строка: ${lineName(o.lineId)}` : ''}</span>}
                 {o.role === 'income' && left !== f.amountKop && <span>Возвращено: {rub(f.amountKop - left)}</span>}
+                {o.role === 'expense' && (o.attachmentId ? <a href={`${API_PREFIX}/attachments/${o.attachmentId}`} download data-testid="expense-doc">Документ к расходу</a> : <span class="yc-field__hint">Документа нет</span>)}
                 <div class="yc-tabs">
+                  {o.role === 'expense' && can('event.money.record') && (
+                    <label class="yc-btn yc-btn--ghost">{o.attachmentId ? 'Заменить документ…' : 'Приложить документ…'}
+                      <input type="file" accept={DOC_ACCEPT} hidden disabled={busy} onChange={(e) => void attachTo(o, e.currentTarget.files?.[0])} /></label>
+                  )}
                   {o.role === 'income' && can('finance.refund') && left > 0 && <button class="yc-btn yc-btn--ghost" type="button" onClick={() => { key.current = crypto.randomUUID(); setRefund({ amount: '', method: f.method ?? 'card', reason: '' }); setRefundError(''); setRefunding(o); }}>Возврат…</button>}
                   {can('finance.correct') && <button class="yc-btn yc-btn--ghost" type="button" onClick={() => setReversing(o)}>Сторно…</button>}
                 </div>
@@ -209,6 +251,11 @@ export default function EventMoney(p: EventTabProps & { mode: 'income' | 'expens
               )}
               <label class="yc-check"><input type="checkbox" checked={form.inCost} onChange={(e) => setForm({ ...form, inCost: e.currentTarget.checked })} /> Учитывать в себестоимости</label>
             </div>
+          )}
+          {!income && (
+            <label class="yc-field"><span class="yc-field__label">Документ: чек или накладная (необязательно)</span>
+              <input ref={docInput} class="yc-input" type="file" accept={DOC_ACCEPT} onChange={(e) => { setDoc(e.currentTarget.files?.[0] ?? null); uploaded.current = null; }} />
+              <span class="yc-field__hint">JPG, PNG или PDF до {mb(MAX_BYTES)}. Файл виден только через CRM.</span></label>
           )}
           <label class="yc-field"><span class="yc-field__label">{income ? 'Комментарий (необязательно)' : 'Комментарий'}</span><input class="yc-input" type="text" maxLength={2000} value={form.comment} onInput={(e) => setForm({ ...form, comment: e.currentTarget.value })} /></label>
           {income && <label class="yc-check"><input type="checkbox" checked={form.receipt} onChange={(e) => setForm({ ...form, receipt: e.currentTarget.checked })} /> Чек выдан</label>}

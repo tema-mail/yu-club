@@ -12,12 +12,12 @@ export interface AttachmentsProps {
   timezone: string;
   canAttach: boolean;
 }
-const MAX_BYTES = 10_485_760;
-const TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
-const mb = (bytes: number) => `${(bytes / 1_048_576).toFixed(1).replace('.', ',')} МБ`;
+export const MAX_BYTES = 10_485_760;
+export const TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
+export const mb = (bytes: number) => `${(bytes / 1_048_576).toFixed(1).replace('.', ',')} МБ`;
 
-/** Загрузка: тело – сам файл, Content-Type – его тип; параметры – в адресе (№350). */
-async function upload(file: File, q: URLSearchParams): Promise<{ attachmentId: string }> {
+/** Загрузка: тело – сам файл, Content-Type – его тип; параметры – в адресе (№350). Её же зовёт документ к расходу мероприятия. */
+export async function upload(file: File, q: URLSearchParams): Promise<{ attachmentId: string }> {
   let res: Response;
   try {
     res = await fetch(`${API_PREFIX}/attachments?${q}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'idempotency-key': crypto.randomUUID(), accept: 'application/json' }, credentials: 'same-origin', body: file });

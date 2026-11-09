@@ -189,7 +189,6 @@ API этих разделов есть, но смотреть на него по
 |---|---|
 | `shifts/accrual.ts:131` | Редкая ложная тревога сверки в закрытом периоде: порог доплаты сменился, а правка часов дала разницу ровно 0, поэтому корректировка и новый снимок порога не пишутся |
 | `reports/clients.ts:233` | `avgIntervalDays` перечитывает все строки на каждой странице |
-| Экраны мероприятий | Нет документа к расходу (11 §11.4): в API нет `attachmentId` и владельца `event`. План: (1) `registerAttachmentOwner('event')` в модуле events – чтение `event.view`, запись `event.money.record`, вне зоны 404, выдача только `GET /attachments/:id`; (2) миграция 0435+ `app.event_expense_documents` (event_id, operation_id, attachment_id, живая строка одна на операцию), `attachmentId` в `POST /events/:id/expense` и `POST /events/:id/expense/:operationId/document`, проверка: вложение этого мероприятия и `active`, операция – живая связь expense этого мероприятия; `attachmentId` у расхода в `GET /events/:id/money`; (3) мок вложений с владельцем `event`, загрузка в `EventMoney.tsx` (`POST /attachments?ownerType=event&docType=check`) и ссылка «Документ» у расхода, спек |
 
 ### Нагрузка отчётов (S4-131, `npm run load:reports`, 10–11.11 на маке)
 
