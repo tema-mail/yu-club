@@ -79,7 +79,9 @@ const lineView = (l: EventLineDto) => ({
 });
 
 const Kop = z.number().int().min(0).max(100_000_000_000);
-const Quantity = z.number().positive().max(99_999_999).refine((q) => Math.round(q * 100) === q * 100 || Number.isInteger(q * 100), 'не больше двух знаков');
+// Не больше двух знаков после запятой: 1.1 * 100 = 110.00000000000001 в плавающей точке, поэтому сравнение с допуском:
+// третий знак даёт отклонение не меньше 0,1, а ошибка округления у 99 999 999,99 × 100 – порядка 1e-6.
+const Quantity = z.number().positive().max(99_999_999).refine((q) => Math.abs(Math.round(q * 100) - q * 100) < 1e-3, 'не больше двух знаков');
 const Short = z.string().trim().min(1).max(200);
 const Note = z.string().trim().max(2000);
 

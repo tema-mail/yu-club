@@ -67,6 +67,12 @@ describe('S3-51: строки', () => {
     expect(await codeOf(tx((c) => addLine(c, owner, e.id, { ...line, discountKop: 100 }, meta(), clock)))).toBe('COMMENT_REQUIRED');
     expect(await codeOf(tx((c) => addLine(c, owner, e.id, { ...line, discountKop: 700000, discountReason: 'x' }, meta(), clock)))).toBe('VALIDATION_FAILED');
   });
+  it('количество: 1,1 и 0,29 принимаются (плавающая точка), 2,675 – три знака, отказ', async () => {
+    const e = await newEvent();
+    expect((await tx((c) => addLine(c, owner, e.id, { ...line, quantity: 1.1 }, meta(), clock))).quantity).toBe(1.1);
+    expect((await tx((c) => addLine(c, owner, e.id, { ...line, quantity: 0.29 }, meta(), clock))).quantity).toBe(0.29);
+    expect(await codeOf(tx((c) => addLine(c, owner, e.id, { ...line, quantity: 2.675 }, meta(), clock)))).toBe('VALIDATION_FAILED');
+  });
   it('история цены: before/after в аудите со стоимостью', async () => {
     const e = await newEvent();
     const a = await tx((c) => addLine(c, owner, e.id, line, meta(), clock));
