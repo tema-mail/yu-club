@@ -14,6 +14,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { randomBytes, randomUUID } from 'node:crypto';
 import { registerBooking, resetBooking } from './mock-booking.ts';
 import { registerCertificates, resetCertificates } from './mock-certificates.ts';
+import { CONTENT_ACTIONS, registerContent } from './mock-content.ts';
 import { EQUIPMENT_ACTIONS, registerEquipment, resetEquipment } from './mock-equipment.ts';
 import { EVENT_ACTIONS, registerEvents, resetEvents } from './mock-events.ts';
 import { registerFinance, resetFinance } from './mock-finance.ts';
@@ -782,6 +783,8 @@ export function buildMock() {
   });
   resetEvents(branches);
   registerEvents(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients });
+  for (const r of ['owner', 'director', 'admin'] as const) ACTIONS[r] = [...new Set([...ACTIONS[r], ...CONTENT_ACTIONS[r]])]; // S4-84…89: контент – mock-content.ts (сброс – его хук)
+  registerContent(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches });
   return app;
 }
 
