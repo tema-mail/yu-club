@@ -1,0 +1,40 @@
+---
+// S4-116. /tournaments/ (карта сайта 3.3, по 19 – подтвердить Q-77): турниры – отдельный тип публикации. Хаб индексируется, только
+// когда в сети есть хотя бы один живой турнир (K23 §2 hubWithMaterial); до того – noindex и пустое состояние. Решение – по всей сети,
+// а не по выбору посетителя: робот приходит без куки, и карта сайта (lib/sitemap.ts) решает так же.
+import PublicationList from '../../components/PublicationList.astro';
+import Site from '../../layouts/Site.astro';
+import { content, type PublicationCard } from '../../lib/content.ts';
+import { SECTION, chosenBranch, displayZone } from '../../lib/publications.ts';
+import { breadcrumbLd } from '../../lib/jsonld.ts';
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let data: { items: PublicationCard[]; nextCursor: string | null } | null = null;
+let hasMaterial = false;
+try {
+  const cursor = Astro.url.searchParams.get('cursor') ?? undefined;
+  const [mine, any] = await Promise.all([
+    content.publications({ type: 'tournament', branchId: chosen?.branch.id, cursor }),
+    chosen ? content.publications({ type: 'tournament', limit: 1 }) : null,
+  ]);
+  data = mine;
+  hasMaterial = (any ?? mine).items.length > 0;
+} catch (e) {
+  console.error('site: турниры из API не загрузились', e);
+  Astro.response.status = 503;
+}
+---
+<Site title="Турниры Ю-Клуб" description="Турниры в компьютерных клубах Ю-Клуб: даты, клубы и результаты." index={{ kind: 'hubWithMaterial', hasMaterial }} jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Турниры', path: '/tournaments/' }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация"><li><a href="/">Главная</a></li><li aria-current="page">Турниры</li></ol>
+  <h1>Турниры</h1>
+  {chosen && <p class="yu-body" data-testid="pub-filter">Для клуба «{chosen.branch.name}» и всей сети.</p>}
+  <div class="yu-section">
+    {data ? (
+      <PublicationList items={data.items} timeZone={displayZone(network, chosen)} empty={SECTION.tournament.empty} />
+    ) : (
+      <p class="yu-notice" role="alert">Турниры сейчас не загрузились. <a href="/tournaments/">Обновить страницу</a></p>
+    )}
+    {data?.nextCursor && <p><a class="yu-btn yu-btn--ghost" href={`/tournaments/?cursor=${encodeURIComponent(data.nextCursor)}`}>Показать ещё</a></p>}
+  </div>
+</Site>
