@@ -2,10 +2,11 @@
 // «Отчёты» (S4-90…S4-98; 14 §15, K24 §3, §8, K11 №239–248). /reports – список отчётов, на которые есть право; /reports/{отчёт} – экран
 // отчёта с фильтрами из адреса (from, to, cityId, branchIds, resourceType, status, method, metric). Нет права или такого отчёта – 404,
 // как у несуществующей страницы (K1). Фильтр по умолчанию – текущий месяц и контекст шапки (город или филиал). Решает всё равно сервер.
-// /reports/exports – мои файлы (S4-93, при reports.export).
+// /reports/exports – мои файлы (S4-93, при reports.export); /reports/reconcile – ночная сверка (S4-96, при audit.view: Владелец и Директор).
 import Crm from '../../layouts/Crm.astro';
 import ExportDialog from '../../islands/ExportDialog.tsx';
 import ExportJobs from '../../islands/ExportJobs.tsx';
+import ReconcileRuns from '../../islands/ReconcileRuns.tsx';
 import ReportView, { type ReportFilters } from '../../islands/ReportView.tsx';
 import { presets, reportInfo, REPORTS, todayIn } from '../../lib/reports.ts';
 
@@ -16,8 +17,9 @@ const q = Astro.url.searchParams;
 
 const allowed = REPORTS.filter((r) => can(r.action));
 const report = segments.length === 1 ? allowed.find((r) => r.key === segments[0]) : undefined;
-const special = segments.length === 1 && segments[0] === 'exports' && can('reports.export') ? 'exports' : null;
+const special = segments.length !== 1 ? null : segments[0] === 'exports' && can('reports.export') ? 'exports' : segments[0] === 'reconcile' && can('audit.view') ? 'reconcile' : null;
 const view = segments.length === 0 && allowed.length > 0 ? 'list' : report ? 'report' : special;
+const branchNames = Object.fromEntries(branches.map((b) => [b.id, b.name]));
 if (view === null) Astro.response.status = 404;
 
 const timezone = (ctx.kind === 'branch' ? ctx.branch.timezone : branches[0]?.timezone) ?? 'Asia/Novosibirsk';
@@ -35,7 +37,7 @@ const initial: ReportFilters = {
   method: q.get('method') ?? '',
 };
 if (initial.branchId && !initial.cityId) initial.cityId = zone.find((b) => b.id === initial.branchId)?.cityId ?? '';
-const reportTitle = report?.title ?? (view === 'exports' ? 'Мои файлы отчётов' : 'Отчёты');
+const reportTitle = report?.title ?? (view === 'exports' ? 'Мои файлы отчётов' : view === 'reconcile' ? 'Ночная сверка' : 'Отчёты');
 ---
 <Crm title={view === null ? 'Не найдено' : reportTitle}>
   {view === null ? (
@@ -47,12 +49,23 @@ const reportTitle = report?.title ?? (view === 'exports' ? 'Мои файлы о
   ) : view === 'list' ? (
     <>
       <div class="yc-head"><h1>Отчёты</h1><p>Цифры считаются в момент запроса по вашей зоне. Нажмите на показатель, чтобы увидеть записи.</p></div>
-      {can('reports.export') && <div class="yc-eq__actions"><a class="yc-btn yc-btn--ghost" href="/reports/exports">Мои файлы</a></div>}
+      {(can('reports.export') || can('audit.view')) && (
+        <div class="yc-eq__actions">
+          {can('reports.export') && <a class="yc-btn yc-btn--ghost" href="/reports/exports">Мои файлы</a>}
+          {can('audit.view') && <a class="yc-btn yc-btn--ghost" href="/reports/reconcile">Ночная сверка</a>}
+        </div>
+      )}
       <ul class="rp-list" data-testid="report-list">
         {allowed.map((r) => (
           <li><a class="rp-list__item" href={`/reports/${r.key}`}><strong>{r.title}</strong><span>{r.purpose}</span></a></li>
         ))}
       </ul>
+    </>
+  ) : view === 'reconcile' ? (
+    <>
+      <p class="yc-crumbs"><a href="/reports">Отчёты</a> / {reportTitle}</p>
+      <div class="yc-head"><h1>{reportTitle}</h1><p>Каждую ночь система сверяет остатки и начисления с первичными записями. Расхождение – повод проверить объект, сама сверка ничего не исправляет.</p></div>
+      <ReconcileRuns client:load timezone={timezone} branchNames={branchNames} />
     </>
   ) : view === 'exports' ? (
     <>
