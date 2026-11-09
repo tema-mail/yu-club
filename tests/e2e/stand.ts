@@ -204,6 +204,25 @@ export function at(date: string, hm: string, tz: string): string {
 }
 export const ddmm = (date: string) => `${date.slice(8, 10)}.${date.slice(5, 7)}`;
 
+/** Ближайший свободный слот ресурсов не раньше notBefore (мс) – сегодня и дальше по дням филиала, до `days` дней.
+ *  Так тест не зависит от часа запуска: днём это сегодняшний слот, ночью – первый утренний, в день-исключение
+ *  графика (засев: +7 сокращённый, +14 закрыт) – что реально открыто. null – за эти дни свободного нет. */
+export async function nearestFree(client: SiteClient, branch: StandBranch, rs: StandResource[], notBefore: number, days = 3) {
+  for (let n = 0; n < days; n++) {
+    const date = dayIn(branch.timezone, n);
+    const a = await client.availability(branch.id, date);
+    let best: { r: StandResource; slot: Slot; date: string } | null = null;
+    for (const r of rs) {
+      const s = a.resources.find((x) => x.resourceId === r.id)?.slots.find((x) => x.state === 'free' && Date.parse(x.start) >= notBefore);
+      if (s && (!best || Date.parse(s.start) < Date.parse(best.slot.start))) best = { r, slot: s, date };
+    }
+    if (best) return best;
+  }
+  return null;
+}
+/** Минуты до начала слота – для проверки окна прихода (visit.arrive_early_min, Q-101). */
+export const minutesUntil = (iso: string) => (Date.parse(iso) - Date.now()) / 60_000;
+
 /** Острова Astro ожили: пока у astro-island есть атрибут ssr, клики по кнопкам острова ничего не делают. */
 export async function hydrated(page: Page): Promise<void> {
   await page.waitForLoadState('load');

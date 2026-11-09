@@ -2,11 +2,11 @@
 // в потоке (код – из лога API стенда) → подтверждение → ЛК «Мои записи» → CRM (демо-Администратор Арбата) видит
 // бронь в календаре → приход → завершение → в ЛК запись в «Прошлых» и «Посещениях». Плюс отмена клиентом из ЛК
 // и отмена клубом из CRM с запланированным уведомлением клиенту (app.notifications, SQL по ssh).
-// Клиент – новый номер на каждый прогон; слоты – первые свободные завтрашние, поэтому повторный прогон не упирается
-// в занятое прошлым. Отменённые брони время освобождают; завершённая остаётся в истории (так и должно быть).
+// Клиент – новый номер на каждый прогон; слоты – ближайшие свободные от «сейчас» (днём – сегодня, ночью – утро),
+// друг за другом, поэтому прогон не зависит ни от часа запуска, ни от занятого прошлым, ни от исключений графика. Отменённые брони время освобождают; завершённая остаётся в истории (так и должно быть).
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import {
-  CRM_URL, DEMO_ADMIN, SITE_URL, SiteClient, at, branchBySlug, branchSetting, crmLogin, dayIn, ddmm, localPhone, logMark, otpCode,
+  CRM_URL, DEMO_ADMIN, SITE_URL, SiteClient, branchBySlug, branchSetting, crmLogin, ddmm, localPhone, logMark, minutesUntil, nearestFree, otpCode,
   hydrated, randomPhone, resourcesOf, sql, type BookingDto, type StandBranch, type StandResource,
 } from './stand.ts';
 
@@ -22,21 +22,21 @@ const phone = randomPhone();
 let main: BookingDto;
 const leftovers: string[] = [];
 let arriveWindowSet = false;
+/** Окно прихода на прогон (мин), максимум K7. Конец последней брони клиента – следующая не раньше (пересечение запрещено). */
+const ARRIVE_EARLY = 1440;
+let busyUntil = 0;
 
 const timeIn = (iso: string, tz: string) =>
   new Intl.DateTimeFormat('ru-RU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(iso));
 
-/** Первый свободный слот ПК на день (+n), не раньше from: имя ресурса и время – для aria-label сетки. */
-async function freePc(day: number, from = '12:00', skip: string[] = []) {
-  const date = dayIn(branch.timezone, day);
-  const a = await client.availability(branch.id, date);
-  const min = Date.parse(at(date, from, branch.timezone));
-  for (const r of pcs) {
-    const s = a.resources.find((x) => x.resourceId === r.id)?.slots.find((x) => x.state === 'free' && Date.parse(x.start) >= min && !skip.includes(`${r.id}@${x.start}`));
-    if (s) return { r, slot: s, label: `${r.name}, ${timeIn(s.start, branch.timezone)}–${timeIn(s.end, branch.timezone)}` };
-  }
-  throw new Error(`на ${date} нет свободных ПК`);
+/** Ближайший свободный слот ПК после прошлых броней клиента (запас 15 мин на поток): дата и aria-label для сетки. */
+async function freePc() {
+  const f = await nearestFree(client, branch, pcs, Math.max(Date.now() + 15 * 60_000, busyUntil));
+  if (!f) throw new Error(`у ${branch.name} нет свободных ПК на 3 дня вперёд`);
+  busyUntil = Date.parse(f.slot.end);
+  return { ...f, label: `${f.r.name}, ${timeIn(f.slot.start, branch.timezone)}–${timeIn(f.slot.end, branch.timezone)}` };
 }
+let mainDate = '';
 
 async function openCrm(browser: Browser): Promise<Page> {
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true, locale: 'ru-RU', timezoneId: branch.timezone, viewport: { width: 1440, height: 900 } });
@@ -59,9 +59,9 @@ test.beforeAll(async ({ browser }) => {
   client = new SiteClient(site.request, phone);
   branch = await branchBySlug(site.request, 'moskva', 'arbat');
   pcs = (await resourcesOf(site.request, branch.id)).filter((r) => r.type === 'pc');
-  // Приход – не раньше visit.arrive_early_min до начала (Q-101, по умолчанию 30 мин). Бронь – на завтра, поэтому
-  // на время прогона окно филиала – сутки; после прогона настройка возвращается к наследованию.
-  await branchSetting('visit.arrive_early_min', branch.id, 1440);
+  // Приход – не раньше visit.arrive_early_min до начала (Q-101, по умолчанию 30 мин). Бронь – на ближайший свободный
+  // слот (ночью – утренний), поэтому на время прогона окно филиала – сутки; после прогона – наследование.
+  await branchSetting('visit.arrive_early_min', branch.id, ARRIVE_EARLY);
   arriveWindowSet = true;
   expect(pcs.length).toBeGreaterThan(0);
 });
@@ -88,12 +88,14 @@ test('сайт: клуб → расписание → слот → удержа�
   await expect(site).toHaveURL(/\/schedule\/\?branch=moskva\/arbat/);
   await expect(site.getByTestId('schedule-branch')).toContainText(branch.name);
 
-  const tomorrow = site.getByRole('button', { name: /^Завтра/ });
+  const pick = await freePc();
+  test.skip(minutesUntil(pick.slot.start) > ARRIVE_EARLY - 30, `клуб закрыт: ближайший свободный ПК ${pick.slot.start} дальше окна прихода ${ARRIVE_EARLY} мин`);
+  mainDate = pick.date;
+  const day = site.locator(`button.yu-sched__day[data-date="${pick.date}"]`);
   await expect(async () => {
-    await tomorrow.click();
-    await expect(tomorrow).toHaveAttribute('aria-pressed', 'true', { timeout: 1000 });
+    await day.click();
+    await expect(day).toHaveAttribute('aria-pressed', 'true', { timeout: 1000 });
   }).toPass({ timeout: 15_000 });
-  const pick = await freePc(1);
   const cell = site.getByRole('button', { name: `${pick.label}, свободно`, exact: true });
   await cell.click();
   await expect(site.getByRole('button', { name: `${pick.label}, выбрано вами`, exact: true })).toBeVisible();
@@ -133,7 +135,7 @@ test('сайт: клуб → расписание → слот → удержа�
 test('CRM: Администратор видит бронь в календаре, отмечает приход и завершает; ЛК – «Прошлые» и «Посещения»', async ({ browser }) => {
   test.skip(!main, 'нет брони из первого шага');
   crm = await openCrm(browser);
-  const date = dayIn(branch.timezone, 1);
+  const date = mainDate;
   await crm.goto(`${CRM_URL}/schedule?branch=${branch.id}&date=${date}`);
   const lane = crm.getByTestId(`cal-lane-${main.resourceId}`);
   const cal = lane.locator(`[data-testid="cal-item"][aria-label^="Бронь №${main.number},"]`);
@@ -172,7 +174,7 @@ test('CRM: Администратор видит бронь в календар�
 });
 
 test('отмена клиентом из ЛК: запись уходит в «Отменённые», время снова свободно', async () => {
-  const pick = await freePc(1, '15:00');
+  const pick = await freePc();
   const [b] = await client.book(branch.id, [{ resourceId: pick.r.id, start: pick.slot.start, end: pick.slot.end }]);
   leftovers.push(b!.id);
   await myTab('Будущие');
@@ -185,14 +187,14 @@ test('отмена клиентом из ЛК: запись уходит в «О
   await expect(item).toHaveCount(0);
   const cancelled = await myTab('Отменённые');
   await expect(cancelled.getByTestId('my-booking').filter({ hasText: `№ ${b!.number} ·` })).toContainText('Отменена вами');
-  const a = await client.availability(branch.id, dayIn(branch.timezone, 1));
+  const a = await client.availability(branch.id, pick.date);
   expect(a.resources.find((x) => x.resourceId === pick.r.id)!.slots.find((s) => s.start === pick.slot.start)!.state).toBe('free');
   // клиент отменил сам – сообщения об отмене нет (K14: видит в ЛК)
   expect(sql(`SELECT count(*) FROM app.notifications WHERE booking_id = '${b!.id}' AND kind = 'booking_cancelled'`)).toEqual(['0']);
 });
 
 test('отмена клубом из CRM: комментарий обязателен, хронология, ЛК «Отменена клубом», уведомление запланировано', async ({ browser }) => {
-  const pick = await freePc(1, '18:00');
+  const pick = await freePc();
   const [b] = await client.book(branch.id, [{ resourceId: pick.r.id, start: pick.slot.start, end: pick.slot.end }]);
   leftovers.push(b!.id);
   crm ??= await openCrm(browser);
