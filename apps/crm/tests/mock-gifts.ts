@@ -186,9 +186,9 @@ export function registerGifts(app: FastifyInstance, P: string, d: EventsMockDeps
     manage(s, 'holiday.manage');
     const reason = reasonOf(body);
     void reason;
-    const h = holidays.find((x) => x.id === p.id && x.status === 'active');
+    const h = holidays.find((x) => x.id === p.id);
     if (!h) throw notFound();
-    h.status = 'cancelled';
+    h.status = 'cancelled'; // уже отменённая – 200 с записью, как API (network/holidays.ts)
     return h;
   }));
 }

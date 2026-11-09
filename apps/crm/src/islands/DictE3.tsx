@@ -24,7 +24,8 @@ const META: Record<DictE3Kind, { path: string; one: string; list: string; query:
   'repair-executors': { path: '/repair-executors', one: 'Исполнитель', list: 'Исполнителей', query: '?includeArchived=true' },
 };
 const SYSTEM_TYPES = new Set(['birthday_party', 'birthday']);
-interface LineDraft { kind: LineKind; name: string; qty: string; unit: string; price: string; plan: string }
+// supplier и comment в окне не правятся, но PATCH заменяет lines целиком (K20 №370): без них правка пакета стирала бы их
+interface LineDraft { kind: LineKind; name: string; qty: string; unit: string; price: string; plan: string; supplier?: string | null; comment?: string | null }
 const newLine = (): LineDraft => ({ kind: 'service', name: '', qty: '1', unit: 'шт', price: '0', plan: '' });
 
 export default function DictE3(p: DictE3Props) {
@@ -75,7 +76,7 @@ export default function DictE3(p: DictE3Props) {
       name: r.name, code: String(r.code ?? ''), sortOrder: String(r.sortOrder ?? ''), kind: String(r.kind ?? ''), contactPerson: String(r.contactPerson ?? ''), phone: String(r.phone ?? ''), email: String(r.email ?? ''),
       comment: String(r.comment ?? ''), approx: pack.approxPriceKop === null || pack.approxPriceKop === undefined ? '' : kopText(pack.approxPriceKop),
     });
-    setLines(p.kind === 'event-packages' ? pack.lines.map((l) => ({ kind: l.kind, name: l.name, qty: qtyText(l.quantity), unit: l.unit, price: kopText(l.priceKop), plan: l.planCostKop === null || l.planCostKop === undefined ? '' : kopText(l.planCostKop) })) : []);
+    setLines(p.kind === 'event-packages' ? pack.lines.map((l) => ({ kind: l.kind, name: l.name, qty: qtyText(l.quantity), unit: l.unit, price: kopText(l.priceKop), plan: l.planCostKop === null || l.planCostKop === undefined ? '' : kopText(l.planCostKop), supplier: l.supplier ?? null, comment: l.comment ?? null })) : []);
   };
   function linesBody(): PackageLine[] | string {
     const out: PackageLine[] = [];
@@ -87,7 +88,7 @@ export default function DictE3(p: DictE3Props) {
       if (q100 === null) return `Строка ${i + 1}: количество больше нуля, до двух знаков.`;
       if (price === null) return `Строка ${i + 1}: цена в рублях.`;
       if (l.plan.trim() !== '' && plan === null) return `Строка ${i + 1}: себестоимость в рублях.`;
-      out.push({ kind: l.kind, name: l.name.trim(), quantity: q100 / 100, unit: l.unit.trim() || 'шт', priceKop: price, ...(p.seesPlan ? { planCostKop: plan } : {}) });
+      out.push({ kind: l.kind, name: l.name.trim(), quantity: q100 / 100, unit: l.unit.trim() || 'шт', priceKop: price, ...(p.seesPlan ? { planCostKop: plan } : {}), ...(l.supplier ? { supplier: l.supplier } : {}), ...(l.comment ? { comment: l.comment } : {}) });
     }
     return out;
   }

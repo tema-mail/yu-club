@@ -105,6 +105,13 @@ test('Типы: системный не уходит в архив – окно 
   const max = packs.find((x) => x.name === 'Праздник «Макси»')!;
   expect(max.lines[0]!.priceKop).toBe(199_999);
   expect(max.lines[0]!.planCostKop).toBe(50_000);
+  // S3-97: PATCH заменяет lines целиком – правка пакета не стирает поставщика строки, которого в окне нет
+  await page.getByRole('button', { name: 'Открыть: Праздник «Старт»' }).click();
+  await d.getByLabel('Название', { exact: true }).fill('Праздник «Старт+»');
+  await d.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(list(page).getByTestId('row-Праздник «Старт+»')).toBeVisible();
+  const after = ((await (await page.request.get(`${API}/event-packages`)).json()) as { items: Array<{ name: string; lines: Array<{ supplier?: string | null }> }> }).items;
+  expect(after.find((x) => x.name === 'Праздник «Старт+»')!.lines[1]!.supplier).toBe('Праздник рядом');
   await page.screenshot({ path: `${SHOTS}/dict-packages-1440.png`, fullPage: true });
 });
 

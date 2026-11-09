@@ -219,6 +219,8 @@ export function registerPayroll(app: FastifyInstance, P: string, h: ShiftsHelper
   app.post(`${P}/payroll/penalties`, command('payroll.penalty.create', 201, async (s, _p, b) => {
     const branchId = (b.branchId as string | null | undefined) ?? null;
     guardTarget(s, String(b.staffId ?? ''), branchId);
+    // как API (penalties.ts, guardTarget): сотрудник не назначен на этот филиал – 404
+    if (branchId !== null && !deps.zone(s).network && !staffBranches(staffOf(String(b.staffId))!).includes(branchId)) throw notFound();
     if (!(await flag())) throw new Fail(409, 'FEATURE_DISABLED', 'Штрафы выключены до юридической проверки', { setting: 'payroll.penalties_enabled' });
     const reason = reasonOf(b.reason);
     const amountKop = amountOf(b.amountKop);
@@ -229,17 +231,20 @@ export function registerPayroll(app: FastifyInstance, P: string, h: ShiftsHelper
     entries.push(penaltyEntry(x, 1, reason));
     return x;
   }));
-  app.post(`${P}/payroll/penalties/:id/cancel`, command('payroll.penalty.cancel', 200, (s, p, b) => {
+  app.post(`${P}/payroll/penalties/:id/cancel`, command('payroll.penalty.cancel', 200, async (s, p, b) => {
     const reason = reasonOf(b.reason);
     const x = lockedPenalty(s, p.id!);
+    // как API (locked → assertEnabled): при выключенном флаге отмена и правка тоже FEATURE_DISABLED
+    if (x.kind === 'penalty' && !(await flag())) throw new Fail(409, 'FEATURE_DISABLED', 'Штрафы выключены до юридической проверки', { setting: 'payroll.penalties_enabled' });
     if (x.status !== 'active') throw new Fail(409, 'ALREADY_REVERSED', 'Запись уже отменена');
     entries.push(penaltyEntry(x, -1, reason));
     Object.assign(x, { status: 'cancelled', cancelReason: reason });
     return x;
   }));
-  app.post(`${P}/payroll/penalties/:id/amend`, command('payroll.penalty.amend', 200, (s, p, b) => {
+  app.post(`${P}/payroll/penalties/:id/amend`, command('payroll.penalty.amend', 200, async (s, p, b) => {
     const why = reasonOf(b.why, 'why');
     const x = lockedPenalty(s, p.id!);
+    if (x.kind === 'penalty' && !(await flag())) throw new Fail(409, 'FEATURE_DISABLED', 'Штрафы выключены до юридической проверки', { setting: 'payroll.penalties_enabled' });
     assertOpen(x.date);
     if (x.status !== 'active') throw new Fail(409, 'ALREADY_REVERSED', 'Запись уже отменена');
     const amountKop = b.amountKop === undefined ? x.amountKop : amountOf(b.amountKop);
