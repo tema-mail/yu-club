@@ -5,6 +5,7 @@
 // Смена города сбрасывает филиал, смена филиала – зависимые фильтры. Сравнение при нулевой базе – «–», недоступное – словами.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, API_PREFIX } from '../lib/api.ts';
+import ReportDetail from './ReportDetail.tsx';
 import {
   BOOKING_STATUS_LABEL, METHOD_LABEL, RESOURCE_TYPE_LABEL, dateBasisOf, daysIn, fmtAt, fmtDelta, fmtMetric, fmtPeriod, metricTitle, presets, reportError, todayIn,
   type Metric, type ReportInfo, type ReportResult,
@@ -64,6 +65,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
   const [error, setError] = useState('');
   const [useExport, setUseExport] = useState(false);
   const [metric, setMetric] = useState(initialMetric);
+  const [applied, setApplied] = useState<ReportFilters>(initial);
   const seq = useRef(0);
   const ctrl = useRef<AbortController | null>(null);
 
@@ -92,6 +94,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
     try {
       const r = await getJson<ReportResult>(`/reports/${report.key}?${reportQuery(next)}`, c.signal);
       if (mine !== seq.current) return; // ответ на прежние фильтры – не показываем
+      setApplied(next);
       setResult(r);
       setState('ready');
     } catch (e) {
@@ -231,6 +234,9 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
               </tbody>
             </table>
           </div>
+          {metric && Object.hasOwn(result.metrics, metric) && (
+            <ReportDetail report={report.key} filters={applied} metric={metric} segment="" segmentLabel="" card={result.metrics[metric]} onClose={() => pick(metric)} />
+          )}
         </>
       )}
     </div>
