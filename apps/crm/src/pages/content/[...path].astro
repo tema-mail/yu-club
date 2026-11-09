@@ -3,7 +3,9 @@
 // типа, статуса, города и филиала (обычная форма GET, «Показать ещё» – курсором); /content/publications/new?type= – новый черновик;
 // /content/publications/{id} – редактор. Доступ – content.view (все роли); чужое – 404 (K1). Медиатека, игры, страницы, главная – свои файлы.
 import Crm from '../../layouts/Crm.astro';
+import PreviewFrame from '../../islands/PreviewFrame.tsx';
 import PublicationEditor from '../../islands/PublicationEditor.tsx';
+import VersionHistory from '../../islands/VersionHistory.tsx';
 import { ApiError, serverCall } from '../../lib/api.ts';
 import { ContentTabs, fmtAt, scopeLabel, STATUS_BADGE, STATUS_LABEL, TYPE_LABEL, type ContentStatus, type PublicationDto, type PublicationType, type Scope } from '../../lib/content.tsx';
 import '../../styles/content.css';
@@ -70,6 +72,12 @@ const title = (d: Record<string, unknown>) => (typeof d.title === 'string' && d.
       </div>
       {q.get('created') && <p class="yc-alert yc-alert--ok" role="status">Черновик создан.</p>}
       <PublicationEditor client:load initial={card} type={card?.type ?? newType} branches={refs} canNetwork={can('content.network.manage')} canCreate={can('content.draft.edit')} timezone={tz} />
+      {card && (
+        <div class="yc-ct__editor">
+          <VersionHistory client:load versionsPath={`/content/publications/${card.id}/versions`} draftPath={`/content/publications/${card.id}`} actionBase={`/content/publications/${card.id}`} canRollback={card.allowedActions.includes('rollback')} timezone={tz} />
+          <aside class="yc-ct__side"><PreviewFrame client:load entityType="publication" id={card.id} branches={refs} /></aside>
+        </div>
+      )}
     </>
   ) : (
     <>

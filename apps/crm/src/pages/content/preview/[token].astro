@@ -3,6 +3,8 @@
 // <iframe srcdoc sandbox> шириной 390 и 1440 px. sandbox пустой: БЕЗ allow-same-origin и БЕЗ allow-scripts – черновик, прошедший мимо очистки,
 // не получает ни куки CRM, ни доступа к её API и не исполняется. Страница за входом (middleware); токен вне CRM бесполезен: нужен секрет.
 import Crm from '../../../layouts/Crm.astro';
+import { PreviewFrames } from '../../../islands/PreviewFrame.tsx';
+import '../../../styles/content.css';
 
 const notFound = () => new Response(null, { status: 404, headers: { 'cache-control': 'no-store' } });
 
@@ -34,22 +36,9 @@ try {
 }
 Astro.response.headers.set('cache-control', 'no-store');
 
-const widths = [
-  { width: 390, label: 'Телефон, 390 px' },
-  { width: 1440, label: 'Компьютер, 1440 px' },
-];
 ---
 <Crm title="Предпросмотр черновика">
   <h1>Предпросмотр черновика</h1>
   <p>На сайте этого текста нет. Ссылка действует 10 минут и до новой правки черновика.</p>
-  {
-    widths.map(({ width, label }) => (
-      <section>
-        <h2>{label}</h2>
-        <div style="overflow-x:auto;border:1px solid #d0d5dd">
-          <iframe title={`Черновик: ${label}`} srcdoc={html} sandbox="" width={width} height="800" style={`display:block;border:0;width:${width}px`} />
-        </div>
-      </section>
-    ))
-  }
+  <PreviewFrames html={html} />
 </Crm>
