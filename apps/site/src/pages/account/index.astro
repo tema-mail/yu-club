@@ -3,10 +3,11 @@
 // Сейчас: профиль, блок «Уведомления» (переключатели и push в браузере – остров NotificationSettings, K9
 // /me/notification-settings, /me/push-subscriptions), «Мои записи» (остров MyBookings, K9 /me/bookings, /me/visits),
 // «Баллы» (остров Loyalty, K15 §11; каталог – клуба из выбора посетителя или первого в сети),
-// «Мои сертификаты» (остров MyCertificates, K16 §8) и выход.
+// «Мои сертификаты» (остров MyCertificates, K16 §8), «Мой подарок» (остров MyGift, K20 §10 П1 – отдельно от сертификатов) и выход.
 import Loyalty from '../../islands/Loyalty.tsx';
 import MyBookings from '../../islands/MyBookings.tsx';
 import MyCertificates from '../../islands/MyCertificates.tsx';
+import MyGift from '../../islands/MyGift.tsx';
 import NotificationSettings from '../../islands/NotificationSettings.tsx';
 import Site from '../../layouts/Site.astro';
 
@@ -36,6 +37,7 @@ const name = [me.firstName, me.lastName].filter(Boolean).join(' ');
     <MyBookings client:load />
     <Loyalty client:load branch={goodsBranch} />
     <MyCertificates client:load />
+    <MyGift client:load />
     <NotificationSettings
       client:load
       remindersEnabled={me.notifications.remindersEnabled}
