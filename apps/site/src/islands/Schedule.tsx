@@ -6,8 +6,12 @@
 // «Оформить запись» – шаг Checkout (S1-20) на месте сетки; таймер идёт и там, истечение возвращает к выбору.
 // Э2 (S2-72): вошедший клиент с балансом −50 видит текст 07 §9.2 до выбора слота, слоты недоступны. Резерв баллов
 // (выбор в Checkout) живёт здесь: сменился состав удержания – резерв снят сервером (K15 §3), говорим об этом фразой.
+// Э3 (S3-92, K20 §10): режим подарка имениннику – /schedule/?gift={id} из ЛК (id держится в sessionStorage вкладки, пока клиент
+// выбирает клуб). Дни – только будни из условий подарка в пределах срока и окна записи; праздник и прочее закрытие дня говорит сервер
+// (П1 /me/gifts/{id}/slots, closedReason). Окна – только те, где свободны оба шлема на всё время подарка. Клик – П2 /me/gifts/{id}/hold:
+// обычное удержание K5 с тем же таймером, дальше обычное оформление с ценой 0 (Checkout gift).
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { ZONE_LABEL, ZONE_ORDER, type ZoneCode } from '../lib/api.ts';
+import { API_PREFIX, ZONE_LABEL, ZONE_ORDER, type ZoneCode } from '../lib/api.ts';
 import {
   LIMIT_TEXT, UI_STATES, addDays, bookingApi, loyaltyApi, dayLabel, describeError, holdDeadline, holdStoreKey, rub, timeIn,
   type AvailabilityDto, type HoldDto, type SlotDto, type SlotState, type UiState,
@@ -15,6 +19,47 @@ import {
 import { ClientApiError } from '../lib/client.ts';
 import Checkout, { RESERVE_DROPPED, holdSignature, type PointsReserve } from './Checkout.tsx';
 import HoldTimer from './HoldTimer.tsx';
+import { GIFT_STORE_KEY, fmtDay, giftApi, type MyGiftDto } from './MyGift.tsx';
+
+// ── Подарок имениннику (П1, П2 – apps/api/src/modules/events/routes.gifts.ts) ──
+interface GiftSlotsDto { date: string; closedReason: string | null; slots: Array<{ start: string; end: string }> }
+type GiftMode = { kind: 'off' } | { kind: 'gone' } | { kind: 'loading' | 'auth' | 'error'; id: string } | { kind: 'on'; gift: MyGiftDto };
+/** Почему день закрыт для подарка – фраза посетителю. */
+const GIFT_CLOSED: Record<string, string> = {
+  GIFT_WEEKDAY_ONLY: 'Подарком можно воспользоваться с понедельника по пятницу. Выберите будний день.',
+  GIFT_HOLIDAY: 'Это праздничный день – в праздники подарок не действует. Выберите другой день.',
+  GIFT_EXPIRED: 'Этот день позже срока подарка. Выберите день раньше.',
+  GIFT_NOT_ACTIVE: 'Подарок уже не действует или по нему уже есть запись – она в личном кабинете.',
+  GIFT_ALREADY_RESERVED: 'По подарку уже есть запись – она в личном кабинете.',
+  GIFT_COMPOSITION_INVALID: 'В подарок входят только 2 шлема Meta Quest 3S. Обновите страницу и выберите время заново.',
+  OUTSIDE_BOOKING_WINDOW: 'Этот день ещё не открыт для записи или уже прошёл.',
+  RESOURCE_UNAVAILABLE: 'В этом клубе запись по подарку недоступна. Выберите другой клуб.',
+};
+const weekdayOf = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay() || 7;
+
+async function giftCall<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { accept: 'application/json' };
+  if (method === 'POST') Object.assign(headers, { 'content-type': 'application/json', 'x-requested-with': 'yu-site', 'idempotency-key': crypto.randomUUID() });
+  let res: Response;
+  try {
+    res = await fetch(`${API_PREFIX}${path}`, { method, headers, credentials: 'same-origin', body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined });
+  } catch {
+    throw new ClientApiError(0, 'NETWORK', '');
+  }
+  if (!res.ok) {
+    let b: { error?: { code?: string; message?: string; details?: Record<string, unknown> } } = {};
+    try {
+      b = (await res.json()) as typeof b;
+    } catch {
+      // тело не JSON – общий код ниже
+    }
+    throw new ClientApiError(res.status, b.error?.code ?? 'INTERNAL', b.error?.message ?? '', b.error?.details ?? {});
+  }
+  return (await res.json()) as T;
+}
+const enc = encodeURIComponent;
+const giftSlotsOf = (id: string, branchId: string, date: string) => giftCall<GiftSlotsDto>('GET', `/me/gifts/${enc(id)}/slots/?branchId=${enc(branchId)}&date=${enc(date)}`);
+const giftHoldOf = (id: string, branchId: string, start: string) => giftCall<HoldDto>('POST', `/me/gifts/${enc(id)}/hold/`, { branchId, start });
 
 export interface ScheduleBranch {
   id: string; name: string; timezone: string;
@@ -62,6 +107,14 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
   const checkoutTitle = useRef<HTMLHeadingElement>(null);
   const firstStep = useRef(true);
   const reqNo = useRef(0);
+  const [giftMode, setGiftMode] = useState<GiftMode>({ kind: 'off' });
+  const [giftSlots, setGiftSlots] = useState<GiftSlotsDto | 'loading' | 'error'>('loading');
+  const giftReq = useRef(0);
+  const gift = giftMode.kind === 'on' ? giftMode.gift : null;
+  /** Дни подарка: будни условий в пределах срока и окна записи филиала. */
+  const giftDays = gift
+    ? Array.from({ length: branch.bookingWindow.maxDays }, (_, i) => addDays(today, i)).filter((d) => d <= gift.validUntil && gift.terms.weekdays.includes(weekdayOf(d)))
+    : [];
 
   function keepReserve(r: PointsReserve | null) {
     reserveRef.current = r;
@@ -112,6 +165,64 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
   }, [date, reload]);
 
   const refresh = () => setReload((x) => x + 1);
+
+  // Режим подарка: ?gift= из ЛК или id, сохранённый во вкладке, пока выбирали клуб. Подарок – только свой и действующий (П1).
+  async function loadGift(id: string) {
+    setGiftMode({ kind: 'loading', id });
+    try {
+      const g = (await giftApi.list()).items.find((x) => x.id === id);
+      if (!g || (g.status !== 'issued' && g.status !== 'reserved')) {
+        sessionStorage.removeItem(GIFT_STORE_KEY);
+        setGiftMode({ kind: 'gone' });
+        return;
+      }
+      setGiftMode({ kind: 'on', gift: g });
+      const days = Array.from({ length: branch.bookingWindow.maxDays }, (_, i) => addDays(today, i)).filter((d) => d <= g.validUntil && g.terms.weekdays.includes(weekdayOf(d)));
+      if (days[0]) setDate(days[0]);
+    } catch (e) {
+      setGiftMode(e instanceof ClientApiError && e.status === 401 ? { kind: 'auth', id } : { kind: 'error', id });
+    }
+  }
+  useEffect(() => {
+    const id = new URLSearchParams(location.search).get('gift') ?? sessionStorage.getItem(GIFT_STORE_KEY);
+    if (!id) return;
+    sessionStorage.setItem(GIFT_STORE_KEY, id);
+    void loadGift(id);
+  }, []);
+
+  useEffect(() => {
+    if (!gift) return;
+    const n = ++giftReq.current;
+    setGiftSlots('loading');
+    giftSlotsOf(gift.id, branch.id, date)
+      .then((s) => n === giftReq.current && setGiftSlots(s))
+      .catch(() => n === giftReq.current && setGiftSlots('error'));
+  }, [gift?.id, date, reload]);
+
+  function exitGift() {
+    sessionStorage.removeItem(GIFT_STORE_KEY);
+    const url = new URL(location.href);
+    url.searchParams.delete('gift');
+    history.replaceState(null, '', url.pathname + url.search);
+    setGiftMode({ kind: 'off' });
+    setNotice(null);
+    setDate(today);
+  }
+
+  async function pickGift(start: string) {
+    if (!gift || busy || holdRef.current) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      adopt(await giftHoldOf(gift.id, branch.id, start));
+    } catch (e) {
+      const code = e instanceof ClientApiError ? e.code : '';
+      setNotice(GIFT_CLOSED[code] ? { state: 'conflict', text: GIFT_CLOSED[code] } : describeError(e));
+    } finally {
+      setBusy(false);
+      refresh();
+    }
+  }
 
   // Смена шага меняет высоту страницы: без этого браузер оставляет прежнюю прокрутку, шапка (sticky) встаёт
   // поверх середины страницы, а заголовок шага уезжает вверх. Каждый шаг начинается с верха страницы.
@@ -213,6 +324,85 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
     </div>
   );
 
+  const holdPanel = hold && deadline !== null && (
+    <section class="yu-hold" aria-labelledby="hold-title" data-testid="hold-panel">
+      <h2 id="hold-title" class="yu-hold__title">{gift ? 'Запись по подарку' : 'Ваш выбор'}</h2>
+      <HoldTimer deadline={deadline} onPhase={setPhase} onExpire={expire} />
+      <ul class="yu-hold__items">
+        {hold.items.map((i) => (
+          <li key={i.id} class="yu-hold__item">
+            <span>{i.resourceName}, {dayLabel(new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date(i.start))).day}, {timeIn(i.start, tz)}–{timeIn(i.end, tz)}</span>
+            <span class="yu-hold__price">{rub(i.priceKop)}</span>
+          </li>
+        ))}
+      </ul>
+      <p class="yu-hold__total">Итого: <strong data-testid="hold-total">{rub(hold.totalKop)}</strong></p>
+      <div class="yu-hold__actions">
+        <button type="button" class="yu-btn" onClick={() => { setNotice(null); setStep('checkout'); }} disabled={busy}>Оформить запись</button>
+        <button type="button" class="yu-btn yu-btn--ghost" onClick={cancel} disabled={busy}>Отменить выбор</button>
+      </div>
+    </section>
+  );
+
+  // ── Режим подарка: вместо сетки – будни срока и окна на оба шлема ──
+  if (step === 'pick' && giftMode.kind !== 'off' && giftMode.kind !== 'gone') {
+    const g = gift;
+    const giftStatus: Notice = notice
+      ?? (giftMode.kind === 'loading' ? { state: 'loading', text: 'Загружаем подарок…' }
+        : giftMode.kind === 'auth' ? { state: 'forbidden', text: 'Чтобы записаться по подарку, войдите в личный кабинет.' }
+          : giftMode.kind === 'error' || giftSlots === 'error' ? { state: 'load_error', text: 'Не удалось загрузить подарок. Проверьте связь и обновите страницу.' }
+            : hold ? { state: phase, text: UI_STATES[phase] }
+              : giftSlots === 'loading' ? { state: 'loading', text: UI_STATES.loading }
+                : giftSlots.closedReason ? { state: 'empty', text: GIFT_CLOSED[giftSlots.closedReason] ?? UI_STATES.empty }
+                  : giftSlots.slots.length === 0 ? { state: 'empty', text: `На этот день нет окна, где оба шлема свободны ${g?.terms.roomMinutes ?? 40} минут подряд. Выберите другой день.` }
+                    : { state: 'loaded', text: `Выберите время начала: ${g?.terms.devices ?? 2} шлема ${g?.terms.device ?? ''} на ${g?.terms.roomMinutes ?? 40} минут.` });
+    const windows = g && giftSlots !== 'loading' && giftSlots !== 'error' && !giftSlots.closedReason ? giftSlots.slots : [];
+    return (
+      <div class="yu-sched" data-testid="schedule">
+        <div class="yu-notice yu-sched__status" data-testid="gift-mode">
+          <span>
+            {g
+              ? `Запись по подарку имениннику № ${g.number}: ${g.terms.devices} × ${g.terms.device} на ${g.terms.roomMinutes} минут, с понедельника по пятницу, кроме праздников, до ${fmtDay(g.validUntil)} включительно. Бесплатно.`
+              : 'Запись по подарку имениннику.'}
+          </span>
+          <button type="button" class="yu-btn yu-btn--ghost yu-btn--small" onClick={exitGift}>Обычная запись</button>
+        </div>
+        {giftMode.kind === 'auth' && (
+          <a class="yu-btn" href={`/login/?next=${enc(`/schedule/?gift=${giftMode.id}`)}`}>Войти</a>
+        )}
+        {g && (
+          <div class="yu-sched__days" role="group" aria-label="День">
+            {giftDays.map((d) => {
+              const l = dayLabel(d);
+              return (
+                <button type="button" key={d} class="yu-sched__day" aria-pressed={d === date} onClick={() => { setNotice(null); setDate(d); }} data-date={d}>
+                  <span class="yu-sched__day-week">{d === today ? 'Сегодня' : d === addDays(today, 1) ? 'Завтра' : l.week}</span>
+                  <span class="yu-sched__day-num">{l.day}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <div class="yu-sched__status" data-state={giftStatus.state} data-testid="schedule-status" role="status" aria-live="polite">
+          <span>{giftStatus.text}</span>
+        </div>
+        {windows.length > 0 && (
+          <div class="yu-sched__zones" role="group" aria-label="Время начала" data-testid="gift-windows">
+            {windows.map((w) => (
+              <button
+                type="button" key={w.start} class="yu-sched__zone" disabled={busy || hold !== null}
+                aria-label={`Подарок, ${timeIn(w.start, tz)}–${timeIn(w.end, tz)}`} onClick={() => pickGift(w.start)}
+              >
+                {timeIn(w.start, tz)}–{timeIn(w.end, tz)}
+              </button>
+            ))}
+          </div>
+        )}
+        {holdPanel}
+      </div>
+    );
+  }
+
   if (step === 'checkout' && hold && deadline !== null) {
     return (
       <div class="yu-sched" data-testid="schedule">
@@ -222,7 +412,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
           <h2 id="checkout-title" class="yu-hold__title" ref={checkoutTitle} tabIndex={-1}>Оформление записи</h2>
           <HoldTimer deadline={deadline} onPhase={setPhase} onExpire={expire} />
           <Checkout
-            hold={hold} timezone={tz} onHold={adopt} onNotice={setNotice} reserve={reserve} onReserve={keepReserve}
+            hold={hold} timezone={tz} onHold={adopt} onNotice={setNotice} reserve={reserve} onReserve={keepReserve} gift={gift !== null}
             onBack={() => { setStep('pick'); refresh(); }}
           />
         </section>
@@ -261,6 +451,9 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
       </div>
 
       {limited && <p class="yu-notice" role="alert" data-testid="loyalty-limit-banner">{LIMIT_TEXT}</p>}
+      {giftMode.kind === 'gone' && (
+        <p class="yu-notice" role="status" data-testid="gift-gone">Подарок уже использован, истёк или по нему есть запись. Ниже – обычная запись.</p>
+      )}
       {statusLine}
 
       {avail?.dayState === 'open' && all.length > 0 && (
@@ -304,25 +497,7 @@ export default function Schedule({ branch, resources, today, zone: initialZone, 
         ))}
       </ul>
 
-      {hold && deadline !== null && (
-        <section class="yu-hold" aria-labelledby="hold-title" data-testid="hold-panel">
-          <h2 id="hold-title" class="yu-hold__title">Ваш выбор</h2>
-          <HoldTimer deadline={deadline} onPhase={setPhase} onExpire={expire} />
-          <ul class="yu-hold__items">
-            {hold.items.map((i) => (
-              <li key={i.id} class="yu-hold__item">
-                <span>{i.resourceName}, {dayLabel(new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date(i.start))).day}, {timeIn(i.start, tz)}–{timeIn(i.end, tz)}</span>
-                <span class="yu-hold__price">{rub(i.priceKop)}</span>
-              </li>
-            ))}
-          </ul>
-          <p class="yu-hold__total">Итого: <strong data-testid="hold-total">{rub(hold.totalKop)}</strong></p>
-          <div class="yu-hold__actions">
-            <button type="button" class="yu-btn" onClick={() => { setNotice(null); setStep('checkout'); }} disabled={busy}>Оформить запись</button>
-            <button type="button" class="yu-btn yu-btn--ghost" onClick={cancel} disabled={busy}>Отменить выбор</button>
-          </div>
-        </section>
-      )}
+      {holdPanel}
     </div>
   );
 }
