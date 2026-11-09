@@ -89,7 +89,8 @@ export function plural(n: number, one: string, few: string, many: string): strin
 }
 
 /** Бренд не удваивается, если филиал уже назван «Ю-Клуб на Красном». */
-const branded = (name: string) => (/^ю-клуб/i.test(name) ? name : `Ю-Клуб ${name}`);
+// бренд уже в названии – в любом написании («Ю-Клуб», «Ю Клуб», «ЮКлуб»): иначе «Ю-Клуб Ю Клуб Арбат» (стенд 09.11)
+const branded = (name: string) => (/^ю[\s\u00a0-]*клуб/i.test(name) ? name : `Ю-Клуб ${name}`);
 
 const GAME_WHERE = { pc: 'на ПК', vr: 'VR', playstation: 'на PlayStation' } as const;
 

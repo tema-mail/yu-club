@@ -31,7 +31,7 @@ let crmCtx: BrowserContext;
 let crm: Page;
 let siteCtx: BrowserContext;
 let site: Page;
-let noShow: BookingDto;
+let noShow: BookingDto | undefined;
 const settingsSet: Array<() => Promise<void>> = [];
 const leftovers: string[] = [];
 const done: { cash?: BookingDto; cashPaymentId?: string; cashOperationId?: string } = {};
@@ -114,9 +114,12 @@ test.beforeAll(async ({ browser }) => {
   clientId = ((await (await client.api.get('/api/public/v1/me/')).json()) as { id: string }).id;
   director = await crmApi(DEMO_DIRECTOR.email, DEMO_DIRECTOR.password());
   // бронь для неявки – сразу, чтобы её начало прошло, пока идут сценарии 1–4
-  const { r, slot } = await freeSlot(vr, 0, '00:00');
-  [noShow] = await client.book(branch.id, [{ resourceId: r.id, start: slot.start, end: slot.end }]) as [BookingDto];
-  leftovers.push(noShow.id);
+  // вечером после закрытия сегодня слотов нет: тогда сценарий 5 пропускается с причиной, а не роняет весь набор
+  const today = await freeSlot(vr, 0, '00:00').catch(() => null);
+  if (today) {
+    [noShow] = await client.book(branch.id, [{ resourceId: today.r.id, start: today.slot.start, end: today.slot.end }]) as [BookingDto];
+    leftovers.push(noShow.id);
+  }
 
   siteCtx = await browser.newContext({ baseURL: SITE_URL, ignoreHTTPSErrors: true, locale: 'ru-RU', timezoneId: branch.timezone, storageState: await client.api.storageState() });
   site = await siteCtx.newPage();
@@ -268,6 +271,8 @@ test('4. полный возврат денег по брони 1: начисл�
 });
 
 test('5. штрафы включены: неявка → −5, баланс −50 → предзапись на сайте закрыта текстом 07 §9.2', async () => {
+  test.skip(!noShow, 'сегодня свободных слотов уже нет (прогон после закрытия клуба) – неявку проверить нельзя, прогонять днём');
+  if (!noShow) return;
   // к −45 – корректировкой Директора (ниже −50 он не может, до −50 – да)
   const start = (await loyalty()).balanceCenti;
   const adj = await director.post(`/api/crm/v1/clients/${clientId}/loyalty/adjust`, {
