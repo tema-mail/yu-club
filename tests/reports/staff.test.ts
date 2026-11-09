@@ -17,6 +17,7 @@ import { HANDLER_ATTENDANCE, HANDLER_RATE, registerPayrollHandlers } from '../..
 import { setAttendance } from '../../apps/api/src/modules/shifts/attendance.ts';
 import { calculateStatements, closePeriod, createPeriod, markPaid, setStatementStatus } from '../../apps/api/src/modules/shifts/payroll.ts';
 import { createPayoutExpense } from '../../apps/api/src/modules/shifts/payout-expense.ts';
+import { createPenalty } from '../../apps/api/src/modules/shifts/penalties.ts';
 import { createShift } from '../../apps/api/src/modules/shifts/plan.ts';
 import { setRate } from '../../apps/api/src/modules/shifts/rates.ts';
 import { payrollReport } from '../../apps/api/src/modules/shifts/report.ts';
@@ -160,6 +161,45 @@ describe('деньги и права', () => {
     expect(val(f.metrics.expenses)).toBe(toPay2);
     const dirB = await fx.run(fx.director([b]), (env) => staffReport(env, { period: NOV }));
     expect(val(dirB.metrics.payoutExpense)).toBe(toPay2); // расход кассы – в филиале, Директору виден
+  });
+});
+
+describe('перенос минуса ведомости', () => {
+  const JUN_JUL = { from: d('2026-06-01'), to: d('2026-07-31') };
+  const JUL = { from: d('2026-07-01'), to: d('2026-07-31') };
+  beforeAll(async () => {
+    // S3: июнь – только штраф 500 ₽, ведомость в минусе, выплата переносит минус в июль; в июле смена 120 минут
+    const o = fx.owner();
+    await db.client.query(`INSERT INTO app.settings_values (key, level, value, valid_from, created_by) VALUES ('payroll.penalties_enabled', 'network', 'true', '2026-01-01', $1)`, [randomUUID()]);
+    const s3 = await person([a]);
+    // периоды без разрывов: перед сентябрьским – август и июль
+    await tx((t) => createPeriod(t, o, { from: '2026-08-01', to: '2026-08-31' }, meta(o), clock));
+    await tx((t) => createPeriod(t, o, { from: '2026-07-01', to: '2026-07-31' }, meta(o), clock));
+    const jun = await tx((t) => createPeriod(t, o, { from: '2026-06-01', to: '2026-06-30' }, meta(o), clock));
+    await tx((t) => createPenalty(t, o, { staffId: s3, branchId: a, date: '2026-06-10', amountKop: 50_000, reason: 'недостача' }, meta(o), clock));
+    await tx((t) => closePeriod(t, o, jun.id, {}, meta(o), clock));
+    const st = (await tx((t) => calculateStatements(t, o, jun.id, meta(o), clock))).find((x) => x.staffId === s3)!;
+    const checked = await tx((t) => setStatementStatus(t, o, st.id, { rowVersion: st.rowVersion, status: 'checked' }, meta(o), clock));
+    const ready = await tx((t) => setStatementStatus(t, o, st.id, { rowVersion: checked.rowVersion, status: 'ready' }, meta(o), clock));
+    await tx((t) => markPaid(t, o, st.id, { rowVersion: ready.rowVersion, actualPayoutDate: '2026-07-02' }, meta(o), clock));
+    await shift(s3, a, NSK, '2026-07-20', 120);
+  }, 60_000);
+
+  it.each([
+    ['июнь–июль: ведомость-источник в периоде – минус один раз (штраф)', JUN_JUL, 0],
+    ['июль: источник вне периода – минус виден корректировкой', JUL, -50_000],
+  ] as const)('%s', async (_name, period, corrections) => {
+    const r = await fx.run(fx.owner(), (env) => staffReport(env, { period }));
+    const e3 = await payrollReport(fx.app, fx.owner(), { from: period.from, to: period.to }, clock);
+    expect(e3.totals.correctionsKop).toBe(corrections);
+    expect(val(r.metrics.toPay)).toBe(e3.totals.toPayKop);
+    expect(r.metrics.adjustments.state === 'ok' ? r.metrics.adjustments.value : 0).toBe(corrections);
+    expect(val(r.metrics.toPay)).toBe(120_000 + 10_000 - 50_000);
+    for (const key of ['toPay', 'adjustments', 'penalties'] as const) {
+      const page = await fx.run(fx.owner(), (env) => staffDetail(env, { period }, key, { limit: 500 }));
+      const m = r.metrics[key];
+      expect(page.rows.reduce((s, x) => s + x.value, 0), key).toBe(m.state === 'ok' ? m.value : 0);
+    }
   });
 });
 

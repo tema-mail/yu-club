@@ -4,7 +4,7 @@
 // отчёт порог не предполагает. Деньги – записи K3 rpt_payroll_entries по дате записи, как раздел «Зарплата» Э3 (report.ts): Директор видит суммы
 // филиалов своей зоны, записи без филиала (выплата, сетевые корректировки) – только сетевая область. Деньги только с reports.payroll.view,
 // в файле – ещё и reports.export.payroll (K24 §8), иначе unavailable/not_permitted. TC-19: выплата по ведомости (K3) и расход кассы на неё
-// (rpt_payout_expenses) – разные показатели, расход один раз, начисление расходом не считается.
+// (rpt_payout_expenses) – разные показатели, расход один раз, начисление расходом не считается. Перенос минуса ведомости – один раз (0416).
 import type { Tx } from '../../core/audit.ts';
 import { roleAllows } from '../../core/permissions.ts';
 import { resolveSettings } from '../../core/settings.ts';
@@ -61,9 +61,12 @@ function gapDefs(): Record<GapMetric, MetricDef> {
   return { emptyIntervals: gaps('count'), emptyMinutes: gaps('sum') };
 }
 
+/** Перенос минуса (0416): ведомость-источник целиком в окне отчёта – её минус уже в суммах, запись переноса не берётся (как report.ts Э3). */
+const NOT_CARRIED_INSIDE: Cond = { sql: 'NOT (t.carry_from_at IS NOT NULL AND t.carry_from_at >= w.s AND t.carry_to_at <= w.e)' };
+
 function moneyDefs(): Record<MoneyMetric, MetricDef> {
   const entries = (kinds: string[], col: string): MetricDef => ({
-    spec: { view: 'app.rpt_payroll_entries', date: 'payroll_at', nullableBranch: true, conds: [{ sql: 't.kind = ANY(?::text[])', values: [kinds] }] },
+    spec: { view: 'app.rpt_payroll_entries', date: 'payroll_at', nullableBranch: true, conds: [{ sql: 't.kind = ANY(?::text[])', values: [kinds] }, NOT_CARRIED_INSIDE] },
     agg: 'sum', col, unit: 'kop', dateBasis: 'at', idCol: 'entry_id',
   });
   const accrual = ['payroll.accrual'];
