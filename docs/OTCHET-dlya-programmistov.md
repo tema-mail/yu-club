@@ -173,12 +173,6 @@ API этих разделов есть, но смотреть на него по
 
 Найдены ревизией, не исправлены. Начинать лучше с них: каждый заметно меньше любого экрана.
 
-### Деньги и данные
-
-| Где | Дефект | Что делать |
-|---|---|---|
-| `reports/reconcile.ts:153`, `db/migrations/0311_rpt_e3.sql`, `0413` | Сверка принимает и `hourly`, и `hourly + fee`, поэтому не поймает пропавшую доплату за выход. Снимка `payroll.attendance_fee_min_minutes` в начислении нет: `journal.payroll_accruals` хранит только `hourly_part_kop`, `fee_part_kop`, `rate_id`; история настройки в `app.settings_values` есть, но момент начисления в журнале – `recorded_at` из `now()` базы, а настройку `accrual.ts` берёт на `clock.now()` | новая миграция: `fee_min_minutes int` в `journal.payroll_accruals` и `refs.feeMinMinutes` у системной корректировки; `accrual.ts` пишет туда значение, на котором считал; представление – новой миграцией: `expected = hourly + (paid_minutes >= fee_min ? fee : 0)`, у старых строк без снимка – как сейчас; `reconcile.ts` сравнивает с одной суммой |
-
 ### Права и экраны
 
 | Где | Дефект | Что делать |

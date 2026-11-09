@@ -253,6 +253,25 @@ describe('смены и зарплата', () => {
     expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id)).toEqual([]);
   });
 
+  it('0414: начисление и корректировка закрытого периода несут порог доплаты, по которому считали', async () => {
+    const id = await shift('2026-08-03', 90);
+    expect((await db.client.query(`SELECT fee_min_minutes, fee_part_kop FROM journal.payroll_accruals WHERE shift_id = $1`, [id])).rows).toEqual([{ fee_min_minutes: 120, fee_part_kop: '0' }]);
+    const v = (await reports.query(`SELECT fee_min_minutes, expected_hourly_kop, expected_fee_kop, accrued_kop FROM app.rpt_payroll_accruals WHERE shift_id = $1`, [id])).rows[0];
+    expect(v).toEqual({ fee_min_minutes: 120, expected_hourly_kop: '90000', expected_fee_kop: '0', accrued_kop: '90000' });
+    // Смена закрытого сентября: факт пришёл после закрытия – системная корректировка с refs.feeMinMinutes.
+    const closed = (await db.client.query<{ id: string }>(
+      `INSERT INTO app.staff_shifts (staff_id, branch_id, local_date, period, created_by, created_at)
+       VALUES ($1, $2, '2026-09-26', tstzrange($3::timestamptz, $4::timestamptz, '[)'), $1, $5) RETURNING id`,
+      [staffId, branchId, at('2026-09-26', '10:00'), at('2026-09-26', '16:00'), NOW],
+    )).rows[0]!.id;
+    await db.client.query(`UPDATE app.staff_shifts SET status = 'worked', paid_minutes = 180, fact_version = fact_version + 1 WHERE id = $1`, [closed]);
+    await tx((t) => settleShift(t, closed, 'attendance', clock));
+    expect((await db.client.query(`SELECT amount, refs->>'feeMinMinutes' AS fee_min FROM journal.ledger_entries WHERE ref_id = $1 AND refs ? 'closedPeriodId'`, [closed])).rows).toEqual([{ amount: '190000', fee_min: '120' }]);
+    const c = (await reports.query(`SELECT fee_min_minutes, expected_fee_kop, accrued_kop FROM app.rpt_payroll_accruals WHERE shift_id = $1`, [closed])).rows[0];
+    expect(c).toEqual({ fee_min_minutes: 120, expected_fee_kop: '10000', accrued_kop: '190000' });
+    expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id || d.objectId === closed)).toEqual([]);
+  });
+
   it('событие в очереди – не расхождение; после обработки считается', async () => {
     const s = await tx((t) => createShift(t, owner, { staffId, branchId, start: at('2026-10-20', '10:00'), end: at('2026-10-20', '16:00') }, meta(), clock));
     await tx((t) => setAttendance(t, owner, s.id, { rowVersion: s.rowVersion, status: 'worked', paidMinutes: 60, reason: 'факт' }, meta(), clock));
@@ -272,6 +291,40 @@ describe('смены и зарплата', () => {
     await db.client.query(`UPDATE app.staff_shifts SET paid_minutes = 60 WHERE id = $1`, [id]);
     const row = (await db.client.query(`SELECT check_name, object_type, object_id FROM journal.reconcile_discrepancies WHERE object_id = $1`, [id])).rows;
     expect(row[0]).toMatchObject({ check_name: 'payroll_accrual', object_type: 'shift' });
+  });
+
+  it('пропавшая доплата за выход: по снимку порога – расхождение (до 0414 сверка принимала hourly и hourly + fee)', async () => {
+    const id = await shift('2026-08-04', 90);
+    expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id)).toEqual([]);
+    // Начисление посчитано по порогу 60 (доплата положена), а в K3 её нет: подменяем снимок, сумма та же – 90 000 без 10 000.
+    await db.client.query(`UPDATE journal.payroll_accruals SET fee_min_minutes = 60 WHERE shift_id = $1`, [id]);
+    const old = (await reports.query<{ ok: boolean }>(`SELECT accrued_kop IN (expected_hourly_kop, expected_hourly_kop + attendance_fee_kop) AS ok FROM app.rpt_payroll_accruals WHERE shift_id = $1`, [id])).rows[0]!;
+    expect(old.ok).toBe(true); // прежнее правило расхождения не видело
+    const found = await onlyCheck('payroll_accrual');
+    expect(found.filter((d) => d.objectId === id).map((d) => [d.expected, d.actual, d.details.feeMinMinutes])).toEqual([[100_000, 90_000, 60]]);
+    await db.client.query(`UPDATE journal.payroll_accruals SET fee_min_minutes = 120 WHERE shift_id = $1`, [id]);
+  });
+
+  it('порог сменился после начисления – не расхождение: сверка берёт порог снимка, а не нынешний', async () => {
+    const id = await shift('2026-08-05', 90);
+    const s = await db.client.query<{ id: string }>(
+      `INSERT INTO app.settings_values (key, level, value, valid_from, created_by) VALUES ('payroll.attendance_fee_min_minutes', 'network', '60', '2026-11-01', $1) RETURNING id`,
+      [randomUUID()],
+    );
+    try {
+      expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id)).toEqual([]);
+    } finally {
+      await db.client.query(`DELETE FROM app.settings_values WHERE id = $1`, [s.rows[0]!.id]);
+    }
+  });
+
+  it('строки без снимка (до 0414) – как раньше: верны и hourly, и hourly + fee', async () => {
+    const short = await shift('2026-08-06', 90);
+    const long = await shift('2026-08-07', 180);
+    await db.client.query(`UPDATE journal.payroll_accruals SET fee_min_minutes = NULL WHERE shift_id IN ($1, $2)`, [short, long]);
+    const rows = (await reports.query(`SELECT fee_min_minutes, expected_fee_kop, accrued_kop FROM app.rpt_payroll_accruals WHERE shift_id IN ($1, $2) ORDER BY accrued_kop`, [short, long])).rows;
+    expect(rows).toEqual([{ fee_min_minutes: null, expected_fee_kop: '10000', accrued_kop: '90000' }, { fee_min_minutes: null, expected_fee_kop: '10000', accrued_kop: '190000' }]);
+    expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === short || d.objectId === long)).toEqual([]);
   });
 
   it('worked по ставке без записи K3 – расхождение', async () => {
