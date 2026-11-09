@@ -11,6 +11,7 @@ import * as K from '../../../packages/contracts/src/booking.ts';
 import { MOCK_CODE, UUID, clients, fail, readCookie, registerClientAuth, sessions } from './mock-clients.ts';
 import { registerCommerce } from './mock-commerce.ts';
 import { registerContent } from './mock-content.ts';
+import { registerNotifications } from './mock-notifications.ts';
 import { registerEvents } from './mock-events.ts';
 import { registerResources, resourceId, seedResources } from './mock-resources.ts';
 
@@ -155,6 +156,7 @@ export function buildMock() {
     fail,
   });
   registerBooking(app, P);
+  registerNotifications(app, P); // центр уведомлений и отписка (K21 §11) – tests/mock-notifications.ts
   registerEvents(app, P, { // мероприятия и подарок (Э3) – tests/mock-events.ts; запись по подарку – обычное удержание K5 ниже
     sessionClient: (cookie) => {
       const c = clients.find((x) => x.id === clientOf(cookie));
