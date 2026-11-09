@@ -181,3 +181,38 @@ describe('документ к расходу мероприятия (0435)', () 
     }
   });
 });
+
+describe('документ к расходу по HTTP', () => {
+  const expenseBody = (over: object = {}) => ({ method: 'cash', amountKop: 30_000, categoryId: ids.category, subcategoryId: ids.subcategory, occurredAt: '2026-11-14T04:00:00Z', comment: 'кейтеринг', ...over });
+
+  it('расход с attachmentId – документ в той же транзакции; GET money отдаёт attachmentId у расхода; замена отдельным маршрутом', async () => {
+    const eventId = await newEvent();
+    const a1 = (await upload('admin', eventId)).json().attachmentId as string;
+    const created = await post('admin', `/events/${eventId}/expense`, expenseBody({ attachmentId: a1 }));
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ kind: 'expense', attachmentId: a1 });
+    const op = created.json().id as string;
+    const plain = await post('admin', `/events/${eventId}/expense`, expenseBody());
+    expect(plain.json().attachmentId).toBeNull();
+
+    const money = (await get('owner', `/events/${eventId}/money`)).json();
+    const byOp = new Map(money.operations.map((o: { operation: { id: string }; attachmentId?: string | null }) => [o.operation.id, o.attachmentId]));
+    expect(byOp.get(op)).toBe(a1);
+    expect(byOp.get(plain.json().id)).toBeNull();
+
+    const a2 = (await upload('admin', eventId, Buffer.concat([PDF, Buffer.from('%v2')]))).json().attachmentId as string;
+    const put = await post('admin', `/events/${eventId}/expense/${op}/document`, { attachmentId: a2 });
+    expect([put.statusCode, put.json()]).toEqual([200, { operationId: op, attachmentId: a2 }]);
+    expect((await post('stranger', `/events/${eventId}/expense/${op}/document`, { attachmentId: a2 })).statusCode).toBe(404);
+    expect((await post('admin', `/events/${eventId}/expense/${randomUUID()}/document`, { attachmentId: a2 })).statusCode).toBe(404);
+  });
+
+  it('чужое вложение в расходе – 400, и операция не создаётся (одна транзакция)', async () => {
+    const eventId = await newEvent();
+    const other = await newEvent();
+    const foreign = (await upload('admin', other)).json().attachmentId as string;
+    const r = await post('admin', `/events/${eventId}/expense`, expenseBody({ attachmentId: foreign }));
+    expect([r.statusCode, r.json().error.details]).toEqual([400, { field: 'attachmentId' }]);
+    expect((await get('owner', `/events/${eventId}/money`)).json().operations).toEqual([]);
+  });
+});

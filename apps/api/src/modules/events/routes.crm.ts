@@ -14,6 +14,7 @@ import { branchScopeSql, can, scopeFilter, type AccessContext } from '../../core
 import { systemClock, type Clock } from '../../core/time.ts';
 import { runOccupancyCommand } from '../booking/occupancy.ts';
 import { bookingLookup } from '../booking/providers.ts';
+import { expenseDocumentsOf, setExpenseDocument } from './attachments.ts';
 import { calendarEvents } from './calendar.ts';
 import { addChecklistItem, listChecklist, updateChecklistItem } from './checklist.ts';
 import { changeEventStatus, createEvent, EVENT_SELECT, EVENT_STATUSES, getEventRow, guardEvent, lockEvent, notFound, parseBody, toEventDto, updateEvent, UUID_RE, type EventDto, type EventRow } from './events.ts';
@@ -273,11 +274,25 @@ export async function eventCrmRoutes(app: FastifyInstance, deps: EventCrmDeps): 
     const e = await getEventRow(deps.pool, idOf(paramsOf(r)));
     if (!e) throw notFound();
     guardEvent(ctx, e.branch_id, 'event.money.view');
-    return { summary: await eventMoneySummary(deps.pool, e.id), operations: await eventOperations(deps.pool, e) };
+    const docs = await expenseDocumentsOf(deps.pool, e.id);
+    const operations = (await eventOperations(deps.pool, e)).map((l) => (l.role === 'expense' ? { ...l, attachmentId: docs.get(l.operation.id) ?? null } : l));
+    return { summary: await eventMoneySummary(deps.pool, e.id), operations };
   }));
   app.post('/events/:id/income', command('income', 'finance.operation.created', (tx, ctx, p, body, meta, key) => recordEventIncome(tx, ctx, idOf(p), body, meta, { idempotencyKey: key, clock }), 201));
   app.post('/events/:id/refund', command('refund', 'finance.operation.created', (tx, ctx, p, body, meta, key) => refundEventIncome(tx, ctx, idOf(p), body, meta, { idempotencyKey: key, clock }), 201));
-  app.post('/events/:id/expense', command('expense', 'finance.operation.created', (tx, ctx, p, body, meta, key) => addEventExpense(tx, ctx, idOf(p), body, meta, { idempotencyKey: key, clock }), 201));
+  // 11 §11.4: attachmentId – вложение этого мероприятия (POST /attachments?ownerType=event), ставится в той же транзакции
+  app.post('/events/:id/expense', command('expense', 'finance.operation.created', async (tx, ctx, p, body, meta, key) => {
+    const { attachmentId } = parseBody(z.object({ attachmentId: z.string().nullish() }).loose(), body);
+    const op = await addEventExpense(tx, ctx, idOf(p), body, meta, { idempotencyKey: key, clock });
+    if (!attachmentId) return { ...op, attachmentId: null };
+    return { ...op, attachmentId: (await setExpenseDocument(tx, ctx, idOf(p), { operationId: op.id, attachmentId }, meta, clock)).attachmentId };
+  }, 201));
+  app.post(
+    '/events/:id/expense/:operationId/document',
+    command('expense.document', 'event.money_linked', (tx, ctx, p, body, meta) =>
+      setExpenseDocument(tx, ctx, idOf(p), { operationId: idOf(p, 'operationId'), attachmentId: parseBody(z.object({ attachmentId: z.string() }), body).attachmentId }, meta, clock),
+    ),
+  );
   app.post(
     '/events/:id/expense/link',
     command('expense.link', 'event.money_linked', async (tx, ctx, p, body, meta) => {

@@ -119,6 +119,10 @@ export function recordEventIncome(tx, ctx, eventId, input: { place; method: Mone
 export function refundEventIncome(tx, ctx, eventId, input: { incomeOperationId; amountKop; method: MoneyMethod; place; reason }, meta): Promise<FinanceOperationDto>;
 export function addEventExpense(tx, ctx, eventId, input: { place; method; amountKop; categoryId; subcategoryId?; supplier?; lineId?; inCost?: boolean; occurredAt; comment; attachmentId? }, meta): Promise<FinanceOperationDto>;
 export function linkEventExpense(tx, ctx, eventId, input: { operationId; lineId?; inCost?: boolean }, meta): Promise<void>;
+// 11 §11.4, 0435 (events/attachments.ts): документ к расходу – вложение owner 'event' этого мероприятия, active (иначе 400
+// VALIDATION_FAILED field attachmentId); операция – живая связь expense этого мероприятия (иначе 404). Одна живая строка на
+// операцию, новый документ заменяет прежний (replaced_at), повтор – без изменений; аудит event.money_linked.
+export function setExpenseDocument(tx, ctx, eventId, input: { operationId; attachmentId }, meta): Promise<{ operationId; attachmentId }>;
 
 export interface EventMoneySummary {          // 11 §11.3 – отдельными показателями, не смешивая
   agreedKop: number;                          // согласованная стоимость (§3)
@@ -371,8 +375,9 @@ CREATE UNIQUE INDEX gift_uses_one_live ON app.gift_uses (gift_id) WHERE status I
 | 365 | `POST /events/{id}/resources`, `POST /events/{id}/resources/{rid}/release`, `POST /events/{id}/move` | `event.manage` | `201` / `200` |
 | 366 | `POST /events/{id}/bookings` (`{ bookingId }`), `POST /events/{id}/bookings/{bid}/unlink` | `event.manage` | `200` |
 | 367 | `GET/POST/PATCH /events/{id}/checklist` | `event.manage` | `200` |
-| 368 | `GET /events/{id}/money` | `event.money.view` | `200 { summary, operations }` |
+| 368 | `GET /events/{id}/money` | `event.money.view` | `200 { summary, operations }`; у расхода `attachmentId` (документ или `null`) |
 | 369 | `POST /events/{id}/income`, `/refund`, `/expense`, `/expense/link` | `event.money.record` (`finance.refund` для возврата) | `201` |
+| 369 | `POST /events/{id}/expense/{operationId}/document` (`{ attachmentId }`); `attachmentId` и в `POST /events/{id}/expense` – в той же транзакции | `event.money.record` | `200 { operationId, attachmentId }`; файл – `POST /attachments?ownerType=event&docType=check`, выдача только `GET /attachments/{id}` (чтение `event.view`) |
 | 370 | `GET/POST/PATCH /event-packages`, `GET/POST/PATCH /event-types` | `event.view` / `event.package.manage` | архив вместо удаления |
 | 376 | `GET /gifts?clientId=&status=`, `POST /gifts`, `POST /gifts/{id}/cancel` | `event.view` / `gift.issue` / `gift.cancel` | `201` / `200` |
 | 377 | `GET /gifts/{id}/slots?branchId=&date=` | `event.view` | `200` – подарочные окна дня с учётом будней и праздников |
