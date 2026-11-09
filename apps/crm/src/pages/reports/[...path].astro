@@ -3,6 +3,7 @@
 // отчёта с фильтрами из адреса (from, to, cityId, branchIds, resourceType, status, method, metric). Нет права или такого отчёта – 404,
 // как у несуществующей страницы (K1). Фильтр по умолчанию – текущий месяц и контекст шапки (город или филиал). Решает всё равно сервер.
 import Crm from '../../layouts/Crm.astro';
+import ExportDialog from '../../islands/ExportDialog.tsx';
 import ReportView, { type ReportFilters } from '../../islands/ReportView.tsx';
 import { presets, reportInfo, REPORTS, todayIn } from '../../lib/reports.ts';
 
@@ -53,6 +54,12 @@ const reportTitle = report?.title ?? 'Отчёты';
     <>
       <p class="yc-crumbs"><a href="/reports">Отчёты</a> / {reportTitle}</p>
       <div class="yc-head"><h1>{reportTitle}</h1></div>
+      {can('reports.export') && (
+        <div class="yc-eq__actions">
+          <ExportDialog client:load report={report!.key} title={reportTitle} financeDetail={report!.key === 'finance' || report!.key === 'certificates'}
+            rights={{ detail: can('reports.export.detail'), pd: can('export.pd'), payroll: can('reports.export.payroll') }} />
+        </div>
+      )}
       <ReportView client:load report={{ key: report!.key, title: report!.title, purpose: report!.purpose, filters: report!.filters, heavy: report!.heavy ?? false }}
         initial={initial} metric={q.get('metric') ?? ''} branches={zone} cityIds={me.access.cityIds} network={me.access.network} timezone={timezone} />
     </>
