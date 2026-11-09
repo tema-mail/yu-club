@@ -7,6 +7,7 @@ import { certificatesDetail, certificatesReport } from './certificates.ts';
 import { clientsDetail, clientsReport } from './clients.ts';
 import { commsDetail, commsReport } from './comms.ts';
 import { equipmentDetail, equipmentReport } from './equipment.ts';
+import { eventsDetail, eventsReport } from './events.ts';
 import { financeDetail, financeReport, type FinanceParams } from './finance.ts';
 import type { ReportEnv, ReportParams } from './framework.ts';
 import { loyaltyDetail, loyaltyReport } from './loyalty.ts';
@@ -103,6 +104,10 @@ export const HANDLERS: Record<string, ReportHandler> = {
   comms: {
     metrics: (env, _q, p) => commsReport(env, p) as unknown as Promise<Record<string, unknown>>,
     detail: (env, q, p) => commsDetail(env, p, q.metric, page(q)),
+  },
+  events: {
+    metrics: (env, _q, p) => eventsReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    detail: (env, q, p) => eventsDetail(env, p, q.metric, page(q)),
   },
   equipment: {
     metrics: (env, _q, p) => equipmentReport(env, p) as unknown as Promise<Record<string, unknown>>,
