@@ -7,13 +7,14 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
 import { bookingFacts, bookingBusy, setCalendarEventRows, setExternalBusy } from './mock-booking.ts';
+import { registerEventMoney } from './mock-event-money.ts';
 import { giftIdsOfEvent, registerGifts, resetGifts } from './mock-gifts.ts';
-import { financeCommands, getFinanceOp, recordMoney, setLinkSource } from './mock-finance.ts';
+import { getFinanceOp, recordMoney, setLinkSource } from './mock-finance.ts';
 import { opsHoursOn, opsState } from './mock-ops.ts';
 
-type Rec = Record<string, unknown>;
+export type Rec = Record<string, unknown>;
 type Role = 'owner' | 'director' | 'admin';
-interface Staffish { id: string; role: string }
+export interface Staffish { id: string; role: string }
 interface BranchLite { id: string; cityId: string; name: string; timezone: string }
 interface ClientLite { id: string; status: string }
 export interface EventsMockDeps {
@@ -42,10 +43,10 @@ export class Fail extends Error {
     if (details) this.details = details;
   }
 }
-const notFound = () => new Fail(404, 'NOT_FOUND', 'Не найдено');
-const invalid = (message: string, field: string) => new Fail(400, 'VALIDATION_FAILED', message, { field });
-const zodFail = (path: string) => new Fail(400, 'VALIDATION_FAILED', 'Неверные данные запроса', { issues: [{ path, message: 'Invalid input' }] });
-const forbidden = (action: string) => new Fail(403, 'FORBIDDEN', 'Недостаточно прав', { action });
+export const notFound = () => new Fail(404, 'NOT_FOUND', 'Не найдено');
+export const invalid = (message: string, field: string) => new Fail(400, 'VALIDATION_FAILED', message, { field });
+export const zodFail = (path: string) => new Fail(400, 'VALIDATION_FAILED', 'Неверные данные запроса', { issues: [{ path, message: 'Invalid input' }] });
+export const forbidden = (action: string) => new Fail(403, 'FORBIDDEN', 'Недостаточно прав', { action });
 const needReason = (field = 'reason') => new Fail(422, 'COMMENT_REQUIRED', 'Укажите причину', { field });
 
 interface Line {
@@ -56,7 +57,7 @@ interface EvResource { id: string; eventId: string; resourceId: string; start: n
 interface Check { id: string; code: string | null; title: string; status: string; responsibleStaffId: string | null; comment: string | null; updatedBy: string | null; updatedAt: string | null }
 interface OpLink { operationId: string; role: 'income' | 'refund' | 'expense'; inCost: boolean; lineId: string | null; linkedAt: string }
 interface Tl { id: string; at: string; action: string; actorType: string; actorId: string | null; actorRole: string | null; before: unknown; after: unknown; reason: string | null; result: string }
-interface Ev {
+export interface Ev {
   id: string; number: string; typeId: string; title: string; branchId: string; plannedStart: string | null; plannedEnd: string | null; status: string;
   customerClientId: string | null; customerName: string; customerPhone: string; birthdayClientId: string | null; birthdayName: string | null; participants: number | null;
   responsibleStaffId: string | null; wishes: string | null; packageId: string | null; party: { format: string; guests: number; catering: boolean } | null; source: 'crm' | 'site';
@@ -82,8 +83,8 @@ function zoned(date: string, hm: string, tz: string): number {
   const shown = (at: number) => Date.parse(`${localDate(at, tz)}T${localHM(at, tz)}:00Z`);
   return naive - (shown(naive) - naive);
 }
-const isMoment = (v: unknown): v is string => typeof v === 'string' && /T.*(Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v));
-const iso = (ms: number) => new Date(ms).toISOString();
+export const isMoment = (v: unknown): v is string => typeof v === 'string' && /T.*(Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v));
+export const iso = (ms: number) => new Date(ms).toISOString();
 const round = (x: number) => Math.round(x);
 const CLIENT = (n: number) => `c0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const mask = (p: string) => (p.length >= 4 ? `+7 *** ***-${p.slice(-4, -2)}-${p.slice(-2)}` : '***');
@@ -99,11 +100,11 @@ const TRANSITIONS: Record<string, string[]> = { new_request: ['negotiation', 'aw
 const STATUSES = Object.keys(TRANSITIONS);
 const closed = (s: string) => s === 'completed' || s === 'cancelled' || s === 'not_held';
 const typeOf = (e: Ev) => types.find((t) => t.id === e.typeId)!;
-const branchOfEvent = (d: EventsMockDeps, e: Ev) => d.branches().find((b) => b.id === e.branchId)!;
+export const branchOfEvent = (d: EventsMockDeps, e: Ev) => d.branches().find((b) => b.id === e.branchId)!;
 
 /** round(quantity × price − discount): на сотых, как numeric сервера. */
 const lineTotal = (l: Line) => round(round(l.quantity * 100) * l.priceKop / 100 - l.discountKop);
-function summary(e: Ev) {
+export function summary(e: Ev) {
   const active = e.lines.filter((l) => l.status === 'active');
   const agreedKop = active.reduce((a, l) => a + lineTotal(l), 0);
   const planCostKop = active.reduce((a, l) => a + (l.planCostKop ?? 0), 0);
@@ -137,7 +138,7 @@ const resourceDto = (d: EventsMockDeps, e: Ev, r: EvResource) => {
   };
 };
 const checklistDto = (e: Ev) => e.checklist.map((c) => (c.code === 'payment' ? { ...c, dueKop: summary(e).dueKop } : c));
-const opOfLink = (l: OpLink) => {
+export const opOfLink = (l: OpLink) => {
   const op = getFinanceOp(l.operationId);
   return op && !op.reversedBy ? { operation: op, role: l.role, inCost: l.inCost, lineId: l.lineId, linkedAt: l.linkedAt } : null;
 };
@@ -679,71 +680,8 @@ export function registerEvents(app: FastifyInstance, P: string, d: EventsMockDep
     return item;
   }));
 
-  // ---- №368, №369 деньги: одна строка журнала кассы (mock-finance)
-
-  const METHODS = ['cash', 'card', 'transfer'];
-  function assertPlace(body: Rec) {
-    if (!METHODS.includes(String(body.method))) throw zodFail('method');
-    if (typeof body.amountKop !== 'number') throw zodFail('amountKop');
-    if (body.place !== undefined && body.place !== (body.method === 'cash' ? 'cash' : 'noncash')) throw invalid('Место денег не соответствует способу оплаты', 'place');
-  }
-  const assertLine = (e: Ev, lineId: unknown) => {
-    if (lineId != null && !e.lines.some((l) => l.id === lineId)) throw invalid('Строка состава не из этого мероприятия', 'lineId');
-  };
-
-  app.get(`${P}/events/:id/money`, read((s, req) => {
-    const e = eventOf(s, idOf(req), 'event.money.view');
-    return { summary: summary(e), operations: e.links.map(opOfLink).filter(Boolean) };
-  }));
-  app.post(`${P}/events/:id/income`, command('income', 201, (s, p, body) => {
-    assertPlace(body);
-    if (!isMoment(body.occurredAt)) throw zodFail('occurredAt');
-    const e = eventOf(s, p.id!, 'event.money.record');
-    const op = financeCommands().income(s, e.branchId, { method: body.method, amountKop: body.amountKop, source: 'event', occurredAt: body.occurredAt, comment: body.comment ?? null, receiptIssued: body.receiptIssued ?? null, ref: { type: 'event', id: e.id } });
-    e.links.push({ operationId: op.id, role: 'income', inCost: false, lineId: null, linkedAt: iso(Date.now()) });
-    return op;
-  }));
-  app.post(`${P}/events/:id/refund`, command('refund', 201, (s, p, body) => {
-    assertPlace(body);
-    if (typeof body.incomeOperationId !== 'string') throw zodFail('incomeOperationId');
-    const e = eventOf(s, p.id!, 'event.money.record');
-    const income = getFinanceOp(body.incomeOperationId);
-    if (!income || income.kind !== 'income' || income.ref?.type !== 'event' || income.ref.id !== e.id) throw notFound();
-    if (!d.can(s, 'finance.refund')) throw forbidden('finance.refund');
-    const reason = reasonOf(body);
-    if (!Number.isSafeInteger(body.amountKop) || (body.amountKop as number) <= 0) throw new Fail(422, 'INVALID_AMOUNT', 'Сумма – целое число копеек больше нуля');
-    if (income.reversedBy) throw new Fail(409, 'OPERATION_REVERSED', 'Поступление уже сторнировано', { operationId: income.id });
-    const refunded = e.links.filter((l) => l.role === 'refund').map(opOfLink).filter((x) => x && x.operation.ref?.id === income.id).reduce((a, x) => a + x!.operation.amountKop, 0);
-    if (refunded + (body.amountKop as number) > income.amountKop) throw new Fail(409, 'EVENT_REFUND_EXCEEDS_INCOME', 'Сумма возврата больше поступления', { availableKop: income.amountKop - refunded });
-    const op = recordMoney({ branchId: e.branchId, timezone: branchOfEvent(d, e).timezone, kind: 'refund', method: body.method as 'cash', amountKop: body.amountKop as number, source: null, ref: { type: 'operation', id: income.id }, comment: reason, authorId: s.id });
-    e.links.push({ operationId: op.id, role: 'refund', inCost: false, lineId: null, linkedAt: iso(Date.now()) });
-    return getFinanceOp(op.id);
-  }));
-  app.post(`${P}/events/:id/expense`, command('expense', 201, (s, p, body) => {
-    assertPlace(body);
-    if (typeof body.categoryId !== 'string' || !isMoment(body.occurredAt)) throw zodFail('expense');
-    const e = eventOf(s, p.id!, 'event.money.record');
-    assertLine(e, body.lineId);
-    const text = String(body.comment ?? '').trim();
-    const comment = body.supplier && text ? `${text} (поставщик: ${body.supplier as string})` : text;
-    const op = financeCommands().expense(s, e.branchId, { method: body.method, amountKop: body.amountKop, categoryId: body.categoryId, subcategoryId: body.subcategoryId ?? null, occurredAt: body.occurredAt, comment, ref: { type: 'event', id: e.id } });
-    e.links.push({ operationId: op.id, role: 'expense', inCost: (body.inCost as boolean | undefined) ?? true, lineId: (body.lineId as string | null | undefined) ?? null, linkedAt: iso(Date.now()) });
-    return op;
-  }));
-  app.post(`${P}/events/:id/expense/link`, command('expense.link', 201, (s, p, body) => {
-    if (typeof body.operationId !== 'string') throw zodFail('operationId');
-    const e = eventOf(s, p.id!, 'event.money.record');
-    assertLine(e, body.lineId);
-    const op = getFinanceOp(body.operationId);
-    if (!op || op.branchId !== e.branchId) throw notFound();
-    if (e.links.some((l) => l.operationId === op.id)) throw new Fail(409, 'OPERATION_ALREADY_LINKED', 'Этот расход уже учтён в мероприятии', { ref: { type: 'event', id: e.id }, role: 'expense' });
-    // одна операция – не больше одной живой связи (K17 §14)
-    if (events.some((x) => x.links.some((l) => l.operationId === op.id)) || op.ref) throw new Fail(409, 'OPERATION_ALREADY_LINKED', 'Операция уже связана', { ref: null, role: 'expense' });
-    if (op.kind !== 'expense' || op.reversedBy) throw new Fail(422, 'OPERATION_LINK_INVALID', 'Эту операцию нельзя привязать');
-    e.links.push({ operationId: op.id, role: 'expense', inCost: (body.inCost as boolean | undefined) ?? false, lineId: (body.lineId as string | null | undefined) ?? null, linkedAt: iso(Date.now()) });
-    tl(e, s, 'event.money_linked', null, { operationId: op.id, amountKop: op.amountKop });
-    return { linked: true };
-  }));
+  // ---- №368, №369 деньги – mock-event-money.ts
+  registerEventMoney(app, P, { d, eventOf, command, read, idOf, tl, reasonOf, events: () => events });
 
   // ---- №370 справочники
 
