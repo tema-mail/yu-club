@@ -10,6 +10,7 @@ import { financeDetail, financeReport, type FinanceParams } from './finance.ts';
 import type { ReportEnv, ReportParams } from './framework.ts';
 import { loyaltyDetail, loyaltyReport } from './loyalty.ts';
 import { applySegment } from './segment.ts';
+import { staffDetail, staffReport } from './staff.ts';
 import { utilizationDetail, utilizationReport, utilizationSeries, type UtilizationParams } from './utilization.ts';
 
 const UUID = z.string().uuid();
@@ -101,5 +102,9 @@ export const HANDLERS: Record<string, ReportHandler> = {
   comms: {
     metrics: (env, _q, p) => commsReport(env, p) as unknown as Promise<Record<string, unknown>>,
     detail: (env, q, p) => commsDetail(env, p, q.metric, page(q)),
+  },
+  staff: {
+    metrics: (env, _q, p) => staffReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    detail: (env, q, p) => staffDetail(env, p, q.metric, page(q)),
   },
 };
