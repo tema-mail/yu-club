@@ -290,6 +290,21 @@ describe('уборка reports:export-gc', () => {
     expect(fresh.job.id).not.toBe(job.id);
   });
 
+  it('файл пропал при ready: 410, строка → expired без file_key, аудит export.expired один раз; повторный запрос – новая задача', async () => {
+    const { job } = await request(owner(), { report: 'certificates', format: 'csv', params: PERIOD });
+    await drain();
+    const key = (await db.client.query<{ file_key: string }>(`SELECT file_key FROM app.report_exports WHERE id = $1`, [job.id])).rows[0]!.file_key;
+    await store.remove(key);
+    for (let i = 0; i < 2; i++) {
+      await expect(downloadExport({ pool: fx.app, clock, store }, owner(), job.id, meta(owner()))).rejects.toMatchObject({ code: 'EXPORT_EXPIRED', httpStatus: 410 });
+    }
+    const row = (await db.client.query<{ status: string; file_key: string | null }>(`SELECT status, file_key FROM app.report_exports WHERE id = $1`, [job.id])).rows[0]!;
+    expect(row).toEqual({ status: 'expired', file_key: null });
+    expect(await auditCount('export.expired', job.id)).toBe(1);
+    const again = await request(owner(), { report: 'certificates', format: 'csv', params: PERIOD });
+    expect(again.job.id).not.toBe(job.id);
+  });
+
   it('срок прошёл, уборки ещё не было: скачивание 410, повторный запрос – новая задача', async () => {
     const { job } = await request(owner(), { report: 'clients', format: 'csv', params: PERIOD });
     await drain();

@@ -283,7 +283,14 @@ export async function downloadExport(deps: ExportDeps & { store: FileStore }, ct
   if (row.status === 'expired' || (row.status === 'ready' && row.expires_at! <= now)) throw new AppError('EXPORT_EXPIRED', 410, 'Срок хранения файла истёк – сформируйте заново');
   if (row.status !== 'ready') throw new AppError('EXPORT_NOT_READY', 409, 'Файл ещё не готов', { status: row.status });
   await assertStillAllowed(deps.pool, ctx, row);
-  if (!(await deps.store.exists(row.file_key!))) throw new AppError('EXPORT_EXPIRED', 410, 'Файла больше нет – сформируйте заново');
+  if (!(await deps.store.exists(row.file_key!))) {
+    // Файл пропал при ready (диск, ручная чистка): строка → expired, как у уборки, иначе 410 до конца срока и повтор запроса вернёт её же.
+    await withTx(deps.pool, async (tx) => {
+      const r = await tx.query(`UPDATE app.report_exports SET status = 'expired', file_key = NULL WHERE id = $1 AND status = 'ready'`, [id]);
+      if ((r.rowCount ?? 0) > 0) await writeAudit(tx, meta, { action: 'export.expired', object: { type: 'export', id }, after: { report: row.report, reason: 'file_missing' } }, clock);
+    });
+    throw new AppError('EXPORT_EXPIRED', 410, 'Файла больше нет – сформируйте заново');
+  }
   await withTx(deps.pool, async (tx) => {
     await tx.query(`UPDATE app.report_exports SET downloaded_at = $2 WHERE id = $1`, [id, now]);
     await writeAudit(tx, meta, { action: 'export.downloaded', object: { type: 'export', id }, after: { report: row.report, masked: row.masked } }, clock);

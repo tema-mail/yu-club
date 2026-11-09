@@ -4,6 +4,7 @@ export const auditActions = [
   'export.requested', // отчёт, фильтры, формат, detail, маска да/нет
   'export.downloaded',
   'export.failed',
+  'export.expired', // файл пропал при ready: строка переведена в expired при скачивании (уборка по сроку аудит не пишет)
   'export.cancelled', // отмена задачи автором, K11 №247 (D4-05)
   'client.searched', // поиск CRM по телефону; номер – в поле phone, маскируется redact (K2 PD_KEYS)
 ] as const;
