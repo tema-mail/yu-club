@@ -75,6 +75,15 @@ afterAll(async () => {
   await db.drop();
 });
 
+describe('права БД', () => {
+  it('yu_app: SELECT и INSERT есть, UPDATE и DELETE на ленте и прочтениях нет', async () => {
+    const rows = (await db.client.query<{ t: string; p: string; ok: boolean }>(
+      `SELECT t, p, has_table_privilege('yu_app', t, p) AS ok FROM unnest(ARRAY['app.staff_feed_events','app.staff_feed_reads']) t, unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p`,
+    )).rows;
+    for (const r of rows) expect(r.ok, `${r.t} ${r.p}`).toBe(r.p === 'SELECT' || r.p === 'INSERT');
+  });
+});
+
 describe('обработчики outbox', () => {
   it('двойная доставка shift.changed – одна строка, в том числе мимо processed_events', async () => {
     const id = await shiftChanged(staff.admin1, b1);

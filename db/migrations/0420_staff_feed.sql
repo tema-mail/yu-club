@@ -33,6 +33,8 @@ CREATE TABLE app.staff_feed_reads (                          -- прочтени
   read_at  timestamptz NOT NULL,
   PRIMARY KEY (staff_id, event_id)
 );
+-- лента только на вставку: приложение читает и добавляет, правка и удаление – нет (как 0404, 0408)
+REVOKE UPDATE, DELETE, TRUNCATE ON app.staff_feed_events, app.staff_feed_reads FROM yu_app;
 
 -- Критичное сервисное (09 §5 табл., §7: отмена и изменение записи или мероприятия) не дошло: error или no_channel при push.
 -- Один раз на строку уведомления; ручной повтор (retry_of) – новая строка и, если снова не дошёл, своя запись ленты.
