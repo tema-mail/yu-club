@@ -1,0 +1,113 @@
+---
+// День рождения /birthday/ (S3-90, карта сайта, K20 §10): платный праздник по 20 §4.10 (R-22) – только комната VR+PS4 целиком, гости,
+// форматы и минимум времени – из П5 GET /party-info (настройки сети, не вёрстка); цены нет, пока priceConfirmed = false – «цена уточняется».
+// Клубы – только те, где есть комната (hasRoom). Блок «Подарок имениннику» – разделом страницы, условия из снимка П5 (11 §9.1, §12).
+// Форма заявки – остров PartyRequest (П4). Один адрес на сеть: выбранный клуб посетителя – только предвыбор в форме. API молчит – 503.
+import PartyRequest, { FORMAT_LABEL, giftTermLines, type GiftTermsView, type PartyFormat } from '../islands/PartyRequest.tsx';
+import Site from '../layouts/Site.astro';
+import { API_PREFIX, apiBase } from '../lib/api.ts';
+import { todayIn } from '../lib/booking.ts';
+import { breadcrumbLd } from '../lib/jsonld.ts';
+import { metaFor } from '../lib/seo.ts';
+
+interface PartyInfo {
+  branches: Array<{ id: string; name: string; hasRoom: boolean }>;
+  minMinutes: number;
+  maxGuests: number;
+  formats: PartyFormat[];
+  priceConfirmed: boolean;
+  giftTerms: GiftTermsView & { validDays: number };
+}
+
+const { network, choice, origin } = Astro.locals;
+let info: PartyInfo | null = null;
+try {
+  const res = await fetch(`${apiBase()}${API_PREFIX}/party-info`, { headers: { accept: 'application/json' }, redirect: 'manual' });
+  if (res.ok) info = (await res.json()) as PartyInfo;
+  else console.error(`site: /birthday/ – party-info ответил ${res.status}`);
+} catch (e) {
+  console.error('site: /birthday/ – party-info не загрузился', e);
+}
+if (!info) Astro.response.status = 503;
+
+const rooms = (info?.branches ?? []).filter((b) => b.hasRoom);
+const branchInfo = new Map((network ?? []).flatMap((c) => c.branches.map((b) => [b.id, { city: c.name, address: b.address, slug: `${c.slug}/${b.slug}` }] as const)));
+const chosen = choice ? rooms.find((b) => branchInfo.get(b.id)?.slug === `${choice.city}/${choice.branch}`) : undefined;
+/** После «от»: от 1 часа, от 2 часов, от 90 минут. */
+const hours = (m: number) => (m % 60 === 0 ? `${m / 60} ${m / 60 === 1 ? 'часа' : 'часов'}` : `${m} минут`);
+const meta = metaFor(
+  { page: 'info', title: 'День рождения в VR-комнате', text: `Праздник в комнате VR+PS4 целиком${info ? `: до ${info.maxGuests} гостей, от ${hours(info.minMinutes)}` : ''}. Подарок имениннику – повторный визит в VR. Оставьте заявку – перезвоним.` },
+  { h1: 'День рождения в Ю-Клуб' },
+);
+const crumbs = [breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'День рождения', path: '/birthday/' }])];
+---
+<Site title={meta.title} description={meta.description} jsonLd={crumbs}>
+  <ol class="yu-crumbs" aria-label="Навигация">
+    <li><a href="/">Главная</a></li>
+    <li aria-current="page">День рождения</li>
+  </ol>
+  <section class="yu-schedule-page" aria-labelledby="birthday-title">
+    <h1 id="birthday-title">{meta.h1}</h1>
+    {!info ? (
+      <p class="yu-notice" role="alert">Сведения о празднике сейчас недоступны: сервис не ответил. Обновите страницу через минуту.</p>
+    ) : (
+      <>
+        <p class="yu-lead">
+          Праздник проходит в комнате VR+PS4, которую мы отдаём вам целиком. Гостей – до {info.maxGuests}, время – непрерывно от {hours(info.minMinutes)}.
+          Праздничный стол или кейтеринг – по желанию.
+        </p>
+        <dl class="yu-facts" data-testid="party-facts">
+          <div><dt>Где</dt><dd>Комната VR+PS4 целиком</dd></div>
+          <div><dt>Гостей</dt><dd data-testid="party-guests">до {info.maxGuests}</dd></div>
+          <div><dt>Формат</dt><dd>{info.formats.map((f) => FORMAT_LABEL[f]).join(' · ')}</dd></div>
+          <div><dt>Цена</dt><dd data-testid="party-price">{info.priceConfirmed ? 'по прайсу клуба' : 'уточняется'}</dd></div>
+        </dl>
+        {!info.priceConfirmed && <p class="yu-body">Цена уточняется: администратор назовёт её, когда вы выберете клуб, дату и формат.</p>}
+
+        <section class="yu-section" aria-labelledby="rooms-title">
+          <h2 id="rooms-title">Где можно провести праздник</h2>
+          {rooms.length === 0 ? (
+            <p class="yu-body" data-testid="party-no-rooms">Сейчас ни в одном клубе нет свободной для праздников комнаты. Загляните позже.</p>
+          ) : (
+            <ul class="yu-cards" data-testid="party-branches">
+              {rooms.map((b) => {
+                const x = branchInfo.get(b.id);
+                return (
+                  <li class="yu-card">
+                    <span class="yu-card__link">{b.name}</span>
+                    {x && <span class="yu-card__meta">{x.city}, {x.address}</span>}
+                    <span class="yu-card__meta">Комната VR+PS4</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
+        <section class="yu-section" aria-labelledby="gift-title" data-testid="gift-block">
+          <h2 id="gift-title">Подарок имениннику</h2>
+          <p class="yu-body">Имениннику, который отметил день рождения у нас, дарим повторный визит в VR. Это не бесплатный праздник, а отдельный подарок:</p>
+          <ul class="yu-body" data-testid="gift-terms">
+            {giftTermLines(info.giftTerms, info.giftTerms.validDays).map((l) => <li>{l}</li>)}
+          </ul>
+          <p class="yu-body">Подарок появится в личном кабинете именинника – оттуда же на него можно записаться.</p>
+        </section>
+
+        {rooms.length > 0 && (
+          <section class="yu-section" aria-labelledby="request-title" style="max-width: 560px">
+            <h2 id="request-title">Заявка на праздник</h2>
+            <p class="yu-body">Оставьте заявку – администратор перезвонит, согласует дату, формат и цену. Онлайн-оплаты нет.</p>
+            <PartyRequest
+              client:load
+              branches={rooms.map((b) => ({ id: b.id, name: b.name }))}
+              formats={info.formats}
+              maxGuests={info.maxGuests}
+              today={todayIn(network?.[0]?.timezone ?? 'Asia/Novosibirsk')}
+              preselect={chosen?.id ?? null}
+            />
+          </section>
+        )}
+      </>
+    )}
+  </section>
+</Site>
