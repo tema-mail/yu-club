@@ -48,7 +48,9 @@ async function visit(page: Page, path: string): Promise<void> {
   expect(res?.status(), path).toBeLessThan(400);
   await hydrated(page);
   await page.waitForLoadState('networkidle');
-  await expect(page.locator('main [role="alert"]'), path).toHaveCount(0);
+  // считаются только видимые сообщения с текстом: пустые служебные блоки role="alert" лежат в разметке заранее
+  const shown = page.locator('main [role="alert"]:visible').filter({ hasText: /\S/ });
+  await expect(shown, `${path}: ${(await shown.allInnerTexts()).join(' | ')}`).toHaveCount(0);
 }
 
 /** Первые карточки разделов – по данным API этого же сотрудника. */
@@ -119,8 +121,10 @@ test('TC-12 на экране: предложение блокировки от�
     if (await panel.count()) {
       const end = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
       await panel.getByLabel('По', { exact: true }).fill(`${end}T12:00`);
+      // список «Брони – требуют решения» есть, только если брони попали в период; проверяем сам ответ API
+      const proposal = page.waitForResponse((r) => r.url().includes(`/repairs/${open!.id}/block-proposal`));
       await page.getByRole('button', { name: 'Показать затронутых' }).click();
-      await expect(page.getByTestId('rp-affected')).toBeVisible();
+      expect((await proposal).status()).toBe(200);
     }
   });
   expect(bad).toEqual([]);
