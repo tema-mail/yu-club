@@ -1,0 +1,31 @@
+---
+// S4-123. ЛК «Уведомления» /account/notifications/ (карта сайта 3.6, 09 §11): за входом – без сессии middleware отвечает 302 на
+// /login/?next=…; noindex и no-store – там же. Список и прочтение – остров NotificationCenter (K5 №201–204).
+import NotificationCenter from '../../islands/NotificationCenter.tsx';
+import Site from '../../layouts/Site.astro';
+---
+<Site title="Уведомления – Ю-Клуб" noindex>
+  <section class="yu-account" aria-labelledby="account-notifications-title">
+    <ol class="yu-crumbs" aria-label="Навигация">
+      <li><a href="/account/">Личный кабинет</a></li>
+      <li aria-current="page">Уведомления</li>
+    </ol>
+    <h1 id="account-notifications-title">Уведомления</h1>
+    <NotificationCenter client:load />
+    <p class="yu-body">Какие сообщения приходят в браузер – в <a href="/account/#notif-title">настройках уведомлений</a>.</p>
+  </section>
+</Site>
+
+<style is:global>
+  .nc__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--yu-sp-xs); }
+  .nc__list { display: grid; gap: var(--yu-sp-2xs); margin: 0; padding: 0; list-style: none; }
+  .nc__item { border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-s); background: var(--yu-surface-2); min-width: 0; }
+  .nc__item--new { border-color: var(--yu-accent); }
+  .nc__open { display: grid; gap: var(--yu-sp-3xs); width: 100%; min-height: var(--yu-tap); padding: var(--yu-sp-xs) var(--yu-sp-s); border: 0; background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+  .nc__open > * { min-width: 0; overflow-wrap: anywhere; }
+  .nc__meta { display: flex; flex-wrap: wrap; gap: var(--yu-sp-2xs); color: var(--yu-dim); font-size: var(--yu-fs-xs); }
+  .nc__new { color: var(--yu-accent); font-weight: 800; }
+  .nc__title { font-weight: 700; }
+  .nc__body { color: var(--yu-muted); font-size: var(--yu-fs-s); }
+  .nc__booking { color: var(--yu-warn); font-size: var(--yu-fs-s); }
+</style>
