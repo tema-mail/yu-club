@@ -1,12 +1,14 @@
 // S4-68. Отчёт «Сертификаты» (K24 §3.8, 14 §11). По событиям rpt_certificate_ops: продажа – филиал продажи, погашение – филиал погашения
 // (взаиморасчёт Q-25); продажа – поступление (она же в 3.4 как certificate_sale), погашение – не поступление (приёмка 8). На конец периода –
-// остаток по последнему событию каждого сертификата, область – филиал продажи. Подарок имениннику – право на услугу из rpt_events (K20), до Э3
-// показатель недоступен (приёмка 14). Детализация погашения: дата, сумма, клиент (маска), сеанс, сотрудник, остаток после.
+// остаток по последнему событию каждого сертификата, область – филиал продажи. Подарок имениннику – право на услугу, не деньги (14 §11,
+// приёмка 14): выдано, использовано, сгорело – по rpt_gift_ops (0425, K20 §8). Детализация погашения: дата, сумма, клиент (маска), сеанс,
+// сотрудник, остаток после.
 import type { Tx } from '../../core/audit.ts';
 import {
-  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, localAt, metricDef, noData, okMetric, pageByKey, prevPeriod, resolveBranches, unavailable, windowsOf,
+  computeMetrics, DAY_RULE, detailPage, loadMaskedClients, localAt, metricDef, noData, okMetric, pageByKey, prevPeriod, resolveBranches, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
+import type { BranchInfo } from '../network/index.ts';
 
 export const CERTIFICATES_ACTION = 'reports.finance.view';
 
@@ -27,6 +29,16 @@ export function certificateDefs(): Record<CertificateOpMetric, MetricDef> {
     expiredAmount: ops('expire', 'sum'),
     cancelledCount: ops('cancel', 'count'),
   };
+}
+
+export type GiftMetric = 'birthdayGift' | 'birthdayGiftUsed' | 'birthdayGiftExpired';
+
+/** Подарок имениннику (K20 §8): выдано – в филиале выдачи, использовано – в филиале брони, сгорело – в филиале выдачи; штуки. */
+export function giftDefs(): Record<GiftMetric, MetricDef> {
+  const op = (o: string): MetricDef => ({
+    spec: { view: 'app.rpt_gift_ops', date: 'at', conds: [{ sql: 't.op = ?', values: [o] }] }, agg: 'count', unit: 'count', dateBasis: 'at', idCol: 'entry_id',
+  });
+  return { birthdayGift: op('issue'), birthdayGiftUsed: op('use'), birthdayGiftExpired: op('expire') };
 }
 
 interface EndRow {
@@ -62,7 +74,7 @@ function endMetrics(rows: readonly EndRow[]): Record<CertificateEndMetric, Metri
   };
 }
 
-export type CertificatesMetric = CertificateOpMetric | CertificateEndMetric | 'birthdayGift';
+export type CertificatesMetric = CertificateOpMetric | CertificateEndMetric | GiftMetric;
 
 export interface CertificatesResult {
   metrics: Record<CertificatesMetric, Metric>;
@@ -80,12 +92,13 @@ export async function certificatesReport(env: ReportEnv, p: ReportParams): Promi
   const defs = certificateDefs();
   const cur = windowsOf(branches, p.period);
   const ops = await computeMetrics(env.tx, defs, cur, windowsOf(branches, prevP));
+  const gifts = await computeMetrics(env.tx, giftDefs(), cur, windowsOf(branches, prevP));
   const atEnd = endMetrics(await endRows(env.tx, cur));
-  const dateBasis = Object.fromEntries((Object.keys(defs) as CertificateOpMetric[]).map((k) => [k, 'at'])) as Record<CertificateOpMetric, string>;
+  const dateBasis = Object.fromEntries([...Object.keys(defs), ...Object.keys(gifts)].map((k) => [k, 'at'])) as Record<CertificateOpMetric | GiftMetric, string>;
   return {
-    metrics: { ...ops, ...atEnd, birthdayGift: unavailable('source_not_ready') },
-    labels: { birthdayGift: 'Появится после модуля мероприятий', redeemed: 'Погашение не является поступлением денег' },
-    dateBasis: { ...dateBasis, activeCount: 'period_end', activeBalance: 'period_end', partiallyRedeemed: 'period_end', birthdayGift: 'at' },
+    metrics: { ...ops, ...atEnd, ...gifts },
+    labels: { birthdayGift: 'Подарок имениннику – право на услугу, не деньги', redeemed: 'Погашение не является поступлением денег' },
+    dateBasis: { ...dateBasis, activeCount: 'period_end', activeBalance: 'period_end', partiallyRedeemed: 'period_end' },
     period: p.period,
     prevPeriod: prevP,
     computedAt: env.clock.now().toISOString(),
@@ -137,6 +150,7 @@ export async function certificatesDetail(
     }));
     return { rows: out, total: endMetrics(all)[metric], nextCursor };
   }
+  if (typeof metric === 'string' && Object.hasOwn(giftDefs(), metric)) return giftDetail(env, branches, windows, metricDef(giftDefs(), metric), opts);
   const def = metricDef(certificateDefs(), metric);
   const page = await detailPage<OpRow>(env.tx, def, windows, opts);
   const withClient = page.rows.filter((r) => r.client_id !== null);
@@ -153,6 +167,44 @@ export async function certificatesDetail(
     authorId: r.author_id,
     balanceAfterKop: Number(r.balance_after_kop),
     value: def.agg === 'sum' ? Number(r.amount_kop) : 1,
+  }));
+  return { rows, total: page.total.rows === 0 ? noData : okMetric(page.total.value, def.unit), nextCursor: page.nextCursor };
+}
+
+interface GiftOpRow {
+  entry_id: string;
+  gift_id: string;
+  number: string;
+  op: string;
+  branch_id: string;
+  client_id: string;
+  booking_id: string | null;
+  author_id: string | null;
+  at: Date;
+}
+
+/** Строка подарка: номер GF-, дата события, клиент (маска), бронь (для использования), сотрудник выдачи; суммы и остатка у права нет. */
+async function giftDetail(
+  env: ReportEnv,
+  branches: readonly BranchInfo[],
+  windows: readonly BranchWindow[],
+  def: MetricDef,
+  opts: { cursor?: string | undefined; limit?: number | undefined },
+): Promise<{ rows: CertificateDetailRow[]; total: Metric; nextCursor: string | null }> {
+  const page = await detailPage<GiftOpRow>(env.tx, def, windows, opts);
+  const clients = await loadMaskedClients(env.main, env.ctx, page.rows.map((r) => ({ clientId: r.client_id, branchId: r.branch_id })));
+  const zones = new Map(branches.map((b) => [b.id, b.timezone]));
+  const rows: CertificateDetailRow[] = page.rows.map((r) => ({
+    certificateId: r.gift_id,
+    number: r.number,
+    atLocal: localAt(env, r.at, zones.get(r.branch_id)!),
+    op: r.op,
+    branchId: r.branch_id,
+    client: clients.get(`${r.client_id}:${r.branch_id}`) ?? null,
+    bookingId: r.booking_id,
+    authorId: r.author_id,
+    balanceAfterKop: 0,
+    value: 1,
   }));
   return { rows, total: page.total.rows === 0 ? noData : okMetric(page.total.value, def.unit), nextCursor: page.nextCursor };
 }
