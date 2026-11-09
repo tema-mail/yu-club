@@ -4,6 +4,7 @@
 // В меню – только разделы, у которых уже есть страница; запись добавит свой шаг (S1-19…S1-21). «Войти / Кабинет» – по куке сессии.
 import '../styles/site.css';
 import BranchPicker, { type PickerCity } from '../islands/BranchPicker.tsx';
+import UnreadBadge from '../islands/UnreadBadge.tsx';
 import { robotsFor, type IndexInput } from '../lib/seo.ts';
 import { serializeJsonLd, type JsonLd } from '../lib/jsonld.ts';
 
@@ -80,6 +81,7 @@ const year = new Date().getFullYear();
         <div class="yu-header__picker">
           <BranchPicker client:load cities={pickerCities} current={choice} />
         </div>
+        {hasSession && <UnreadBadge client:load />}
         <a
           class="yu-header__account"
           href={hasSession ? '/account/' : '/login/'}
@@ -132,3 +134,10 @@ const year = new Date().getFullYear();
     </footer>
   </body>
 </html>
+
+<style is:global>
+  /* Значок непрочитанных (S4-124): 44 px – правило касания; число – поверх, слово – в aria-label. */
+  .yu-bell { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--yu-tap); height: var(--yu-tap); border-radius: var(--yu-r-s); color: var(--yu-text); }
+  .yu-bell:hover { background: var(--yu-surface-2); }
+  .yu-bell__count { position: absolute; top: 2px; right: 0; min-width: 18px; padding: 0 4px; border-radius: 9px; background: var(--yu-accent); color: var(--yu-on-accent); font-size: 11px; font-weight: 800; line-height: 18px; text-align: center; }
+</style>
