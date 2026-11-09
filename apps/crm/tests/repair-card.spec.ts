@@ -190,8 +190,22 @@ test('закрытие: не хватает данных; другой откр�
   await expect(page.getByTestId('rp-status')).toHaveText('Закрыт');
   await expect(page.getByTestId('rp-still')).toContainText('другой открытый ремонт');
   await expect(page.getByTestId('rp-blocks')).toContainText('Активна');
+  // Снятие – с настоящей rowVersion блокировки из карточки; 409 – сообщение без тихого повтора
+  const ver = ((await api(page, `/repairs/${CHECK}`)).blocks as Array<{ active: boolean; rowVersion: number }>).find((b) => b.active)!.rowVersion;
+  expect(ver).toEqual(expect.any(Number));
+  const lifts: number[] = [];
+  await page.route('**/blocks/*/lift', async (route) => {
+    lifts.push((route.request().postDataJSON() as { rowVersion: number }).rowVersion);
+    if (lifts.length > 1) return route.continue();
+    return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'VERSION_CONFLICT', message: 'Запись изменилась', details: { current: ver + 1 } } }) });
+  });
+  await page.getByRole('button', { name: 'Снять блокировку' }).click();
+  await expect(page.getByTestId('rp-block-panel').getByRole('alert')).toContainText('изменил другой сотрудник');
+  expect(lifts).toEqual([ver]);
   await page.getByRole('button', { name: 'Снять блокировку' }).click();
   await expect(page.getByTestId('rp-blocks')).toContainText('Снята');
+  expect(lifts).toEqual([ver, ver]);
+  await page.unroute('**/blocks/*/lift');
   await expect(page.getByRole('button', { name: 'Закрыть ремонт…' })).toHaveCount(0);
 });
 

@@ -43,7 +43,7 @@ export interface RepairDto {
   executor: { id: string | null; snapshot: { kind: string; name: string; phone: string | null; contactPerson: string | null } | null };
   approval: { required: boolean; approvedBy: string | null; approvedAt: string | null };
   actualCostKop: number | null; noCost: boolean; completedAt: string | null; finalEquipmentStatus: EquipmentStatus | null; acceptedBy: string | null; previousRepairId: string | null;
-  blocks: Array<{ blockId: string; active: boolean; period: { start: string; end: string }; liftedAt: string | null }>;
+  blocks: Array<{ blockId: string; active: boolean; period: { start: string; end: string }; liftedAt: string | null; rowVersion: number }>;
   payment: { paidKop: number; status: 'unpaid' | 'partially_paid' | 'paid' | 'overpaid' | 'no_cost'; lastPaidAt: string | null; operationIds: string[] };
   rowVersion: number;
 }

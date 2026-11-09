@@ -1,7 +1,7 @@
 // Блокировка из ремонта (S3-80, K19 №345, §8; TC-12): предпросмотр ничего не пишет; блокировка ставится только после подтверждения
 // сотрудника. Затронутые брони не отменяются и не переносятся: список «требуют решения» с действиями K11 №6 (отмена клубом с причиной –
 // клиенту сервисное уведомление) и №7 (перенос). Мероприятия – отдельным списком, их не трогаем. Снятие блокировки за закрытым ремонтом –
-// K11 №14: в ответах ремонта нет rowVersion блокировки, поэтому отправляем 1 и при конфликте берём current из ответа сервера.
+// K11 №14: шлём rowVersion блокировки из карточки ремонта; конфликт – сообщение «изменил другой», без тихого повтора.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { STATUS_LABEL, bookingApi, fmtRange, type BookingCard, type CrmBookingRow } from '../lib/booking.ts';
@@ -133,21 +133,15 @@ export default function RepairBlockPanel(p: RepairBlockPanelProps) {
       setDialogError(errorText(err));
     }
   };
-  const lift = async (blockId: string) => {
+  const lift = async (blockId: string, rowVersion: number) => {
     if (busy) return;
     setBusy(true);
     setError('');
-    const send = (rowVersion: number) => browserCall(`/blocks/${blockId}/lift`, { method: 'POST', body: { rowVersion, comment: `Снято из ремонта ${r.number}` } });
     try {
-      try {
-        await send(1);
-      } catch (err) {
-        if (!(err instanceof ApiError) || err.code !== 'VERSION_CONFLICT' || typeof err.details?.current !== 'number') throw err;
-        await send(err.details.current);
-      }
+      await browserCall(`/blocks/${blockId}/lift`, { method: 'POST', body: { rowVersion, comment: `Снято из ремонта ${r.number}` } });
       p.onChanged('Блокировка снята, запись о ней осталась в истории.');
     } catch (err) {
-      setError(errorText(err));
+      setError(err instanceof ApiError && err.code === 'VERSION_CONFLICT' ? 'Блокировку уже изменил другой сотрудник – обновите страницу и проверьте её состояние.' : errorText(err));
     } finally {
       setBusy(false);
     }
@@ -163,7 +157,7 @@ export default function RepairBlockPanel(p: RepairBlockPanelProps) {
           {r.blocks.map((b) => (
             <li class="yc-eq__row" key={b.blockId}>
               <span><strong>{b.active ? 'Активна' : 'Снята'}</strong> · {fmtRange(b.period.start, b.period.end, p.timezone)}{b.liftedAt ? ` · снята ${fmtAt(b.liftedAt, p.timezone)}` : ''}</span>
-              {b.active && !open && p.canBlock && <span data-testid="rp-still-blocked">Ремонт закрыт, а блокировка стоит: снимите её, когда место будет готово. <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => void lift(b.blockId)}>Снять блокировку</button></span>}
+              {b.active && !open && p.canBlock && <span data-testid="rp-still-blocked">Ремонт закрыт, а блокировка стоит: снимите её, когда место будет готово. <button type="button" class="yc-btn yc-btn--ghost" disabled={busy} onClick={() => void lift(b.blockId, b.rowVersion)}>Снять блокировку</button></span>}
             </li>
           ))}
         </ul>

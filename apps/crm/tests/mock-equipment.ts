@@ -444,7 +444,7 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
 
   const blocksOf = (r: Repair) => r.blockIds.map((id) => {
     const b = opsState().blocks.find((x) => x.id === id)!;
-    return { blockId: id, active: b.status === 'active', period: { start: b.start, end: b.end }, liftedAt: r.liftedAt[id] ?? null };
+    return { blockId: id, active: b.status === 'active', period: { start: b.start, end: b.end }, liftedAt: r.liftedAt[id] ?? null, rowVersion: b.rowVersion };
   });
   const paymentOf = (r: Repair) => {
     const links = db.links.filter((l) => l.repairId === r.id);
