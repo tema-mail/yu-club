@@ -1,0 +1,95 @@
+---
+// Каталог игр (S4-86, K11 №219–220; 12 §6): /content/games – список по направлению и статусу, /content/games/new?direction= – новая карточка
+// (Владелец), /content/games/{id} – карточка и доступность по филиалам зоны. Доступ – content.view; несуществующая – 404.
+import Crm from '../../../layouts/Crm.astro';
+import GameAvailability from '../../../islands/GameAvailability.tsx';
+import GameEditor, { DIRECTION_LABEL, type Direction, type GameDto } from '../../../islands/GameEditor.tsx';
+import { ApiError, serverCall } from '../../../lib/api.ts';
+import { ContentTabs, STATUS_BADGE, STATUS_LABEL, type ContentStatus } from '../../../lib/content.tsx';
+import '../../../styles/content.css';
+
+const { me, cookie, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const parts = (Astro.params.path ?? '').split('/').filter(Boolean);
+const q = Astro.url.searchParams;
+const DIRS = Object.keys(DIRECTION_LABEL) as Direction[];
+const STATUSES = Object.keys(STATUS_LABEL) as ContentStatus[];
+let notFound = !can('content.view') || parts.length > 1;
+const creating = parts[0] === 'new';
+if (creating && !can('content.network.manage')) notFound = true;
+const newDir = (DIRS as string[]).includes(q.get('direction') ?? '') ? (q.get('direction') as Direction) : 'pc';
+const filters = { direction: q.get('direction') ?? '', status: q.get('status') ?? '' };
+let card: GameDto | null = null;
+let items: GameDto[] = [];
+if (!notFound && parts[0] && !creating) {
+  try {
+    card = await serverCall<GameDto>(cookie, `/content/games/${encodeURIComponent(parts[0])}/draft`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFound = true;
+  }
+} else if (!notFound && !creating) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) if ((k === 'direction' ? DIRS : STATUSES).includes(v as never)) p.set(k, v);
+  items = (await serverCall<{ items: GameDto[] }>(cookie, `/content/games?${p}`)).items;
+}
+if (notFound) Astro.response.status = 404;
+const refs = branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName, timezone: b.timezone }));
+const title = (d: Record<string, unknown>) => (typeof d.title === 'string' && d.title.trim() ? d.title : 'Без названия');
+---
+<Crm title={card ? `${title(card.draft)} – игры` : 'Игры'}>
+  {notFound ? (
+    <div class="yc-head"><h1>Не найдено</h1><p>Такой игры нет.</p><a href="/content/games">К каталогу игр</a></div>
+  ) : card || creating ? (
+    <>
+      <p class="yc-crumbs"><a href="/content/games">Игры</a> / {card ? title(card.draft) : 'Новая игра'}</p>
+      <div class="yc-head"><h1>{card ? title(card.draft) : `Новая игра: ${DIRECTION_LABEL[newDir]}`}</h1><p>Карточка одна на всю сеть; доступность – по филиалам.</p></div>
+      {q.get('created') && <p class="yc-alert yc-alert--ok" role="status">Карточка создана.</p>}
+      <div class="yc-ct__editor">
+        <GameEditor client:load initial={card} direction={card?.direction ?? newDir} canManage={can('content.network.manage')} />
+        {card && (
+          <aside class="yc-ct__side">
+            <GameAvailability client:load gameId={card.id} branches={refs} initial={card.branches ?? []} canEdit={can('content.catalog.availability')} />
+          </aside>
+        )}
+      </div>
+    </>
+  ) : (
+    <>
+      <div class="yc-head"><h1>Каталог игр</h1><p>Игры на ПК, VR и PlayStation. Карточку правит Владелец, доступность в филиале – Директор своего филиала.</p></div>
+      <ContentTabs path={Astro.url.pathname} />
+      {can('content.network.manage') && <div class="yc-ct__create">{DIRS.map((d) => <a class="yc-btn yc-btn--ghost" href={`/content/games/new?direction=${d}`}>{`+ Игра ${DIRECTION_LABEL[d]}`}</a>)}</div>}
+      <section class="yc-panel" aria-labelledby="games-filter">
+        <h2 id="games-filter">Фильтры</h2>
+        <form class="yc-ct__filters" method="get" action="/content/games">
+          <label class="yc-field"><span class="yc-field__label">Направление</span>
+            <select class="yc-input" name="direction"><option value="">Все</option>{DIRS.map((d) => <option value={d} selected={filters.direction === d}>{DIRECTION_LABEL[d]}</option>)}</select>
+          </label>
+          <label class="yc-field"><span class="yc-field__label">Статус</span>
+            <select class="yc-input" name="status"><option value="">Любой</option>{STATUSES.map((s) => <option value={s} selected={filters.status === s}>{STATUS_LABEL[s]}</option>)}</select>
+          </label>
+          <button class="yc-btn yc-btn--ghost" type="submit">Показать</button>
+        </form>
+      </section>
+      <section class="yc-panel" aria-label="Игры">
+        {items.length === 0 ? (
+          <div class="yc-empty"><p>Игр по этим условиям нет.</p>{(filters.direction || filters.status) && <a class="yc-btn yc-btn--ghost" href="/content/games">Сбросить фильтры</a>}</div>
+        ) : (
+          <table class="yc-table" data-testid="games-list">
+            <thead><tr><th>Название</th><th>Направление</th><th>Статус</th><th>Адрес</th></tr></thead>
+            <tbody>
+              {items.map((g) => (
+                <tr>
+                  <td class="yc-table__main"><a href={`/content/games/${g.id}`}>{title(g.draft)}</a></td>
+                  <td data-label="Направление">{DIRECTION_LABEL[g.direction]}</td>
+                  <td data-label="Статус"><span class={`yc-badge yc-badge--${STATUS_BADGE[g.status]}`}>{STATUS_LABEL[g.status]}</span></td>
+                  <td data-label="Адрес">{g.slug ?? '–'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </>
+  )}
+</Crm>
