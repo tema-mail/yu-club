@@ -1,0 +1,87 @@
+---
+// «Уведомления» (S4-80…S4-82; 09 §12, K21 §5–§11, K11 №201–212). Раздел – при notifications.view (все роли, K21 §10), иначе 404.
+// /notifications – журнал: вкладки «Рассылки» (кампании) и «Отправки» (строки), фильтры 09 §12.2 в адресе.
+// /notifications/new – форма сообщения (есть право отправки хоть одной категории), ?clientId=&bookingId= – предзаполнение;
+// /notifications/campaigns/{id} – черновик (форма) или карточка рассылки (K11 №203).
+// /notifications/templates – шаблоны (K11 №210–211): видят все с notifications.view, правит Владелец.
+// Чужая кампания – 404 от API, страница отвечает так же (K1). Имена авторов – из /staff при staff.view; без права – «Вы» и «Сотрудник».
+import Crm from '../../layouts/Crm.astro';
+import CampaignForm from '../../islands/CampaignForm.tsx';
+import NotificationJournal, { type JournalFilters } from '../../islands/NotificationJournal.tsx';
+import TemplateEditor from '../../islands/TemplateEditor.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+import type { CampaignDetail, TemplateDto } from '../../lib/notifications.ts';
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const segments = (Astro.params.path ?? '').split('/').filter(Boolean);
+const q = Astro.url.searchParams;
+
+const canSend = can('notifications.send.service') || can('notifications.send.marketing');
+const view = segments.length === 0 ? 'journal' : segments.length === 1 && segments[0] === 'templates' ? 'templates' : segments.length === 1 && segments[0] === 'new' && canSend ? 'new' : segments.length === 2 && segments[0] === 'campaigns' ? 'campaign' : null;
+let notFound = !can('notifications.view') || view === null;
+let campaign: CampaignDetail | null = null;
+if (!notFound && view === 'campaign') {
+  try {
+    campaign = await serverCall<CampaignDetail>(cookie, `/notifications/campaigns/${encodeURIComponent(segments[1]!)}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFound = true;
+  }
+}
+if (notFound) Astro.response.status = 404;
+const templates = !notFound && (view === 'new' || view === 'templates' || campaign?.status === 'draft')
+  ? (await serverCall<{ items: TemplateDto[] }>(cookie, `/notifications/templates${view === 'templates' ? '' : '?status=active'}`)).items : [];
+
+const tab = q.get('tab') === 'rows' ? 'rows' : 'campaigns';
+const keys = ['from', 'to', 'branchId', 'category', 'source', 'authorId', 'status', 'clientId', 'kind'] as const;
+const filters = Object.fromEntries(keys.map((k) => [k, (q.get(k) ?? '').trim()])) as unknown as JournalFilters;
+
+const staffNames: Record<string, string> = {};
+if (!notFound && can('staff.view')) {
+  let cursor: string | null = null;
+  for (let page = 0; page < 20; page++) {
+    const c: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+    const r: { items: Array<{ id: string; firstName: string; lastName: string }>; nextCursor: string | null } = await serverCall(cookie, `/staff?limit=100${c}`);
+    for (const s of r.items) staffNames[s.id] = `${s.firstName} ${s.lastName}`;
+    if (!r.nextCursor) break;
+    cursor = r.nextCursor;
+  }
+}
+// Время – в зоне филиала (K8); у сетевых и городских – в зоне контекста, иначе первого филиала зоны.
+const timezone = (ctx.kind === 'branch' ? ctx.branch.timezone : branches[0]?.timezone) ?? 'Asia/Novosibirsk';
+const zone = branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName, timezone: b.timezone }));
+const tabHref = (t: 'campaigns' | 'rows') => (t === 'rows' ? '/notifications?tab=rows' : '/notifications');
+const tabNow = view === 'templates' ? 'templates' : tab;
+---
+<Crm title={notFound ? 'Не найдено' : campaign ? `${campaign.title} – уведомления` : view === 'new' ? 'Новое сообщение' : 'Уведомления'}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такой записи нет или она вне вашей зоны доступа. Проверьте ссылку.</p>
+      <p><a href="/notifications">К журналу уведомлений</a></p>
+    </div>
+  ) : view === 'new' || view === 'campaign' ? (
+    <>
+      <p class="yc-crumbs"><a href="/notifications">Уведомления</a> / {campaign ? campaign.title : 'Новое сообщение'}</p>
+      <div class="yc-head"><h1>{campaign ? (campaign.status === 'draft' ? 'Черновик сообщения' : 'Рассылка') : 'Новое сообщение'}</h1></div>
+      <CampaignForm client:load initial={campaign} prefill={{ clientId: q.get('clientId') ?? '', bookingId: q.get('bookingId') ?? '' }} branches={zone} timezone={timezone}
+        templates={templates} staffNames={staffNames} meId={me.staff.id}
+        can={{ service: can('notifications.send.service'), marketing: can('notifications.send.marketing'), mass: can('notifications.send.mass'), network: me.access.network }} />
+    </>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>Уведомления</h1>
+        <p>Журнал рассылок и отправок вашей зоны. «Отправлено провайдеру» не значит «доставлено на устройство».</p>
+      </div>
+      {canSend && <div class="yc-eq__actions"><a class="yc-btn" href="/notifications/new">Новое сообщение</a></div>}
+      <nav class="yc-tabs" aria-label="Журнал">
+        <a class="yc-tabs__link" href={tabHref('campaigns')} aria-current={tabNow === 'campaigns' ? 'page' : undefined}>Рассылки</a>
+        <a class="yc-tabs__link" href={tabHref('rows')} aria-current={tabNow === 'rows' ? 'page' : undefined}>Отправки</a>
+        <a class="yc-tabs__link" href="/notifications/templates" aria-current={tabNow === 'templates' ? 'page' : undefined}>Шаблоны</a>
+      </nav>
+      {view === 'templates' ? <TemplateEditor client:load initial={templates} canManage={can('notifications.templates.manage')} /> : <NotificationJournal client:load tab={tab} filters={filters} branches={zone} timezone={timezone} staffNames={staffNames} meId={me.staff.id} canRetry={can('notifications.retry')} />}
+    </>
+  )}
+</Crm>

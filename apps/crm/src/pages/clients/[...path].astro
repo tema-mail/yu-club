@@ -6,11 +6,13 @@
 // Записи, посещения и согласия появятся с бронированием (S1-07…S1-10): API их пока не отдаёт – и экран не показывает.
 // Бонусный счёт (S2-65, K15 №24) – при loyalty.view; корректировка, выдача и возврат – по правам из /me.
 // Подарок имениннику (S3-85, K20 №376) – отдельным блоком при event.view, не среди сертификатов.
+// Уведомления (S4-83, K11 №212) – блоком при notifications.view: настройки клиента, «N браузеров», последние отправки, повтор по праву.
 // Экспорта нет: маршрута выгрузки в API нет, Администратору он не положен вовсе (client.export – только Владелец).
 import '../../styles/events.css';
 import Crm from '../../layouts/Crm.astro';
 import EntityList from '../../islands/EntityList.tsx';
 import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
+import ClientNotifications from '../../islands/ClientNotifications.tsx';
 import GiftPanel from '../../islands/GiftPanel.tsx';
 import LoyaltyBlock from '../../islands/LoyaltyBlock.tsx';
 import type { LoyaltyCard } from '../../lib/loyalty.ts';
@@ -124,6 +126,10 @@ const seesAll = me.access.network;
         <LoyaltyBlock client:load clientId={client.id} initial={loyalty} timezone={timezone}
           branches={branches.map((b) => ({ id: b.id, name: b.name }))} defaultBranchId={ctx.kind === 'branch' ? ctx.branch.id : null}
           canAdjust={can('loyalty.adjust')} canBelowLimit={can('loyalty.adjust_below_limit')} canIssue={can('loyalty.goods.issue')} />
+      )}
+      {can('notifications.view') && (
+        <ClientNotifications client:load clientId={client.id} timezone={timezone} branches={branches.map((b) => ({ id: b.id, timezone: b.timezone }))}
+          canRetry={can('notifications.retry')} canSend={can('notifications.send.service') || can('notifications.send.marketing')} />
       )}
       {can('event.view') && (
         <>
