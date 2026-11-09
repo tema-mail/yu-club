@@ -6,12 +6,15 @@
 // Э2 (S2-72, 07 §6, §12.3): «оплатить баллами» – резерв на удержание (POST points-reserve), 1 балл = 1 минута, только
 // всё время целиком: баллов мало – выбор недоступен, доплаты нет. Резерв живёт столько же, сколько удержание (таймер
 // выше – его срок); сменился состав – резерв снят (Schedule говорит фразой RESERVE_DROPPED). Спишутся при оплате в клубе.
+// Э3 (S3-92, K20 §10): удержание по подарку имениннику – то же оформление K5 с ценой 0, без выбора оплаты и баллов. После успеха
+// режим подарка в расписании (GIFT_STORE_KEY) снимается.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   SUCCESS_STORE_KEY, bookingApi, dayLabel, describeError, holdStoreKey, loyaltyApi, points, pointsWord, rub, timeIn,
   type HoldDto, type LoyaltyBalanceDto, type UiState,
 } from '../lib/booking.ts';
 import { ClientApiError, clientAuth, errorText } from '../lib/client.ts';
+import { GIFT_STORE_KEY } from './MyGift.tsx';
 
 /** Резерв баллов на удержание: подпись состава (id позиций) на момент резерва и сумма. */
 export interface PointsReserve { signature: string; amountCenti: number }
@@ -26,6 +29,8 @@ interface Props {
   onBack: () => void;
   reserve: PointsReserve | null;
   onReserve: (r: PointsReserve | null) => void;
+  /** Удержание по подарку имениннику: цена 0, оплаты нет. */
+  gift?: boolean;
 }
 
 /** Десять цифр после +7: «8 913…», «+7 913…», «913…» – одинаково (как на /login/). */
@@ -45,7 +50,7 @@ function formatPhone(d: string): string {
   return s;
 }
 
-export default function Checkout({ hold, timezone, onHold, onNotice, onBack, reserve, onReserve }: Props) {
+export default function Checkout({ hold, timezone, onHold, onNotice, onBack, reserve, onReserve, gift = false }: Props) {
   const [mode, setMode] = useState<'checking' | 'phone' | 'code' | 'summary'>(hold.owner === 'client' ? 'summary' : 'checking');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
@@ -61,7 +66,7 @@ export default function Checkout({ hold, timezone, onHold, onNotice, onBack, res
 
   // Баланс – когда удержание уже клиента (сводка). Без входа баллов нет – блок не показываем.
   useEffect(() => {
-    if (mode !== 'summary' || hold.owner !== 'client') return;
+    if (mode !== 'summary' || hold.owner !== 'client' || gift) return;
     loyaltyApi.balance().then(setLoyalty).catch(() => setLoyalty(null));
   }, [mode, hold.owner, reserve]);
 
@@ -153,6 +158,7 @@ export default function Checkout({ hold, timezone, onHold, onNotice, onBack, res
       const result = await bookingApi.confirm(hold.id, confirmKey.current);
       sessionStorage.setItem(SUCCESS_STORE_KEY, JSON.stringify(result));
       sessionStorage.removeItem(holdStoreKey(hold.branchId));
+      if (gift) sessionStorage.removeItem(GIFT_STORE_KEY);
       location.assign('/booking/success/');
     } catch (e) {
       const d = describeError(e);
@@ -217,7 +223,7 @@ export default function Checkout({ hold, timezone, onHold, onNotice, onBack, res
             ))}
           </ul>
           <p class="yu-hold__total">Итого: <strong data-testid="checkout-total">{rub(hold.totalKop)}</strong></p>
-          {loyalty ? (() => {
+          {gift ? <p class="yu-body" data-testid="gift-free">Подарок имениннику – оплата не нужна.</p> : loyalty ? (() => {
             const enough = loyalty.availableCenti + (reserve?.amountCenti ?? 0) >= requiredCenti;
             const canPoints = !loyalty.preBookingBlocked && (enough || reserve !== null);
             return (
