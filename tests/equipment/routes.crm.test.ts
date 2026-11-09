@@ -200,3 +200,26 @@ describe('карточка и фильтры по ремонтам и гаран
     expect((await req('admin', 'GET', `/equipment/${eq.id}`)).json()).toMatchObject({ openRepairsCount: 0, lastRepairAt: null });
   });
 });
+
+describe('хронология оборудования /audit/timeline (K2, зона K1)', () => {
+  it('Директор и Администратор своей зоны видят; чужая зона и несуществующий – одинаковый 404', async () => {
+    const eq = await newItem({ name: 'Хронология' }, 'director');
+    const away = await newItem({ branchId: w.other, name: 'Чужая хронология' });
+    const tl = (who: string, id: string) => req(who, 'GET', `/audit/timeline?objectType=equipment&objectId=${id}`);
+    const actions = (r: { json: () => { items: { action: string }[] } }) => r.json().items.map((e) => e.action);
+    expect(actions(await tl('owner', eq.id))).toContain('equipment.created');
+    const dir = await tl('director', eq.id);
+    expect(dir.statusCode).toBe(200);
+    expect(actions(dir)).toContain('equipment.created');
+    const adm = await tl('admin', eq.id);
+    expect(adm.statusCode).toBe(200);
+    expect(actions(adm)).toEqual([]); // Администратор – только свои события (audit.view.own), карточку создал Директор
+    const foreign = await tl('admin', away.id);
+    const missing = await tl('admin', randomUUID());
+    expect(foreign.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+    expect(foreign.json().error.code).toBe(missing.json().error.code);
+    expect((await tl('foreign', eq.id)).statusCode).toBe(404);
+    expect((await tl('director', 'не-uuid')).statusCode).toBe(404);
+  });
+});

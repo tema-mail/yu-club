@@ -22,6 +22,7 @@ import {
   withTx,
   type StaffAuthConfig,
 } from './auth.ts';
+import { getEquipment } from '../equipment/items.ts';
 import { createGrant, listGrants, revokeGrant } from './grants.ts';
 
 export const STAFF_COOKIE = 'yu_staff';
@@ -286,6 +287,12 @@ async function assertTimelineObject(deps: StaffDeps, ctx: AccessContext, type: (
       a.rows.every((x) => (x.branch_id ? ctx.branchIds.has(x.branch_id) : x.city_id ? ctx.cityIds.has(x.city_id) : false));
     if (!inZone) throw new AppError('NOT_FOUND', 404, 'Не найдено');
     return;
+  }
+  if (type === 'equipment') {
+    // Зона – текущий филиал карточки (провайдер модуля equipment): после перевозки события аудита несут разные филиалы.
+    // Вне зоны, несуществующий и кривой id – одинаковый NOT_FOUND из getEquipment.
+    const eq = await getEquipment(deps.pool, ctx, id);
+    return assertCan(ctx, 'audit.view.own', { branchId: eq.placement.branchId });
   }
   if (BRANCH_OBJECTS.has(type)) {
     // Филиал объекта – из его же успешных событий аудита (K2: branch_id обязателен у объекта с филиалом).
