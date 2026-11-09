@@ -86,6 +86,12 @@ describe('CSV', () => {
     const file = await collect(csvStream(doc([['x', '=1+1', null, 'не дата']])));
     expect(file.toString()).toContain(`x;'=1+1;;не дата`);
   });
+
+  it('ведущий управляющий символ не обходит защиту: сначала чистка, потом апостроф', async () => {
+    const file = await collect(csvStream(doc([['\u0001=HYPERLINK("x")', '\u0000\u001f+7', null, null]])));
+    const line = file.subarray(3).toString().split('\r\n')[5];
+    expect(line).toBe(`"'=HYPERLINK(""x"")";'+7;;`);
+  });
 });
 
 describe('XLSX', () => {
@@ -111,6 +117,13 @@ describe('XLSX', () => {
   it('символы, запрещённые в XML, выбрасываются', async () => {
     const zip = unzip(await collect(xlsxStream(doc([['a\u0001b\ud800c', 0, 0, null]]))));
     expect(zip.get('xl/worksheets/sheet1.xml')).toContain('>abc</t>');
+  });
+
+  it('ведущий управляющий символ не обходит защиту от формул', async () => {
+    const zip = unzip(await collect(xlsxStream(doc([['\u0001=HYPERLINK("x")', '\u0008@SUM(1)', 0, null]]))));
+    const data = zip.get('xl/worksheets/sheet1.xml')!;
+    expect(data).toContain(`<t xml:space="preserve">'=HYPERLINK(&quot;x&quot;)</t>`);
+    expect(data).toContain(`<t xml:space="preserve">'@SUM(1)</t>`);
   });
 
   it('много столбцов: ссылки за Z – AA', async () => {

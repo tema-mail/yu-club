@@ -35,9 +35,15 @@ export interface WriteProgress {
   rows: number;
 }
 
-/** Текстовая ячейка: формула становится текстом. */
+// символы, запрещённые в XML 1.0, выбрасываются: иначе Excel считает файл повреждённым
+// eslint-disable-next-line no-control-regex
+const XML_ILLEGAL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
+/** Текстовая ячейка: сначала выбрасываются управляющие и запрещённые в XML символы, потом формула становится текстом.
+ * Обратный порядок пропускал «\u0001=HYPERLINK(...)»: проверка видела \u0001, а после чистки в файле оставалась формула. */
 export function protectText(value: string): string {
-  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  const clean = value.replace(XML_ILLEGAL, '');
+  return /^[=+\-@\t\r]/.test(clean) ? `'${clean}` : clean;
 }
 
 /** Целое в копейках/сотых → строка с двумя знаками без арифметики с плавающей точкой: -15000 → '-150.00'. */
@@ -275,9 +281,6 @@ async function* zipStream(parts: ReadonlyArray<{ name: string; data: AsyncIterab
 
 // ---- XLSX: лист «Данные» и лист «Параметры»
 
-// символы, запрещённые в XML 1.0, выбрасываются: иначе Excel считает файл повреждённым
-// eslint-disable-next-line no-control-regex
-const XML_ILLEGAL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 const xmlEscape = (s: string): string => s.replace(XML_ILLEGAL, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 const STYLE_HUNDREDTHS = 1;
