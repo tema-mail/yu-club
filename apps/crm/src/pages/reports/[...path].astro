@@ -1,0 +1,87 @@
+---
+// «Отчёты» (S4-90…S4-98; 14 §15, K24 §3, §8, K11 №239–248). /reports – список отчётов, на которые есть право; /reports/{отчёт} – экран
+// отчёта с фильтрами из адреса (from, to, cityId, branchIds, resourceType, status, method, metric). Нет права или такого отчёта – 404,
+// как у несуществующей страницы (K1). Фильтр по умолчанию – текущий месяц и контекст шапки (город или филиал). Решает всё равно сервер.
+import Crm from '../../layouts/Crm.astro';
+import ReportView, { type ReportFilters } from '../../islands/ReportView.tsx';
+import { presets, reportInfo, REPORTS, todayIn } from '../../lib/reports.ts';
+
+const { me, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const segments = (Astro.params.path ?? '').split('/').filter(Boolean);
+const q = Astro.url.searchParams;
+
+const allowed = REPORTS.filter((r) => can(r.action));
+const report = segments.length === 1 ? allowed.find((r) => r.key === segments[0]) : undefined;
+const view = segments.length === 0 && allowed.length > 0 ? 'list' : report ? 'report' : null;
+if (view === null) Astro.response.status = 404;
+
+const timezone = (ctx.kind === 'branch' ? ctx.branch.timezone : branches[0]?.timezone) ?? 'Asia/Novosibirsk';
+const month = presets(todayIn(timezone)).find((p) => p.key === 'month')!.period;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const zone = branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName, timezone: b.timezone }));
+const branchId = (q.get('branchIds') ?? '').split(',')[0] ?? '';
+const initial: ReportFilters = {
+  from: DATE.test(q.get('from') ?? '') ? q.get('from')! : month.from,
+  to: DATE.test(q.get('to') ?? '') ? q.get('to')! : month.to,
+  cityId: q.get('cityId') ?? (q.has('from') ? '' : ctx.kind === 'city' ? ctx.cityId : ''),
+  branchId: q.has('branchIds') ? branchId : q.has('from') ? '' : ctx.kind === 'branch' ? ctx.branch.id : '',
+  resourceType: q.get('resourceType') ?? '',
+  status: q.get('status') ?? '',
+  method: q.get('method') ?? '',
+};
+if (initial.branchId && !initial.cityId) initial.cityId = zone.find((b) => b.id === initial.branchId)?.cityId ?? '';
+const reportTitle = report?.title ?? 'Отчёты';
+---
+<Crm title={view === null ? 'Не найдено' : reportTitle}>
+  {view === null ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такого отчёта нет или он вам недоступен. Проверьте ссылку.</p>
+      <p><a href="/reports">К списку отчётов</a></p>
+    </div>
+  ) : view === 'list' ? (
+    <>
+      <div class="yc-head"><h1>Отчёты</h1><p>Цифры считаются в момент запроса по вашей зоне. Нажмите на показатель, чтобы увидеть записи.</p></div>
+      <ul class="rp-list" data-testid="report-list">
+        {allowed.map((r) => (
+          <li><a class="rp-list__item" href={`/reports/${r.key}`}><strong>{r.title}</strong><span>{r.purpose}</span></a></li>
+        ))}
+      </ul>
+    </>
+  ) : (
+    <>
+      <p class="yc-crumbs"><a href="/reports">Отчёты</a> / {reportTitle}</p>
+      <div class="yc-head"><h1>{reportTitle}</h1></div>
+      <ReportView client:load report={{ key: report!.key, title: report!.title, purpose: report!.purpose, filters: report!.filters, heavy: report!.heavy ?? false }}
+        initial={initial} metric={q.get('metric') ?? ''} branches={zone} cityIds={me.access.cityIds} network={me.access.network} timezone={timezone} />
+    </>
+  )}
+</Crm>
+
+<style is:global>
+  .rp{ display:grid; gap:var(--yc-sp-s); min-width:0; }
+  .rp > *{ min-width:0; }
+  .rp__purpose{ margin:0; color:var(--yc-muted); }
+  .rp-filters{ display:grid; grid-template-columns:repeat(auto-fill, minmax(10rem, 1fr)); gap:var(--yc-sp-xs); align-items:end; }
+  .rp-filters__go{ display:flex; align-items:end; }
+  .rp__meta{ display:flex; flex-wrap:wrap; gap:var(--yc-sp-2xs) var(--yc-sp-s); margin:0; font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .rp-cards{ list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fill, minmax(11rem, 1fr)); gap:var(--yc-sp-xs); }
+  .rp-card{ width:100%; height:100%; display:grid; gap:var(--yc-sp-3xs); align-content:start; text-align:left; padding:var(--yc-sp-xs);
+    background:var(--yc-surface); border:1px solid var(--yc-line); border-radius:var(--yc-r-m); font:inherit; color:inherit; cursor:pointer; }
+  .rp-card[aria-pressed="true"]{ border-color:var(--yc-accent); box-shadow:inset 0 0 0 1px var(--yc-accent); background:var(--yc-accent-bg); }
+  .rp-card:focus-visible{ outline:2px solid var(--yc-accent); outline-offset:2px; }
+  .rp-card__title{ font-size:var(--yc-fs-xs); font-weight:600; }
+  .rp-card__value{ font-size:var(--yc-fs-l); font-weight:700; overflow-wrap:anywhere; }
+  .rp-card--muted .rp-card__value{ font-size:var(--yc-fs-s); font-weight:600; color:var(--yc-muted); }
+  .rp-card__delta, .rp-card__basis{ font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .rp__notes{ margin:0; padding-left:1.25rem; font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .rp-scroll{ overflow-x:auto; max-width:100%; border:1px solid var(--yc-line); border-radius:var(--yc-r-m); background:var(--yc-surface); }
+  .rp-table{ width:100%; border-collapse:collapse; font-size:var(--yc-fs-s); }
+  .rp-table caption{ text-align:left; padding:var(--yc-sp-2xs) var(--yc-sp-xs); font-weight:600; }
+  .rp-table th, .rp-table td{ padding:var(--yc-sp-2xs) var(--yc-sp-xs); border-top:1px solid var(--yc-line); text-align:left; white-space:nowrap; }
+  .rp-table thead th{ font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .rp-list{ list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fill, minmax(16rem, 1fr)); gap:var(--yc-sp-xs); }
+  .rp-list__item{ display:grid; gap:var(--yc-sp-3xs); padding:var(--yc-sp-s); background:var(--yc-surface); border:1px solid var(--yc-line); border-radius:var(--yc-r-m); color:inherit; text-decoration:none; }
+  .rp-list__item span{ font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+</style>
