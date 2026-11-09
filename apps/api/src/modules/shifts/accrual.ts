@@ -116,6 +116,7 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
     // Цель – по ставке, с которой период закрыт, а не по новой (K18 §3); ручные корректировки в сумму не входят: их разницей не поглощаем.
     // Ставка – самой свежей записи смены: начисления или прежней системной корректировки (refs.rateId); нет ни той, ни другой – на дату.
     // Ставку корректировка пишет в refs: по ней сверка (rpt_payroll_accruals, 0413) считает ожидаемую сумму, а не по ставке на дату.
+    // Порог доплаты за выход – тоже (refs.feeMinMinutes, 0414): истории настройки нет, без снимка сверка не отличит пропавшую доплату.
     const prior = (await tx.query<{ rate_id: string; v: number }>(`SELECT refs->>'rateId' AS rate_id, (refs->>'factVersion')::int AS v FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND refs ? 'closedPeriodId' AND refs ? 'rateId' ORDER BY v DESC LIMIT 1`, [account.id, shift.id])).rows[0];
     const appliedId = prior && prior.v > (last?.fact_version ?? 0) ? prior.rate_id : (last?.rate_id ?? null);
     const applied = appliedId ? (await tx.query<{ hourly_kop: string; attendance_fee_kop: string }>(`SELECT hourly_kop, attendance_fee_kop FROM journal.staff_rates WHERE id = $1`, [appliedId])).rows[0] : undefined;
@@ -130,7 +131,7 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
     if (diff !== 0) {
       const onDate = openDate ?? date;
       await post(tx, {
-        entries: [{ account: { kind: 'staff_payroll', ownerType: 'staff', ownerId: shift.staff_id }, amount: diff, type: 'payroll.correction', basis: 'Изменение смены закрытого периода', branchId: shift.branch_id, ref, refs: { factVersion: String(shift.fact_version), closedPeriodId: closed.id, ...(closedRateId ? { rateId: closedRateId } : {}) }, occurredAt: payrollInstant(onDate) }],
+        entries: [{ account: { kind: 'staff_payroll', ownerType: 'staff', ownerId: shift.staff_id }, amount: diff, type: 'payroll.correction', basis: 'Изменение смены закрытого периода', branchId: shift.branch_id, ref, refs: { factVersion: String(shift.fact_version), closedPeriodId: closed.id, ...(closedRateId ? { rateId: closedRateId } : {}), feeMinMinutes: String(feeMin) }, occurredAt: payrollInstant(onDate) }],
         idempotencyKey: `payroll-correction:shift:${shift.id}:${shift.fact_version}`,
         author: SYSTEM_AUTHOR,
       });
@@ -178,13 +179,15 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
     });
     entryId = posted.entries[0]!.id;
   }
-  await tx.query(`INSERT INTO journal.payroll_accruals (shift_id, fact_version, ledger_entry_id, rate_id, hourly_part_kop, fee_part_kop) VALUES ($1, $2, $3, $4, $5, $6)`, [
+  // fee_min_minutes – порог, по которому посчитана доплата (снимок для сверки, 0414).
+  await tx.query(`INSERT INTO journal.payroll_accruals (shift_id, fact_version, ledger_entry_id, rate_id, hourly_part_kop, fee_part_kop, fee_min_minutes) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
     shift.id,
     version,
     entryId,
     rate!.id,
     target.hourlyPartKop,
     target.feePartKop,
+    feeMin,
   ]);
 }
 

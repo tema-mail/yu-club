@@ -253,6 +253,25 @@ describe('смены и зарплата', () => {
     expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id)).toEqual([]);
   });
 
+  it('0414: начисление и корректировка закрытого периода несут порог доплаты, по которому считали', async () => {
+    const id = await shift('2026-08-03', 90);
+    expect((await db.client.query(`SELECT fee_min_minutes, fee_part_kop FROM journal.payroll_accruals WHERE shift_id = $1`, [id])).rows).toEqual([{ fee_min_minutes: 120, fee_part_kop: '0' }]);
+    const v = (await reports.query(`SELECT fee_min_minutes, expected_hourly_kop, expected_fee_kop, accrued_kop FROM app.rpt_payroll_accruals WHERE shift_id = $1`, [id])).rows[0];
+    expect(v).toEqual({ fee_min_minutes: 120, expected_hourly_kop: '90000', expected_fee_kop: '0', accrued_kop: '90000' });
+    // Смена закрытого сентября: факт пришёл после закрытия – системная корректировка с refs.feeMinMinutes.
+    const closed = (await db.client.query<{ id: string }>(
+      `INSERT INTO app.staff_shifts (staff_id, branch_id, local_date, period, created_by, created_at)
+       VALUES ($1, $2, '2026-09-26', tstzrange($3::timestamptz, $4::timestamptz, '[)'), $1, $5) RETURNING id`,
+      [staffId, branchId, at('2026-09-26', '10:00'), at('2026-09-26', '16:00'), NOW],
+    )).rows[0]!.id;
+    await db.client.query(`UPDATE app.staff_shifts SET status = 'worked', paid_minutes = 180, fact_version = fact_version + 1 WHERE id = $1`, [closed]);
+    await tx((t) => settleShift(t, closed, 'attendance', clock));
+    expect((await db.client.query(`SELECT amount, refs->>'feeMinMinutes' AS fee_min FROM journal.ledger_entries WHERE ref_id = $1 AND refs ? 'closedPeriodId'`, [closed])).rows).toEqual([{ amount: '190000', fee_min: '120' }]);
+    const c = (await reports.query(`SELECT fee_min_minutes, expected_fee_kop, accrued_kop FROM app.rpt_payroll_accruals WHERE shift_id = $1`, [closed])).rows[0];
+    expect(c).toEqual({ fee_min_minutes: 120, expected_fee_kop: '10000', accrued_kop: '190000' });
+    expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id || d.objectId === closed)).toEqual([]);
+  });
+
   it('событие в очереди – не расхождение; после обработки считается', async () => {
     const s = await tx((t) => createShift(t, owner, { staffId, branchId, start: at('2026-10-20', '10:00'), end: at('2026-10-20', '16:00') }, meta(), clock));
     await tx((t) => setAttendance(t, owner, s.id, { rowVersion: s.rowVersion, status: 'worked', paidMinutes: 60, reason: 'факт' }, meta(), clock));
