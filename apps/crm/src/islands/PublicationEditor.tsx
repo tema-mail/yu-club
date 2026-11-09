@@ -3,6 +3,8 @@
 // обновить. Кнопки – по allowedActions ответа API (у Администратора «Опубликовать» нет); защита – на сервере.
 import { useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
+import { RATIO_HINT } from './MediaLibrary.tsx';
+import MediaPicker from './MediaPicker.tsx';
 import { aria, clean, ConflictNotice, DraftActions, Field, fieldErrors, fmtAt, fromLocalInput, STATUS_BADGE, STATUS_LABEL, toLocalInput, TYPE_LABEL, type BranchRef, type PublicationDto, type PublicationType, type Scope } from '../lib/content.tsx';
 
 export interface PublicationEditorProps {
@@ -44,7 +46,7 @@ export default function PublicationEditor(props: PublicationEditorProps) {
   const initialScope = (base.scope as Scope | undefined) ?? (props.canNetwork ? { type: 'network' } : { type: 'branch', branchIds: branches.length === 1 ? [branches[0]!.id] : [] });
   const [scope, setScope] = useState<Scope>(initialScope);
   const [cover, setCover] = useState(String(base.coverMediaId ?? ''));
-  const [rulesMediaId] = useState(String(base.rulesMediaId ?? ''));
+  const [rulesMediaId, setRulesMediaId] = useState(String(base.rulesMediaId ?? ''));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -76,6 +78,7 @@ export default function PublicationEditor(props: PublicationEditorProps) {
     setForm(formOf(fresh.draft));
     setScope((fresh.draft.scope as Scope) ?? { type: 'network' });
     setCover(String(fresh.draft.coverMediaId ?? ''));
+    setRulesMediaId(String(fresh.draft.rulesMediaId ?? ''));
     setConflict(false);
     setErrors({});
     setDirty(false);
@@ -168,9 +171,10 @@ export default function PublicationEditor(props: PublicationEditorProps) {
                 </Field>
               );
             })}
-            <Field id="pub-cover" label="Обложка" error={errors.coverMediaId} hint="Выбор из медиатеки – в разделе «Медиатека».">
-              <input {...aria('pub-cover', errors.coverMediaId, true)} class="yc-input" value={cover} readOnly />
-            </Field>
+            <MediaPicker id="pub-cover" label="Обложка" value={cover} onChange={(id) => { setCover(id); setDirty(true); }} hint={RATIO_HINT.cover} error={errors.coverMediaId} disabled={readOnly || busy} />
+            {type === 'giveaway' && (
+              <MediaPicker id="pub-rules" label="Правила розыгрыша файлом (PDF)" purpose="document" value={rulesMediaId} onChange={(id) => { setRulesMediaId(id); setDirty(true); }} error={errors.rulesMediaId} disabled={readOnly || busy} />
+            )}
           </fieldset>
           <p class={`yc-alert ${msg ? (msg.ok ? 'yc-alert--ok' : 'yc-alert--error') : ''}`} role="status" aria-live="polite">{msg?.text ?? ''}</p>
         </form>

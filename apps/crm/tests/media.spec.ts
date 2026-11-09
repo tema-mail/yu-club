@@ -83,6 +83,21 @@ test('Администратор: загрузка и alt есть, архива
   await expect(page.getByRole('button', { name: 'В архив' })).toHaveCount(0);
 });
 
+test('выбор обложки в редакторе: пропорции подсказкой, без alt – предупреждение', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, `/content/publications/${CONTENT_IDS.pubCity}`);
+  await expect(page.getByText('Обложка: 16:9, не меньше 1600×900 px.')).toBeVisible();
+  await page.getByRole('button', { name: 'Выбрать из медиатеки…' }).click();
+  const dlg = page.getByRole('dialog');
+  await expect(dlg.getByRole('button', { name: /^Выбрать:/ })).toHaveCount(2); // PDF правил среди картинок не предлагается
+  await dlg.getByRole('button', { name: 'Выбрать: zal-krasny.jpg' }).click();
+  await expect(page.getByTestId('pub-cover-current')).toContainText('Нет описания (alt) – без него не опубликовать');
+  await page.getByRole('button', { name: 'Сохранить черновик' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Черновик сохранён' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId('pub-cover-current')).toContainText('zal-krasny.jpg');
+});
+
 test('снимки медиатеки 1440 и 390 без горизонтальной прокрутки', async ({ page }) => {
   await login(page, 'owner@yu.test');
   for (const width of [1440, 390]) {
