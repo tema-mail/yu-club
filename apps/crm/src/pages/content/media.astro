@@ -1,0 +1,25 @@
+---
+// Медиатека CMS (S4-85, K22 §8, K11 №224–227): загрузка, alt, «где используется», архив, удаление неиспользуемого (Владелец). Доступ – content.view.
+import Crm from '../../layouts/Crm.astro';
+import MediaLibrary from '../../islands/MediaLibrary.tsx';
+import { ContentTabs } from '../../lib/content.tsx';
+import '../../styles/content.css';
+
+const { me, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+if (!can('content.view')) Astro.response.status = 404;
+---
+<Crm title="Медиатека">
+  {can('content.view') ? (
+    <>
+      <div class="yc-head">
+        <h1>Медиатека</h1>
+        <p>Картинки и PDF для сайта. Один файл можно использовать в нескольких материалах; удаления нет – только архив неиспользуемых.</p>
+      </div>
+      <ContentTabs path={Astro.url.pathname} />
+      <MediaLibrary client:load canArchive={can('content.media.archive')} canDelete={can('content.media.purge')} timezone={branches[0]?.timezone ?? 'Asia/Novosibirsk'} />
+    </>
+  ) : (
+    <div class="yc-head"><h1>Не найдено</h1><p>Раздел недоступен.</p></div>
+  )}
+</Crm>
