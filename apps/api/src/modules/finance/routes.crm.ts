@@ -84,7 +84,8 @@ const listSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
-/** K17 №37: журнал кассы филиала, порядок (occurred_at, number) – стабильный при совпадении времени (06 §10). */
+/** K17 №37: журнал кассы филиала, порядок (occurred_at, number) – стабильный при совпадении времени (06 §10).
+ *  link – живая связь с объектом (K17 §14): { type: event | repair | payroll_statement, id, role } или null. */
 async function listOperations(db: Db, ctx: AccessContext, branchId: string, raw: unknown, clock: Clock) {
   const b = await getBranch(db, branchId);
   if (!b || !can(ctx, 'finance.view.day', { branchId: b.id })) throw notFound();
@@ -124,8 +125,14 @@ async function listOperations(db: Db, ctx: AccessContext, branchId: string, raw:
   const r = await db.query<OperationRow>(`${OPERATION_SELECT} WHERE ${where} ORDER BY fo.occurred_at, fo.number LIMIT $${params.length}`, params);
   const rows = r.rows.slice(0, q.limit);
   const last = rows.at(-1);
+  // K17 §14: живая связь операции с объектом (мероприятие, ремонт, ведомость) – и ручная привязка, у которой нет ref
+  const links = await db.query<{ operation_id: string; ref_type: string; ref_id: string; role: string }>(
+    `SELECT operation_id, ref_type, ref_id, role FROM app.finance_operation_links WHERE operation_id = ANY($1::uuid[]) AND unlinked_at IS NULL`,
+    [rows.map((x) => x.id)],
+  );
+  const linkOf = new Map(links.rows.map((l) => [l.operation_id, { type: l.ref_type, id: l.ref_id, role: l.role }]));
   return {
-    items: rows.map((row) => shape(ctx, toOperationDto(row))),
+    items: rows.map((row) => ({ ...shape(ctx, toOperationDto(row)), link: linkOf.get(row.id) ?? null })),
     nextCursor: r.rows.length > q.limit && last ? `${last.occurred_at.getTime()}:${last.number}` : null,
     from,
     to,

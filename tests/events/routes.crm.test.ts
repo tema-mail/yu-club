@@ -227,6 +227,21 @@ describe('S3-55: команды', () => {
     expect(money.summary).toMatchObject({ receivedKop: 5000, factCostKop: 1000 });
     expect(money.operations).toHaveLength(2);
   });
+  it('журнал K17 отдаёт связь с мероприятием: и расход из карточки, и привязанный вручную', async () => {
+    const e = await newEvent();
+    expect((await req('owner', 'POST', `/events/${e.id}/income`, { method: 'transfer', amountKop: 5000, occurredAt: AT })).statusCode).toBe(201);
+    const manual = await req('owner', 'POST', `/branches/${ids.b1}/finance/expense`, { method: 'transfer', amountKop: 700, categoryId: ids.category, subcategoryId: ids.subcategory, occurredAt: AT, comment: 'торт вручную' });
+    expect(manual.statusCode).toBe(201);
+    expect((await req('owner', 'POST', `/events/${e.id}/expense/link`, { operationId: manual.json().id })).statusCode).toBe(201);
+    const own = await req('owner', 'POST', `/events/${e.id}/expense`, { method: 'transfer', amountKop: 300, categoryId: ids.category, subcategoryId: ids.subcategory, occurredAt: AT, comment: 'свечи' });
+    expect(own.statusCode).toBe(201);
+    const items = (await req('owner', 'GET', `/branches/${ids.b1}/finance/operations?from=2026-11-14&limit=200`)).json().items as Array<{ id: string; ref: unknown; link: unknown }>;
+    const byId = new Map(items.map((x) => [x.id, x]));
+    expect(byId.get(manual.json().id)).toMatchObject({ ref: null, link: { type: 'event', id: e.id, role: 'expense' } });
+    expect(byId.get(own.json().id)).toMatchObject({ ref: { type: 'event', id: e.id }, link: { type: 'event', id: e.id, role: 'expense' } });
+    const ofEvent = items.filter((x) => (x.link as { id: string } | null)?.id === e.id).map((x) => (x.link as { role: string }).role);
+    expect(ofEvent.sort()).toEqual(['expense', 'expense', 'income']);
+  });
   it('связь с бронью: чужой филиал – 404; второе мероприятие – отказ; снятие связи и след в аудите', async () => {
     const e = await newEvent();
     const other = await newEvent();
