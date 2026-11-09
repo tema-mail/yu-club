@@ -38,6 +38,7 @@
     "load:club": "node tests/load/club-race.ts",
     "gift:ensure": "node db/seed/gift-resources.ts",
     "test:e2e:stand": "playwright test -c tests/e2e/playwright.config.ts",
-    "load:campaign": "node tests/load/campaign.ts"
+    "load:campaign": "node tests/load/campaign.ts",
+    "load:reports": "node tests/load/reports.ts"
   }
 }
