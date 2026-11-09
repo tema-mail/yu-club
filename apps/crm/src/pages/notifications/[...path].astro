@@ -1,0 +1,57 @@
+---
+// «Уведомления» (S4-80…S4-82; 09 §12, K21 §5–§11, K11 №201–212). Раздел – при notifications.view (все роли, K21 §10), иначе 404.
+// /notifications – журнал: вкладки «Рассылки» (кампании) и «Отправки» (строки), фильтры 09 §12.2 в адресе.
+// Чужая кампания – 404 от API, страница отвечает так же (K1). Имена авторов – из /staff при staff.view; без права – «Вы» и «Сотрудник».
+import Crm from '../../layouts/Crm.astro';
+import NotificationJournal, { type JournalFilters } from '../../islands/NotificationJournal.tsx';
+import { serverCall } from '../../lib/api.ts';
+
+const { me, cookie, ctx, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const segments = (Astro.params.path ?? '').split('/').filter(Boolean);
+const q = Astro.url.searchParams;
+
+const notFound = !can('notifications.view') || segments.length > 0;
+if (notFound) Astro.response.status = 404;
+
+const tab = q.get('tab') === 'rows' ? 'rows' : 'campaigns';
+const keys = ['from', 'to', 'branchId', 'category', 'source', 'authorId', 'status', 'clientId', 'kind'] as const;
+const filters = Object.fromEntries(keys.map((k) => [k, (q.get(k) ?? '').trim()])) as unknown as JournalFilters;
+
+const staffNames: Record<string, string> = {};
+if (!notFound && can('staff.view')) {
+  let cursor: string | null = null;
+  for (let page = 0; page < 20; page++) {
+    const c: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+    const r: { items: Array<{ id: string; firstName: string; lastName: string }>; nextCursor: string | null } = await serverCall(cookie, `/staff?limit=100${c}`);
+    for (const s of r.items) staffNames[s.id] = `${s.firstName} ${s.lastName}`;
+    if (!r.nextCursor) break;
+    cursor = r.nextCursor;
+  }
+}
+// Время – в зоне филиала (K8); у сетевых и городских – в зоне контекста, иначе первого филиала зоны.
+const timezone = (ctx.kind === 'branch' ? ctx.branch.timezone : branches[0]?.timezone) ?? 'Asia/Novosibirsk';
+const zone = branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName, timezone: b.timezone }));
+const tabHref = (t: 'campaigns' | 'rows') => (t === 'rows' ? '/notifications?tab=rows' : '/notifications');
+---
+<Crm title={notFound ? 'Не найдено' : 'Уведомления'}>
+  {notFound ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Страница не найдена</h1>
+      <p>Такой записи нет или она вне вашей зоны доступа. Проверьте ссылку.</p>
+      <p><a href="/notifications">К журналу уведомлений</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>Уведомления</h1>
+        <p>Журнал рассылок и отправок вашей зоны. «Отправлено провайдеру» не значит «доставлено на устройство».</p>
+      </div>
+      <nav class="yc-tabs" aria-label="Журнал">
+        <a class="yc-tabs__link" href={tabHref('campaigns')} aria-current={tab === 'campaigns' ? 'page' : undefined}>Рассылки</a>
+        <a class="yc-tabs__link" href={tabHref('rows')} aria-current={tab === 'rows' ? 'page' : undefined}>Отправки</a>
+      </nav>
+      <NotificationJournal client:load tab={tab} filters={filters} branches={zone} timezone={timezone} staffNames={staffNames} meId={me.staff.id} canRetry={can('notifications.retry')} />
+    </>
+  )}
+</Crm>
