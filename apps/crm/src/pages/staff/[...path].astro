@@ -2,10 +2,12 @@
 // Сотрудники (S0-15c, staff/routes.staff.ts): /staff – список зоны, /staff/new – создание, /staff/{id} – карточка.
 // Экран – при staff.view (Владелец, Директор); Администратору – 404, как несуществующей странице.
 // Опция «Директор» в создании – только при staff.director.assign (Владелец). Решает всё равно сервер (K1).
+// S3-87: блок «Дополнительные права» (K11 №380–382) – только Владельцу и не на своей карточке; действия – из `delegable` ответа, зона – из назначений.
 // S3-70: блок ставок (K18 №309) – при payroll.view. Даты работы, статус планирования и комментарий руководителя – поля карточки GET /staff/{id} (K18 §2), правка – №319.
 import Crm from '../../layouts/Crm.astro';
 import EntityList from '../../islands/EntityList.tsx';
 import StaffForm, { type StaffCard } from '../../islands/StaffForm.tsx';
+import StaffGrants, { type GrantDto, type GrantZoneOption } from '../../islands/StaffGrants.tsx';
 import StaffRates from '../../islands/StaffRates.tsx';
 import { ApiError, ROLE_LABEL, serverCall, type StaffRole } from '../../lib/api.ts';
 import { today as todayIn } from '../../lib/booking.ts';
@@ -61,6 +63,23 @@ if (staff) {
   }
 }
 
+// S3-87: делегирование. Зона права ⊆ назначений получателя: город целиком или филиал (назначенный или в назначенном городе).
+let grants: { items: GrantDto[]; delegable: string[] } | null = null;
+const grantZones: GrantZoneOption[] = [];
+const zoneNames: Record<string, string> = {};
+for (const b of zoneBranches) Object.assign(zoneNames, { [b.id]: b.name, [b.cityId]: b.cityName });
+if (staff && me.staff.role === 'owner' && !self) {
+  try {
+    grants = await serverCall<{ items: GrantDto[]; delegable: string[] }>(cookie, `/staff/grants?staffId=${encodeURIComponent(staff.id)}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 403) throw e;
+  }
+  const cityIds = staff.assignments.flatMap((a) => (a.cityId ? [a.cityId] : []));
+  const branchIds = new Set(staff.assignments.flatMap((a) => (a.branchId ? [a.branchId] : [])));
+  for (const c of cityIds) grantZones.push({ value: c, label: `${zoneNames[c] ?? 'Город'} – весь город`, kind: 'city' });
+  for (const b of zoneBranches) if (branchIds.has(b.id) || cityIds.includes(b.cityId)) grantZones.push({ value: b.id, label: `${b.name} (${b.cityName})`, kind: 'branch' });
+}
+
 const title = notFound ? 'Не найдено' : staff ? `${staff.lastName} ${staff.firstName}` : key === 'new' ? 'Новый сотрудник' : 'Сотрудники';
 ---
 <Crm title={title}>
@@ -111,6 +130,10 @@ const title = notFound ? 'Не найдено' : staff ? `${staff.lastName} ${st
         <StaffRates client:load staffId={staff.id} initialRates={rates} canManage={can('payroll.rate.manage')} canPlanning={can('staff.planning_status')}
           initialPlanning={staff.planningStatus} initialWork={{ employmentStart: staff.employmentStart, employmentEnd: staff.employmentEnd, managerComment: staff.managerComment }}
           rowVersion={staff.rowVersion} canWork={canAssign} today={todayIn(timezone)} staffNames={staffNames} />
+      )}
+      {staff && grants && (
+        <StaffGrants client:load staffId={staff.id} initialItems={grants.items} delegable={grants.delegable} zones={grantZones}
+          zoneNames={zoneNames} staffNames={staffNames} today={todayIn(timezone)} />
       )}
     </>
   )}

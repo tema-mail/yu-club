@@ -1,5 +1,5 @@
 // Мок экрана «Сотрудники» (S0-15c): точно по apps/api/src/modules/staff/routes.staff.ts и правилам
-// assertCanManageStaff (core/permissions.ts). Подключается из mock-api.ts (registerStaff), состояние – общий
+// assertCanManageStaff (core/permissions.ts); S3-87 – делегирование по staff/grants.ts. Подключается из mock-api.ts (registerStaff), состояние – общий
 // массив сотрудников мока; resetStaff() возвращает засев (POST /__test/reset).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -29,7 +29,31 @@ let list: StaffRecord[] = [];
 
 export function resetStaff(): void {
   list.splice(0, list.length, ...structuredClone(snapshot));
+  grants = seedGrants();
+  idem.clear();
 }
+
+// ---- делегирование (S3-89, staff/grants.ts и routes.crm.ts №380–382): только Владелец, себе нельзя, закрытый список DELEGABLE.
+// Отличие от API одно: id мока – не UUID, поэтому проверки формы uuid (staffId, cityId, branchId) здесь нет.
+const DELEGABLE = ['block.manage', 'network.hours.manage', 'finance.income.create', 'finance.expense.create',
+  'equipment.view.accounts', 'client.merge', 'shift.manage', 'payroll.view', 'network.branch.create'];
+interface Grant {
+  id: string; staffId: string; action: string; cityId: string | null; branchId: string | null; validFrom: string; validTo: string | null;
+  grantedBy: string; createdAt: string; revokedAt: string | null; revokedBy: string | null;
+}
+let grants: Grant[] = [];
+const idem = new Map<string, { request: string; status: number; body: unknown }>();
+const dayShift = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+/** Засев от «сейчас»: истёкшее право Директора и отозванное у Администратора – задним числом через API их не создать. */
+function seedGrants(): Grant[] {
+  const at = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+  return [
+    { id: 'g-expired', staffId: 's-director', action: 'payroll.view', cityId: 'c-nsk', branchId: null, validFrom: dayShift(-40), validTo: dayShift(-10), grantedBy: 's-owner', createdAt: at(-41), revokedAt: null, revokedBy: null },
+    { id: 'g-revoked', staffId: 's-admin', action: 'finance.income.create', cityId: null, branchId: 'b-nsk-krasny', validFrom: dayShift(-20), validTo: null, grantedBy: 's-owner', createdAt: at(-21), revokedAt: at(-5), revokedBy: 's-owner' },
+  ];
+}
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const isDate = (v: unknown): v is string => typeof v === 'string' && DATE.test(v) && !Number.isNaN(Date.parse(v));
 
 /** Ответ API: StaffItem (routes.staff.ts toItem). */
 function item(s: StaffRecord) {
@@ -51,6 +75,7 @@ const mask = (p: string | null | undefined) => (p ? `${p.slice(0, 2)}******${p.s
 export function registerStaff(app: FastifyInstance, P: string, d: StaffMockDeps): void {
   list = d.staff;
   snapshot = structuredClone(d.staff);
+  grants = seedGrants();
   const notFound = (reply: FastifyReply) => d.fail(reply, 404, 'NOT_FOUND', 'Не найдено');
   const forbidden = (reply: FastifyReply) => d.fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав');
   const invalid = (reply: FastifyReply, issues: Issue[], message = 'Неверные данные запроса') =>
@@ -223,6 +248,86 @@ export function registerStaff(app: FastifyInstance, P: string, d: StaffMockDeps)
     if (scopeChange) d.audit(me, 'staff', s.id, 'staff.scope_changed', zone, { branchIds: nextB, cityIds: nextC });
     return item(s);
   });
+
+  // №380–382 (staff/routes.crm.ts): порядок проверок как в API – вход, Idempotency-Key, Владелец, тело, сотрудник, право и зона, пересечение.
+  const ownerOnly = (reply: FastifyReply) => d.fail(reply, 403, 'FORBIDDEN', 'Делегирование – только Владелец');
+  const grantCommand = (op: string, status: number, run: (me: StaffRecord, req: FastifyRequest, reply: FastifyReply) => { status?: number; body: unknown } | null) =>
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const me = d.current(req);
+      const key = req.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return d.fail(reply, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Нужен заголовок Idempotency-Key');
+      const scope = `${me.id}:staff.grant.${op}:${key}`;
+      const request = JSON.stringify({ params: req.params, body: req.body ?? {} });
+      const seen = idem.get(scope);
+      if (seen) {
+        if (seen.request !== request) return d.fail(reply, 409, 'IDEMPOTENCY_KEY_REUSED', 'Этот ключ уже использован для другого запроса');
+        reply.header('idempotent-replay', 'true');
+        return reply.code(seen.status).send(seen.body);
+      }
+      const r = run(me, req, reply);
+      if (!r) return reply; // ошибка уже отправлена; в API откат транзакции – ключ не сохраняется
+      idem.set(scope, { request, status, body: r.body });
+      return reply.code(status).send(r.body);
+    };
+
+  app.get(`${P}/staff/grants`, async (req, reply) => {
+    const me = d.current(req);
+    reply.header('cache-control', 'no-store');
+    if (me.role !== 'owner') return ownerOnly(reply);
+    const q = req.query as { staffId?: string };
+    const items = grants.filter((g) => !q.staffId || g.staffId === q.staffId).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+    return { items: items.slice(0, 500), delegable: DELEGABLE };
+  });
+
+  app.post(`${P}/staff/:staffId/grants`, grantCommand('create', 201, (me, req, reply) => {
+    if (me.role !== 'owner') { ownerOnly(reply); return null; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const issues: Issue[] = [];
+    if (typeof b.action !== 'string' || !b.action || b.action.length > 100) issues.push({ path: 'action', message: 'Нужно действие' });
+    for (const f of ['cityId', 'branchId']) if (b[f] !== undefined && typeof b[f] !== 'string') issues.push({ path: f, message: 'Неверный id' });
+    if (!isDate(b.validFrom)) issues.push({ path: 'validFrom', message: 'Дата – ГГГГ-ММ-ДД' });
+    if (b.validTo !== undefined && b.validTo !== null && !isDate(b.validTo)) issues.push({ path: 'validTo', message: 'Дата – ГГГГ-ММ-ДД' });
+    const reason = typeof b.reason === 'string' ? b.reason.trim() : undefined;
+    if (b.reason !== undefined && (reason === undefined || !reason || reason.length > 500)) issues.push({ path: 'reason', message: 'От 1 до 500 символов' });
+    if ((b.cityId === undefined) === (b.branchId === undefined)) issues.push({ path: '', message: 'Нужна одна цель: cityId или branchId' });
+    if (isDate(b.validFrom) && isDate(b.validTo) && b.validTo < b.validFrom) issues.push({ path: 'validTo', message: 'validTo раньше validFrom' });
+    if (issues.length) { invalid(reply, issues); return null; }
+    const validFrom = b.validFrom as string;
+    const validTo = (b.validTo as string | null | undefined) ?? null;
+    if (validFrom < dayShift(-1)) { d.fail(reply, 400, 'VALIDATION_FAILED', 'Дата начала права в прошлом', { field: 'validFrom' }); return null; }
+    const staffId = (req.params as { staffId: string }).staffId;
+    if (staffId === me.id) { ownerOnly(reply); return null; }
+    const t = list.find((x) => x.id === staffId);
+    if (!t || t.status === 'archived') { notFound(reply); return null; }
+    const action = b.action as string;
+    if (!DELEGABLE.includes(action)) { d.fail(reply, 422, 'GRANT_ACTION_NOT_DELEGABLE', 'Это действие не делегируется', { action }); return null; }
+    const cityId = (b.cityId as string | undefined) ?? null;
+    const branchId = (b.branchId as string | undefined) ?? null;
+    // assertGrantable: зона права ⊆ назначений получателя (город – назначен целиком; филиал – назначен или в назначенном городе).
+    const inZone = cityId ? t.cityIds.includes(cityId) : t.branchIds.includes(branchId!) || (t.cityIds.length > 0 && d.access(t).branchIds.includes(branchId!));
+    if ((action === 'network.branch.create' && !cityId) || !inZone) { d.fail(reply, 422, 'GRANT_SCOPE_INVALID', 'Зона права вне назначений сотрудника'); return null; }
+    const end = (x: string | null) => x ?? '9999-12-31';
+    if (grants.some((g) => !g.revokedAt && g.staffId === staffId && g.action === action && (g.cityId ?? g.branchId) === (cityId ?? branchId) && g.validFrom <= end(validTo) && validFrom <= end(g.validTo))) {
+      { d.fail(reply, 409, 'GRANT_ALREADY_ACTIVE', 'На эти даты такое право уже выдано'); return null; }
+    }
+    const g: Grant = { id: randomUUID(), staffId, action, cityId, branchId, validFrom, validTo, grantedBy: me.id, createdAt: new Date().toISOString(), revokedAt: null, revokedBy: null };
+    grants.push(g);
+    d.audit(me, 'staff_grant', g.id, 'staff.grant.created', {}, { staffId, action, cityId, branchId, validFrom, validTo }, reason ?? null);
+    return { body: g };
+  }));
+
+  app.post(`${P}/staff/grants/:grantId/revoke`, grantCommand('revoke', 200, (me, req, reply) => {
+    if (me.role !== 'owner') { ownerOnly(reply); return null; }
+    const b = (req.body ?? {}) as { reason?: unknown };
+    const reason = typeof b.reason === 'string' ? b.reason.trim() : undefined;
+    if (b.reason !== undefined && (reason === undefined || !reason || reason.length > 500)) { invalid(reply, [{ path: 'reason', message: 'От 1 до 500 символов' }]); return null; }
+    const g = grants.find((x) => x.id === (req.params as { grantId: string }).grantId);
+    if (!g) { notFound(reply); return null; }
+    if (g.revokedAt) return { body: g }; // повтор над отозванным – без новой записи аудита
+    Object.assign(g, { revokedAt: new Date().toISOString(), revokedBy: me.id });
+    d.audit(me, 'staff_grant', g.id, 'staff.grant.revoked', { staffId: g.staffId, action: g.action, validFrom: g.validFrom, validTo: g.validTo }, {}, reason ?? null);
+    return { body: g };
+  }));
 
   for (const op of ['block', 'unblock'] as const) {
     app.post(`${P}/staff/:staffId/${op}`, async (req, reply) => {
