@@ -114,8 +114,13 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
     const corrected = await tx.query<{ v: number | null }>(`SELECT max((refs->>'factVersion')::int) AS v FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND refs ? 'closedPeriodId'`, [account.id, shift.id]);
     if ((eventFactVersion ?? shift.fact_version) <= Math.max(last?.fact_version ?? 0, corrected.rows[0]?.v ?? 0)) return;
     // Цель – по ставке, с которой период закрыт, а не по новой (K18 §3); ручные корректировки в сумму не входят: их разницей не поглощаем.
-    const applied = last?.rate_id ? (await tx.query<{ hourly_kop: string; attendance_fee_kop: string }>(`SELECT hourly_kop, attendance_fee_kop FROM journal.staff_rates WHERE id = $1`, [last.rate_id])).rows[0] : undefined;
+    // Ставка – самой свежей записи смены: начисления или прежней системной корректировки (refs.rateId); нет ни той, ни другой – на дату.
+    // Ставку корректировка пишет в refs: по ней сверка (rpt_payroll_accruals, 0413) считает ожидаемую сумму, а не по ставке на дату.
+    const prior = (await tx.query<{ rate_id: string; v: number }>(`SELECT refs->>'rateId' AS rate_id, (refs->>'factVersion')::int AS v FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND refs ? 'closedPeriodId' AND refs ? 'rateId' ORDER BY v DESC LIMIT 1`, [account.id, shift.id])).rows[0];
+    const appliedId = prior && prior.v > (last?.fact_version ?? 0) ? prior.rate_id : (last?.rate_id ?? null);
+    const applied = appliedId ? (await tx.query<{ hourly_kop: string; attendance_fee_kop: string }>(`SELECT hourly_kop, attendance_fee_kop FROM journal.staff_rates WHERE id = $1`, [appliedId])).rows[0] : undefined;
     const closedRate = applied ? { hourlyKop: Number(applied.hourly_kop), attendanceFeeKop: Number(applied.attendance_fee_kop) } : rate;
+    const closedRateId = applied ? appliedId : (rate?.id ?? null);
     const closedTarget = shift.status === 'worked' && !shift.unpaid_confirmed && closedRate !== null && shift.paid_minutes !== null ? accrualParts(shift.paid_minutes, closedRate, feeMin).totalKop : 0;
     const sum = await tx.query<{ sum: string }>(
       `SELECT coalesce(sum(amount), 0) AS sum FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND (entry_type IN ('payroll.accrual','reversal') OR refs ? 'closedPeriodId')`,
@@ -125,7 +130,7 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
     if (diff !== 0) {
       const onDate = openDate ?? date;
       await post(tx, {
-        entries: [{ account: { kind: 'staff_payroll', ownerType: 'staff', ownerId: shift.staff_id }, amount: diff, type: 'payroll.correction', basis: 'Изменение смены закрытого периода', branchId: shift.branch_id, ref, refs: { factVersion: String(shift.fact_version), closedPeriodId: closed.id }, occurredAt: payrollInstant(onDate) }],
+        entries: [{ account: { kind: 'staff_payroll', ownerType: 'staff', ownerId: shift.staff_id }, amount: diff, type: 'payroll.correction', basis: 'Изменение смены закрытого периода', branchId: shift.branch_id, ref, refs: { factVersion: String(shift.fact_version), closedPeriodId: closed.id, ...(closedRateId ? { rateId: closedRateId } : {}) }, occurredAt: payrollInstant(onDate) }],
         idempotencyKey: `payroll-correction:shift:${shift.id}:${shift.fact_version}`,
         author: SYSTEM_AUTHOR,
       });

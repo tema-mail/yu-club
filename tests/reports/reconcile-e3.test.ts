@@ -233,6 +233,26 @@ describe('смены и зарплата', () => {
     expect(eventMoney.rows).toEqual([{ role: 'expense', in_cost: true, kind: 'expense', direction: 'out', reversed: false }]);
   });
 
+  it('корректировка закрытого периода без начисления, потом ставка задним числом – не расхождение: ставка самой корректировки', async () => {
+    const staff2 = (await db.client.query<{ id: string }>(`INSERT INTO app.staff (first_name, last_name, email, role, password_hash) VALUES ('В', 'Ф', $1, 'admin', 'x') RETURNING id`, [`${randomUUID()}@yu.test`])).rows[0]!.id;
+    await db.client.query(`INSERT INTO app.staff_assignments (staff_id, scope_type, branch_id, valid_from, created_by) VALUES ($1, 'branch', $2, '2026-01-01', $1)`, [staff2, branchId]);
+    await tx((t) => setRate(t, owner, { staffId: staff2, validFrom: '2026-01-01', hourlyKop: 60_000, attendanceFeeKop: 0, reason: 'старт' }, meta(), clock));
+    await settle();
+    // Смена закрытого сентября без начисления (не была отмечена до закрытия); факт пришёл после – корректировка по ставке на дату.
+    const id = (await db.client.query<{ id: string }>(
+      `INSERT INTO app.staff_shifts (staff_id, branch_id, local_date, period, created_by, created_at)
+       VALUES ($1, $2, '2026-09-25', tstzrange($3::timestamptz, $4::timestamptz, '[)'), $1, $5) RETURNING id`,
+      [staff2, branchId, at('2026-09-25', '10:00'), at('2026-09-25', '16:00'), NOW],
+    )).rows[0]!.id;
+    await db.client.query(`UPDATE app.staff_shifts SET status = 'worked', paid_minutes = 60, fact_version = fact_version + 1 WHERE id = $1`, [id]);
+    await tx((t) => settleShift(t, id, 'attendance', clock));
+    expect((await db.client.query(`SELECT amount FROM journal.ledger_entries WHERE ref_id = $1 AND refs ? 'closedPeriodId'`, [id])).rows).toEqual([{ amount: '60000' }]);
+    // Новая ставка задним числом: закрытый период не пересчитывается (K18 §3), корректировка остаётся по прежней.
+    await tx((t) => setRate(t, owner, { staffId: staff2, validFrom: '2026-09-01', hourlyKop: 90_000, attendanceFeeKop: 0, reason: 'повышение' }, meta(), clock));
+    await settle();
+    expect((await onlyCheck('payroll_accrual')).filter((d) => d.objectId === id)).toEqual([]);
+  });
+
   it('событие в очереди – не расхождение; после обработки считается', async () => {
     const s = await tx((t) => createShift(t, owner, { staffId, branchId, start: at('2026-10-20', '10:00'), end: at('2026-10-20', '16:00') }, meta(), clock));
     await tx((t) => setAttendance(t, owner, s.id, { rowVersion: s.rowVersion, status: 'worked', paidMinutes: 60, reason: 'факт' }, meta(), clock));
