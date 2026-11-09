@@ -1,0 +1,116 @@
+---
+// Страницы из CMS (S4-87, K11 №221–223; K22 §5, §7): /content/pages – страницы сайта, юридические документы, страницы филиалов и комнат зоны;
+// /content/pages/{key}[?cityId=] – страница по ключу (юридические – только сетевые, правит Владелец); /content/pages/rooms/{roomId},
+// /content/pages/branches/{branchId} – текст и галерея. Ключ вне карты сайта и чужое – 404 (K1).
+import Crm from '../../../layouts/Crm.astro';
+import PageEditor, { type PageKind } from '../../../islands/PageEditor.tsx';
+import PreviewFrame from '../../../islands/PreviewFrame.tsx';
+import VersionHistory from '../../../islands/VersionHistory.tsx';
+import { ApiError, serverCall } from '../../../lib/api.ts';
+import { ContentTabs, type DraftDto, type VersionDto } from '../../../lib/content.tsx';
+import '../../../styles/content.css';
+
+const PAGES: Record<string, string> = { about: 'О клубе', rules: 'Правила клуба', contacts_intro: 'Контакты: вступление' };
+const LEGAL: Record<string, string> = { 'privacy-policy': 'Политика конфиденциальности', 'personal-data-consent': 'Согласие на обработку персональных данных', 'cookie-policy': 'Политика cookie', 'advertising-consent': 'Согласие на рекламу' };
+
+const { me, cookie, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const parts = (Astro.params.path ?? '').split('/').filter(Boolean);
+const cityId = Astro.url.searchParams.get('cityId') || null;
+let notFound = !can('content.view');
+let kind: PageKind | null = null;
+let base = '';
+let name = '';
+let draft: DraftDto | null = null;
+let liveDoc: string | null = null;
+const legal = parts.length === 1 && parts[0]! in LEGAL;
+if (!notFound && parts.length === 1 && (parts[0]! in PAGES || legal)) {
+  kind = 'page';
+  base = `/content/pages/${parts[0]}`;
+  name = PAGES[parts[0]!] ?? LEGAL[parts[0]!]!;
+  if (legal && cityId) notFound = true;
+} else if (!notFound && parts.length === 2 && (parts[0] === 'rooms' || parts[0] === 'branches')) {
+  kind = parts[0] === 'rooms' ? 'room' : 'branch';
+  base = `/content/${parts[0]}/${encodeURIComponent(parts[1]!)}`;
+} else if (parts.length > 0) notFound = true;
+const query = kind === 'page' && cityId ? `?cityId=${encodeURIComponent(cityId)}` : '';
+if (!notFound && kind) {
+  try {
+    draft = await serverCall<DraftDto>(cookie, `${base}/draft${query}`);
+    if (legal && draft.liveVersionId) {
+      const v = await serverCall<{ items: VersionDto[] }>(cookie, `${base}/versions`);
+      liveDoc = (v.items.find((x) => x.id === draft!.liveVersionId)?.snapshot.documentVersion as string | undefined) ?? null;
+    }
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFound = true;
+  }
+}
+if (notFound) Astro.response.status = 404;
+
+// Комнаты зоны – для списка и подписи страницы комнаты
+type Room = { id: string; name: string; branchId?: string };
+const rooms: Array<Room & { branchName: string; branchId: string }> = [];
+if (!notFound && (!kind || kind === 'room')) {
+  await Promise.all(branches.map(async (b) => {
+    try {
+      const r = await serverCall<{ items: Room[] }>(cookie, `/branches/${encodeURIComponent(b.id)}/rooms?limit=100`);
+      rooms.push(...r.items.map((x) => ({ ...x, branchId: b.id, branchName: b.name })));
+    } catch (e) {
+      if (!(e instanceof ApiError) || ![403, 404].includes(e.status)) throw e;
+    }
+  }));
+}
+if (kind === 'room') name = `Комната: ${rooms.find((r) => r.id === parts[1])?.name ?? 'комната'}`;
+if (kind === 'branch') name = `Филиал: ${branches.find((b) => b.id === parts[1])?.name ?? 'филиал'}`;
+const cities = [...new Map(branches.map((b) => [b.cityId, b.cityName])).entries()];
+const cityName = cityId ? cities.find(([id]) => id === cityId)?.[1] ?? 'город' : null;
+const canEdit = kind === 'page' ? can(legal ? 'content.legal.publish' : 'content.network.manage') : can('content.draft.edit');
+const canPublish = kind === 'page' ? canEdit : can('content.publish');
+---
+<Crm title={name || 'Страницы'}>
+  {notFound ? (
+    <div class="yc-head"><h1>Не найдено</h1><p>Такой страницы нет или она вне вашей зоны.</p><a href="/content/pages">К страницам</a></div>
+  ) : kind && draft ? (
+    <>
+      <p class="yc-crumbs"><a href="/content/pages">Страницы</a> / {name}{cityName ? ` – ${cityName}` : ''}</p>
+      <div class="yc-head"><h1>{name}{cityName ? ` – ${cityName}` : ''}</h1><p>{cityName ? 'Своя версия города: пока она не опубликована, сайт показывает сетевую.' : 'Адрес страницы задан картой сайта и не меняется.'}</p></div>
+      <div class="yc-ct__editor">
+        <PageEditor client:load kind={kind} base={base} query={query} initial={draft} legal={legal} liveDocumentVersion={liveDoc} docKey={parts[0] ?? ''} canEdit={canEdit} canPublish={canPublish} />
+        <aside class="yc-ct__side">
+          <PreviewFrame client:load entityType={kind === 'page' ? 'content_page' : kind === 'room' ? 'room_page' : 'branch_page'} id={draft.id} branches={kind === 'page' ? branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName, timezone: b.timezone })) : []} />
+          {draft.id && <VersionHistory client:load versionsPath={`${base}/versions${query}`} draftPath={`${base}/draft${query}`} actionBase={base} query={query} canRollback={canPublish} timezone={branches[0]?.timezone ?? 'Asia/Novosibirsk'} />}
+        </aside>
+      </div>
+    </>
+  ) : (
+    <>
+      <div class="yc-head"><h1>Страницы</h1><p>Тексты страниц сайта. Новые страницы редактором не создаются: адреса задаёт карта сайта.</p></div>
+      <ContentTabs path={Astro.url.pathname} />
+      <section class="yc-panel" aria-labelledby="pg-site">
+        <h2 id="pg-site">Страницы сайта</h2>
+        <ul class="yc-ct__versions" data-testid="pages-site">
+          {Object.entries(PAGES).map(([key, label]) => (
+            <li><a href={`/content/pages/${key}`}>{label}</a>{cities.length > 0 && <span class="yc-ct__muted"> Версия города: {cities.map(([id, n], i) => <>{i > 0 && ', '}<a href={`/content/pages/${key}?cityId=${id}`}>{n}</a></>)}</span>}</li>
+          ))}
+        </ul>
+      </section>
+      <section class="yc-panel" aria-labelledby="pg-legal">
+        <h2 id="pg-legal">Юридические документы</h2>
+        <p class="yc-ct__muted">Только сетевые. Публикует Владелец; у каждой опубликованной редакции – свой номер версии.</p>
+        <ul class="yc-ct__versions">{Object.entries(LEGAL).map(([key, label]) => <li><a href={`/content/pages/${key}`}>{label}</a></li>)}</ul>
+      </section>
+      <section class="yc-panel" aria-labelledby="pg-branches">
+        <h2 id="pg-branches">Филиалы и комнаты</h2>
+        <ul class="yc-ct__versions" data-testid="pages-branches">
+          {branches.map((b) => (
+            <li>
+              <a href={`/content/pages/branches/${b.id}`}>{b.name}</a>
+              {rooms.filter((r) => r.branchId === b.id).length > 0 && <span class="yc-ct__muted"> Комнаты: {rooms.filter((r) => r.branchId === b.id).map((r, i) => <>{i > 0 && ', '}<a href={`/content/pages/rooms/${r.id}`}>{r.name}</a></>)}</span>}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </>
+  )}
+</Crm>
