@@ -31,33 +31,58 @@ interface ClientStat {
   notVisited: boolean;
 }
 
-/** Строка на клиента области. История – вся сеть; «до периода» и «в периоде» – по суткам филиала посещения. */
-async function clientStats(tx: Tx, windows: readonly BranchWindow[]): Promise<ClientStat[]> {
-  if (windows.length === 0) return [];
+interface StatRow {
+  client_id: string;
+  branch_id: string;
+  n: string;
+  first_at: Date;
+  total: string;
+  window_start: Date | null;
+  had_prior: boolean;
+}
+
+/** Один проход по истории: строка на клиента (perBranch – на пару клиент × филиал посещения). История h – вся сеть. */
+async function statRows(tx: Tx, windows: readonly BranchWindow[], perBranch: boolean): Promise<StatRow[]> {
   const [ids, starts, ends] = arr(windows);
-  const r = await tx.query<{ client_id: string; branch_id: string; n: string; first_at: Date; total: string; window_start: Date | null; had_prior: boolean }>(
+  const r = await tx.query<StatRow>(
     `WITH w AS (SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS x(branch_id, s, e)),
      v AS (SELECT client_id, branch_id, planned_start FROM ${VISITS} WHERE client_kind = 'profile'),
      h AS (SELECT client_id, min(planned_start) AS first_at, count(*) AS total FROM v GROUP BY client_id),
      s AS (
-       SELECT v.client_id, min(v.branch_id::text) AS branch_id,
+       SELECT v.client_id, ${perBranch ? 'v.branch_id::text' : 'min(v.branch_id::text)'} AS branch_id,
               count(*) FILTER (WHERE v.planned_start >= w.s AND v.planned_start < w.e) AS n,
               min(w.s) FILTER (WHERE v.planned_start >= w.s AND v.planned_start < w.e) AS window_start,
               bool_or(v.planned_start < w.s) AS had_prior
-       FROM v JOIN w ON w.branch_id = v.branch_id GROUP BY v.client_id
+       FROM v JOIN w ON w.branch_id = v.branch_id GROUP BY v.client_id${perBranch ? ', v.branch_id' : ''}
      )
      SELECT s.client_id, s.branch_id, s.n, h.first_at, h.total, s.window_start, s.had_prior
-     FROM s JOIN h ON h.client_id = s.client_id ORDER BY s.client_id`,
+     FROM s JOIN h ON h.client_id = s.client_id ORDER BY ${perBranch ? 's.branch_id, ' : ''}s.client_id`,
     [ids, starts, ends],
   );
-  return r.rows.map((x) => {
-    const visits = Number(x.n);
-    const first = visits > 0 && x.first_at.getTime() >= x.window_start!.getTime();
-    return {
-      client_id: x.client_id, branch_id: x.branch_id, visits, firstTime: first, returning: visits > 0 && !first,
-      repeat: visits > 0 && Number(x.total) >= 2, notVisited: visits === 0 && x.had_prior,
-    };
-  });
+  return r.rows;
+}
+
+function toStat(x: StatRow): ClientStat {
+  const visits = Number(x.n);
+  const first = visits > 0 && x.first_at.getTime() >= x.window_start!.getTime();
+  return {
+    client_id: x.client_id, branch_id: x.branch_id, visits, firstTime: first, returning: visits > 0 && !first,
+    repeat: visits > 0 && Number(x.total) >= 2, notVisited: visits === 0 && x.had_prior,
+  };
+}
+
+/** Строка на клиента области. История – вся сеть; «до периода» и «в периоде» – по суткам филиала посещения. */
+async function clientStats(tx: Tx, windows: readonly BranchWindow[]): Promise<ClientStat[]> {
+  if (windows.length === 0) return [];
+  return (await statRows(tx, windows, false)).map(toStat);
+}
+
+/** То же для каждого филиала отдельно (clientStats(windowsOf([b]))) – одним проходом вместо прохода на филиал (S4-131). */
+async function clientStatsByBranch(tx: Tx, windows: readonly BranchWindow[]): Promise<Map<string, ClientStat[]>> {
+  const out = new Map<string, ClientStat[]>(windows.map((w) => [w.branchId!, []]));
+  if (windows.length === 0) return out;
+  for (const row of await statRows(tx, windows, true)) out.get(row.branch_id)?.push(toStat(row));
+  return out;
 }
 
 const STAT_FILTERS: Record<Exclude<ClientsPeriodMetric, 'profileVisits'>, (s: ClientStat) => boolean> = {
@@ -183,7 +208,8 @@ export async function clientsReport(env: ReportEnv, p: ReportParams): Promise<Cl
   const ivPrev = await intervalRows(env.tx, prev);
   const byBranch: ClientsBranchGroup[] = [];
   if (branches.length > 1) {
-    for (const b of branches) byBranch.push({ branchId: b.id, metrics: periodMetrics(await clientStats(env.tx, windowsOf([b], p.period)), null) });
+    const perBranch = await clientStatsByBranch(env.tx, cur);
+    for (const b of branches) byBranch.push({ branchId: b.id, metrics: periodMetrics(perBranch.get(b.id) ?? [], null) });
   }
   const metrics: Record<ClientsMetric, Metric> = {
     ...base,

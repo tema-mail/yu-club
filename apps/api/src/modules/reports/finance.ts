@@ -76,34 +76,66 @@ export interface PlaceBalance {
   closingKop: number;
 }
 
-/** Остаток по каждому месту денег (K17 §2). closing считается независимо – Σ движений до конца периода; формула 14 §7.2 – в тесте. */
-async function placeBalances(tx: Tx, windows: readonly BranchWindow[]): Promise<PlaceBalance[]> {
-  if (windows.length === 0) return [];
-  const r = await tx.query<Record<'branch_id' | 'place' | 'opening' | 'income' | 'refund' | 'expense' | 'withdrawal' | 'tin' | 'tout' | 'corr' | 'closing', string>>(
-    `WITH w AS (SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS x(branch_id, s, e)),
-     moves AS (
-       SELECT t.branch_id, t.place, t.delta_kop AS d, t.original_kind AS k, t.occurred_at FROM app.rpt_finance_operations t JOIN w ON w.branch_id = t.branch_id WHERE t.occurred_at < w.e
+type BalanceCol = 'branch_id' | 'place' | 'opening' | 'income' | 'refund' | 'expense' | 'withdrawal' | 'tin' | 'tout' | 'corr' | 'closing';
+
+/** Остатки периода из сумм на границах: pre – Σ до начала окна, end – Σ до конца, n – операций до конца (место без операций – без строки). */
+const balanceSelect = (which: string, pre: string, end: string, n: string) => {
+  const moved = (k: string, sign = '') => `coalesce(${sign}sum(coalesce(g.${end}, 0) - coalesce(g.${pre}, 0)) FILTER (WHERE g.k = '${k}'), 0)`;
+  return `
+  SELECT '${which}' AS which, g.branch_id, g.place,
+    coalesce(sum(g.${pre}), 0) + ${moved('opening_balance')} AS opening,
+    ${moved('income')} AS income, ${moved('refund', '-')} AS refund, ${moved('expense', '-')} AS expense, ${moved('withdrawal', '-')} AS withdrawal,
+    ${moved('transfer_in')} AS tin, ${moved('place_transfer', '-')} AS tout, ${moved('correction')} AS corr,
+    coalesce(sum(g.${end}), 0) AS closing
+  FROM g GROUP BY g.branch_id, g.place HAVING coalesce(sum(g.${n}), 0) > 0`;
+};
+
+const toBalance = (x: Record<BalanceCol, string>): PlaceBalance => ({
+  branchId: x.branch_id, place: x.place as PlaceBalance['place'], openingKop: Number(x.opening), incomeKop: Number(x.income), refundKop: Number(x.refund), expenseKop: Number(x.expense),
+  withdrawalKop: Number(x.withdrawal), transferInKop: Number(x.tin), transferOutKop: Number(x.tout), correctionKop: Number(x.corr), closingKop: Number(x.closing),
+});
+
+/** Остаток по каждому месту денег (K17 §2): «Σ движений до t» (K24 §3.4); closing считается независимо, формула 14 §7.2 – в тесте.
+ *  S4-131: Σ до границы t = дневные суммы rpt_finance_place_days за сутки UTC до суток t (0418) + операции журнала от начала
+ *  этих суток до t (по индексу). Границы – начало и конец окна и прошлого окна (prev: те же филиалы в том же порядке) – одним запросом. */
+async function placeBalances(tx: Tx, windows: readonly BranchWindow[], prev?: readonly BranchWindow[]): Promise<{ cur: PlaceBalance[]; prev: PlaceBalance[] }> {
+  if (windows.length === 0) return { cur: [], prev: [] };
+  const p = prev ?? windows;
+  const r = await tx.query<Record<BalanceCol | 'which', string>>(
+    `WITH w AS (SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[], $4::timestamptz[], $5::timestamptz[]) AS x(branch_id, s, e, ps, pe)),
+     b AS (
+       SELECT w.branch_id, x.tag, x.t, (x.t AT TIME ZONE 'UTC')::date AS day, ((x.t AT TIME ZONE 'UTC')::date::timestamp AT TIME ZONE 'UTC') AS day_at
+       FROM w CROSS JOIN LATERAL (VALUES ('s', w.s), ('e', w.e), ('ps', w.ps), ('pe', w.pe)) AS x(tag, t)
+     ),
+     -- неполные сутки до границы – из журнала по индексу (филиал, дата) на каждую границу: OFFSET 0 не даёт планировщику
+     -- превратить это в соединение со всем журналом
+     raw AS (
+       SELECT b.branch_id, b.tag, r.place, r.k, r.cp, r.d
+       FROM b CROSS JOIN LATERAL (
+         SELECT t.place, t.original_kind AS k, t.counter_place AS cp, t.delta_kop AS d FROM app.rpt_finance_operations t
+         WHERE t.branch_id = b.branch_id AND t.occurred_at >= b.day_at AND t.occurred_at < b.t OFFSET 0
+       ) r
+     ),
+     m AS (
+       SELECT b.branch_id, b.tag, a.place, a.kind AS k, a.delta_kop AS d, a.ops AS n
+       FROM b JOIN app.rpt_finance_place_days a ON a.branch_id = b.branch_id AND a.day < b.day
        UNION ALL
-       SELECT t.branch_id, t.counter_place, -t.delta_kop, 'transfer_in', t.occurred_at FROM app.rpt_finance_operations t JOIN w ON w.branch_id = t.branch_id WHERE t.occurred_at < w.e AND t.counter_place IS NOT NULL
+       SELECT raw.branch_id, raw.tag, raw.place, raw.k, raw.d, 1 FROM raw
+       UNION ALL
+       SELECT raw.branch_id, raw.tag, raw.cp, 'transfer_in', -raw.d, 1 FROM raw WHERE raw.k = 'place_transfer'
+     ),
+     g AS (
+       SELECT branch_id, place, k,
+              sum(d) FILTER (WHERE tag = 's') AS ds, sum(d) FILTER (WHERE tag = 'e') AS de, sum(n) FILTER (WHERE tag = 'e') AS ne,
+              sum(d) FILTER (WHERE tag = 'ps') AS dps, sum(d) FILTER (WHERE tag = 'pe') AS dpe, sum(n) FILTER (WHERE tag = 'pe') AS npe
+       FROM m GROUP BY branch_id, place, k
      )
-     SELECT m.branch_id, m.place,
-       coalesce(sum(m.d) FILTER (WHERE m.occurred_at < w.s OR m.k = 'opening_balance'), 0) AS opening,
-       coalesce(sum(m.d) FILTER (WHERE m.occurred_at >= w.s AND m.k = 'income'), 0) AS income,
-       coalesce(-sum(m.d) FILTER (WHERE m.occurred_at >= w.s AND m.k = 'refund'), 0) AS refund,
-       coalesce(-sum(m.d) FILTER (WHERE m.occurred_at >= w.s AND m.k = 'expense'), 0) AS expense,
-       coalesce(-sum(m.d) FILTER (WHERE m.occurred_at >= w.s AND m.k = 'withdrawal'), 0) AS withdrawal,
-       coalesce(sum(m.d) FILTER (WHERE m.occurred_at >= w.s AND m.k = 'transfer_in'), 0) AS tin,
-       coalesce(-sum(m.d) FILTER (WHERE m.occurred_at >= w.s AND m.k = 'place_transfer'), 0) AS tout,
-       coalesce(sum(m.d) FILTER (WHERE m.occurred_at >= w.s AND m.k = 'correction'), 0) AS corr,
-       coalesce(sum(m.d), 0) AS closing
-     FROM moves m JOIN w ON w.branch_id = m.branch_id
-     GROUP BY m.branch_id, m.place ORDER BY m.branch_id, m.place`,
-    [windows.map((w) => w.branchId), windows.map((w) => w.start), windows.map((w) => w.end)],
+     ${balanceSelect('cur', 'ds', 'de', 'ne')}
+     ${prev ? `UNION ALL ${balanceSelect('prev', 'dps', 'dpe', 'npe')}` : ''}
+     ORDER BY which, branch_id, place`,
+    [windows.map((w) => w.branchId), windows.map((w) => w.start), windows.map((w) => w.end), p.map((w) => w.start), p.map((w) => w.end)],
   );
-  return r.rows.map((x) => ({
-    branchId: x.branch_id, place: x.place as PlaceBalance['place'], openingKop: Number(x.opening), incomeKop: Number(x.income), refundKop: Number(x.refund), expenseKop: Number(x.expense),
-    withdrawalKop: Number(x.withdrawal), transferInKop: Number(x.tin), transferOutKop: Number(x.tout), correctionKop: Number(x.corr), closingKop: Number(x.closing),
-  }));
+  return { cur: r.rows.filter((x) => x.which === 'cur').map(toBalance), prev: r.rows.filter((x) => x.which === 'prev').map(toBalance) };
 }
 
 export interface ExpenseGroup {
@@ -121,7 +153,8 @@ async function expenseGroups(tx: Tx, windows: readonly BranchWindow[], p: Financ
      JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON w.branch_id = t.branch_id AND t.occurred_at >= w.s AND t.occurred_at < w.e
      JOIN app.rpt_finance_categories c ON c.category_id = t.category_id
      LEFT JOIN app.rpt_finance_categories s ON s.category_id = t.subcategory_id
-     WHERE t.original_kind = 'expense' AND ($4::text[] IS NULL OR t.method = ANY($4::text[])) AND ($5::uuid IS NULL OR t.category_id = $5 OR t.subcategory_id = $5)
+     WHERE t.original_kind = 'expense' AND t.branch_id = ANY($1::uuid[]) AND t.occurred_at >= (SELECT min(x) FROM unnest($2::timestamptz[]) x) AND t.occurred_at < (SELECT max(x) FROM unnest($3::timestamptz[]) x)
+       AND ($4::text[] IS NULL OR t.method = ANY($4::text[])) AND ($5::uuid IS NULL OR t.category_id = $5 OR t.subcategory_id = $5)
      GROUP BY t.category_id, t.subcategory_id, c.name, s.name ORDER BY c.name, s.name NULLS FIRST`,
     [windows.map((w) => w.branchId), windows.map((w) => w.start), windows.map((w) => w.end), p.method?.length ? p.method : null, p.categoryId ?? null],
   );
@@ -140,7 +173,8 @@ async function incomeByMethod(tx: Tx, windows: readonly BranchWindow[]): Promise
   const r = await tx.query<{ method: string; amount: string }>(
     `SELECT t.method, sum(t.signed_kop) AS amount FROM app.rpt_finance_operations t
      JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON w.branch_id = t.branch_id AND t.occurred_at >= w.s AND t.occurred_at < w.e
-     WHERE t.original_kind = 'income' AND t.method IS NOT NULL GROUP BY t.method ORDER BY t.method`,
+     WHERE t.original_kind = 'income' AND t.method IS NOT NULL
+       AND t.branch_id = ANY($1::uuid[]) AND t.occurred_at >= (SELECT min(x) FROM unnest($2::timestamptz[]) x) AND t.occurred_at < (SELECT max(x) FROM unnest($3::timestamptz[]) x) GROUP BY t.method ORDER BY t.method`,
     [windows.map((w) => w.branchId), windows.map((w) => w.start), windows.map((w) => w.end)],
   );
   return r.rows.map((x) => ({ method: x.method, amountKop: Number(x.amount) }));
@@ -160,8 +194,7 @@ export async function financeReport(env: ReportEnv, p: FinanceParams): Promise<F
   const branches = await resolveBranches(env.tx, env.ctx, FINANCE_ACTION, p);
   const windows = windowsOf(branches, p.period);
   const prev = windowsOf(branches, prevPeriod(p.period));
-  const places = await placeBalances(env.tx, windows);
-  const prevPlaces = await placeBalances(env.tx, prev);
+  const { cur: places, prev: prevPlaces } = await placeBalances(env.tx, windows, prev);
   const balance = (key: 'openingKop' | 'closingKop'): Metric => (places.length === 0 ? noData : okMetric(placeTotal(places, key), 'kop', prevPlaces.length ? placeTotal(prevPlaces, key) : null));
   return {
     ...base,
@@ -204,7 +237,7 @@ export async function financeDetail(
 ): Promise<{ rows: Array<FinanceDetailRow & { value: number }> | Array<PlaceBalance & { value: number }>; total: Metric; nextCursor: string | null }> {
   if (metric === 'cashOpening' || metric === 'cashClosing') {
     const branches = await resolveBranches(env.tx, env.ctx, FINANCE_ACTION, p);
-    const rows = (await placeBalances(env.tx, windowsOf(branches, p.period))).filter((r) => !p.place || r.place === p.place);
+    const rows = (await placeBalances(env.tx, windowsOf(branches, p.period))).cur.filter((r) => !p.place || r.place === p.place);
     const key = metric === 'cashOpening' ? 'openingKop' : 'closingKop';
     return { rows: rows.map((r) => ({ ...r, value: r[key] })), total: rows.length ? okMetric(placeTotal(rows, key), 'kop') : noData, nextCursor: null };
   }
