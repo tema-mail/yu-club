@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import * as K from '../../../packages/contracts/src/booking.ts';
 import { MOCK_CODE, UUID, clients, fail, readCookie, registerClientAuth, sessions } from './mock-clients.ts';
 import { registerCommerce } from './mock-commerce.ts';
+import { registerEvents } from './mock-events.ts';
 import { registerResources, resourceId, seedResources } from './mock-resources.ts';
 
 export { MOCK_CODE, resourceId };
@@ -148,6 +149,22 @@ export function buildMock() {
     fail,
   });
   registerBooking(app, P);
+  registerEvents(app, P, { // мероприятия и подарок (Э3) – tests/mock-events.ts; запись по подарку – обычное удержание K5 ниже
+    sessionClient: (cookie) => {
+      const c = clients.find((x) => x.id === clientOf(cookie));
+      return c ? { id: c.id, phone: c.phone } : null;
+    },
+    branches: () => publicBranches().map((b) => ({ id: b.id, name: b.name, timezone: b.timezone, active: b.status === 'active', hasRoom: resourcesOf(b.id).some((r) => r.type === 'room_whole') })),
+    giftWindows,
+    giftHold,
+    holdState: (id) => {
+      const h = holds.get(id);
+      if (!h) return { state: 'dead', bookingId: null };
+      if (h.status === 'converted') return { state: 'converted', bookingId: bookings.find((b) => b.checkoutId === (h.checkout as { checkoutId: string }).checkoutId)?.id ?? null };
+      return { state: isLive(h, Date.now()) ? 'live' : 'dead', bookingId: null };
+    },
+    fail,
+  });
   return app;
 }
 
@@ -200,9 +217,12 @@ class MockError extends Error {
 }
 
 const resourcesOf = (branchId: string) => seedResources(branchId);
-const findResource = (id: string): Resource | undefined => publicBranches().flatMap((b) => resourcesOf(b.id)).find((r) => r.id === id);
-/** Вся комната VR = оба места (expandToUnits); остальные ресурсы – одна единица. */
-const unitsOf = (r: Resource) => (r.type === 'room_whole' ? [resourceId(r.branchId, 'vr1'), resourceId(r.branchId, 'vr2')] : [r.id]);
+/** Подарочный ресурс gift_vr (K20 §8.2, gift-resource.ts): VR1+VR2 без PS4, self_bookable = false – в публичном списке ресурсов
+ *  и в доступности его нет, тариф 0 ₽; удержание – только с грантом подарка (без него RESOURCE_UNAVAILABLE, hold.ts). */
+const giftResource = (branchId: string): Resource => ({ ...resourcesOf(branchId).find((r) => r.type === 'room_whole')!, id: resourceId(branchId, 'gift'), type: 'gift_vr', name: 'Подарок: 2 VR', stepMinutes: 5 });
+const findResource = (id: string): Resource | undefined => publicBranches().flatMap((b) => [...resourcesOf(b.id), giftResource(b.id)]).find((r) => r.id === id);
+/** Вся комната VR и подарок = оба места (expandToUnits); остальные ресурсы – одна единица. */
+const unitsOf = (r: Resource) => (r.type === 'room_whole' || r.type === 'gift_vr' ? [resourceId(r.branchId, 'vr1'), resourceId(r.branchId, 'vr2')] : [r.id]);
 const branchOf = (id: string) => publicBranches().find((b) => b.id === id);
 
 /** Интервалы работы ресурса в день по зоне филиала. */
@@ -276,7 +296,7 @@ function clientOverlap(clientId: string, start: number, end: number, skipItem?: 
 }
 
 /** Проверки позиции 01 §8.2 и занятость единиц (EXCLUDE в API) – те же коды. */
-function checkItem(b: Branch, raw: unknown, owner: Owner): MHoldItem {
+function checkItem(b: Branch, raw: unknown, owner: Owner, grant = false): MHoldItem {
   const now = Date.now();
   const it = (raw ?? {}) as { resourceId?: unknown; start?: unknown; end?: unknown };
   const start = typeof it.start === 'string' ? Date.parse(it.start) : NaN;
@@ -284,6 +304,7 @@ function checkItem(b: Branch, raw: unknown, owner: Owner): MHoldItem {
   if (typeof it.resourceId !== 'string' || !Number.isFinite(start) || !Number.isFinite(end)) throw new MockError(400, 'VALIDATION_FAILED', 'Проверьте данные');
   const r = findResource(it.resourceId);
   if (!r || r.branchId !== b.id) throw new MockError(404, 'NOT_FOUND', 'Не найдено');
+  if (r.type === 'gift_vr' && !grant) throw new MockError(409, 'RESOURCE_UNAVAILABLE', 'Это место недоступно для записи', { resourceId: r.id });
   if (!(start < end)) throw new MockError(422, 'INVALID_DURATION', 'Конец раньше начала', { reason: 'empty' });
   const date = localDate(start, b.timezone);
   const today = localDate(now, b.timezone);
@@ -409,6 +430,44 @@ function pageOf<T extends { id: string }>(rows: T[], key: (x: T) => number, asc:
   return { items, nextCursor: from.length > PAGE && last ? cursorOf(key(last), last.id) : null };
 }
 
+/** Окна подарка на день (giftSlots, routes.gifts.ts): начало на сетке 15 мин от открытия, длительность minutes, оба шлема свободны –
+ *  занятость та же, что у удержаний и броней (один занятый шлем – окна нет). Проверки дня (будни, праздник, срок) – в mock-events.ts. */
+function giftWindows(branchId: string, date: string, minutes: number): { closedReason: string | null; slots: Array<{ start: string; end: string }> } {
+  const b = branchOf(branchId);
+  if (!b) throw new MockError(404, 'NOT_FOUND', 'Не найдено');
+  const now = Date.now();
+  const today = localDate(now, b.timezone);
+  if (date < today || date >= plusDays(today, WINDOW_MAX_DAYS)) return { closedReason: 'OUTSIDE_BOOKING_WINDOW', slots: [] };
+  const units = unitsOf(giftResource(b.id));
+  const fixed = staticBusy(b, date);
+  const live = [...holds.values()].filter((h) => isLive(h, now));
+  const busy = (s: number, e: number) =>
+    fixed.some((x) => units.includes(x.unit) && overlaps(x.start, x.end, s, e))
+    || bookings.some((x) => occupies(x) && x.units.some((u) => units.includes(u)) && overlaps(x.start, x.end, s, e))
+    || live.some((h) => h.items.some((i) => i.status === 'active' && i.units.some((u) => units.includes(u)) && overlaps(i.start, i.end, s, e)));
+  const slots = [];
+  for (const [os, oe] of openOf(b, null, date)) {
+    for (let s = os; s + minutes * MIN <= oe; s += 15 * MIN) {
+      if (s > now && !busy(s, s + minutes * MIN)) slots.push({ start: iso(s), end: iso(s + minutes * MIN) });
+    }
+  }
+  return { closedReason: null, slots };
+}
+
+/** Удержание по подарку (holdGift → createHold с грантом): обычное K5 – тот же таймер и HOLD_ALREADY_ACTIVE, позиция – подарочный ресурс, цена 0. */
+function giftHold(clientId: string, branchId: string, start: string, minutes: number) {
+  const b = branchOf(branchId);
+  if (!b) throw new MockError(404, 'NOT_FOUND', 'Не найдено');
+  if (b.status !== 'active') throw new MockError(409, 'BRANCH_NOT_ACTIVE', 'Филиал сейчас не принимает записи');
+  const o: Owner = { clientId, visitorId: null };
+  const existing = ownActiveHold(b.id, o);
+  if (existing) throw new MockError(409, 'HOLD_ALREADY_ACTIVE', 'Уже есть активное удержание – добавьте слот в него', { holdId: existing.id });
+  const t = Date.parse(start);
+  const item = checkItem(b, { resourceId: giftResource(b.id).id, start, end: iso(t + minutes * MIN) }, o, true);
+  const h: MHold = { id: randomUUID(), branchId: b.id, clientId, visitorId: null, status: 'active', expiresAt: Date.now() + HOLD_MINUTES * MIN, items: [item] };
+  holds.set(h.id, h);
+  return holdDto(h, Date.now());
+}
 function registerBooking(app: FastifyInstance, P: string) {
   const send = (reply: FastifyReply, e: unknown) => {
     if (!(e instanceof MockError)) throw e;
