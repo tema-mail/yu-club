@@ -98,7 +98,9 @@ describe('постановка', () => {
     await withTx(fx.app, (tx) => cancelExport(tx, owner(), long.job.id, meta(owner()), clock));
     await expect(request(owner(), { report: 'bookings', format: 'csv', params: { from: '2026-10-31', to: '2026-10-01' } })).rejects.toMatchObject({ code: 'REPORT_PERIOD_INVALID' });
     await expect(request(owner(), { report: 'нет', format: 'csv', params: PERIOD })).rejects.toMatchObject({ code: 'REPORT_UNKNOWN' });
-    await expect(request(owner(), { report: 'events', format: 'csv', params: PERIOD })).rejects.toMatchObject({ code: 'REPORT_UNKNOWN' });
+    const e3 = await request(owner(), { report: 'staff', format: 'csv', params: PERIOD }); // отчёты Э3 в реестре с S4-76…S4-78
+    expect(e3.job.status).toBe('queued');
+    await withTx(fx.app, (tx) => cancelExport(tx, owner(), e3.job.id, meta(owner()), clock));
     await expect(request(director(), { report: 'bookings', format: 'csv', params: { ...PERIOD, branchIds: [msk] } })).rejects.toMatchObject({ code: 'NOT_FOUND', httpStatus: 404 });
     await expect(request(fx.admin([nsk]), { report: 'bookings', format: 'csv', params: PERIOD })).rejects.toMatchObject({ code: 'FORBIDDEN', details: { action: 'reports.export' } });
     await expect(request(owner(), { report: 'bookings', format: 'csv', detail: true, params: PERIOD })).rejects.toMatchObject({ code: 'REPORT_FILTER_INVALID' });

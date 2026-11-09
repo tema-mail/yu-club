@@ -41,6 +41,9 @@ const VIEW_ACTION: Record<string, string> = {
   clients: 'reports.clients.view',
   loyalty: 'reports.loyalty.view',
   comms: 'reports.comms.view',
+  events: 'reports.events.view',
+  staff: 'reports.staff.view',
+  equipment: 'reports.equipment.view',
 };
 /** Детальные финансы – отдельное право (K24 §8; 14 §16). */
 const DETAIL_ACTION: Record<string, string> = { finance: 'reports.export.detail', certificates: 'reports.export.detail' };
