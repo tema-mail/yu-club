@@ -1,10 +1,14 @@
 // S4-69. Сводный дашборд (K24 §3.1, §4; 14 §4). Своих формул нет: каждая карточка – значение функции своего отчёта при тех же фильтрах,
 // с переходом в него. Набор – по праву роли (§8): нет права – карточки нет, деньги Администратору не приходят. Поступления, возвраты,
-// расходы, движение и остаток – отдельными карточками, слова «прибыль» нет (14 §4.3). Карточки Э3 до выпуска – source_not_ready (S4-79).
+// расходы, движение и остаток – отдельными карточками, слова «прибыль» нет (14 §4.3). Карточки Э3 (S4-79): мероприятия (3.5), пустые
+// и незакрытые смены (3.9, рабочий стол Директора и Владельца K24 §4), открытые неисправности и простой (3.10) – числами своих отчётов.
 import { roleAllows } from '../../core/permissions.ts';
 import { bookingsReport, type BookingsMetric } from './bookings.ts';
 import { financeReport } from './finance.ts';
-import { DAY_RULE, prevPeriod, unavailable, type Metric, type Period, type ReportEnv, type ReportParams } from './framework.ts';
+import { equipmentReport } from './equipment.ts';
+import { eventsReport } from './events.ts';
+import { DAY_RULE, prevPeriod, type Metric, type Period, type ReportEnv, type ReportParams } from './framework.ts';
+import { staffReport } from './staff.ts';
 import { utilizationReport } from './utilization.ts';
 
 export interface DashboardCard {
@@ -55,11 +59,18 @@ export async function dashboard(env: ReportEnv, p: ReportParams): Promise<Dashbo
     for (const [key, title] of FINANCE_CARDS) cards.push({ key, title, metric: f.metrics[key], link: { report: 'finance', metric: key } });
   }
   if (allowed('reports.events.view')) {
-    cards.push({ key: 'eventsCount', title: 'Мероприятия', metric: unavailable('source_not_ready'), link: { report: 'events', metric: 'count' }, note: 'Появится после модуля мероприятий' });
+    const e = await eventsReport(env, p);
+    cards.push({ key: 'eventsCount', title: 'Мероприятия', metric: e.metrics.count, link: { report: 'events', metric: 'count' }, note: 'По дате проведения' });
+  }
+  if (allowed('reports.staff.view')) {
+    const s = await staffReport(env, p);
+    cards.push({ key: 'emptyIntervals', title: 'Пустые смены', metric: s.metrics.emptyIntervals, link: { report: 'staff', metric: 'emptyIntervals' }, note: s.labels.emptyIntervals });
+    cards.push({ key: 'unclosedShifts', title: 'Незакрытые смены', metric: s.metrics.unclosedShifts, link: { report: 'staff', metric: 'unclosedShifts' }, note: s.labels.unclosedShifts });
   }
   if (allowed('reports.equipment.view')) {
-    cards.push({ key: 'openFaults', title: 'Открытые неисправности', metric: unavailable('source_not_ready'), link: { report: 'equipment', metric: 'openFaults' }, note: 'Появится после модуля оборудования' });
-    cards.push({ key: 'downtime', title: 'Часы простоя', metric: unavailable('source_not_ready'), link: { report: 'equipment', metric: 'downtime' }, note: 'Появится после модуля оборудования' });
+    const q = await equipmentReport(env, p);
+    cards.push({ key: 'openFaults', title: 'Открытые неисправности', metric: q.metrics.openFaults, link: { report: 'equipment', metric: 'openFaults' }, note: 'На момент запроса' });
+    cards.push({ key: 'downtime', title: 'Часы простоя', metric: q.metrics.downtimeMinutes, link: { report: 'equipment', metric: 'downtimeMinutes' }, note: 'В минутах, пересечения не задваиваются' });
   }
   return { cards, period: p.period, prevPeriod: prevPeriod(p.period), dayRule: DAY_RULE, computedAt: env.clock.now().toISOString() };
 }
