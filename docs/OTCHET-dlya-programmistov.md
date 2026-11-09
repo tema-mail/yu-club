@@ -188,7 +188,6 @@ API этих разделов есть, но смотреть на него по
 | Где | Дефект |
 |---|---|
 | `shifts/accrual.ts:131` | Редкая ложная тревога сверки в закрытом периоде: порог доплаты сменился, а правка часов дала разницу ровно 0, поэтому корректировка и новый снимок порога не пишутся |
-| `core/time.ts:215` `hoursToInterval` | `close_time` `24:00` база принимает (`time`, `close_time > open_time`), а `PlainTime.from('24:00:00')` падает – проверка графика отвечает 500; мок CRM отдаёт `24:00` как конец суток. Найдено 10.11 при тесте календаря мероприятий, путь ввода из CRM не проверялся |
 | `reports/clients.ts:233` | `avgIntervalDays` перечитывает все строки на каждой странице |
 | Экраны мероприятий | Нет документа к расходу (11 §11.4): в API нет `attachmentId` и владельца `event`. План: (1) `registerAttachmentOwner('event')` в модуле events – чтение `event.view`, запись `event.money.record`, вне зоны 404, выдача только `GET /attachments/:id`; (2) миграция 0435+ `app.event_expense_documents` (event_id, operation_id, attachment_id, живая строка одна на операцию), `attachmentId` в `POST /events/:id/expense` и `POST /events/:id/expense/:operationId/document`, проверка: вложение этого мероприятия и `active`, операция – живая связь expense этого мероприятия; `attachmentId` у расхода в `GET /events/:id/money`; (3) мок вложений с владельцем `event`, загрузка в `EventMoney.tsx` (`POST /attachments?ownerType=event&docType=check`) и ссылка «Документ» у расхода, спек |
 

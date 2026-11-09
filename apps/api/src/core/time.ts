@@ -210,9 +210,14 @@ export function splitIntoSlots(i: Interval, stepMinutes: number): Interval[] {
   return out;
 }
 
-/** Открытые часы на дату → интервал UTC (close_time > open_time гарантирует схема). */
-export function hoursToInterval(date: LocalDate, open: LocalTime, close: LocalTime, tz: TimeZone): Interval {
-  return interval(localToInstant(date, open, tz), localToInstant(date, close, tz));
+/** Конец суток в графике: Postgres `time` принимает '24:00:00', to_char отдаёт '24:00'. */
+export const END_OF_DAY = '24:00';
+
+/** Открытые часы на дату → интервал UTC (close_time > open_time гарантирует схема).
+ *  close '24:00' – конец суток: 00:00 следующей даты филиала (Temporal.PlainTime 24:00 не принимает). */
+export function hoursToInterval(date: LocalDate, open: LocalTime, close: LocalTime | typeof END_OF_DAY, tz: TimeZone): Interval {
+  const end = close === END_OF_DAY ? branchDay(date, tz).end : localToInstant(date, close, tz);
+  return interval(localToInstant(date, open, tz), end);
 }
 
 // ---- интервалы

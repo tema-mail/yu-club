@@ -279,6 +279,10 @@ describe('выравнивание слотов', () => {
     );
     expect(() => hoursToInterval(d('2026-11-15'), t('22:00'), t('10:00'), NSK)).toThrow();
   });
+  it('hoursToInterval: close 24:00 – конец суток (00:00 следующей даты), в том числе в день перехода', () => {
+    expect(hoursToInterval(d('2026-11-15'), t('10:00'), '24:00', NSK)).toEqual(iv('2026-11-15T03:00:00Z', '2026-11-15T17:00:00Z'));
+    expect(durationMinutes(hoursToInterval(d('2026-10-25'), t('00:00'), '24:00', BER))).toBe(25 * 60);
+  });
 });
 
 describe('напоминания', () => {

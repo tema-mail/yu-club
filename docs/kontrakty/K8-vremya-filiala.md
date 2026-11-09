@@ -48,8 +48,9 @@ export function isDateInWindow(date: LocalDate, clock: Clock, tz: TimeZone, days
 export function assertSlotAligned(i: Interval, stepMinutes: number, tz: TimeZone): void;
 /** Нарезка интервала на слоты шага (для сетки K6). */
 export function splitIntoSlots(i: Interval, stepMinutes: number): Interval[];
-/** Открытые часы на дату → интервал UTC (close_time > open_time гарантирует схема). */
-export function hoursToInterval(date: LocalDate, open: LocalTime, close: LocalTime, tz: TimeZone): Interval;
+/** Открытые часы на дату → интервал UTC (close_time > open_time гарантирует схема).
+ *  close '24:00' (Postgres time '24:00:00') – конец суток: 00:00 следующей даты филиала. */
+export function hoursToInterval(date: LocalDate, open: LocalTime, close: LocalTime | '24:00', tz: TimeZone): Interval;
 
 // ---- интервалы
 export function overlaps(a: Interval, b: Interval): boolean;    // a.start < b.end && b.start < a.end

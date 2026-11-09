@@ -135,6 +135,27 @@ describe('кука посетителя и создание удержания',
     expect((await bad(many)).code).toBe('HOLD_LIMIT_REACHED');
     expect(await one<{ n: number }>(`SELECT count(*)::int n FROM app.holds WHERE visitor_id = $1`, [v.split('=')[1]])).toEqual({ n: 0 });
   });
+
+  it('филиал 10:00–24:00: 23:00–24:00 – можно, 24:00–01:00 – OUTSIDE_SCHEDULE (а не 500)', async () => {
+    const c = await pool.connect();
+    let clientId = '';
+    const hold = async (start: string) => {
+      await c.query('SAVEPOINT h'); // каждая попытка – с чистого листа: неудачная могла оставить строку удержания
+      const code = await codeOf(createHold(c, { clientId, visitorId: null }, { branchId: ids.b1!, items: [{ resourceId: ids.pc1!, start: new Date(start), end: new Date(Date.parse(start) + 3_600_000) }] }, clock));
+      await c.query('ROLLBACK TO SAVEPOINT h');
+      return code;
+    };
+    try {
+      await c.query('BEGIN');
+      clientId = (await c.query(`INSERT INTO app.clients (phone_e164, status, created_by_type, registered_at) VALUES ('+79130000024', 'active', 'system', now()) RETURNING id`)).rows[0].id;
+      await c.query(`INSERT INTO app.calendar_exceptions (branch_id, scope_type, local_date, kind, open_time, close_time, reason, created_by) VALUES ($1, 'branch', '2026-11-20', 'special_hours', '10:00', '24:00', 'до полуночи', $2)`, [ids.b1, SYS]);
+      expect(await hold('2026-11-20T17:00:00Z')).toBe('OUTSIDE_SCHEDULE'); // 21.11 00:00–01:00 местного – день 10:00–22:00
+      expect(await hold('2026-11-20T16:00:00Z')).toBe('ok'); // 20.11 23:00–24:00 местного
+    } finally {
+      await c.query('ROLLBACK');
+      c.release();
+    }
+  });
 });
 
 describe('общий таймер (TC-06) и истечение (TC-05)', () => {
