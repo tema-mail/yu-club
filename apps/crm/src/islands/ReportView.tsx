@@ -148,6 +148,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
 
   const metrics = result ? Object.entries(result.metrics) : [];
   const labels = result?.labels ? Object.entries(result.labels) : [];
+  const sections = sectionsOf(report.key, metrics);
 
   return (
     <div class="rp" data-testid="report" data-state={state} data-period={result ? `${result.period.from}..${result.period.to}` : ''}>
@@ -213,25 +214,32 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
 
       {result && (
         <>
-          <ul class="rp-cards" data-testid="cards">
-            {metrics.map(([key, m]) => (
-              <li key={key}>
-                <button type="button" class={`rp-card${m.state !== 'ok' ? ' rp-card--muted' : ''}`} data-testid={`card-${key}`} aria-pressed={metric === key} onClick={() => pick(key)}>
-                  <span class="rp-card__title">{metricTitle(key)}</span>
-                  <span class="rp-card__value" data-testid="value">{fmtMetric(m)}</span>
-                  <span class="rp-card__delta" data-testid="delta">к прошлому периоду: {fmtDelta(m)}</span>
-                  {dateBasisOf(result, key) && <span class="rp-card__basis">{dateBasisOf(result, key)}</span>}
-                </button>
-              </li>
-            ))}
-          </ul>
+          {sections.map((sec) => (
+            <div key={sec.title} class="rp-section" data-testid={`section-${sec.title}`} style="display:grid;gap:var(--yc-sp-2xs);min-width:0">
+              {sections.length > 1 && <h2 style="margin:0;font-size:var(--yc-fs-m)">{sec.title}</h2>}
+              {sec.hidden ? <p class="yc-empty" data-testid="money-hidden" style="margin:0">{sec.hidden}</p> : (
+                <ul class="rp-cards" data-testid="cards">
+                  {sec.items.map(([key, m]) => (
+                    <li key={key}>
+                      <button type="button" class={`rp-card${m.state !== 'ok' ? ' rp-card--muted' : ''}`} data-testid={`card-${key}`} aria-pressed={metric === key} onClick={() => pick(key)}>
+                        <span class="rp-card__title">{metricTitle(key)}</span>
+                        <span class="rp-card__value" data-testid="value">{fmtMetric(m)}</span>
+                        <span class="rp-card__delta" data-testid="delta">к прошлому периоду: {fmtDelta(m)}</span>
+                        {dateBasisOf(result, key) && <span class="rp-card__basis">{dateBasisOf(result, key)}</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
           {labels.length > 0 && <ul class="rp__notes">{labels.map(([k, t]) => <li key={k}>{t}</li>)}</ul>}
           <div class="rp-scroll">
             <table class="rp-table" data-testid="metrics-table">
               <caption>Точные значения</caption>
               <thead><tr><th scope="col">Показатель</th><th scope="col">Значение</th><th scope="col">Прошлый период</th><th scope="col">Изменение</th></tr></thead>
               <tbody>
-                {metrics.map(([key, m]) => (
+                {sections.flatMap((x) => x.items).map(([key, m]) => (
                   <tr key={key}>
                     <th scope="row">{metricTitle(key)}</th>
                     <td>{fmtMetric(m)}</td>
@@ -242,6 +250,14 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
               </tbody>
             </table>
           </div>
+          {groupTables(result).map((g) => (
+            <div class="rp-scroll" key={g.title}>
+              <table class="rp-table" data-testid={`group-${g.title}`}>
+                <caption>{g.title}</caption>
+                <tbody>{g.rows.map(([k, v]) => <tr key={k}><th scope="row">{k}</th><td>{v}</td></tr>)}</tbody>
+              </table>
+            </div>
+          ))}
           {result.series && result.series.points.length > 1 && (
             <ReportChart title="Загрузка по дням" unit="minutes" buckets={result.series.points.map((x) => ({ key: x.bucket, label: x.bucket.slice(8), period: fmtPeriod({ from: x.bucket, to: x.bucket }) }))}
               series={[
@@ -272,6 +288,50 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
       )}
     </div>
   );
+}
+
+// ---- отчёты Э3 (S4-98; 14 §8, §12, §13): показатели по смыслу; деньги сотрудников без права – скрыты целиком, а не нулями
+
+const E3_SECTIONS: Record<string, Array<{ title: string; keys: string[]; money?: boolean }>> = {
+  events: [
+    { title: 'Мероприятия', keys: ['count', 'cancelled', 'withoutBooking'] },
+    { title: 'Деньги мероприятий', keys: ['agreedPrice', 'avgPrice', 'received', 'refunded', 'due'] },
+    { title: 'Себестоимость и результат', keys: ['plannedCost', 'factCost', 'deviation', 'result'] },
+  ],
+  staff: [
+    { title: 'Смены', keys: ['plannedShifts', 'workedShifts', 'noShows', 'unclosedShifts', 'shortShifts', 'plannedMinutes', 'paidMinutes'] },
+    { title: 'Пустые интервалы', keys: ['emptyIntervals', 'emptyMinutes'] },
+    { title: 'Деньги сотрудников', keys: ['accrued', 'hoursAmount', 'perShift', 'penalties', 'bonuses', 'adjustments', 'toPay', 'paid', 'payoutExpense', 'forecast'], money: true },
+  ],
+  equipment: [
+    { title: 'Парк оборудования', keys: ['totalEquipment', 'inService', 'faulty', 'openFaults'] },
+    { title: 'Поломки и ремонт', keys: ['incidents', 'warrantyRepairs', 'avgRepairMinutes', 'downtimeMinutes', 'repeatBreakdowns'] },
+    { title: 'Расходы на ремонт', keys: ['repairExpenses'] },
+  ],
+};
+
+type Entry = [string, Metric];
+function sectionsOf(report: string, metrics: Entry[]): Array<{ title: string; items: Entry[]; hidden?: string }> {
+  const plan = E3_SECTIONS[report];
+  if (!plan) return [{ title: 'Показатели', items: metrics }];
+  const byKey = new Map(metrics);
+  const out = plan.map((sec) => {
+    const items = sec.keys.filter((k) => byKey.has(k)).map((k): Entry => [k, byKey.get(k)!]);
+    const denied = sec.money && items.length > 0 && items.every(([, m]) => m.state === 'unavailable' && m.reason === 'not_permitted');
+    return denied ? { title: sec.title, items: [], hidden: 'Суммы сотрудников скрыты: нет права на зарплатные данные.' } : { title: sec.title, items };
+  });
+  const rest = metrics.filter(([k]) => !plan.some((x) => x.keys.includes(k)));
+  return rest.length ? [...out, { title: 'Прочее', items: rest }] : out;
+}
+
+const EVENT_STATUS: Record<string, string> = { held: 'Проведено', planned: 'Запланировано', cancelled: 'Отменено', not_held: 'Не состоялось' };
+function groupTables(r: ReportResult): Array<{ title: string; rows: Array<[string, string]> }> {
+  const g = (r.groups ?? {}) as { byStatus?: Array<{ status: string; count: number }>; costStructure?: Array<{ kind: string; amountKop: number }>; expensesByContractor?: Array<{ contractorId: string | null; amountKop: number }> };
+  const out: Array<{ title: string; rows: Array<[string, string]> }> = [];
+  if (g.byStatus?.length) out.push({ title: 'Мероприятия по статусам', rows: g.byStatus.map((x) => [EVENT_STATUS[x.status] ?? x.status, String(x.count)]) });
+  if (g.costStructure?.length) out.push({ title: 'Структура себестоимости', rows: g.costStructure.map((x) => [x.kind === 'other' ? 'Прочее' : x.kind, fmtMetric({ state: 'ok', value: x.amountKop, unit: 'kop' })]) });
+  if (g.expensesByContractor?.length) out.push({ title: 'Расходы на ремонт по исполнителям', rows: g.expensesByContractor.map((x) => [x.contractorId ? 'Подрядчик' : 'Без исполнителя', fmtMetric({ state: 'ok', value: x.amountKop, unit: 'kop' })]) });
+  return out;
 }
 
 function prevText(m: Metric): string {
