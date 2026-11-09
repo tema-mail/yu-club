@@ -40,6 +40,8 @@ test('список затронутых до подтверждения; без 
   await expect(page.getByTestId('move-conflict')).toBeVisible();
   await expect(page.getByTestId('move-bookings')).toContainText('VR-комната целиком');
   await expect(page.getByTestId('move-events')).toContainText('мероприятий: 1');
+  // K19 §8: мероприятие – ссылкой на карточку, не текстом
+  await expect(page.getByTestId('move-events').getByRole('link')).toHaveAttribute('href', /^\/events\/[0-9a-f-]{36}$/);
   await expect(page.getByTestId('eq-place')).toContainText('VR1');
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/equipment-move-conflict.png` });
 

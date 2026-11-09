@@ -110,7 +110,12 @@ export default function MoveEquipment(p: MoveEquipmentProps) {
                 {conflict.unknownBookings > 0 && <li>Ещё броней вне вашего доступа: {conflict.unknownBookings}</li>}
               </ul>
             )}
-            {conflict.eventIds.length > 0 && <p data-testid="move-events">Затронуто мероприятий: {conflict.eventIds.length} ({conflict.eventIds.map((id) => id.slice(-6)).join(', ')})</p>}
+            {conflict.eventIds.length > 0 && (
+              <div data-testid="move-events">
+                <p>Затронуто мероприятий: {conflict.eventIds.length}</p>
+                <ul class="yc-eq__rows">{conflict.eventIds.map((id) => <li key={id}><a href={`/events/${id}`} target="_blank" rel="noopener">Мероприятие …{id.slice(-6)}</a></li>)}</ul>
+              </div>
+            )}
             {conflict.holds > 0 && <p>Незавершённых удержаний на сайте: {conflict.holds}</p>}
             <label class="yc-check"><input type="checkbox" checked={ack} onChange={(x) => setAck((x.currentTarget as HTMLInputElement).checked)} />Видел список, беру решение на себя</label>
           </section>
