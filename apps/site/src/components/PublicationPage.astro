@@ -1,0 +1,84 @@
+---
+// S4-111. Страница публикации (12 §8): один H1, дата и охват словами, плашка «завершена» (K22 §3, K23 §2 – страница с noindex),
+// пометка, если в выбранном клубе публикация не действует (12 §8.5). Текст – только через rich-text.ts (K22 §6).
+// По типу: акция – срок, условия, ограничения, цена не пересчитывается (12 §8.3); розыгрыш – приз, дата итогов, правила, без формы
+// участия (12 §8.4); турнир – дата. Кнопка – только внутренний путь (ctaUrl проверен API) и не у завершённой.
+import { giveawayRulesPath, publicationsPath } from '../../../../packages/contracts/src/paths.ts';
+import type { PublicationPage } from '../lib/content.ts';
+import { SECTION, formatDay, scopeText } from '../lib/publications.ts';
+import { renderRichText, safeHref } from '../lib/rich-text.ts';
+
+interface Props {
+  page: PublicationPage;
+  h1: string;
+  timeZone: string;
+}
+
+const { page: p, h1, timeZone } = Astro.props;
+const section = SECTION[p.type];
+const ended = p.state === 'ended';
+const day = (v: string | null) => (v ? formatDay(v, timeZone) : null);
+const cta = !ended && p.ctaLabel && p.ctaUrl && safeHref(p.ctaUrl)?.startsWith('/') ? { label: p.ctaLabel, href: p.ctaUrl } : null;
+const cover = p.cover && !p.cover.removed && p.cover.url ? p.cover : null;
+const srcset = cover?.variants.filter((v) => v.format === 'webp').map((v) => `${v.url} ${v.w}w`).join(', ') || undefined;
+---
+<ol class="yu-crumbs" aria-label="Навигация">
+  <li><a href="/">Главная</a></li>
+  <li><a href={publicationsPath(p.type)}>{section.title}</a></li>
+  <li aria-current="page">{p.title}</li>
+</ol>
+
+<article class="pub" data-testid="publication">
+  <header class="pub__head">
+    <h1>{h1}</h1>
+    {ended && <p class="yu-notice pub__ended" role="status" data-testid="pub-ended">{section.ended}</p>}
+    {p.appliesHere === false && <p class="yu-notice" role="status" data-testid="pub-not-here">В выбранном вами клубе это не действует. {scopeText(p.onlyIn)}.</p>}
+    <p class="pub__meta">
+      <span>{p.type === 'promotion' && p.publishTo ? `${formatDay(p.publishFrom, timeZone)} – ${formatDay(p.publishTo, timeZone)}` : formatDay(p.publishFrom, timeZone)}</span>
+      <span data-testid="pub-scope">{scopeText(p.onlyIn)}</span>
+    </p>
+    {p.lead && <p class="yu-lead">{p.lead}</p>}
+  </header>
+
+  {cover && <img class="pub__cover" src={cover.url} srcset={srcset} sizes="(min-width: 900px) 760px, 100vw" alt={cover.alt} width={cover.width ?? undefined} height={cover.height ?? undefined} decoding="async" />}
+
+  {(p.type === 'giveaway' || p.type === 'tournament') && (
+    <dl class="yu-facts pub__facts" data-testid="pub-facts">
+      {p.eventDate && <div><dt>{p.type === 'tournament' ? 'Дата турнира' : 'Дата'}</dt><dd>{day(p.eventDate)}</dd></div>}
+      {p.prize && <div><dt>Приз</dt><dd data-testid="pub-prize">{p.prize}</dd></div>}
+      {p.resultsDate && <div><dt>Итоги</dt><dd data-testid="pub-results">{day(p.resultsDate)}</dd></div>}
+    </dl>
+  )}
+
+  <div class="pub__text yu-rich-text" set:html={renderRichText(p.body, p.media)} />
+
+  {p.conditions && (
+    <section class="pub__part" aria-labelledby="pub-conditions">
+      <h2 id="pub-conditions">Условия</h2>
+      <div class="yu-rich-text" set:html={renderRichText(p.conditions, p.media)} />
+    </section>
+  )}
+  {p.restrictions && (
+    <section class="pub__part" aria-labelledby="pub-restrictions">
+      <h2 id="pub-restrictions">Ограничения</h2>
+      <div class="yu-rich-text" set:html={renderRichText(p.restrictions, p.media)} />
+    </section>
+  )}
+  {p.type === 'giveaway' && (p.rulesBody || p.rulesUrl) && (
+    <p class="pub__part"><a class="yu-btn yu-btn--ghost" href={p.rulesBody ? giveawayRulesPath(p.slug) : p.rulesUrl!} data-testid="pub-rules">Правила розыгрыша</a></p>
+  )}
+  {cta && <p class="pub__part"><a class="yu-btn" href={cta.href} data-testid="pub-cta">{cta.label}</a></p>}
+  <p class="pub__part"><a class="pub__back" href={publicationsPath(p.type)}>Все {section.title.toLowerCase()}</a></p>
+</article>
+
+<style>
+  .pub { display: grid; gap: var(--yu-sp-m); max-width: 760px; }
+  .pub > * { min-width: 0; margin: 0; }
+  .pub__head { display: grid; gap: var(--yu-sp-xs); }
+  .pub__head > * { margin: 0; overflow-wrap: anywhere; }
+  .pub__meta { display: flex; flex-wrap: wrap; gap: var(--yu-sp-2xs) var(--yu-sp-s); color: var(--yu-dim); font-size: var(--yu-fs-s); }
+  .pub__cover { display: block; width: 100%; height: auto; border-radius: var(--yu-r-m); background: var(--yu-surface-2); }
+  .pub__text, .pub__part { overflow-wrap: anywhere; }
+  .pub__part h2 { font-size: var(--yu-fs-l); margin: 0 0 var(--yu-sp-2xs); }
+  .pub__back { display: inline-flex; align-items: center; min-height: var(--yu-tap); }
+</style>

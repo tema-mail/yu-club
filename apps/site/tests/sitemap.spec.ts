@@ -24,8 +24,8 @@ test('три вывода совпадают: каждый адрес карты
 
 test('в карте только индексируемое: нет города с одним филиалом, готовящегося, закрытых страниц, адресов без страницы и параметров', async ({ request }) => {
   const xml = await xmlPaths(request);
-  for (const p of ['/', '/rules/', '/schedule/', '/sitemap/', '/novosibirsk/', '/novosibirsk/krasny-prospekt/', '/novosibirsk/akademgorodok/', '/tomsk/lenina/']) expect(xml, p).toContain(p);
-  for (const p of ['/tomsk/', '/novosibirsk/gorskiy/', '/omsk/', '/omsk/mira/', '/login/', '/account/', '/privacy-policy/', '/news/', '/news/live-news/', '/games/vr/alyx/']) expect(xml, p).not.toContain(p);
+  for (const p of ['/', '/rules/', '/schedule/', '/sitemap/', '/novosibirsk/', '/novosibirsk/krasny-prospekt/', '/novosibirsk/akademgorodok/', '/tomsk/lenina/', '/news/', '/news/live-news/']) expect(xml, p).toContain(p);
+  for (const p of ['/tomsk/', '/novosibirsk/gorskiy/', '/omsk/', '/omsk/mira/', '/login/', '/account/', '/privacy-policy/', '/games/vr/alyx/']) expect(xml, p).not.toContain(p);
   expect(xml.filter((p) => p.includes('?'))).toEqual([]);
   expect(new Set(xml).size).toBe(xml.length);
 });
