@@ -10,6 +10,8 @@ import {
 } from '../../../../lib/api.ts';
 import { metaFor } from '../../../../lib/seo.ts';
 import { breadcrumbLd, roomLd } from '../../../../lib/jsonld.ts';
+import { content, type RoomPage } from '../../../../lib/content.ts';
+import { renderRichText } from '../../../../lib/rich-text.ts';
 
 const { city: citySlug = '', branch: branchSlug = '', room: slug = '' } = Astro.params;
 const { network, origin } = Astro.locals;
@@ -32,19 +34,30 @@ const room = rooms.find((r) => r.slug === slug);
 if (!failed && !room) return Astro.rewrite('/404/');
 if (failed) Astro.response.status = 503;
 
+// S4-121: описание, особенности, форматы аренды текстом и галерея – страница CMS (K5 №213). Нет её или API контента молчит – факты.
+let page: RoomPage | null = null;
+if (room && !failed) {
+  try {
+    page = await content.room(room.id);
+  } catch (e) {
+    console.error('site: страница комнаты из CMS не загрузилась – показываем факты', e);
+  }
+}
+const gallery = (page?.gallery ?? []).filter((m) => !m.removed && m.url);
+const plainDescription = page?.description ? page.description.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_#>`]/g, '').replace(/\s+/g, ' ').trim() : null;
 const city = found?.city;
 const branch = found?.branch;
 const closed = branch?.status === 'temporarily_closed';
 const hasCityHub = (city?.branches.length ?? 0) >= 2;
 const others = rooms.filter((r) => r.id !== room?.id);
-// Описание, фото и вместимость из страницы CMS добавит S4-121: нет данных – нет полей (K23 §6).
+// Описание и фото – из страницы CMS; вместимости в данных нет: нет данных – нет полей (K23 §6).
 const jsonLd = room && branch && city
   ? [
-      roomLd(origin, { path: roomPath(city.slug, branch.slug, room.slug), name: room.name, branchPath: branchPath(city.slug, branch.slug) }),
+      roomLd(origin, { path: roomPath(city.slug, branch.slug, room.slug), name: room.name, branchPath: branchPath(city.slug, branch.slug), description: plainDescription, images: gallery.map((m) => m.url!) }),
       breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, ...(hasCityHub ? [{ name: city.name, path: `/${city.slug}/` }] : []), { name: branch.name, path: branchPath(city.slug, branch.slug) }, { name: room.name, path: roomPath(city.slug, branch.slug, room.slug) }]),
     ]
   : [];
-const meta = room && branch && city ? metaFor({ page: 'room', room: room.name, branch: branch.name, city: city.name, description: `${room.name} в клубе ${branch.name}, ${city.name}: ${room.resources.map((r) => r.name).join(', ')}. Онлайн-запись.` }) : null;
+const meta = room && branch && city ? metaFor({ page: 'room', room: room.name, branch: branch.name, city: city.name, description: plainDescription ?? `${room.name} в клубе ${branch.name}, ${city.name}: ${room.resources.map((r) => r.name).join(', ')}. Онлайн-запись.` }, page?.seo) : null;
 ---
 <Site
   title={meta?.title ?? 'Комната временно недоступна – Ю-Клуб'}
@@ -89,8 +102,22 @@ const meta = room && branch && city ? metaFor({ page: 'room', room: room.name, b
         </dl>
       </section>
 
+      {page && (page.description || page.features.length > 0 || gallery.length > 0) && (
+        <section class="yu-section" aria-labelledby="room-about" data-testid="room-content">
+          <h2 id="room-about">О комнате</h2>
+          {page.description && <div class="yu-rich-text" set:html={renderRichText(page.description, page.media)} />}
+          {page.features.length > 0 && <ul class="yu-chips" data-testid="room-features">{page.features.map((f) => <li class="yu-chip">{f}</li>)}</ul>}
+          {gallery.length > 0 && (
+            <ul class="room-gallery" data-testid="room-gallery">
+              {gallery.map((m) => <li><img src={m.url!} alt={m.alt} width={m.width ?? undefined} height={m.height ?? undefined} loading="lazy" decoding="async" /></li>)}
+            </ul>
+          )}
+        </section>
+      )}
+
       <section class="yu-section" aria-labelledby="formats-title">
         <h2 id="formats-title">Что можно забронировать</h2>
+        {page?.rentFormatsText && <div class="yu-rich-text" data-testid="room-rent-text" set:html={renderRichText(page.rentFormatsText, page.media)} />}
         <ul class="yu-zone__rooms" data-testid="room-formats">
           {room.resources.map((r) => (
             <li class="yu-zone__room">
@@ -112,3 +139,8 @@ const meta = room && branch && city ? metaFor({ page: 'room', room: room.name, b
     </>
   )}
 </Site>
+
+<style>
+  .room-gallery { display: grid; gap: var(--yu-sp-xs); grid-template-columns: repeat(2, minmax(0, 1fr)); margin: var(--yu-sp-s) 0 0; padding: 0; list-style: none; }
+  .room-gallery img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--yu-r-s); background: var(--yu-surface-2); }
+</style>
