@@ -8,7 +8,7 @@ import ExportDialog from '../../islands/ExportDialog.tsx';
 import ExportJobs from '../../islands/ExportJobs.tsx';
 import ReconcileRuns from '../../islands/ReconcileRuns.tsx';
 import ReportView, { type ReportFilters } from '../../islands/ReportView.tsx';
-import { presets, reportInfo, REPORTS, todayIn } from '../../lib/reports.ts';
+import { presets, REPORTS, todayIn } from '../../lib/reports.ts';
 
 const { me, ctx, branches } = Astro.locals;
 const can = (a: string) => me.actions.includes(a);

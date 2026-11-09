@@ -106,7 +106,7 @@ export default function GlobalSearch() {
       onFocusOut={(e) => { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) setOpen(false); }}>
       <label class="yc-field" style="gap:0">
         <span class="yc-field__label" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Поиск по CRM</span>
-        <input ref={input} class="yc-input" type="search" name="globalSearch" value={q} maxLength={100} autoComplete="off" placeholder="Поиск: клиент, телефон, № брони…  ( / )"
+        <input ref={input} class="yc-input" type="text" enterKeyHint="search" name="globalSearch" value={q} maxLength={100} autoComplete="off" placeholder="Поиск: клиент, телефон, № брони…  ( / )"
           role="combobox" aria-expanded={open && (groups !== null || hint !== '' || error !== '')} aria-controls="gsearch-list" aria-autocomplete="list"
           aria-activedescendant={active >= 0 ? `gs-${active}` : undefined}
           onInput={(e) => onInput((e.target as HTMLInputElement).value)} onFocus={() => setOpen(true)} onKeyDown={onKeyDown} />
