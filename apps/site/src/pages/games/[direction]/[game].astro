@@ -1,0 +1,91 @@
+---
+// S4-118. Карточка игры /games/{direction}/{game}/ (карта сайта 3.2, 12 §6.1): только у игры с полным описанием – иначе API 404 и здесь 404
+// (плитка в каталоге остаётся). «Где поиграть» – клубы из availableIn (только рабочие, API); кнопка – /schedule/?game= (фильтр, карта п.2.10).
+// Индексация – K23 §2 { game, live, hasFull }: раз страница есть, оба условия выполнены.
+import Site from '../../../layouts/Site.astro';
+import { GAME_DIRECTIONS, branchPath, gamesPath, type GameDirection } from '../../../../../../packages/contracts/src/paths.ts';
+import { content, type GamePage } from '../../../lib/content.ts';
+import { breadcrumbLd } from '../../../lib/jsonld.ts';
+import { renderRichText } from '../../../lib/rich-text.ts';
+import { metaFor } from '../../../lib/seo.ts';
+
+const TITLE: Record<GameDirection, string> = { pc: 'Игры на ПК', vr: 'Игры VR', playstation: 'Игры на PlayStation' };
+const direction = Astro.params.direction as GameDirection;
+if (!(GAME_DIRECTIONS as readonly string[]).includes(direction)) return Astro.rewrite('/404/');
+
+const { origin } = Astro.locals;
+let game: GamePage | null = null;
+try {
+  game = await content.game(direction, Astro.params.game ?? '');
+  if (!game) return Astro.rewrite('/404/');
+} catch (e) {
+  console.error('site: карточка игры из API не загрузилась', e);
+  Astro.response.status = 503;
+}
+const meta = game ? metaFor({ page: 'game', title: game.title, short: game.short }, game.seo) : null;
+const path = game?.slug ? `/games/${direction}/${game.slug}/` : gamesPath(direction);
+const cover = game?.cover && !game.cover.removed && game.cover.url ? game.cover : null;
+const srcset = cover?.variants.filter((v) => v.format === 'webp').map((v) => `${v.url} ${v.w}w`).join(', ') || undefined;
+---
+<Site
+  title={meta?.title ?? 'Игра временно недоступна – Ю-Клуб'}
+  description={meta?.description}
+  ogImage={meta?.ogImage}
+  index={game ? { kind: 'game', live: true, hasFull: true } : { kind: 'closed' }}
+  jsonLd={game ? [breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Игры', path: '/games/' }, { name: TITLE[direction], path: gamesPath(direction) }, { name: game.title, path }])] : []}
+>
+  {game && meta ? (
+    <>
+      <ol class="yu-crumbs" aria-label="Навигация">
+        <li><a href="/">Главная</a></li>
+        <li><a href="/games/">Игры</a></li>
+        <li><a href={gamesPath(direction)}>{TITLE[direction]}</a></li>
+        <li aria-current="page">{game.title}</li>
+      </ol>
+      <article class="gp" data-testid="game-page">
+        <header class="gp__head">
+          <h1>{meta.h1}</h1>
+          <p class="yu-lead">{game.short}</p>
+          <p class="gp__meta">{[...game.genres, game.ageRating, ...game.platforms].filter(Boolean).join(' · ')}</p>
+          <p><a class="yu-btn" href={`/schedule/?game=${encodeURIComponent(game.slug ?? '')}`} data-testid="game-book">Записаться поиграть</a></p>
+        </header>
+        {cover && <img class="gp__cover" src={cover.url} srcset={srcset} sizes="(min-width: 900px) 760px, 100vw" alt={cover.alt} width={cover.width ?? undefined} height={cover.height ?? undefined} decoding="async" />}
+        <div class="yu-rich-text gp__text" set:html={renderRichText(game.full, game.media)} />
+        <section aria-labelledby="gp-where" data-testid="game-where">
+          <h2 id="gp-where">Где поиграть</h2>
+          {game.availableIn.length === 0 ? (
+            <p class="yu-body">Сейчас игра не доступна ни в одном клубе. Загляните позже.</p>
+          ) : (
+            <ul class="gp__where">
+              {game.availableIn.map((b) => (
+                <li class="gp__club">
+                  <a class="gp__club-link" href={branchPath(b.citySlug, b.slug)}>{b.name}</a>
+                  {b.note && <span class="gp__meta">{b.note}</span>}
+                  <a class="yu-btn yu-btn--ghost" href={`/schedule/?branch=${b.citySlug}/${b.slug}&game=${encodeURIComponent(game!.slug ?? '')}`}>Записаться в этот клуб</a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </article>
+    </>
+  ) : (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Игра временно недоступна</h1>
+      <p class="yu-body">Сервис не ответил. <a href="">Обновите страницу</a> через минуту.</p>
+    </section>
+  )}
+</Site>
+
+<style>
+  .gp { display: grid; gap: var(--yu-sp-m); max-width: 760px; }
+  .gp > *, .gp__head > * { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .gp__head { display: grid; gap: var(--yu-sp-xs); }
+  .gp__meta { color: var(--yu-dim); font-size: var(--yu-fs-s); }
+  .gp__cover { display: block; width: 100%; height: auto; border-radius: var(--yu-r-m); background: var(--yu-surface-2); }
+  .gp h2 { font-size: var(--yu-fs-l); margin: 0 0 var(--yu-sp-xs); }
+  .gp__where { display: grid; gap: var(--yu-sp-xs); margin: 0; padding: 0; list-style: none; }
+  .gp__club { display: flex; flex-wrap: wrap; align-items: center; gap: var(--yu-sp-2xs) var(--yu-sp-s); padding: var(--yu-sp-xs) var(--yu-sp-s); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); }
+  .gp__club-link { display: inline-flex; align-items: center; min-height: var(--yu-tap); font-weight: 700; margin-inline-end: auto; }
+</style>
