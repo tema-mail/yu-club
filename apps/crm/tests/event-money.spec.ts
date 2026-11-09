@@ -151,3 +151,41 @@ test('Администратор: списка и плана нет, посту�
   expect(await tapTargetsOk(page)).toEqual([]);
   await page.screenshot({ path: `${SHOTS}/event-money-390.png`, fullPage: true });
 });
+
+const PDF = Buffer.from('%PDF-1.4\n%чек\n');
+const uploadCheck = (page: Page, eventId: string, buffer = PDF) =>
+  page.request.post(`${API}/attachments?ownerType=event&ownerId=${eventId}&docType=check&name=${encodeURIComponent('чек.pdf')}`, { headers: { ...key(), 'content-type': 'application/pdf' }, data: buffer });
+
+test('Документ к расходу (11 §11.4) по API мока: владелец event, чужое вложение – 400 без операции, замена, вне зоны – 404', async ({ page, browser }) => {
+  await login(page, 'admin@yu.test');
+  const id = await eventIdOf(page, 'EV-000124');
+  const other = await eventIdOf(page, 'EV-000126');
+  const cats = (await (await page.request.get(`${API}/finance/categories?kind=expense`)).json()) as { items: Array<{ id: string; name: string; children: Array<{ id: string; name: string }> }> };
+  const top = cats.items.find((c) => c.name === 'Подрядчики и услуги')!;
+  const body = { method: 'cash', amountKop: 10_000, categoryId: top.id, subcategoryId: top.children[0]!.id, occurredAt: new Date().toISOString(), comment: 'Шары' };
+  const a1 = (await (await uploadCheck(page, id)).json()).attachmentId as string;
+  const foreign = (await (await uploadCheck(page, other)).json()).attachmentId as string;
+
+  const bad = await page.request.post(`${API}/events/${id}/expense`, { headers: key(), data: { ...body, attachmentId: foreign } });
+  expect([bad.status(), (await bad.json()).error.details]).toEqual([400, { field: 'attachmentId' }]);
+  const ok = await page.request.post(`${API}/events/${id}/expense`, { headers: key(), data: { ...body, attachmentId: a1 } });
+  expect(ok.status()).toBe(201);
+  const op = (await ok.json()) as { id: string; attachmentId: string };
+  expect(op.attachmentId).toBe(a1);
+  expect((await page.request.get(`${API}/attachments/${a1}`)).headers()['content-disposition']).toMatch(/^attachment;/);
+
+  const a2 = (await (await uploadCheck(page, id, Buffer.from('%PDF-1.4\n%v2\n'))).json()).attachmentId as string;
+  const put = await page.request.post(`${API}/events/${id}/expense/${op.id}/document`, { headers: key(), data: { attachmentId: a2 } });
+  expect([put.status(), await put.json()]).toEqual([200, { operationId: op.id, attachmentId: a2 }]);
+
+  const tomsk = await (await browser.newContext()).newPage();
+  await login(tomsk, 'tomsk@yu.test');
+  expect((await tomsk.request.get(`${API}/attachments/${a2}`)).status()).toBe(404);
+  expect((await uploadCheck(tomsk, id)).status()).toBe(404);
+  expect((await tomsk.request.post(`${API}/events/${id}/expense/${op.id}/document`, { headers: key(), data: { attachmentId: a2 } })).status()).toBe(404);
+
+  const owner = await (await browser.newContext()).newPage();
+  await login(owner, 'owner@yu.test');
+  const ops = ((await (await owner.request.get(`${API}/events/${id}/money`)).json()) as { operations: Array<{ operation: { comment: string }; attachmentId?: string | null }> }).operations;
+  expect(ops.filter((o) => o.operation.comment === 'Шары').map((o) => o.attachmentId)).toEqual([a2]); // отказ с чужим документом операции не оставил
+});

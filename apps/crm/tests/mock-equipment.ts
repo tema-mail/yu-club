@@ -135,6 +135,8 @@ function seed() {
   };
 }
 let db = seed();
+export const attachmentOwners = new Map<string, { read: string; write: string; branchOf: (id: string) => string | undefined }>(); // другие моки: event – mock-event-money
+export const attachmentOf = (id: string) => db.attachments.find((a) => a.id === id);
 let replays = new Map<string, { status: number; body: unknown }>();
 export function resetEquipment(): void {
   db = seed();
@@ -741,12 +743,13 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
   // ---- №350 вложения: тело – файл; лимит и тип – по сигнатуре, как core/files.ts
 
   app.addContentTypeParser(['application/octet-stream', 'image/jpeg', 'image/png', 'application/pdf'], { parseAs: 'buffer', bodyLimit: 52_428_801 }, (_req, body, done) => done(null, body));
-  const owner = (s: Staffish, ownerType: string, ownerId: string, action: string) => {
-    if (ownerType !== 'equipment' && ownerType !== 'repair') throw invalid('ownerType', 'Неизвестный тип объекта вложения');
+  const owner = (s: Staffish, ownerType: string, ownerId: string, mode: 'read' | 'write') => {
+    const o = ownerType === 'equipment' || ownerType === 'repair' ? { read: 'equipment.view', write: 'repair.attach', branchOf: (id: string) => (ownerType === 'equipment' ? db.items.find((x) => x.id === id)?.placement.branchId : db.repairs.find((x) => x.id === id)?.branchId) } : attachmentOwners.get(ownerType);
+    if (!o) throw invalid('ownerType', 'Неизвестный тип объекта вложения');
     if (!UUID.test(ownerId)) throw notFound();
-    const branchId = ownerType === 'equipment' ? db.items.find((x) => x.id === ownerId)?.placement.branchId : db.repairs.find((x) => x.id === ownerId)?.branchId;
+    const branchId = o.branchOf(ownerId);
     if (!branchId || !sees(s, branchId)) throw notFound();
-    if (!d.can(s, action)) throw forbidden(action);
+    if (!d.can(s, o[mode])) throw forbidden(o[mode]);
   };
   const sniff = (b: Buffer) => (b[0] === 0xff && b[1] === 0xd8 ? 'image/jpeg' : b[0] === 0x89 && b[1] === 0x50 ? 'image/png' : b.subarray(0, 4).toString() === '%PDF' ? 'application/pdf' : null);
   const attachmentDto = ({ content: _c, ...a }: Attachment) => (void _c, a);
@@ -756,7 +759,7 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
     if (!DOC_TYPES.includes(q.docType ?? '')) throw invalid('docType');
     const body = req.body;
     if (!Buffer.isBuffer(body) || body.length === 0) throw new Fail(400, 'VALIDATION_FAILED', 'Пустой файл');
-    owner(s, q.ownerType ?? '', q.ownerId ?? '', 'repair.attach');
+    owner(s, q.ownerType ?? '', q.ownerId ?? '', 'write');
     if (q.supersedes) {
       const prev = db.attachments.find((a) => a.id === q.supersedes);
       if (!prev || prev.ownerType !== q.ownerType || prev.ownerId !== q.ownerId) throw notFound();
@@ -770,7 +773,7 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
     return { attachmentId: a.id, attachment: attachmentDto(a) };
   }));
   app.get(`${P}/attachments`, read((s, _id, q) => {
-    owner(s, q.ownerType ?? '', q.ownerId ?? '', 'equipment.view');
+    owner(s, q.ownerType ?? '', q.ownerId ?? '', 'read');
     return { items: db.attachments.filter((a) => a.ownerType === q.ownerType && a.ownerId === q.ownerId).sort((x, y) => y.createdAt.localeCompare(x.createdAt)).map(attachmentDto) };
   }));
   app.get(`${P}/attachments/:id`, async (req, reply) => {
@@ -778,7 +781,7 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
       const s = d.current(req);
       const a = db.attachments.find((x) => x.id === (req.params as { id: string }).id);
       if (!a) throw notFound();
-      owner(s, a.ownerType, a.ownerId, 'equipment.view');
+      owner(s, a.ownerType, a.ownerId, 'read');
       return await reply.header('content-type', a.mimeType).header('content-disposition', `attachment; filename="file"; filename*=UTF-8''${encodeURIComponent(a.originalName ?? a.id)}`)
         .header('x-content-type-options', 'nosniff').header('cache-control', 'private, no-store').header('content-security-policy', "default-src 'none'; sandbox").send(a.content);
     } catch (e) {
@@ -788,7 +791,7 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
   app.post(`${P}/attachments/:id/invalidate`, command('attachment.invalidate', 200, (s, id, b) => {
     const a = db.attachments.find((x) => x.id === id);
     if (!a) throw notFound();
-    owner(s, a.ownerType, a.ownerId, 'repair.attach');
+    owner(s, a.ownerType, a.ownerId, 'write');
     const reason = text(b.reason);
     if (!reason) throw new Fail(422, 'COMMENT_REQUIRED', 'Укажите причину', { field: 'reason' });
     if (a.status === 'active') Object.assign(a, { status: 'invalid', invalidReason: reason, invalidatedAt: new Date().toISOString() });
