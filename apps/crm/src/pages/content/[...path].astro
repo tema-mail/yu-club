@@ -1,0 +1,142 @@
+---
+// Раздел «Контент» (S4-84, K22 §13 №213–218; 12 §9, §14.2): /content – на публикации; /content/publications – список с поиском и фильтрами
+// типа, статуса, города и филиала (обычная форма GET, «Показать ещё» – курсором); /content/publications/new?type= – новый черновик;
+// /content/publications/{id} – редактор. Доступ – content.view (все роли); чужое – 404 (K1). Медиатека, игры, страницы, главная – свои файлы.
+import Crm from '../../layouts/Crm.astro';
+import PublicationEditor from '../../islands/PublicationEditor.tsx';
+import { ApiError, serverCall } from '../../lib/api.ts';
+import { ContentTabs, fmtAt, scopeLabel, STATUS_BADGE, STATUS_LABEL, TYPE_LABEL, type ContentStatus, type PublicationDto, type PublicationType, type Scope } from '../../lib/content.tsx';
+import '../../styles/content.css';
+
+const { me, cookie, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const parts = (Astro.params.path ?? '').split('/').filter(Boolean);
+if (parts.length === 0 && can('content.view')) return Astro.redirect('/content/publications');
+const q = Astro.url.searchParams;
+const TYPES = Object.keys(TYPE_LABEL) as PublicationType[];
+const STATUSES = Object.keys(STATUS_LABEL) as ContentStatus[];
+
+let notFound = !can('content.view') || parts[0] !== 'publications' || parts.length > 2;
+const creating = parts[1] === 'new';
+const newType = (TYPES as string[]).includes(q.get('type') ?? '') ? (q.get('type') as PublicationType) : 'news';
+if (creating && !can('content.draft.edit')) notFound = true;
+let card: PublicationDto | null = null;
+let list: { items: PublicationDto[]; nextCursor: string | null } | null = null;
+let listError = '';
+const filters = { q: q.get('q')?.trim() ?? '', type: q.get('type') ?? '', status: q.get('status') ?? '', cityId: q.get('cityId') ?? '', branchId: q.get('branchId') ?? '', sort: q.get('sort') ?? '' };
+if (!notFound && parts[1] && !creating) {
+  try {
+    card = await serverCall<PublicationDto>(cookie, `/content/publications/${encodeURIComponent(parts[1])}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || ![400, 403, 404].includes(e.status)) throw e;
+    notFound = true;
+  }
+} else if (!notFound && !creating) {
+  const p = new URLSearchParams({ limit: '50' });
+  for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+  const cursor = q.get('cursor');
+  if (cursor) p.set('cursor', cursor);
+  try {
+    list = await serverCall(cookie, `/content/publications?${p}`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 400) throw e;
+    listError = 'Фильтр не подошёл – проверьте условия поиска и повторите.';
+    list = { items: [], nextCursor: null };
+  }
+}
+if (notFound) Astro.response.status = 404;
+
+const refs = branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName, timezone: b.timezone }));
+const cities = [...new Map(branches.map((b) => [b.cityId, b.cityName])).entries()];
+const tz = branches[0]?.timezone ?? 'Asia/Novosibirsk';
+const filtered = Object.values(filters).some(Boolean);
+const nextLink = () => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+  p.set('cursor', list?.nextCursor ?? '');
+  return `/content/publications?${p}`;
+};
+const title = (d: Record<string, unknown>) => (typeof d.title === 'string' && d.title.trim() ? d.title : 'Без заголовка');
+---
+<Crm title={card ? `${title(card.draft)} – контент` : creating ? 'Новая публикация' : 'Контент'}>
+  {notFound ? (
+    <div class="yc-head"><h1>Не найдено</h1><p>Такого материала нет или он вне вашей зоны.</p><a href="/content/publications">К публикациям</a></div>
+  ) : card || creating ? (
+    <>
+      <p class="yc-crumbs"><a href="/content/publications">Публикации</a> / {card ? title(card.draft) : 'Новый материал'}</p>
+      <div class="yc-head">
+        <h1>{card ? title(card.draft) : `Новый материал: ${TYPE_LABEL[newType].toLowerCase()}`}</h1>
+        <p>{TYPE_LABEL[card?.type ?? newType]}. Сохранение черновика сайт не меняет – публикация отдельным действием.</p>
+      </div>
+      {q.get('created') && <p class="yc-alert yc-alert--ok" role="status">Черновик создан.</p>}
+      <PublicationEditor client:load initial={card} type={card?.type ?? newType} branches={refs} canNetwork={can('content.network.manage')} canCreate={can('content.draft.edit')} timezone={tz} />
+    </>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>Контент</h1>
+        <p>Новости, акции, розыгрыши и турниры сайта. Черновик не виден посетителям, пока его не опубликуют.</p>
+      </div>
+      <ContentTabs path={Astro.url.pathname} />
+      {can('content.draft.edit') && (
+        <div class="yc-ct__create">
+          {TYPES.map((t) => <a class="yc-btn yc-btn--ghost" href={`/content/publications/new?type=${t}`}>{`+ ${TYPE_LABEL[t]}`}</a>)}
+        </div>
+      )}
+      <section class="yc-panel" aria-labelledby="ct-filter">
+        <h2 id="ct-filter">Поиск и фильтры</h2>
+        <form class="yc-ct__filters" method="get" action="/content/publications">
+          <label class="yc-field"><span class="yc-field__label">Поиск по заголовку</span>
+            <input class="yc-input" type="search" name="q" value={filters.q} maxlength={200} />
+          </label>
+          <label class="yc-field"><span class="yc-field__label">Тип</span>
+            <select class="yc-input" name="type"><option value="">Все типы</option>{TYPES.map((t) => <option value={t} selected={filters.type === t}>{TYPE_LABEL[t]}</option>)}</select>
+          </label>
+          <label class="yc-field"><span class="yc-field__label">Статус</span>
+            <select class="yc-input" name="status"><option value="">Любой</option>{STATUSES.map((s) => <option value={s} selected={filters.status === s}>{STATUS_LABEL[s]}</option>)}</select>
+          </label>
+          {cities.length > 0 && (
+            <label class="yc-field"><span class="yc-field__label">Город</span>
+              <select class="yc-input" name="cityId"><option value="">Все города</option>{cities.map(([id, name]) => <option value={id} selected={filters.cityId === id}>{name}</option>)}</select>
+            </label>
+          )}
+          {branches.length > 0 && (
+            <label class="yc-field"><span class="yc-field__label">Филиал</span>
+              <select class="yc-input" name="branchId"><option value="">Все филиалы</option>{branches.map((b) => <option value={b.id} selected={filters.branchId === b.id}>{b.name}</option>)}</select>
+            </label>
+          )}
+          <label class="yc-field"><span class="yc-field__label">Сортировка</span>
+            <select class="yc-input" name="sort"><option value="">По изменению</option><option value="created" selected={filters.sort === 'created'}>По созданию</option></select>
+          </label>
+          <button class="yc-btn yc-btn--ghost" type="submit">Найти</button>
+        </form>
+        <p class="yc-field__hint">Фильтр города показывает материалы для этого города, филиала – для этого филиала; сетевые – без фильтра.</p>
+      </section>
+      {listError && <p class="yc-alert yc-alert--error" role="alert">{listError}</p>}
+      <section class="yc-panel" aria-label="Список публикаций">
+        {list && list.items.length === 0 ? (
+          <div class="yc-empty" data-testid="ct-empty">
+            <p>{filtered ? 'По этим условиям материалов нет.' : 'Материалов пока нет.'}</p>
+            {filtered && <a class="yc-btn yc-btn--ghost" href="/content/publications">Сбросить фильтры</a>}
+          </div>
+        ) : (
+          <table class="yc-table" data-testid="ct-list">
+            <thead><tr><th>Заголовок</th><th>Тип</th><th>Статус</th><th>Где показывать</th><th>Изменён</th></tr></thead>
+            <tbody>
+              {list?.items.map((p) => (
+                <tr data-testid={`ct-${p.id}`}>
+                  <td class="yc-table__main"><a href={`/content/publications/${p.id}`}>{title(p.draft)}</a></td>
+                  <td data-label="Тип">{TYPE_LABEL[p.type]}</td>
+                  <td data-label="Статус"><span class={`yc-badge yc-badge--${STATUS_BADGE[p.status]}`}>{STATUS_LABEL[p.status]}</span></td>
+                  <td data-label="Где показывать">{scopeLabel(p.draft.scope as Scope, refs)}</td>
+                  <td data-label="Изменён">{fmtAt(p.draftUpdatedAt, tz)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {list?.nextCursor && <div class="yc-list__more"><a class="yc-btn yc-btn--ghost" href={nextLink()}>Показать ещё</a></div>}
+      </section>
+    </>
+  )}
+</Crm>
