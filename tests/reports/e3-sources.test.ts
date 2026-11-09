@@ -103,4 +103,12 @@ describe('поиск: мероприятия и оборудование', () =>
     const viaAdmin = await search(fx.admin([a]), 'EV-000001');
     expect(viaAdmin('event')!.items.map((i) => i.number)).toEqual(['EV-000001']); // event.view у Администратора есть (K1)
   });
+
+  it('номер с префиксом без нулей: «EV-2», «ev 1», «INV-2»; лишние нули не мешают', async () => {
+    expect((await search(fx.owner(), 'EV-2'))('event')!.items.map((i) => i.number)).toEqual(['EV-000002']);
+    expect((await search(fx.owner(), 'ev 1'))('event')!.items.map((i) => i.number)).toEqual(['EV-000001']);
+    expect((await search(fx.owner(), 'EV-0000001'))('event')!.items.map((i) => i.number)).toEqual(['EV-000001']);
+    expect((await search(fx.owner(), 'inv-2'))('equipment')!.items.map((i) => i.inventoryNo)).toEqual(['INV-000002']);
+    expect((await search(fx.director([b]), 'EV-1'))('event')!.items).toEqual([]);
+  });
 });

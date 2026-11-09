@@ -124,8 +124,11 @@ async function financeGroup(tx: Tx, ctx: AccessContext, q: string, clock: Clock)
   };
 }
 
-/** Номер с префиксом: «EV-000012», «ev-000012» или просто «12» (как в CRM). */
-const numberLike = (q: string, prefix: string): string => (NUMBER_RE.test(q) ? `${prefix}-${q.padStart(6, '0')}` : q.toUpperCase());
+/** Номер с префиксом: «EV-000012», «ev-000012», «EV-12», «ev 12» или просто «12» → «EV-000012» (номера – префикс и 6 цифр с нулями). */
+function numberLike(q: string, prefix: string): string {
+  const m = new RegExp(`^(?:${prefix}[-\\s]?)?(\\d{1,15})$`, 'i').exec(q);
+  return m ? `${prefix}-${m[1]!.replace(/^0+(?=\d)/, '').padStart(6, '0')}` : q.toUpperCase();
+}
 
 /** Мероприятия: номер, дата проведения (по зоне филиала) или заказчик среди найденных клиентов. */
 async function eventGroup(tx: Tx, ctx: AccessContext, q: string, clientIds: string[], clock: Clock): Promise<SearchGroup | null> {
