@@ -3,13 +3,14 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { addDays, inZone } from '../src/lib/booking.ts';
-import { financeOperation, salaryCategoryId } from './mock-finance.ts';
+import { financeOperation, salaryCategoryId, setLinkSource } from './mock-finance.ts';
 import {
   accrualOf, assertOpen, computeTotals, DATE_RE, dto, entries, expenses, Fail, forbidden, invalid, nextSeq, notFound, penalties, periodOf, periods, rateAt, shifts, statements, TZ, unresolved,
   type Entry, type Penalty, type Period, type Rec, type ShiftsHelpers, type Staffish, type Statement, type StatementStatus,
 } from './mock-shifts-staff.ts';
 
 export function registerPayroll(app: FastifyInstance, P: string, h: ShiftsHelpers): void {
+  setLinkSource('payroll_statement', (opId) => { for (const [id, ops] of expenses) if (ops.includes(opId)) return { type: 'payroll_statement', id, role: 'payout_expense' }; return null; });
   const { deps, branchOf, tzOf, inZ, can, assertCan, owner, viewer, read, command, send, staffOf, staffBranches, reasonOf, dateRange, coverageOf } = h;
 
   // ---- зарплата

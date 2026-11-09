@@ -1,6 +1,7 @@
-// S3-84: деньги мероприятия. Приёмка: двойной клик – одна операция; привязка показывает только непривязанные расходы; операция – одна строка журнала кассы.
+// S3-84: деньги мероприятия. Приёмка: двойной клик – одна операция; привязка показывает только непривязанные расходы; операция – одна строка журнала кассы,
+// ручная привязка видна в журнале ссылкой на мероприятие (K17 §14).
 import { expect, test, type Page } from '../../../tests/support/e2e.ts';
-import { eventIdOf, key, login, noHorizontalScroll, openEvent, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
+import { eventIdOf, key, login, noHorizontalScroll, open, openEvent, resetMock, SHOTS, tapTargetsOk } from './event-helpers.ts';
 import { MOCK } from './event-helpers.ts';
 
 test.describe.configure({ mode: 'serial' });
@@ -13,7 +14,7 @@ async function money(page: Page, number = 'EV-000124') {
   return (await (await page.request.get(`${API}/events/${await eventIdOf(page, number)}/money`)).json()) as { summary: Record<string, number>; operations: Array<{ role: string; operation: { id: string; number: number; amountKop: number } }> };
 }
 const todayNsk = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Novosibirsk' }).format(new Date());
-const journal = async (page: Page) => ((await (await page.request.get(`${API}/branches/${K}/finance/operations?from=${todayNsk()}&to=${todayNsk()}&limit=200`)).json()) as { items: Array<{ id: string; kind: string; ref: { type: string; id: string } | null; reversedBy: string | null }> }).items;
+const journal = async (page: Page) => ((await (await page.request.get(`${API}/branches/${K}/finance/operations?from=${todayNsk()}&to=${todayNsk()}&limit=200`)).json()) as { items: Array<{ id: string; kind: string; ref: { type: string; id: string } | null; link: { type: string; id: string; role: string } | null; reversedBy: string | null }> }).items;
 
 test('Поступление: двойной клик – одна операция, она же в журнале кассы; копейки целыми', async ({ page }) => {
   await login(page, 'owner@yu.test');
@@ -127,6 +128,12 @@ test('Расход из карточки – в себестоимости и ж
   expect(m.summary.factCostKop).toBe(200_000); // по умолчанию не в себестоимости
   const elsewhere = await page.request.post(`${API}/events/${await eventIdOf(page, 'EV-000126')}/expense/link`, { headers: key(), data: { operationId: generalOp.id } });
   expect((await elsewhere.json()).error.code).toBe('OPERATION_ALREADY_LINKED');
+  // журнал K17: ручная привязка видна связью (ref у операции нет), на экране – ссылка на мероприятие
+  const linked = (await journal(page)).find((o) => o.id === generalOp.id)!;
+  expect([linked.ref, linked.link]).toEqual([null, { type: 'event', id, role: 'expense' }]);
+  await open(page, `/finance/${K}`);
+  await expect(page.getByTestId(`fin-row-${generalOp.number}`).getByTestId('fin-link-event')).toHaveAttribute('href', `/events/${id}`);
+  await expect(page.getByTestId(`fin-row-${eventExpense.number}`).getByTestId('fin-link-event')).toHaveAttribute('href', `/events/${id}`);
 });
 
 test('Администратор: списка и плана нет, поступление – нет права кассы, расход – есть; 390', async ({ page }) => {

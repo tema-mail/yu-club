@@ -5,6 +5,7 @@
 // (TC-12), расход виден журналу кассы, связь – одна на операцию. Подключается из mock-api.ts.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
+import { setLinkSource } from './mock-finance.ts';
 import { opsState } from './mock-ops.ts';
 
 type Rec = Record<string, unknown>;
@@ -141,6 +142,7 @@ export function resetEquipment(): void {
 }
 
 export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentMockDeps): void {
+  setLinkSource('repair', (opId) => { const l = db.links.find((x) => x.operationId === opId); return l ? { type: 'repair', id: l.repairId, role: 'expense' } : null; });
   const sees = (s: Staffish, branchId: string) => d.can(s, 'equipment.view') && d.zone(s).branchIds.includes(branchId);
   const guard = (s: Staffish, branchId: string, action: string) => {
     if (!sees(s, branchId)) throw notFound();
