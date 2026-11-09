@@ -20,6 +20,8 @@ export interface FinanceOperation {
   /** Нет в ответе без finance.view (06 §14). */
   balanceAfterKop?: number;
   reversedBy: string | null; reversalOf: string | null;
+  /** Живая связь с объектом (K17 §14), и ручная привязка без ref; только в журнале. */
+  link?: { type: 'event' | 'repair' | 'payroll_statement'; id: string; role: string } | null;
 }
 export interface FinBranch { id: string; name: string; cityName: string; timezone: string; today: string }
 export interface CashJournalProps {
@@ -260,10 +262,18 @@ export default function CashJournal(p: CashJournalProps) {
   const catOf = (o: FinanceOperation) =>
     o.categoryId ? [p.categoryNames[o.categoryId] ?? 'Категория', o.subcategoryId ? (p.categoryNames[o.subcategoryId] ?? '') : ''].filter(Boolean).join(' / ')
       : o.source ? SOURCE_LABEL[o.source] : o.kind === 'reversal' && o.reversalOf ? `к операции №${numberOf(o.reversalOf) ?? '…'}` : '';
-  const refOf = (o: FinanceOperation) => {
+  const refText = (o: FinanceOperation) => {
     if (!o.ref) return '';
     if (o.ref.type === 'operation') return `Операция №${numberOf(o.ref.id) ?? '…'}`;
     return REF_LABEL[o.ref.type] ?? o.ref.type;
+  };
+  /** Связь: мероприятие и ремонт – ссылкой на карточку (и привязанный вручную расход, у которого нет ref). */
+  const refOf = (o: FinanceOperation) => {
+    const l = o.link ?? (o.ref && (o.ref.type === 'event' || o.ref.type === 'repair') ? { type: o.ref.type, id: o.ref.id, role: '' } : null);
+    if (l?.type === 'event') return <a href={`/events/${l.id}`} data-testid="fin-link-event">Мероприятие</a>;
+    if (l?.type === 'repair') return <a href={`/repairs/${l.id}`} data-testid="fin-link-repair">Ремонт</a>;
+    if (l?.type === 'payroll_statement' && !o.ref) return 'Ведомость зарплаты';
+    return refText(o);
   };
   /** Место и способ: «Наличные», «Безнал · Карта», «Безнал · Перевод». */
   const wayOf = (o: FinanceOperation) => (o.place === 'cash' ? PLACE_LABEL.cash : `${PLACE_LABEL.noncash}${o.method && o.method !== 'cash' ? ` · ${METHOD_LABEL[o.method]}` : ''}`);
@@ -435,7 +445,7 @@ export default function CashJournal(p: CashJournalProps) {
               <dt>Сумма</dt><dd>{rub(open.direction === 'in' ? open.amountKop : -open.amountKop, true)}</dd>
               {p.full && open.balanceAfterKop !== undefined && <><dt>Остаток после</dt><dd>{rub(open.balanceAfterKop)}</dd></>}
               <dt>Комментарий</dt><dd>{open.comment ?? '–'}</dd>
-              {refOf(open) && <><dt>Связь</dt><dd>{refOf(open)}</dd></>}
+              {(open.link || open.ref) && <><dt>Связь</dt><dd>{refOf(open)}</dd></>}
               <dt>Автор</dt><dd>{author(open.authorId)}</dd>
               <dt>Статус</dt><dd>{statusOf(open)}{open.reversedBy && numberOf(open.reversedBy) ? ` (сторно №${numberOf(open.reversedBy)})` : ''}</dd>
             </dl>

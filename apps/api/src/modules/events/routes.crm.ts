@@ -14,6 +14,7 @@ import { branchScopeSql, can, scopeFilter, type AccessContext } from '../../core
 import { systemClock, type Clock } from '../../core/time.ts';
 import { runOccupancyCommand } from '../booking/occupancy.ts';
 import { bookingLookup } from '../booking/providers.ts';
+import { calendarEvents } from './calendar.ts';
 import { addChecklistItem, listChecklist, updateChecklistItem } from './checklist.ts';
 import { changeEventStatus, createEvent, EVENT_SELECT, EVENT_STATUSES, getEventRow, guardEvent, lockEvent, notFound, parseBody, toEventDto, updateEvent, UUID_RE, type EventDto, type EventRow } from './events.ts';
 import { addLine, applyPackage, createEventType, createPackage, listEventTypes, listLines, listPackages, removeLine, updateEventType, updateLine, updatePackage, type EventLineDto, type EventPackageDto } from './lines.ts';
@@ -204,6 +205,8 @@ export async function eventCrmRoutes(app: FastifyInstance, deps: EventCrmDeps): 
   // №361, №362
   app.get('/events', read((ctx, r) => listEvents(deps.pool, ctx, r.query)));
   app.post('/events', command('create', 'event.created', (tx, ctx, _p, body, meta) => createEvent(tx, ctx, body, meta, clock), 201));
+  // K11 №2: мероприятия календаря филиала за период (calendar.ts)
+  app.get('/branches/:branchId/calendar-events', read((ctx, r) => calendarEvents(deps.pool, ctx, paramsOf(r).branchId ?? '', r.query)));
   app.get('/events/:id', read((ctx, r) => eventCard(deps.pool, ctx, idOf(paramsOf(r)), clock)));
   app.patch('/events/:id', command('update', 'event.updated', (tx, ctx, p, body, meta) => updateEvent(tx, ctx, idOf(p), body, meta, clock)));
 
