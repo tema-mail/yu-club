@@ -36,6 +36,7 @@ import { startGiftExpiry } from './modules/events/gifts.ts';
 import { startRequestHoldExpiry } from './modules/events/resources.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
+import { registerStaffFeedHandlers } from './modules/notifications/staff-feed.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { startExportGc, startExportRunner } from './modules/reports/export.ts';
 import { createReportsPool, type ReportsPool } from './modules/reports/framework.ts';
@@ -91,6 +92,7 @@ export async function startWorkerTasks(opts: {
   const logger = opts.logger ?? { error: (obj: Record<string, unknown>, msg: string) => log('error', msg, obj) };
   // подписки – до startOutboxWorker: он замораживает их и создаёт очереди по снимку
   registerNotificationHandlers({ bookings: bookingLookup, clock });
+  registerStaffFeedHandlers({ clock }); // 13 §11: лента событий CRM – смены (K18 §11) и ремонт (K19 §11), без push сотрудникам
   registerPenaltyHandlers({ bookings: paymentBookingProvider, clock });
   const payments = opts.payments ?? paymentLookup;
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });

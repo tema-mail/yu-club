@@ -12,6 +12,7 @@ import { systemClock, type Clock } from '../../core/time.ts';
 import type { Pool } from '../clients/index.ts';
 import { cancelCampaign, confirmCampaign, createCampaign, inZone, previewCampaign, updateCampaign, type CampaignBookingLookup, type CampaignDeps, type CampaignInput } from './campaigns.ts';
 import { clientNotificationSummary, getCampaignDetail, listCampaigns, listNotifications, retryNotification } from './journal.ts';
+import { feedUnreadCount, listStaffFeed, markAllFeedRead, markFeedRead } from './staff-feed.ts';
 import { createTemplate, listTemplates, updateTemplate } from './templates.ts';
 
 export interface NotificationCrmDeps {
@@ -78,6 +79,8 @@ const templatePatch = z.object({
   status: z.enum(['active', 'archived']).optional(),
 });
 const templateQuery = z.object({ status: z.enum(['active', 'archived']).optional() });
+const feedQuery = z.object({ cursor: page.cursor, limit: z.coerce.number().int().min(1).max(50).optional(), unread: z.enum(['true', 'false']).optional() });
+const feedReadAll = z.object({ before: when });
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const r = schema.safeParse(value ?? {});
@@ -223,5 +226,31 @@ export async function notificationCrmRoutes(app: FastifyInstance, deps: Notifica
   app.get<{ Params: { clientId: string } }>('/clients/:clientId/notification-summary', async (request, reply) => {
     const { access } = await deps.authenticate(request, reply);
     return clientNotificationSummary(deps.pool, access, request.params.clientId.toLowerCase());
+  });
+
+  // ---- лента событий CRM (13 §11, S4-28, D4-46): своё и своей зоны; чужое – 404. Прочтение естественно идемпотентно – без ключа.
+  app.get('/staff-feed', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    const q = parse(feedQuery, request.query);
+    reply.header('cache-control', 'no-store');
+    return listStaffFeed(deps.pool, access, { cursor: q.cursor, limit: q.limit, unreadOnly: q.unread === 'true' });
+  });
+
+  app.get('/staff-feed/unread-count', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    reply.header('cache-control', 'no-store');
+    return { unread: await feedUnreadCount(deps.pool, access) };
+  });
+
+  app.post('/staff-feed/:id/read', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    await markFeedRead(deps.pool, access, idOf(request), clock.now());
+    return reply.code(204).send();
+  });
+
+  app.post('/staff-feed/read-all', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    const body = parse(feedReadAll, request.body);
+    return { marked: await markAllFeedRead(deps.pool, access, new Date(body.before), clock.now()) };
   });
 }
