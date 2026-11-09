@@ -1,7 +1,8 @@
 // S0-18. Тестовые данные Э0: 2 города, 3 филиала в разных зонах, демо-значения справочников,
 // сотрудники трёх ролей с назначениями. Ресурсы, тарифы, исключения графика, демо-клиенты – S1-28 (db/seed/resources.ts):
 // CLI ниже запускает его следом за засевом Э0, тем же окружением, затем Э2 (db/seed/commerce.ts: касса, категории,
-// сертификаты, баллы, оплаченные и неоплаченные брони) – если задан CERT_PEPPER, затем Э3 (db/seed/club.ts: смены, оборудование, ремонт, подарок, праздник).
+// сертификаты, баллы, оплаченные и неоплаченные брони) – если задан CERT_PEPPER, затем Э3 (db/seed/club.ts: смены, оборудование, ремонт, подарок, праздник),
+// затем Э4 (db/seed/content.ts: медиа, публикации, игры, страницы, черновики кампаний) – если задан MEDIA_DIR (на стенде его даёт compose).
 // Повторный запуск не плодит дубли: всё ищется по коду/email и создаётся, только если нет.
 // Демо-данные помечены (19 §10.1): коды городов и филиалов с префиксом demo-, email @demo.yu-club.test,
 // комментарий DEMO_MARK; код демо-причин – demo_*. На прод не попадают: при APP_ENV/NODE_ENV = production
@@ -20,6 +21,7 @@ import { createBranch, createCity, setBranchStatus } from '../../apps/api/src/mo
 import { assertPasswordStrength, hashPassword, withTx, type Pool } from '../../apps/api/src/modules/staff/auth.ts';
 import { seedClub } from './club.ts';
 import { certificateLines, seedCommerce } from './commerce.ts';
+import { seedContent } from './content.ts';
 import { seedResources } from './resources.ts';
 
 export const DEMO_MARK = 'DEMO: тестовые данные Э0 (db/seed/dev.ts), не для прода';
@@ -181,6 +183,13 @@ async function cli(): Promise<void> {
     }
     const e3 = await seedClub(pool, { env: process.env });
     console.log(`Засев Э3: создано ${JSON.stringify(e3.created)}`);
+    const mediaDir = process.env.MEDIA_DIR;
+    if (mediaDir) {
+      const e4 = await seedContent(pool, { env: process.env, mediaDir });
+      console.log(`Засев Э4: создано ${JSON.stringify(e4.created)}`);
+    } else {
+      console.log('Засев Э4 пропущен: нет MEDIA_DIR (каталог медиатеки API)');
+    }
   } finally {
     await pool.end();
   }
