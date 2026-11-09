@@ -103,6 +103,12 @@ let externalBusy: (branchId: string, unitIds: string[], s: number, e: number) =>
 export const setExternalBusy = (f: typeof externalBusy) => {
   externalBusy = f;
 };
+/** Строки ресурсов живых мероприятий для календаря (events/calendar.ts) – отдаёт мок мероприятий. */
+interface CalEventRow { id: string; number: string; title: string; status: string; branchId: string; resourceId: string; unitIds: string[]; start: number; end: number }
+let calendarEventRows: () => CalEventRow[] = () => [];
+export const setCalendarEventRows = (f: typeof calendarEventRows) => {
+  calendarEventRows = f;
+};
 export const bookingFacts = (id: string) => store.find((b) => b.id === id);
 export const bookingBusy = (branchId: string, unitIds: string[], s: number, e: number) =>
   store.some((b) => b.branchId === branchId && OCCUPYING.includes(b.status) && ms(cur(b).start) < e && ms(cur(b).end) > s && cur(b).unitIds.some((u) => unitIds.includes(u)));
@@ -289,6 +295,31 @@ export function registerBooking(app: FastifyInstance, P: string, d: BookingDeps)
       items: items.filter((i) => !filter || i.resourceIds.length > 0),
     };
     return dto;
+  });
+
+  // apps/api/src/modules/events/calendar.ts: мероприятия календаря за период, пересечение интервалов, зона как у календаря
+  app.get(`${P}/branches/:branchId/calendar-events`, async (req, reply) => {
+    const s = d.current(req);
+    const { branchId } = req.params as { branchId: string };
+    const q = req.query as { from?: string; to?: string; resourceIds?: string };
+    if (!DATE.test(q.from ?? '') || !DATE.test(q.to ?? '')) return invalid(reply, 'Неверные данные запроса', { issues: [{ path: 'from', message: 'Неверная дата' }] });
+    if (!seesBranch(s, branchId) || !d.can(s, 'event.view')) return notFound(reply);
+    const from = q.from!;
+    const to = q.to!;
+    if (to < from) return invalid(reply, 'Конец периода раньше начала', { field: 'to' });
+    if (addDays(from, MAX_DAYS - 1) < to) return d.fail(reply, 422, 'RANGE_TOO_LONG', `Период не длиннее ${MAX_DAYS} дней`, { maxDays: MAX_DAYS });
+    const filter = q.resourceIds ? new Set(q.resourceIds.split(',').filter((x) => x !== '')) : null;
+    const db = opsState();
+    const lanes = db.resources.filter((r) => r.branchId === branchId && r.status !== 'archived' && (!filter || filter.has(r.id)));
+    const start = atLocal(from, '00:00');
+    const end = atLocal(addDays(to, 1), '00:00');
+    const items = calendarEventRows()
+      .filter((x) => x.branchId === branchId && x.start < end && x.end > start)
+      .sort((a, b) => a.start - b.start || a.number.localeCompare(b.number))
+      .map((x) => ({ id: x.id, number: x.number, title: x.title, status: x.status, start: iso(x.start), end: iso(x.end),
+        resourceIds: lanes.filter((l) => l.id === x.resourceId || (db.composition[l.id] ?? []).some((u) => x.unitIds.includes(u))).map((l) => l.id) }))
+      .filter((x) => x.resourceIds.length > 0);
+    return { branchId, from, to, items };
   });
 
   app.get(`${P}/branches/:branchId/bookings`, async (req, reply) => {
