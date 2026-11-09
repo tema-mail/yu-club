@@ -1,0 +1,47 @@
+---
+// S4-116. /tournaments/{slug}/ (карта сайта 3.3): дата турнира и текст из CMS; результаты – только реальные, из текста публикации, своих
+// цифр сайт не придумывает. Разметка Event – только при одном клубе охвата и дате (lib/jsonld.ts). Нет или не опубликован – 404.
+import PublicationPage from '../../components/PublicationPage.astro';
+import Site from '../../layouts/Site.astro';
+import { content, type PublicationPage as Page } from '../../lib/content.ts';
+import { breadcrumbLd, tournamentLd } from '../../lib/jsonld.ts';
+import { chosenBranch, displayZone, scopeBranchPaths } from '../../lib/publications.ts';
+import { metaFor } from '../../lib/seo.ts';
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let page: Page | null = null;
+try {
+  page = await content.publication('tournament', Astro.params.slug ?? '', chosen?.branch.id);
+  if (!page) return Astro.rewrite('/404/');
+} catch (e) {
+  console.error('site: турнир из API не загрузился', e);
+  Astro.response.status = 503;
+}
+const meta = page ? metaFor({ page: 'publication', title: page.title, lead: page.lead }, page.seo) : null;
+const path = page ? `/tournaments/${page.slug}/` : '/tournaments/';
+const ld = page
+  ? [
+      tournamentLd(origin, { path, title: page.title, lead: page.lead, startDate: page.eventDate, branchPaths: scopeBranchPaths(page.onlyIn, network), image: page.seo.ogImage }),
+      breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Турниры', path: '/tournaments/' }, { name: page.title, path }]),
+    ]
+  : [];
+---
+<Site
+  title={meta?.title ?? 'Турнир временно недоступен – Ю-Клуб'}
+  description={meta?.description}
+  ogImage={meta?.ogImage}
+  ogType={meta?.ogType}
+  index={page ? { kind: 'publication', live: true, indexable: page.indexable, ended: page.state === 'ended' } : { kind: 'closed' }}
+  jsonLd={ld}
+>
+  {page && meta ? (
+    <PublicationPage page={page} h1={meta.h1} timeZone={displayZone(network, chosen)} />
+  ) : (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Турнир временно недоступен</h1>
+      <p class="yu-body">Сервис не ответил. <a href="">Обновите страницу</a> через минуту.</p>
+    </section>
+  )}
+</Site>

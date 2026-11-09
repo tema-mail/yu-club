@@ -4,6 +4,7 @@
 // В меню – только разделы, у которых уже есть страница; запись добавит свой шаг (S1-19…S1-21). «Войти / Кабинет» – по куке сессии.
 import '../styles/site.css';
 import BranchPicker, { type PickerCity } from '../islands/BranchPicker.tsx';
+import UnreadBadge from '../islands/UnreadBadge.tsx';
 import { robotsFor, type IndexInput } from '../lib/seo.ts';
 import { serializeJsonLd, type JsonLd } from '../lib/jsonld.ts';
 
@@ -23,7 +24,8 @@ interface Props {
 
 const { title, description, noindex = false, index, ogImage = null, ogType = 'website', jsonLd = [] } = Astro.props;
 const { network, choice, indexable, origin, hasSession } = Astro.locals;
-const path = Astro.url.pathname;
+// Адрес, который запросил посетитель: внутренняя подмена (/about/ → /info/about/, S4-120) не меняет canonical.
+const path = Astro.originPathname;
 // canonical – адрес без параметров (карта сайта п.2.10).
 const canonical = `${origin}${path}`;
 const robots = robotsFor(index ?? (noindex ? { kind: 'closed' } : { kind: 'open' }), indexable) === 'index' ? 'index, follow' : 'noindex, nofollow';
@@ -79,6 +81,7 @@ const year = new Date().getFullYear();
         <div class="yu-header__picker">
           <BranchPicker client:load cities={pickerCities} current={choice} />
         </div>
+        {hasSession && <UnreadBadge client:load />}
         <a
           class="yu-header__account"
           href={hasSession ? '/account/' : '/login/'}
@@ -131,3 +134,10 @@ const year = new Date().getFullYear();
     </footer>
   </body>
 </html>
+
+<style is:global>
+  /* Значок непрочитанных (S4-124): 44 px – правило касания; число – поверх, слово – в aria-label. */
+  .yu-bell { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--yu-tap); height: var(--yu-tap); border-radius: var(--yu-r-s); color: var(--yu-text); }
+  .yu-bell:hover { background: var(--yu-surface-2); }
+  .yu-bell__count { position: absolute; top: 2px; right: 0; min-width: 18px; padding: 0 4px; border-radius: 9px; background: var(--yu-accent); color: var(--yu-on-accent); font-size: 11px; font-weight: 800; line-height: 18px; text-align: center; }
+</style>

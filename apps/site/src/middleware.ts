@@ -6,7 +6,7 @@
 // Адреса (K23 §1, §5, S4-53): ненормальный адрес (регистр, нет слеша) и старый адрес из истории – 301 одним переходом, параметры сохраняются;
 // сначала страница строится по текущим данным, 404 – спрашиваем GET /redirects/resolve (K5 №216); ответа API нет – 503, а не ложный 404 для поисковика.
 import { defineMiddleware } from 'astro:middleware';
-import { normalizePath, parsePath } from '../../../packages/contracts/src/paths.ts';
+import { LEGAL_KEYS, normalizePath, parsePath } from '../../../packages/contracts/src/paths.ts';
 import { API_PREFIX, BRANCH_COOKIE, apiBase, findBranch, isIndexable, loadNetwork, parseBranchCookie, siteUrl, type CityWithBranches } from './lib/api.ts';
 import { CLIENT_COOKIE, safeNext, serverMe, type Me } from './lib/client.ts';
 
@@ -50,6 +50,11 @@ const unavailable = () =>
  *  Процент-кодирование (кириллица, пробел): слаг такого не содержит, а URL снова поднимает регистр %XX – нижний регистр дал бы вечную петлю 301. */
 const OUTSIDE_REGISTRY = /^\/(api|_astro|media|preview|unsubscribe)(\/|$)|^\/404\/?$|\.[a-z0-9]+\/?$|%/i;
 
+/** Страницы CMS (S4-120, K22 §5): канонический адрес /{key}/ рисует src/pages/info/[key].astro; прямой /info/{key}/ – 301 на канонический. */
+const INFO_KEYS = new Set<string>(['about', 'rules', ...LEGAL_KEYS]);
+const INFO_DIRECT = /^\/info\/([a-z-]+)\/$/;
+const INFO_CANONICAL = /^\/([a-z-]+)\/$/;
+
 /** K5 №216: текущий адрес старого пути или null. Сбой API – исключение. */
 async function resolveLegacy(path: string): Promise<string | null> {
   const res = await fetch(`${apiBase()}${API_PREFIX}/redirects/resolve?path=${encodeURIComponent(path)}`, { headers: { accept: 'application/json' }, redirect: 'manual' });
@@ -81,6 +86,13 @@ export const onRequest = defineMiddleware(async (context, next) => {
     }
     return isIndexable() ? moved(target, search) : withHeaders(moved(target, search), { 'x-robots-tag': 'noindex, nofollow' });
   }
+
+  const direct = isRead ? INFO_DIRECT.exec(pathname) : null;
+  if (direct && INFO_KEYS.has(direct[1]!)) {
+    const to = moved(`/${direct[1]}/`, search);
+    return isIndexable() ? to : withHeaders(to, { 'x-robots-tag': 'noindex, nofollow' });
+  }
+  const infoKey = inRegistry ? INFO_CANONICAL.exec(pathname)?.[1] : undefined;
 
   const isAccount = pathname === '/account/' || pathname.startsWith('/account/');
   const isLogin = pathname === '/login/';
@@ -126,7 +138,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // /{city}/{branch}/rooms/ страница переводит на раздел #rooms; у несуществующего филиала сразу 404 – иначе старый адрес дал бы два перехода.
   const match = inRegistry ? parsePath(pathname) : null;
   const noBranch = match?.kind === 'branchRooms' && network !== null && !findBranch(network, match.city, match.branch);
-  const res = noBranch ? await context.rewrite('/404/') : await next();
+  const res = noBranch ? await context.rewrite('/404/') : infoKey && INFO_KEYS.has(infoKey) ? await next(`/info/${infoKey}/`) : await next();
   if (inRegistry && res.status === 404) {
     let location: string | null;
     try {

@@ -1,0 +1,72 @@
+---
+// S4-122. /contacts/ (карта сайта 3.3, 19 §4.10): все открытые клубы – адрес, телефон, часы по недельному графику из network (K5 №3 weeklyHours),
+// текст вступления – страница CMS contacts_intro (K5 №212; не опубликована – без текста). Архивный и готовящийся клубы API не отдаёт – их нет.
+// Реквизиты оператора – когда появятся в данных (N-01); выдуманных нет.
+import Site from '../layouts/Site.astro';
+import { branchPath, site, type BranchDetailDto } from '../lib/api.ts';
+import { content, type PublicPage } from '../lib/content.ts';
+import { breadcrumbLd } from '../lib/jsonld.ts';
+import { renderRichText } from '../lib/rich-text.ts';
+
+const DAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+const { network, origin } = Astro.locals;
+let details: Map<string, BranchDetailDto> | null = null;
+let intro: PublicPage | null = null;
+try {
+  const branches = (network ?? []).flatMap((c) => c.branches);
+  const [list, page] = await Promise.all([Promise.all(branches.map((b) => site.branch(b.id))), content.page('contacts_intro').catch(() => null)]);
+  details = new Map(list.map((d) => [d.id, d]));
+  intro = page;
+} catch (e) {
+  console.error('site: контакты – клубы из API не загрузились', e);
+}
+if (!network || !details) Astro.response.status = 503;
+
+/** Недельный график строками: одинаковые дни подряд – диапазоном («Пн–Пт 10:00–22:00»), дней без записи – «выходной». */
+function weekText(hours: BranchDetailDto['weeklyHours']): string[] {
+  const byDay = DAYS.map((_, i) => hours.filter((h) => h.weekday === i + 1).map((h) => `${h.open}–${h.close}`).join(', ') || 'выходной');
+  const out: string[] = [];
+  for (let i = 0; i < 7; ) {
+    let j = i;
+    while (j + 1 < 7 && byDay[j + 1] === byDay[i]) j++;
+    out.push(`${i === j ? DAYS[i] : `${DAYS[i]}–${DAYS[j]}`} ${byDay[i]}`);
+    i = j + 1;
+  }
+  return out;
+}
+---
+<Site title="Контакты Ю-Клуб: адреса, телефоны и часы работы" description="Адреса, телефоны и часы работы всех клубов Ю-Клуб." jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Контакты', path: '/contacts/' }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация"><li><a href="/">Главная</a></li><li aria-current="page">Контакты</li></ol>
+  <h1>Контакты</h1>
+  {intro && <div class="yu-rich-text contacts-intro" data-testid="contacts-intro" set:html={renderRichText(intro.body, intro.media)} />}
+  {!network || !details ? (
+    <p class="yu-notice" role="alert">Список клубов сейчас не загрузился. <a href="/contacts/">Обновите страницу</a> через минуту.</p>
+  ) : (
+    network.map((c) => (
+      <section class="yu-section" aria-labelledby={`city-${c.slug}`}>
+        <h2 id={`city-${c.slug}`}>{c.name}</h2>
+        <ul class="yu-cards">
+          {c.branches.map((b) => {
+            const d = details.get(b.id);
+            return (
+              <li class="yu-card contacts-club" data-testid={`contacts-${b.slug}`}>
+                <a class="yu-card__link contacts-club__link" href={branchPath(c.slug, b.slug)}>{b.name}</a>
+                <span class="yu-card__meta">{b.address}</span>
+                {b.phone && <a class="contacts-club__phone" href={`tel:${b.phone.replace(/[^\d+]/g, '')}`}>{b.phone}</a>}
+                {b.status === 'temporarily_closed'
+                  ? <span class="yu-card__status yu-card__status--closed">Временно закрыт</span>
+                  : <ul class="contacts-club__hours" data-testid="contacts-hours">{weekText(d?.weeklyHours ?? []).map((l) => <li>{l}</li>)}</ul>}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    ))
+  )}
+</Site>
+
+<style>
+  .contacts-intro { max-width: var(--yu-measure); }
+  .contacts-club__phone { position: relative; z-index: 1; display: inline-flex; align-items: center; min-height: var(--yu-tap); justify-self: start; }
+  .contacts-club__hours { margin: var(--yu-sp-2xs) 0 0; padding: 0; list-style: none; color: var(--yu-muted); font-size: var(--yu-fs-s); }
+</style>

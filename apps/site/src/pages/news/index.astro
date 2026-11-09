@@ -1,0 +1,32 @@
+---
+// S4-112. /news/ (карта сайта 3.3, 12 §8.2): действующие новости с охватом выбранного клуба (K22 §4: сеть + его город + он сам);
+// без выбора – вся сеть. «Показать ещё» – курсор API (?cursor= – фильтр, canonical без него). API молчит – 503 с повтором.
+import PublicationList from '../../components/PublicationList.astro';
+import Site from '../../layouts/Site.astro';
+import { content, type PublicationCard } from '../../lib/content.ts';
+import { SECTION, chosenBranch, displayZone } from '../../lib/publications.ts';
+import { breadcrumbLd } from '../../lib/jsonld.ts';
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let data: { items: PublicationCard[]; nextCursor: string | null } | null = null;
+try {
+  data = await content.publications({ type: 'news', branchId: chosen?.branch.id, cursor: Astro.url.searchParams.get('cursor') ?? undefined });
+} catch (e) {
+  console.error('site: новости из API не загрузились', e);
+  Astro.response.status = 503;
+}
+---
+<Site title="Новости Ю-Клуб" description="Новости сети компьютерных клубов Ю-Клуб: открытия, обновления залов и игр." jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Новости', path: '/news/' }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация"><li><a href="/">Главная</a></li><li aria-current="page">Новости</li></ol>
+  <h1>Новости</h1>
+  {chosen && <p class="yu-body" data-testid="pub-filter">Для клуба «{chosen.branch.name}» и всей сети.</p>}
+  <div class="yu-section">
+    {data ? (
+      <PublicationList items={data.items} timeZone={displayZone(network, chosen)} empty={SECTION.news.empty} />
+    ) : (
+      <p class="yu-notice" role="alert">Новости сейчас не загрузились. <a href="/news/">Обновить страницу</a></p>
+    )}
+    {data?.nextCursor && <p><a class="yu-btn yu-btn--ghost" href={`/news/?cursor=${encodeURIComponent(data.nextCursor)}`}>Показать ещё</a></p>}
+  </div>
+</Site>

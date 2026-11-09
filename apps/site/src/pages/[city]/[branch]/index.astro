@@ -6,6 +6,8 @@
 // Зоны – разделы этой страницы (#rooms, отдельных страниц зон нет); комната – ссылка на свою карточку (S1-21),
 // у зоны – запись с предвыбором зоны. Нет опубликованных комнат – пустое состояние, а не пропавший раздел.
 // Запись – кнопкой в /schedule/?branch={город}/{филиал} (карта п.2.9: своего адреса расписания у филиала нет); у закрытого её нет.
+// S4-121: описание, особенности, как добраться, галерея, адрес и координаты для разметки – страница CMS (K5 №214). Нет страницы или API
+// контента молчит – страница работает на фактах network; кнопку записи и часы контент не меняет (приёмка 21).
 import Site from '../../../layouts/Site.astro';
 import {
   ApiError, ZONE_LABEL, ZONE_ORDER, branchPath, branchRooms, findBranch, roomPath, scheduleHref, site,
@@ -13,6 +15,8 @@ import {
 } from '../../../lib/api.ts';
 import { metaFor } from '../../../lib/seo.ts';
 import { branchLd, breadcrumbLd, organizationLd } from '../../../lib/jsonld.ts';
+import { content, type BranchPage } from '../../../lib/content.ts';
+import { renderRichText } from '../../../lib/rich-text.ts';
 
 const { city: citySlug = '', branch: branchSlug = '' } = Astro.params;
 const { network, origin } = Astro.locals;
@@ -33,6 +37,15 @@ if (found) {
   }
 }
 if (failed) Astro.response.status = 503;
+let page: BranchPage | null = null;
+if (found && !failed) {
+  try {
+    page = await content.branch(found.branch.id);
+  } catch (e) {
+    console.error('site: страница филиала из CMS не загрузилась – показываем факты', e);
+  }
+}
+const gallery = (page?.gallery ?? []).filter((m) => !m.removed && m.url);
 
 const city = found?.city;
 const branch = detail ?? found?.branch;
@@ -55,16 +68,16 @@ const zones = ZONE_ORDER.map((code) => {
 }).filter((z) => z.rooms.length > 0);
 
 const title = branch && city ? `${branch.name}, ${city.name}` : 'Клуб временно недоступен';
-// Адрес, координаты и фото из страницы CMS (postal, geo, gallery) добавит S4-121: нет данных – нет полей (K23 §6).
+// Адрес, координаты и фото – из страницы CMS (postal, geo, gallery): нет данных – нет полей (K23 §6).
 const jsonLd = branch && city
   ? [
       organizationLd(origin),
-      branchLd(origin, { path: branchPath(city.slug, branch.slug), name: branch.name, status: branch.status, phone: branch.phone, weeklyHours: detail?.weeklyHours }),
+      branchLd(origin, { path: branchPath(city.slug, branch.slug), name: branch.name, status: branch.status, phone: branch.phone, weeklyHours: detail?.weeklyHours, postal: page?.postal, geo: page?.geo, images: gallery.map((m) => m.url!) }),
       breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, ...(city.branches.length >= 2 ? [{ name: city.name, path: `/${city.slug}/` }] : []), { name: branch.name, path: branchPath(city.slug, branch.slug) }]),
     ]
   : [];
 const meta = branch && city
-  ? metaFor({ page: 'branch', branch: branch.name, city: city.name, address: branch.address, directions: zones.map((z) => ZONE_LABEL[z.code]), hoursToday: closed ? 'Временно закрыт' : `Сегодня: ${hoursToday}`, closed })
+  ? metaFor({ page: 'branch', branch: branch.name, city: city.name, address: branch.address, directions: zones.map((z) => ZONE_LABEL[z.code]), hoursToday: closed ? 'Временно закрыт' : `Сегодня: ${hoursToday}`, closed }, page?.seo)
   : null;
 const hasCityHub = (city?.branches.length ?? 0) >= 2;
 ---
@@ -104,6 +117,25 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
         </dl>
       </section>
 
+      {page && (page.description || page.features.length > 0 || page.howToGet || gallery.length > 0) && (
+        <section class="yu-section" aria-labelledby="about-title" data-testid="branch-content">
+          <h2 id="about-title">О клубе</h2>
+          {page.description && <div class="yu-rich-text" set:html={renderRichText(page.description, page.media)} />}
+          {page.features.length > 0 && <ul class="yu-chips" data-testid="branch-features">{page.features.map((f) => <li class="yu-chip">{f}</li>)}</ul>}
+          {page.howToGet && (
+            <>
+              <h3>Как добраться</h3>
+              <div class="yu-rich-text" data-testid="branch-how" set:html={renderRichText(page.howToGet, page.media)} />
+            </>
+          )}
+          {gallery.length > 0 && (
+            <ul class="branch-gallery" data-testid="branch-gallery">
+              {gallery.map((m) => <li><img src={m.url!} alt={m.alt} width={m.width ?? undefined} height={m.height ?? undefined} loading="lazy" decoding="async" /></li>)}
+            </ul>
+          )}
+        </section>
+      )}
+
       <section class="yu-section" id="rooms" aria-labelledby="zones-title">
         <h2 id="zones-title">Зоны и комнаты</h2>
         {zones.length === 0 ? (
@@ -134,3 +166,9 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
     </>
   )}
 </Site>
+
+<style>
+  .branch-gallery { display: grid; gap: var(--yu-sp-xs); grid-template-columns: repeat(2, minmax(0, 1fr)); margin: var(--yu-sp-s) 0 0; padding: 0; list-style: none; }
+  @media (min-width: 900px) { .branch-gallery { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .branch-gallery img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--yu-r-s); background: var(--yu-surface-2); }
+</style>

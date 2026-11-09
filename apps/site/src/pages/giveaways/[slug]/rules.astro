@@ -1,0 +1,55 @@
+---
+// S4-115. /giveaways/{slug}/rules/ (карта сайта 3.4): правила розыгрыша – Юридическая, noindex всегда (K23 §2).
+// Текст правил из CMS (rulesBody) – страницей; правила только файлом – ссылка на PDF в /media/ (вопрос формата 13 – оба варианта).
+// Нет розыгрыша или правил нет вовсе – 404.
+import Site from '../../../layouts/Site.astro';
+import { content, type PublicationPage as Page } from '../../../lib/content.ts';
+import { breadcrumbLd } from '../../../lib/jsonld.ts';
+import { renderRichText } from '../../../lib/rich-text.ts';
+import { metaFor } from '../../../lib/seo.ts';
+
+const { origin } = Astro.locals;
+let page: Page | null = null;
+try {
+  page = await content.publication('giveaway', Astro.params.slug ?? '');
+  if (!page || (!page.rulesBody && !page.rulesUrl)) return Astro.rewrite('/404/');
+} catch (e) {
+  console.error('site: правила розыгрыша из API не загрузились', e);
+  Astro.response.status = 503;
+}
+const title = page ? `Правила розыгрыша «${page.title}»` : 'Правила розыгрыша';
+const meta = metaFor({ page: 'info', title, text: page ? `${title}: организатор, сроки, приз и порядок определения победителей.` : undefined });
+const back = page ? `/giveaways/${page.slug}/` : '/giveaways/';
+---
+<Site title={meta.title} description={meta.description} index={{ kind: 'closed' }} jsonLd={page ? [breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Розыгрыши', path: '/giveaways/' }, { name: page.title, path: back }, { name: 'Правила', path: `${back}rules/` }])] : []}>
+  {page ? (
+    <>
+      <ol class="yu-crumbs" aria-label="Навигация">
+        <li><a href="/">Главная</a></li>
+        <li><a href="/giveaways/">Розыгрыши</a></li>
+        <li><a href={back}>{page.title}</a></li>
+        <li aria-current="page">Правила</li>
+      </ol>
+      <article class="rules" data-testid="giveaway-rules">
+        <h1>{meta.h1}</h1>
+        {page.rulesBody && <div class="yu-rich-text" set:html={renderRichText(page.rulesBody, page.media)} />}
+        {page.rulesUrl && (
+          <p><a class="yu-btn yu-btn--ghost" href={page.rulesUrl} data-testid="rules-pdf" target="_blank" rel="noopener">Правила файлом (PDF)</a></p>
+        )}
+        <p><a class="rules__back" href={back}>К розыгрышу</a></p>
+      </article>
+    </>
+  ) : (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Правила временно недоступны</h1>
+      <p class="yu-body">Сервис не ответил. <a href="">Обновите страницу</a> через минуту.</p>
+    </section>
+  )}
+</Site>
+
+<style>
+  .rules { display: grid; gap: var(--yu-sp-m); max-width: 760px; overflow-wrap: anywhere; }
+  .rules > * { margin: 0; min-width: 0; }
+  .rules__back { display: inline-flex; align-items: center; min-height: var(--yu-tap); }
+</style>

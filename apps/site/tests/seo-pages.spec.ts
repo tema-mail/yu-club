@@ -22,12 +22,14 @@ test('JSON-LD филиала и комнаты: только реальные д
   expect(b).toMatchObject({ '@id': 'https://yu-club.test/tomsk/lenina/#branch', name: 'Ю-Клуб на Ленина', url: 'https://yu-club.test/tomsk/lenina/', parentOrganization: { '@id': 'https://yu-club.test/#organization' } });
   expect(b.openingHoursSpecification).toHaveLength(7);
   expect(b.telephone).toBeUndefined(); // телефона нет в данных – поля нет
-  expect(b.address).toBeUndefined(); // разобранного адреса CMS нет – строку не подставляем
+  expect(b.address).toMatchObject({ postalCode: '634050' }); // адрес – из страницы CMS (S4-121)
   expect(ofType(blocks, 'Organization')).toBeTruthy();
   expect(ofType(blocks, 'BreadcrumbList')!.itemListElement).toHaveLength(2); // у Томска один филиал – страницы города нет, в крошках её нет
   const closed = ofType(jsonLd(await html(request, '/novosibirsk/akademgorodok/')), 'EntertainmentBusiness')!;
   expect(closed.openingHoursSpecification).toBeUndefined(); // временно закрыт – без часов
-  const near = ofType(jsonLd(await html(request, '/novosibirsk/krasny-prospekt/')), 'BreadcrumbList')!;
+  const krasny = jsonLd(await html(request, '/novosibirsk/krasny-prospekt/'));
+  expect(ofType(krasny, 'EntertainmentBusiness')!.address).toBeUndefined(); // страницы CMS нет – строку адреса не подставляем
+  const near = ofType(krasny, 'BreadcrumbList')!;
   expect(near.itemListElement).toHaveLength(3); // в Новосибирске страница города есть
 
   const roomHtml = await html(request, '/novosibirsk/krasny-prospekt/rooms/vr-ps4-room/');

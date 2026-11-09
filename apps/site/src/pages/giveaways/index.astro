@@ -1,0 +1,32 @@
+---
+// S4-114. /giveaways/ (карта сайта 3.3, 12 §8.4): действующие розыгрыши с охватом выбранного клуба (K22 §4). Розыгрыш информационный:
+// приёма заявок на сайте нет – только условия, приз, дата итогов и правила.
+import PublicationList from '../../components/PublicationList.astro';
+import Site from '../../layouts/Site.astro';
+import { content, type PublicationCard } from '../../lib/content.ts';
+import { SECTION, chosenBranch, displayZone } from '../../lib/publications.ts';
+import { breadcrumbLd } from '../../lib/jsonld.ts';
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let data: { items: PublicationCard[]; nextCursor: string | null } | null = null;
+try {
+  data = await content.publications({ type: 'giveaway', branchId: chosen?.branch.id, cursor: Astro.url.searchParams.get('cursor') ?? undefined });
+} catch (e) {
+  console.error('site: розыгрыши из API не загрузились', e);
+  Astro.response.status = 503;
+}
+---
+<Site title="Розыгрыши Ю-Клуб" description="Розыгрыши компьютерных клубов Ю-Клуб: призы, условия участия и даты итогов." jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Розыгрыши', path: '/giveaways/' }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация"><li><a href="/">Главная</a></li><li aria-current="page">Розыгрыши</li></ol>
+  <h1>Розыгрыши</h1>
+  {chosen && <p class="yu-body" data-testid="pub-filter">Для клуба «{chosen.branch.name}» и всей сети.</p>}
+  <div class="yu-section">
+    {data ? (
+      <PublicationList items={data.items} timeZone={displayZone(network, chosen)} empty={SECTION.giveaway.empty} />
+    ) : (
+      <p class="yu-notice" role="alert">Розыгрыши сейчас не загрузились. <a href="/giveaways/">Обновить страницу</a></p>
+    )}
+    {data?.nextCursor && <p><a class="yu-btn yu-btn--ghost" href={`/giveaways/?cursor=${encodeURIComponent(data.nextCursor)}`}>Показать ещё</a></p>}
+  </div>
+</Site>

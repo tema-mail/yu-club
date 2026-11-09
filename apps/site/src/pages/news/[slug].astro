@@ -1,0 +1,42 @@
+---
+// S4-112. /news/{slug}/ (карта сайта 3.3): нет, не опубликовано или ещё не наступило – 404 с кодом 404 (API отдаёт 404).
+// Индексация – K23 §2: живая версия и флаг CMS indexable. Мета – metaFor: ручные поля CMS важнее шаблона, один H1.
+// API молчит (и устаревшего в кэше нет) – 503 с повтором, а не ложный 404.
+import PublicationPage from '../../components/PublicationPage.astro';
+import Site from '../../layouts/Site.astro';
+import { content, type PublicationPage as Page } from '../../lib/content.ts';
+import { breadcrumbLd, newsLd } from '../../lib/jsonld.ts';
+import { chosenBranch, displayZone } from '../../lib/publications.ts';
+import { metaFor } from '../../lib/seo.ts';
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let page: Page | null = null;
+try {
+  page = await content.publication('news', Astro.params.slug ?? '', chosen?.branch.id);
+  if (!page) return Astro.rewrite('/404/');
+} catch (e) {
+  console.error('site: новость из API не загрузилась', e);
+  Astro.response.status = 503;
+}
+const meta = page ? metaFor({ page: 'publication', title: page.title, lead: page.lead }, page.seo) : null;
+const path = page ? `/news/${page.slug}/` : '/news/';
+---
+<Site
+  title={meta?.title ?? 'Новость временно недоступна – Ю-Клуб'}
+  description={meta?.description}
+  ogImage={meta?.ogImage}
+  ogType={meta?.ogType}
+  index={page ? { kind: 'publication', live: true, indexable: page.indexable, ended: page.state === 'ended' } : { kind: 'closed' }}
+  jsonLd={page ? [newsLd(origin, { path, title: page.title, datePublished: page.publishFrom, image: page.seo.ogImage }), breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Новости', path: '/news/' }, { name: page.title, path }])] : []}
+>
+  {page && meta ? (
+    <PublicationPage page={page} h1={meta.h1} timeZone={displayZone(network, chosen)} />
+  ) : (
+    <section class="yu-error">
+      <span class="yu-error__code">503</span>
+      <h1>Новость временно недоступна</h1>
+      <p class="yu-body">Сервис не ответил. <a href="">Обновите страницу</a> через минуту.</p>
+    </section>
+  )}
+</Site>

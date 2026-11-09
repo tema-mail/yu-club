@@ -1,0 +1,32 @@
+---
+// S4-113. /promotions/ (карта сайта 3.3, 12 §8.3): только действующие акции – срок показа фильтрует API (завершённой в списке нет).
+// Охват – выбранного клуба (K22 §4). Цены на сайте не пересчитываются: условия – текстом из CMS (12 §8.3).
+import PublicationList from '../../components/PublicationList.astro';
+import Site from '../../layouts/Site.astro';
+import { content, type PublicationCard } from '../../lib/content.ts';
+import { SECTION, chosenBranch, displayZone } from '../../lib/publications.ts';
+import { breadcrumbLd } from '../../lib/jsonld.ts';
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let data: { items: PublicationCard[]; nextCursor: string | null } | null = null;
+try {
+  data = await content.publications({ type: 'promotion', branchId: chosen?.branch.id, cursor: Astro.url.searchParams.get('cursor') ?? undefined });
+} catch (e) {
+  console.error('site: акции из API не загрузились', e);
+  Astro.response.status = 503;
+}
+---
+<Site title="Акции Ю-Клуб" description="Действующие акции компьютерных клубов Ю-Клуб: сроки, условия и клубы, где они действуют." jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Акции', path: '/promotions/' }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация"><li><a href="/">Главная</a></li><li aria-current="page">Акции</li></ol>
+  <h1>Акции</h1>
+  {chosen && <p class="yu-body" data-testid="pub-filter">Для клуба «{chosen.branch.name}» и всей сети.</p>}
+  <div class="yu-section">
+    {data ? (
+      <PublicationList items={data.items} timeZone={displayZone(network, chosen)} empty={SECTION.promotion.empty} />
+    ) : (
+      <p class="yu-notice" role="alert">Акции сейчас не загрузились. <a href="/promotions/">Обновить страницу</a></p>
+    )}
+    {data?.nextCursor && <p><a class="yu-btn yu-btn--ghost" href={`/promotions/?cursor=${encodeURIComponent(data.nextCursor)}`}>Показать ещё</a></p>}
+  </div>
+</Site>

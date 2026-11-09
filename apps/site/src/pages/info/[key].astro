@@ -1,0 +1,66 @@
+---
+// S4-120. Страницы из CMS (K22 §5, §7; K5 №212): /about/, /rules/ и юридические. Адреса канонические – middleware внутренне подменяет их на
+// /info/{key}/ (этот файл); прямой заход на /info/… – 301 на канонический (там же). Текст – только через rich-text.ts.
+// Не опубликована: юридическая и правила – «Документ готовится» (19 §4.1, 4.10), «О клубе» – 404 (в карте сайта её тогда нет).
+// Индексация – K23 §2: юридические noindex всегда, «О клубе» и правила – индекс.
+import Site from '../../layouts/Site.astro';
+import { content, type PageKey, type PublicPage } from '../../lib/content.ts';
+import { breadcrumbLd } from '../../lib/jsonld.ts';
+import { renderRichText } from '../../lib/rich-text.ts';
+import { metaFor } from '../../lib/seo.ts';
+
+const PAGES: Record<string, { title: string; legal: boolean }> = {
+  about: { title: 'О клубе', legal: false },
+  rules: { title: 'Правила клуба', legal: false },
+  'privacy-policy': { title: 'Политика обработки персональных данных', legal: true },
+  'personal-data-consent': { title: 'Согласие на обработку персональных данных', legal: true },
+  'cookie-policy': { title: 'Политика использования cookie', legal: true },
+  'advertising-consent': { title: 'Согласие на получение рекламных сообщений', legal: true },
+};
+
+const key = Astro.params.key ?? '';
+const def = Object.hasOwn(PAGES, key) ? PAGES[key]! : null;
+if (!def) return Astro.rewrite('/404/');
+
+const { origin } = Astro.locals;
+let page: PublicPage | null = null;
+let failed = false;
+try {
+  page = await content.page(key as PageKey);
+} catch (e) {
+  console.error('site: страница CMS из API не загрузилась', e);
+  failed = true;
+  Astro.response.status = 503;
+}
+if (!failed && !page && key === 'about') return Astro.rewrite('/404/');
+
+const path = `/${key}/`;
+const title = page?.title || def.title;
+const meta = metaFor({ page: 'info', title, text: page ? page.body.replace(/[*_#>`[\]()]/g, '').slice(0, 400) : undefined }, page?.seo);
+const updated = page ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Moscow' }).format(new Date(page.updatedAt)) : null;
+---
+<Site title={meta.title} description={meta.description} ogImage={meta.ogImage} index={def.legal || failed ? { kind: 'closed' } : { kind: 'open' }} jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: title, path }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация">
+    <li><a href="/">Главная</a></li>
+    <li aria-current="page">{title}</li>
+  </ol>
+  <article class="info" data-testid="info-page">
+    <h1>{meta.h1}</h1>
+    {page ? (
+      <>
+        {def.legal && page.documentVersion && <p class="info__meta" data-testid="doc-version">Редакция {page.documentVersion}, опубликована {updated}</p>}
+        <div class="yu-rich-text" set:html={renderRichText(page.body, page.media)} />
+      </>
+    ) : failed ? (
+      <p class="yu-notice" role="alert">Текст сейчас не загрузился. <a href={path}>Обновите страницу</a> через минуту.</p>
+    ) : (
+      <p class="yu-notice" role="status" data-testid="doc-pending">Документ готовится и появится здесь до открытия онлайн-записи.</p>
+    )}
+  </article>
+</Site>
+
+<style>
+  .info { display: grid; gap: var(--yu-sp-m); max-width: 760px; overflow-wrap: anywhere; }
+  .info > * { margin: 0; min-width: 0; }
+  .info__meta { color: var(--yu-dim); font-size: var(--yu-fs-s); }
+</style>

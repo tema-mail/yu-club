@@ -1,0 +1,80 @@
+---
+// S4-117. Каталог направления /games/{pc|vr|playstation}/ (карта сайта 3.2, 12 §6): плитки игр; у игры с полным описанием – ссылка на карточку
+// (S4-118), без него – только плитка (12 §18 п.4). Жанр – фильтр ?genre= (canonical без параметра – Site.astro, карта п.2.10).
+// Выбран клуб – только доступные в нём, с заметкой клуба; иначе пометка «общий каталог сети». PlayStation – платформа из справочника (12 §6.4).
+import Site from '../../../layouts/Site.astro';
+import { GAME_DIRECTIONS, gamePath, type GameDirection } from '../../../../../../packages/contracts/src/paths.ts';
+import { content, type GameCard } from '../../../lib/content.ts';
+import { breadcrumbLd } from '../../../lib/jsonld.ts';
+import { chosenBranch } from '../../../lib/publications.ts';
+import { metaFor } from '../../../lib/seo.ts';
+
+const TITLE: Record<GameDirection, string> = { pc: 'Игры на ПК', vr: 'Игры VR', playstation: 'Игры на PlayStation' };
+const direction = Astro.params.direction as GameDirection;
+if (!(GAME_DIRECTIONS as readonly string[]).includes(direction)) return Astro.rewrite('/404/');
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let data: { items: GameCard[]; networkCatalog: boolean } | null = null;
+try {
+  data = await content.games({ direction, branchId: chosen?.branch.id });
+} catch (e) {
+  console.error('site: каталог игр из API не загрузился', e);
+  Astro.response.status = 503;
+}
+const all = data?.items ?? [];
+const genres = [...new Set(all.flatMap((g) => g.genres))].sort((a, b) => a.localeCompare(b, 'ru'));
+const raw = Astro.url.searchParams.get('genre');
+const genre = raw && genres.includes(raw) ? raw : null;
+const items = genre ? all.filter((g) => g.genres.includes(genre)) : all;
+const meta = metaFor({ page: 'gameCatalog', direction, count: all.length });
+const here = Astro.url.pathname;
+const srcset = (c: GameCard['cover']) => c?.variants.filter((v) => v.format === 'webp').map((v) => `${v.url} ${v.w}w`).join(', ') || undefined;
+---
+<Site title={meta.title} description={meta.description} jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Игры', path: '/games/' }, { name: TITLE[direction], path: here }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация"><li><a href="/">Главная</a></li><li><a href="/games/">Игры</a></li><li aria-current="page">{TITLE[direction]}</li></ol>
+  <h1>{meta.h1}</h1>
+  {data && (data.networkCatalog
+    ? <p class="yu-body" data-testid="games-scope">Общий каталог сети. Выберите клуб в шапке – покажем только то, что есть в нём.</p>
+    : <p class="yu-body" data-testid="games-scope">Игры клуба «{chosen?.branch.name}».</p>)}
+  {!data && <p class="yu-notice" role="alert">Каталог игр сейчас не загрузился. <a href={here}>Обновить страницу</a></p>}
+  {genres.length > 1 && (
+    <nav class="games-genres" aria-label="Жанр">
+      <a class="yu-chip games-genres__chip" href={here} aria-current={genre ? undefined : 'page'}>Все</a>
+      {genres.map((g) => <a class="yu-chip games-genres__chip" href={`${here}?genre=${encodeURIComponent(g)}`} aria-current={g === genre ? 'page' : undefined}>{g}</a>)}
+    </nav>
+  )}
+  {data && items.length === 0 && <p class="yu-notice" role="status" data-testid="games-empty">{data.networkCatalog ? 'Игр этого направления пока нет.' : 'В выбранном клубе игр этого направления нет.'}</p>}
+  {items.length > 0 && (
+    <ul class="games" data-testid="games">
+      {items.map((g) => (
+        <li class="game">
+          {g.cover && !g.cover.removed && g.cover.url && <img class="game__cover" src={g.cover.url} srcset={srcset(g.cover)} sizes="(min-width: 900px) 280px, 50vw" alt={g.cover.alt} width={g.cover.width ?? undefined} height={g.cover.height ?? undefined} loading="lazy" decoding="async" />}
+          <div class="game__body">
+            <h2 class="game__title">{g.hasPage && g.slug ? <a class="game__link" href={gamePath(direction, g.slug)}>{g.title}</a> : g.title}</h2>
+            <p class="game__short">{g.short}</p>
+            <p class="game__meta">{[...g.genres, g.ageRating, ...g.platforms].filter(Boolean).join(' · ')}</p>
+            {g.note && <p class="game__meta" data-testid="game-note">{g.note}</p>}
+          </div>
+        </li>
+      ))}
+    </ul>
+  )}
+</Site>
+
+<style>
+  .games-genres { display: flex; flex-wrap: wrap; gap: var(--yu-sp-2xs); margin-block: var(--yu-sp-s); }
+  .games-genres__chip { display: inline-flex; align-items: center; min-height: var(--yu-tap); padding-inline: var(--yu-sp-xs); text-decoration: none; }
+  .games-genres__chip[aria-current='page'] { background: var(--yu-accent); color: var(--yu-on-accent); }
+  .games { display: grid; gap: var(--yu-sp-s); grid-template-columns: repeat(2, minmax(0, 1fr)); margin: var(--yu-sp-m) 0 0; padding: 0; list-style: none; }
+  @media (min-width: 900px) { .games { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  .game { position: relative; display: grid; align-content: start; min-width: 0; border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); overflow: hidden; }
+  .game__cover { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--yu-surface-2); }
+  .game__body { display: grid; gap: var(--yu-sp-3xs); padding: var(--yu-sp-xs); }
+  .game__body > * { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .game__title { font-size: var(--yu-fs-m); line-height: var(--yu-lh-head); }
+  .game__link { display: inline-flex; align-items: center; min-height: var(--yu-tap); text-decoration: none; color: var(--yu-text); }
+  .game__link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+  .game__short { color: var(--yu-muted); font-size: var(--yu-fs-s); }
+  .game__meta { color: var(--yu-dim); font-size: var(--yu-fs-xs); }
+</style>

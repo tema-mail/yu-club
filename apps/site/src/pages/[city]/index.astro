@@ -1,51 +1,29 @@
 ---
-// Первый сегмент адреса: юридическая страница или хаб города.
-// 1) Юридические (карта сайта 3.4) – слова зарезервированы и городом быть не могут (п.2.8). Тексты – от юриста
-//    заказчика (N-01); пока их нет, страница честно пишет «документ готовится» (19 §4.1). Закрыты от поиска, кроме правил.
-// 2) Хаб города /{city}/ (3.1, п.2.11): ≥ 2 открытых филиала – список; один – 301 на филиал; нет города в публичном
-//    списке (K5 №1 отдаёт только города с active/temporarily_closed) – 404.
+// Хаб города /{city}/ (3.1, п.2.11): ≥ 2 открытых филиала – список; один – 301 на филиал; нет города в публичном
+// списке (K5 №1 отдаёт только города с active/temporarily_closed) – 404. Юридические, /rules/ и /about/ сюда не попадают:
+// middleware подменяет их на src/pages/info/[key].astro (S4-120).
 import Site from '../../layouts/Site.astro';
 import { branchPath } from '../../lib/api.ts';
 import { metaFor } from '../../lib/seo.ts';
 import { breadcrumbLd } from '../../lib/jsonld.ts';
 
-const DOCS: Record<string, { title: string; index: boolean }> = {
-  rules: { title: 'Правила клуба', index: true },
-  'privacy-policy': { title: 'Политика обработки персональных данных', index: false },
-  'personal-data-consent': { title: 'Согласие на обработку персональных данных', index: false },
-  'cookie-policy': { title: 'Политика использования cookie', index: false },
-};
-
 const { city: slug = '' } = Astro.params;
-const doc = Object.hasOwn(DOCS, slug) ? DOCS[slug] : undefined;
 const { network, origin } = Astro.locals;
-const city = doc ? undefined : network?.find((c) => c.slug === slug);
+const city = network?.find((c) => c.slug === slug);
 
-if (!doc && network && !city) return Astro.rewrite('/404/');
+if (network && !city) return Astro.rewrite('/404/');
 if (city && city.branches.length === 1) return Astro.redirect(`${branchPath(city.slug, city.branches[0]!.slug)}${Astro.url.search}`, 301);
-if (!doc && !network) Astro.response.status = 503;
+if (!network) Astro.response.status = 503;
 
-const title = doc ? doc.title : 'Клубы временно недоступны';
 const meta = city ? metaFor({ page: 'city', city: city.name, branches: city.branches.map((b) => b.name) }) : null;
 ---
 <Site
-  title={meta?.title ?? `${title} – Ю-Клуб`}
+  title={meta?.title ?? 'Клубы временно недоступны – Ю-Клуб'}
   description={meta?.description}
-  index={city ? { kind: 'city', openBranches: city.branches.length } : doc?.index ? { kind: 'open' } : { kind: 'closed' }}
-  jsonLd={city || doc ? [breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: city?.name ?? doc!.title, path: `/${slug}/` }])] : []}
+  index={city ? { kind: 'city', openBranches: city.branches.length } : { kind: 'closed' }}
+  jsonLd={city ? [breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: city.name, path: `/${slug}/` }])] : []}
 >
-  {doc ? (
-    <>
-      <ol class="yu-crumbs" aria-label="Навигация">
-        <li><a href="/">Главная</a></li>
-        <li aria-current="page">{doc.title}</li>
-      </ol>
-      <h1>{doc.title}</h1>
-      <div class="yu-section">
-        <p class="yu-notice" role="status" data-testid="doc-pending">Документ готовится и появится здесь до открытия онлайн-записи.</p>
-      </div>
-    </>
-  ) : !city ? (
+  {!city ? (
     <section class="yu-error">
       <span class="yu-error__code">503</span>
       <h1>Список клубов временно недоступен</h1>

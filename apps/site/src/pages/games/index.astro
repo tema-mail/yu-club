@@ -1,0 +1,54 @@
+---
+// S4-117. /games/ (карта сайта 3.1): хаб игр – три направления с превью. Выбран клуб – только игры, доступные в нём (K5 №210 с branch,
+// 12 §14.1: не подменять играми другого клуба); без выбора – сетевой каталог с пометкой «общий каталог сети».
+import Site from '../../layouts/Site.astro';
+import { gamesPath, type GameDirection } from '../../../../../packages/contracts/src/paths.ts';
+import { content, type GameCard } from '../../lib/content.ts';
+import { breadcrumbLd } from '../../lib/jsonld.ts';
+import { chosenBranch } from '../../lib/publications.ts';
+
+const DIRECTIONS: Array<{ code: GameDirection; title: string }> = [
+  { code: 'pc', title: 'Игры на ПК' },
+  { code: 'vr', title: 'Игры VR' },
+  { code: 'playstation', title: 'Игры на PlayStation' },
+];
+
+const { network, choice, origin } = Astro.locals;
+const chosen = chosenBranch(network, choice);
+let data: { items: GameCard[]; networkCatalog: boolean } | null = null;
+try {
+  data = await content.games({ branchId: chosen?.branch.id });
+} catch (e) {
+  console.error('site: игры из API не загрузились', e);
+  Astro.response.status = 503;
+}
+const groups = DIRECTIONS.map((d) => ({ ...d, items: (data?.items ?? []).filter((g) => g.direction === d.code) }));
+---
+<Site title="Игры в Ю-Клуб: ПК, VR и PlayStation" description="Во что поиграть в Ю-Клуб: игры на ПК, в VR и на PlayStation – где они есть, по клубам." jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Игры', path: '/games/' }])]}>
+  <ol class="yu-crumbs" aria-label="Навигация"><li><a href="/">Главная</a></li><li aria-current="page">Игры</li></ol>
+  <h1>Игры</h1>
+  {data && (data.networkCatalog
+    ? <p class="yu-body" data-testid="games-scope">Общий каталог сети. Выберите клуб в шапке – покажем только то, что есть в нём.</p>
+    : <p class="yu-body" data-testid="games-scope">Игры клуба «{chosen?.branch.name}».</p>)}
+  {!data && <p class="yu-notice" role="alert">Каталог игр сейчас не загрузился. <a href="/games/">Обновить страницу</a></p>}
+  <div class="games-hub">
+    {data && groups.map((g) => (
+      <section class="games-hub__dir" aria-labelledby={`dir-${g.code}`} data-testid={`dir-${g.code}`}>
+        <h2 id={`dir-${g.code}`}><a class="games-hub__link" href={gamesPath(g.code)}>{g.title}</a></h2>
+        {g.items.length === 0
+          ? <p class="yu-card__meta">{data.networkCatalog ? 'Игры этого направления скоро появятся.' : 'В выбранном клубе игр этого направления нет.'}</p>
+          : <p class="yu-card__meta">{g.items.slice(0, 4).map((x) => x.title).join(', ')}{g.items.length > 4 ? ` и ещё ${g.items.length - 4}` : ''}</p>}
+      </section>
+    ))}
+  </div>
+</Site>
+
+<style>
+  .games-hub { display: grid; gap: var(--yu-sp-s); grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); margin-block-start: var(--yu-sp-m); }
+  .games-hub__dir { position: relative; display: grid; gap: var(--yu-sp-2xs); padding: var(--yu-sp-m); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); min-width: 0; }
+  .games-hub__dir:hover { border-color: var(--yu-accent); }
+  .games-hub__dir > * { margin: 0; }
+  .games-hub__dir h2 { font-size: var(--yu-fs-l); }
+  .games-hub__link { display: inline-flex; align-items: center; min-height: var(--yu-tap); text-decoration: none; color: var(--yu-text); }
+  .games-hub__link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+</style>
