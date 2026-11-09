@@ -726,9 +726,13 @@ export function registerEquipment(app: FastifyInstance, P: string, d: EquipmentM
   }));
   app.patch(`${P}/repair-executors/:id`, command('executor.update', 200, (s, id, b) => {
     role(s, 'repair.executor.manage');
+    const FIELDS = ['kind', 'name', 'staffId', 'contactPerson', 'phone', 'email', 'address', 'inn', 'comment', 'status'] as const;
+    strict(b, ['rowVersion', ...FIELDS]); // как updateSchema API: строгий разбор и обязательная rowVersion
     const e = db.executors.find((x) => x.id === id);
     if (!e) throw notFound();
-    for (const f of ['kind', 'name', 'contactPerson', 'phone', 'email', 'comment', 'status'] as const) if (b[f] !== undefined) (e as unknown as Rec)[f] = b[f];
+    version(b, e.rowVersion);
+    for (const f of FIELDS) if (b[f] !== undefined) (e as unknown as Rec)[f] = b[f];
+    e.rowVersion++;
     return e;
   }));
 

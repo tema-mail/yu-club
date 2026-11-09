@@ -144,6 +144,26 @@ test('Директор: читает праздники, категории, т�
   await d.getByLabel('Телефон').fill('+79130001234');
   await d.getByRole('button', { name: 'Сохранить' }).click();
   await expect(list(page).getByTestId('row-Сервис ВР')).toContainText('Подрядчик');
+
+  // Архив и возврат – как у категорий; устаревшая версия – 409, как в API (K19 №349)
+  const ex = ((await (await page.request.get(`${API}/repair-executors?includeArchived=true`)).json()).items as Array<{ id: string; name: string; rowVersion: number }>).find((x) => x.name === 'Сервис ВР')!;
+  const stale = await page.request.patch(`${API}/repair-executors/${ex.id}`, { headers: key(), data: { rowVersion: ex.rowVersion + 5, comment: 'чужая правка' } });
+  expect(stale.status()).toBe(409);
+  expect((await stale.json()).error.code).toBe('VERSION_CONFLICT');
+  expect((await page.request.patch(`${API}/repair-executors/${ex.id}`, { headers: key(), data: { comment: 'без версии' } })).status()).toBe(400);
+  await page.getByRole('button', { name: 'Открыть: Сервис ВР' }).click();
+  await d.getByRole('button', { name: 'Удалить…' }).click();
+  const a = page.getByTestId('dict-archive');
+  await expect(a).toContainText('Совсем удалить нельзя');
+  await a.getByRole('button', { name: 'В архив' }).click();
+  await expect(list(page).getByTestId('row-Сервис ВР')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Архив', exact: true }).click();
+  await page.getByRole('button', { name: 'Открыть: Сервис ВР' }).click();
+  await d.getByRole('button', { name: 'Вернуть из архива' }).click();
+  await page.getByRole('button', { name: 'Действующие' }).click();
+  await expect(list(page).getByTestId('row-Сервис ВР')).toBeVisible();
+  const after = ((await (await page.request.get(`${API}/repair-executors`)).json()).items as Array<{ name: string; rowVersion: number; status: string }>).find((x) => x.name === 'Сервис ВР')!;
+  expect(after).toMatchObject({ status: 'active', rowVersion: ex.rowVersion + 2 });
 });
 
 test('Администратор – 404; 390 без прокрутки, кнопки ≥ 44', async ({ page, browser }) => {
