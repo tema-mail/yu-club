@@ -3,6 +3,8 @@
 // (Владелец), /content/games/{id} – карточка и доступность по филиалам зоны. Доступ – content.view; несуществующая – 404.
 import Crm from '../../../layouts/Crm.astro';
 import GameAvailability from '../../../islands/GameAvailability.tsx';
+import PreviewFrame from '../../../islands/PreviewFrame.tsx';
+import VersionHistory from '../../../islands/VersionHistory.tsx';
 import GameEditor, { DIRECTION_LABEL, type Direction, type GameDto } from '../../../islands/GameEditor.tsx';
 import { ApiError, serverCall } from '../../../lib/api.ts';
 import { ContentTabs, STATUS_BADGE, STATUS_LABEL, type ContentStatus } from '../../../lib/content.tsx';
@@ -50,6 +52,8 @@ const title = (d: Record<string, unknown>) => (typeof d.title === 'string' && d.
         {card && (
           <aside class="yc-ct__side">
             <GameAvailability client:load gameId={card.id} branches={refs} initial={card.branches ?? []} canEdit={can('content.catalog.availability')} />
+            <PreviewFrame client:load entityType="game" id={card.id} branches={refs} />
+            <VersionHistory client:load versionsPath={`/content/games/${card.id}/versions`} draftPath={`/content/games/${card.id}/draft`} actionBase={`/content/games/${card.id}`} canRollback={can('content.network.manage')} timezone={refs[0]?.timezone ?? 'Asia/Novosibirsk'} />
           </aside>
         )}
       </div>

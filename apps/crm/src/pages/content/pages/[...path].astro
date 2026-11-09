@@ -4,6 +4,8 @@
 // /content/pages/branches/{branchId} – текст и галерея. Ключ вне карты сайта и чужое – 404 (K1).
 import Crm from '../../../layouts/Crm.astro';
 import PageEditor, { type PageKind } from '../../../islands/PageEditor.tsx';
+import PreviewFrame from '../../../islands/PreviewFrame.tsx';
+import VersionHistory from '../../../islands/VersionHistory.tsx';
 import { ApiError, serverCall } from '../../../lib/api.ts';
 import { ContentTabs, type DraftDto, type VersionDto } from '../../../lib/content.tsx';
 import '../../../styles/content.css';
@@ -73,7 +75,13 @@ const canPublish = kind === 'page' ? canEdit : can('content.publish');
     <>
       <p class="yc-crumbs"><a href="/content/pages">Страницы</a> / {name}{cityName ? ` – ${cityName}` : ''}</p>
       <div class="yc-head"><h1>{name}{cityName ? ` – ${cityName}` : ''}</h1><p>{cityName ? 'Своя версия города: пока она не опубликована, сайт показывает сетевую.' : 'Адрес страницы задан картой сайта и не меняется.'}</p></div>
-      <PageEditor client:load kind={kind} base={base} query={query} initial={draft} legal={legal} liveDocumentVersion={liveDoc} docKey={parts[0] ?? ''} canEdit={canEdit} canPublish={canPublish} />
+      <div class="yc-ct__editor">
+        <PageEditor client:load kind={kind} base={base} query={query} initial={draft} legal={legal} liveDocumentVersion={liveDoc} docKey={parts[0] ?? ''} canEdit={canEdit} canPublish={canPublish} />
+        <aside class="yc-ct__side">
+          <PreviewFrame client:load entityType={kind === 'page' ? 'content_page' : kind === 'room' ? 'room_page' : 'branch_page'} id={draft.id} branches={kind === 'page' ? branches.map((b) => ({ id: b.id, name: b.name, cityId: b.cityId, cityName: b.cityName, timezone: b.timezone })) : []} />
+          {draft.id && <VersionHistory client:load versionsPath={`${base}/versions${query}`} draftPath={`${base}/draft${query}`} actionBase={base} query={query} canRollback={canPublish} timezone={branches[0]?.timezone ?? 'Asia/Novosibirsk'} />}
+        </aside>
+      </div>
     </>
   ) : (
     <>
