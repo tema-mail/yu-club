@@ -1,47 +1,52 @@
 ---
-// Главная (карта сайта 3.1): пока – выбор клуба по городам. Блоки главной из CMS (12 §5) – шаг Э4.
+// Главная (карта сайта 3.1, 12 §5): блоки CMS (S4-119, components/HomeBlocks.astro) с подменой городом выбранного клуба (K5 №207 ?city=),
+// после баннера – выбор клуба по городам (сеть из API, K5 №1–2). Контент не ответил – главная работает на сети: запасной баннер и клубы.
+import HomeBlocks from '../components/HomeBlocks.astro';
 import Site from '../layouts/Site.astro';
-import { branchPath, findBranch } from '../lib/api.ts';
-import { metaFor } from '../lib/seo.ts';
+import { branchPath } from '../lib/api.ts';
+import { content, type HomeContent } from '../lib/content.ts';
 import { organizationLd, websiteLd } from '../lib/jsonld.ts';
+import { chosenBranch, displayZone } from '../lib/publications.ts';
+import { metaFor } from '../lib/seo.ts';
 
 const { network, choice, origin } = Astro.locals;
 if (!network) Astro.response.status = 503;
-const mine = network && choice ? findBranch(network, choice.city, choice.branch) : null;
-// Текст «о клубе» и заголовок баннера из блоков CMS придут с S4-119; соцсети в sameAs – с блоком подвала.
-const meta = metaFor({ page: 'home', singleCity: network?.length === 1 ? network[0]!.name : undefined });
+const mine = chosenBranch(network, choice);
+let home: HomeContent | null = null;
+try {
+  home = await content.home(mine?.city.id);
+} catch (e) {
+  console.error('site: блоки главной из API не загрузились', e);
+}
+const hero = home?.blocks.find((b) => b.blockType === 'hero');
+const about = home?.blocks.find((b) => b.blockType === 'about');
+// Описание из текста «о клубе»: без разметки Markdown, по целому слову (metaFor режет до 160).
+const plain = (s: unknown) => (typeof s === 'string' ? s.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_#>`]/g, '').replace(/\s+/g, ' ').trim() : '') || undefined;
+const heroTitle = typeof hero?.payload.title === 'string' && hero.payload.title.trim() ? hero.payload.title.trim() : undefined;
+const meta = metaFor({ page: 'home', singleCity: network?.length === 1 ? network[0]!.name : undefined, about: plain(about?.payload.body), hero: heroTitle });
 ---
 <Site title={meta.title} description={meta.description} jsonLd={[organizationLd(origin), websiteLd(origin)]}>
-  <section class="yu-hero">
-    <div>
-      <h1>{meta.h1}</h1>
-      <p class="yu-lead">Игровые ПК, VR и PlayStation 5 в одной сети. Выберите свой клуб: адрес, часы и зоны.</p>
-    </div>
-    {mine && (
-      <div>
-        <a class="yu-btn" href={branchPath(mine.city.slug, mine.branch.slug)} data-testid="my-branch">Ваш клуб: {mine.branch.name}</a>
-      </div>
-    )}
-  </section>
-
-  <section class="yu-section" id="clubs" aria-labelledby="clubs-title">
-    <h2 id="clubs-title">Клубы</h2>
-    {!network && <p class="yu-notice" role="alert">Список клубов сейчас недоступен. Обновите страницу через минуту.</p>}
-    {network?.map((c) => (
-      <div class="yu-group">
-        <h3>{c.name}</h3>
-        <ul class="yu-cards">
-          {c.branches.map((b) => (
-            <li class="yu-card">
-              <a class="yu-card__link" href={branchPath(c.slug, b.slug)}>{b.name}</a>
-              <span class="yu-card__meta">{b.address}</span>
-              {b.status === 'temporarily_closed'
-                ? <span class="yu-card__status yu-card__status--closed">Временно закрыт</span>
-                : <span class="yu-card__status">Работает</span>}
-            </li>
-          ))}
-        </ul>
-      </div>
-    ))}
-  </section>
+  <HomeBlocks home={home} h1={meta.h1} lead="Игровые ПК, VR и PlayStation 5 в одной сети. Выберите свой клуб: адрес, часы и зоны." timeZone={displayZone(network, mine)}>
+    <section class="yu-section" id="clubs" aria-labelledby="clubs-title" slot="clubs">
+      <h2 id="clubs-title">Клубы</h2>
+      {mine && <p><a class="yu-btn" href={branchPath(mine.city.slug, mine.branch.slug)} data-testid="my-branch">Ваш клуб: {mine.branch.name}</a></p>}
+      {!network && <p class="yu-notice" role="alert">Список клубов сейчас недоступен. Обновите страницу через минуту.</p>}
+      {network?.map((c) => (
+        <div class="yu-group">
+          <h3>{c.name}</h3>
+          <ul class="yu-cards">
+            {c.branches.map((b) => (
+              <li class="yu-card">
+                <a class="yu-card__link" href={branchPath(c.slug, b.slug)}>{b.name}</a>
+                <span class="yu-card__meta">{b.address}</span>
+                {b.status === 'temporarily_closed'
+                  ? <span class="yu-card__status yu-card__status--closed">Временно закрыт</span>
+                  : <span class="yu-card__status">Работает</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
+  </HomeBlocks>
 </Site>

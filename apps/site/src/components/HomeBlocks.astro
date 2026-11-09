@@ -1,0 +1,177 @@
+---
+// S4-119. Главная из блоков CMS (12 §5, K22 §2, K5 №207): баннер, о клубе, направления, преимущества, полоса акции, призыв – в порядке API;
+// затем акции, новости и карусель игр. Пустой блок не рисуется, технических названий типов на странице нет (12 §5); демо-данных макета нет –
+// только то, что отдал API. Нет баннера – запасной первый экран с тем же H1 (один на странице). Слот clubs – выбор клуба сразу после баннера.
+// Карусель (19 §4.3): листается сама раз в 5 с, кнопка «Пауза», стоп при наведении и фокусе; prefers-reduced-motion – не листается сама.
+import { gamePath, gamesPath } from '../../../../packages/contracts/src/paths.ts';
+import type { HomeContent } from '../lib/content.ts';
+import { renderRichText, safeHref, type RichMedia } from '../lib/rich-text.ts';
+import PublicationList from './PublicationList.astro';
+
+interface Props {
+  home: HomeContent | null;
+  h1: string;
+  lead: string;
+  timeZone: string;
+}
+
+const { home, h1, lead, timeZone } = Astro.props;
+type P = Record<string, unknown>;
+const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+const link = (v: unknown) => {
+  const s = str(v);
+  return s && safeHref(s)?.startsWith('/') ? s : null;
+};
+const items = (p: P) => (Array.isArray(p.items) ? (p.items as P[]) : []);
+const blocks = home?.blocks ?? [];
+const hero = blocks.find((b) => b.blockType === 'hero');
+const rest = blocks.filter((b) => b.blockType !== 'hero');
+const heroMedia = hero ? (hero.media[String(hero.payload.mediaId)] as RichMedia | undefined) : undefined;
+const img = (m: RichMedia | undefined | null) => (m && !m.removed && m.url ? m : null);
+const srcset = (m: RichMedia) => m.variants.filter((v) => v.format === 'webp').map((v) => `${v.url} ${v.w}w`).join(', ') || undefined;
+const DIR_HREF = { pc: gamesPath('pc'), vr: gamesPath('vr'), playstation: gamesPath('playstation') } as Record<string, string>;
+const games = (home?.games ?? []).filter((g) => g.title);
+---
+<section class="yu-hero home-hero" data-testid="home-hero">
+  <div>
+    <h1>{h1}</h1>
+    <p class="yu-lead">{(hero && str(hero.payload.subtitle)) ?? lead}</p>
+    {hero && str(hero.payload.ctaLabel) && link(hero.payload.ctaUrl) && <a class="yu-btn" href={link(hero.payload.ctaUrl)!}>{str(hero.payload.ctaLabel)}</a>}
+  </div>
+  {img(heroMedia) && <img class="home-hero__img" src={heroMedia!.url} srcset={srcset(heroMedia!)} sizes="(min-width: 900px) 520px, 100vw" alt={heroMedia!.alt} width={heroMedia!.width ?? undefined} height={heroMedia!.height ?? undefined} fetchpriority="high" />}
+</section>
+
+<slot name="clubs" />
+
+{rest.map((b) => {
+  const p = b.payload;
+  if (b.blockType === 'about' && str(p.body)) {
+    return (
+      <section class="yu-section" aria-labelledby="home-about" data-testid="home-about">
+        <h2 id="home-about">{str(p.title) ?? 'О клубе'}</h2>
+        <div class="yu-rich-text home-text" set:html={renderRichText(String(p.body), b.media)} />
+      </section>
+    );
+  }
+  if ((b.blockType === 'directions' || b.blockType === 'advantages') && items(p).length > 0) {
+    const id = `home-${b.blockType}`;
+    return (
+      <section class="yu-section" aria-labelledby={id} data-testid={id}>
+        <h2 id={id}>{b.blockType === 'directions' ? 'Во что играть' : (str(p.title) ?? 'Почему мы')}</h2>
+        <ul class="home-tiles">
+          {items(p).map((it) => (
+            <li class="home-tile">
+              {b.blockType === 'directions' && DIR_HREF[String(it.direction)]
+                ? <h3><a class="home-tile__link" href={DIR_HREF[String(it.direction)]}>{str(it.title)}</a></h3>
+                : <h3>{str(it.title)}</h3>}
+              {str(it.text) && <p>{str(it.text)}</p>}
+            </li>
+          ))}
+        </ul>
+      </section>
+    );
+  }
+  if (b.blockType === 'promo_strip' && str(p.text)) {
+    return (
+      <p class="home-strip" data-testid="home-strip">
+        {link(p.url) ? <a class="home-strip__link" href={link(p.url)!}>{str(p.text)}</a> : str(p.text)}
+      </p>
+    );
+  }
+  if (b.blockType === 'cta' && str(p.title) && str(p.label) && link(p.url)) {
+    return (
+      <section class="yu-section home-cta" data-testid="home-cta">
+        <h2>{str(p.title)}</h2>
+        {str(p.text) && <p class="yu-body">{str(p.text)}</p>}
+        <a class="yu-btn" href={link(p.url)!}>{str(p.label)}</a>
+      </section>
+    );
+  }
+  return null;
+})}
+
+{home && home.promos.length > 0 && (
+  <section class="yu-section" aria-labelledby="home-promos" data-testid="home-promos">
+    <h2 id="home-promos"><a class="home-more" href="/promotions/">Акции</a></h2>
+    <PublicationList items={home.promos} timeZone={timeZone} empty="" level={3} testid="home-promos-list" />
+  </section>
+)}
+{home && home.news.length > 0 && (
+  <section class="yu-section" aria-labelledby="home-news" data-testid="home-news">
+    <h2 id="home-news"><a class="home-more" href="/news/">Новости</a></h2>
+    <PublicationList items={home.news} timeZone={timeZone} empty="" level={3} testid="home-news-list" />
+  </section>
+)}
+{games.length > 0 && (
+  <section class="yu-section home-games" aria-roledescription="карусель" aria-labelledby="home-games" data-testid="home-games">
+    <div class="home-games__head">
+      <h2 id="home-games"><a class="home-more" href="/games/">Игры</a></h2>
+      <button class="yu-btn yu-btn--ghost yu-btn--small" type="button" data-carousel-toggle aria-pressed="false">Пауза</button>
+    </div>
+    <ul class="home-games__track" data-carousel data-state="paused" tabindex="0" aria-label="Игры клуба, листаются по горизонтали">
+      {games.map((g) => (
+        <li class="home-game">
+          {img(g.cover) && <img src={g.cover!.url} srcset={srcset(g.cover!)} sizes="240px" alt={g.cover!.alt} width={g.cover!.width ?? undefined} height={g.cover!.height ?? undefined} loading="lazy" decoding="async" />}
+          <p class="home-game__title">{g.hasPage && g.slug ? <a href={gamePath(g.direction, g.slug)}>{g.title}</a> : g.title}</p>
+        </li>
+      ))}
+    </ul>
+  </section>
+)}
+
+<script>
+  // Карусель: по одной плитке раз в 5 с; в конце – к началу. Пауза кнопкой (aria-pressed), при наведении и фокусе.
+  // prefers-reduced-motion: reduce – сама не листается, кнопка предлагает включить.
+  const PERIOD = 5000;
+  for (const track of document.querySelectorAll<HTMLElement>('[data-carousel]')) {
+    const button = track.parentElement?.querySelector<HTMLButtonElement>('[data-carousel-toggle]');
+    let playing = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let hold = false;
+    const show = () => {
+      track.dataset.state = playing ? 'playing' : 'paused';
+      if (!button) return;
+      button.textContent = playing ? 'Пауза' : 'Листать';
+      button.setAttribute('aria-pressed', String(!playing));
+    };
+    show();
+    button?.addEventListener('click', () => {
+      playing = !playing;
+      show();
+    });
+    for (const [on, off] of [['mouseenter', 'mouseleave'], ['focusin', 'focusout']] as const) {
+      track.addEventListener(on, () => (hold = true));
+      track.addEventListener(off, () => (hold = false));
+    }
+    setInterval(() => {
+      if (!playing || hold) return;
+      const step = (track.firstElementChild as HTMLElement | null)?.offsetWidth ?? 240;
+      const end = track.scrollLeft + track.clientWidth >= track.scrollWidth - 4;
+      track.scrollTo({ left: end ? 0 : track.scrollLeft + step + 16, behavior: 'smooth' });
+    }, PERIOD);
+  }
+</script>
+
+<style>
+  .home-hero__img { width: 100%; height: auto; border-radius: var(--yu-r-m); background: var(--yu-surface-2); }
+  .home-text { max-width: var(--yu-measure); }
+  .home-tiles { display: grid; gap: var(--yu-sp-s); grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); margin: 0; padding: 0; list-style: none; }
+  .home-tile { position: relative; display: grid; gap: var(--yu-sp-3xs); padding: var(--yu-sp-s); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); min-width: 0; }
+  .home-tile > * { margin: 0; overflow-wrap: anywhere; }
+  .home-tile h3 { font-size: var(--yu-fs-l); }
+  .home-tile p { color: var(--yu-muted); font-size: var(--yu-fs-s); }
+  .home-tile__link { display: inline-flex; align-items: center; min-height: var(--yu-tap); text-decoration: none; color: var(--yu-text); }
+  .home-tile__link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+  .home-strip { margin: var(--yu-sp-m) 0 0; padding: var(--yu-sp-xs) var(--yu-sp-s); border-radius: var(--yu-r-m); background: var(--yu-accent-soft); color: var(--yu-accent); font-weight: 700; overflow-wrap: anywhere; }
+  .home-strip__link { display: inline-flex; align-items: center; min-height: var(--yu-tap); color: inherit; }
+  .home-cta { display: grid; gap: var(--yu-sp-xs); justify-items: start; }
+  .home-cta > * { margin: 0; }
+  .home-more { display: inline-flex; align-items: center; min-height: var(--yu-tap); color: var(--yu-text); }
+  .home-games__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--yu-sp-xs); }
+  .home-games__head h2 { margin: 0; }
+  .home-games__track { display: grid; grid-auto-flow: column; grid-auto-columns: min(240px, 70%); gap: 16px; margin: var(--yu-sp-s) 0 0; padding: 0 0 var(--yu-sp-2xs); list-style: none; overflow-x: auto; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
+  .home-game { scroll-snap-align: start; display: grid; gap: var(--yu-sp-3xs); min-width: 0; }
+  .home-game img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--yu-r-s); background: var(--yu-surface-2); }
+  .home-game__title { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+  .home-game__title a { display: inline-flex; align-items: center; min-height: var(--yu-tap); }
+  @media (prefers-reduced-motion: reduce) { .home-games__track { scroll-behavior: auto; } }
+</style>
