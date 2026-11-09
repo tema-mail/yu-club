@@ -65,3 +65,55 @@ test('Директор: суммы зарплаты в файл не попад�
   await expect(dlg.getByTestId('export-masked')).toHaveCount(0);
   await expect(dlg.getByRole('radio', { name: 'Записи показателя «Возвраты»' })).toBeEnabled();
 });
+
+test('мои файлы: статусы словами, скачивание готового, у истёкшего ссылки нет, новая задача доходит до «Готов»', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/reports');
+  await page.getByRole('link', { name: 'Мои файлы' }).click();
+  await expect(page).toHaveURL(/\/reports\/exports$/);
+  const ready = page.getByTestId('job-ea000000-0000-4000-8000-000000000901');
+  await expect(ready.getByTestId('status')).toContainText('Готов');
+  const link = ready.getByRole('link', { name: /Скачать \(310 строк\)/ });
+  const file = await page.request.get((await link.getAttribute('href'))!);
+  expect(file.status()).toBe(200);
+  expect(file.headers()['content-disposition']).toMatch(/^attachment;/);
+  expect(file.headers()['cache-control']).toBe('no-store');
+  const expired = page.getByTestId('job-ea000000-0000-4000-8000-000000000902');
+  await expect(expired.getByTestId('status')).toHaveText('Срок хранения истёк');
+  await expect(expired.getByRole('link')).toHaveCount(0);
+  await expect(expired).toContainText('Сформируйте заново');
+  expect((await page.request.get('/api/crm/v1/reports/exports/ea000000-0000-4000-8000-000000000902/file')).status()).toBe(410);
+  await expect(page.getByTestId('job-ea000000-0000-4000-8000-000000000903').getByTestId('status')).toHaveText('Ошибка: больше 200 000 строк – сузьте период');
+
+  await open(page, `/reports/bookings?${P}`);
+  await page.getByTestId('export-open').click();
+  await page.getByTestId('export-dialog').getByRole('button', { name: 'Сформировать' }).click();
+  await page.getByTestId('export-dialog').getByRole('link', { name: 'Мои файлы' }).click();
+  const fresh = page.getByTestId('export-jobs').locator('tbody tr').first();
+  await expect(fresh).toContainText('Бронирования и посещаемость, XLSX');
+  await expect(fresh.getByTestId('status')).toContainText('Готов', { timeout: 10_000 });
+  await expect(fresh.getByRole('link', { name: /Скачать/ })).toBeVisible();
+});
+
+test('отмена идущей задачи; без права – 404 на списке файлов', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  const job = await (await page.request.post('/api/crm/v1/reports/exports', {
+    headers: { 'idempotency-key': crypto.randomUUID() }, data: { report: 'events', format: 'csv', params: { from: '2026-11-01', to: '2026-11-10' } },
+  })).json() as { id: string };
+  // список отдаём с задачей «в очереди», отмена уходит в настоящий маршрут
+  await page.route('**/api/crm/v1/reports/exports', async (route) => {
+    const r = await route.fetch();
+    const body = await r.json() as { items: Array<{ id: string; status: string }> };
+    for (const j of body.items) if (j.id === job.id) j.status = 'queued';
+    await route.fulfill({ response: r, json: body });
+  });
+  await open(page, '/reports/exports');
+  const row = page.getByTestId(`job-${job.id}`);
+  await expect(row.getByTestId('status')).toHaveText('В очереди');
+  await row.getByRole('button', { name: 'Отменить' }).click();
+  await expect(page.getByTestId('export-jobs').getByRole('status')).toHaveText(/Задача отменена\.|Задача уже завершилась – отменять нечего\./);
+
+  await page.context().clearCookies();
+  await login(page, 'admin@yu.test');
+  expect((await page.goto('/reports/exports'))?.status()).toBe(404);
+});
