@@ -7,6 +7,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
 import { bookingFacts } from './mock-booking.ts';
+import { registerStaffFeed } from './mock-staff-feed.ts';
 import type {
   Audience, AudiencePreviewDto, CampaignCategory, CampaignDetail, CampaignDto, CampaignListRow, ClientNotificationSummary, NotificationView, SegmentV1, TemplateDto, TimelineEvent,
 } from '../src/lib/notifications.ts';
@@ -202,6 +203,7 @@ function ev(objectId: string, action: string, at: string, actorId: string, after
 export function registerNotifications(app: FastifyInstance, P: string, d: NotificationsMockDeps): void {
   for (const r of Object.keys(NOTIFICATION_ACTIONS) as Role[]) d.grant(r, NOTIFICATION_ACTIONS[r]);
   resetNotifications();
+  registerStaffFeed(app, P, d); // лента событий CRM (S4-28) – тот же модуль notifications
   app.addHook('onRequest', async (req) => {
     if (req.method === 'POST' && req.url === '/__test/reset') resetNotifications();
   });
