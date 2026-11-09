@@ -5,6 +5,7 @@ import { useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { RATIO_HINT } from './MediaLibrary.tsx';
 import MediaPicker from './MediaPicker.tsx';
+import SeoPanel, { seoLengthErrors, type SeoValue } from './SeoPanel.tsx';
 import { aria, clean, ConflictNotice, DraftActions, Field, fieldErrors, fmtAt, fromLocalInput, STATUS_BADGE, STATUS_LABEL, toLocalInput, TYPE_LABEL, type BranchRef, type PublicationDto, type PublicationType, type Scope } from '../lib/content.tsx';
 
 export interface PublicationEditorProps {
@@ -36,6 +37,7 @@ const FIELDS: Def[] = [
   { name: 'ctaUrl', label: 'Ссылка кнопки', kind: 'path', max: 500, hint: 'Только путь этого сайта, например /booking/.' },
 ];
 
+const seoOf = (d: Record<string, unknown>): SeoValue => ({ slug: String(d.slug ?? ''), seoTitle: String(d.seoTitle ?? ''), seoDescription: String(d.seoDescription ?? ''), h1: String(d.h1 ?? ''), indexable: d.indexable !== false });
 const formOf = (d: Record<string, unknown>) => Object.fromEntries(FIELDS.map((f) => [f.name, f.kind === 'date' ? toLocalInput(d[f.name]) : String(d[f.name] ?? '')]));
 
 export default function PublicationEditor(props: PublicationEditorProps) {
@@ -47,6 +49,7 @@ export default function PublicationEditor(props: PublicationEditorProps) {
   const [scope, setScope] = useState<Scope>(initialScope);
   const [cover, setCover] = useState(String(base.coverMediaId ?? ''));
   const [rulesMediaId, setRulesMediaId] = useState(String(base.rulesMediaId ?? ''));
+  const [seo, setSeo] = useState<SeoValue>(seoOf(base));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -68,7 +71,7 @@ export default function PublicationEditor(props: PublicationEditorProps) {
     for (const f of FIELDS) values[f.name] = f.kind === 'date' ? fromLocalInput(form[f.name] ?? '') : form[f.name];
     const keep = { ...base };
     for (const f of FIELDS) delete keep[f.name];
-    return clean({ ...keep, ...values, scope, coverMediaId: cover || undefined, rulesMediaId: rulesMediaId || undefined });
+    return clean({ ...keep, ...values, scope, coverMediaId: cover || undefined, rulesMediaId: rulesMediaId || undefined, ...seo });
   };
 
   const reload = async () => {
@@ -79,6 +82,7 @@ export default function PublicationEditor(props: PublicationEditorProps) {
     setScope((fresh.draft.scope as Scope) ?? { type: 'network' });
     setCover(String(fresh.draft.coverMediaId ?? ''));
     setRulesMediaId(String(fresh.draft.rulesMediaId ?? ''));
+    setSeo(seoOf(fresh.draft));
     setConflict(false);
     setErrors({});
     setDirty(false);
@@ -101,6 +105,11 @@ export default function PublicationEditor(props: PublicationEditorProps) {
     setMsg(null);
     if (scope.type === 'city' && scope.cityIds.length === 0) return setErrors({ scope: 'Выберите хотя бы один город', _: 'Проверьте отмеченные поля.' });
     if (scope.type === 'branch' && scope.branchIds.length === 0) return setErrors({ scope: 'Выберите хотя бы один филиал', _: 'Проверьте отмеченные поля.' });
+    const long = seoLengthErrors(seo);
+    if (Object.keys(long).length) {
+      setErrors(long);
+      return setMsg({ ok: false, text: 'Не сохранено: сократите отмеченные поля SEO.' });
+    }
     setBusy(true);
     try {
       if (!dto) {
@@ -175,6 +184,8 @@ export default function PublicationEditor(props: PublicationEditorProps) {
             {type === 'giveaway' && (
               <MediaPicker id="pub-rules" label="Правила розыгрыша файлом (PDF)" purpose="document" value={rulesMediaId} onChange={(id) => { setRulesMediaId(id); setDirty(true); }} error={errors.rulesMediaId} disabled={readOnly || busy} />
             )}
+            <SeoPanel entityType="publication" parent={type} entityId={dto?.id ?? null} liveSlug={dto?.slug ?? null} published={dto?.status === 'published'} title={form.title ?? ''} lead={form.lead ?? ''}
+              value={seo} onChange={(v) => { setSeo(v); setDirty(true); }} errors={errors} disabled={readOnly || busy} />
           </fieldset>
           <p class={`yc-alert ${msg ? (msg.ok ? 'yc-alert--ok' : 'yc-alert--error') : ''}`} role="status" aria-live="polite">{msg?.text ?? ''}</p>
         </form>
