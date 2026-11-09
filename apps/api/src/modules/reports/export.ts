@@ -498,8 +498,14 @@ export async function runExportJob(deps: ExportRunDeps, row: ExportRow, signal?:
       return;
     }
     if (!(err instanceof AppError)) deps.log?.(err);
-    await fail(deps, row, errorCode(err));
+    await failLogged(deps, row, errorCode(err));
   }
+}
+
+/** fail() из catch и фонового прохода: сбой БД в нём не уходит необработанным отказом промиса (ронял worker) – только в лог.
+ *  Строка останется running, её подберёт failStale следующего прохода. */
+function failLogged(deps: ExportDeps & { log?: ((err: unknown) => void) | undefined }, row: ExportRow, code: string): Promise<void> {
+  return fail(deps, row, code).catch((err: unknown) => (deps.log ?? ((e) => console.error('reports:export: fail()', e)))(err));
 }
 
 const CLAIM_LOCK = 72_401_408; // постоянный ключ: проверка «одна на сотрудника, всего 2» и захват – одним шагом
@@ -522,9 +528,9 @@ async function claim(pool: Pool, now: Date, maxRunning: number): Promise<ExportR
 }
 
 /** Процесс умер посреди записи: задача не занимает очередь вечно, пользователь видит ошибку и может повторить. */
-async function failStale(deps: ExportDeps, active: ReadonlySet<string>, now: Date): Promise<void> {
+async function failStale(deps: ExportRunDeps, active: ReadonlySet<string>, now: Date): Promise<void> {
   const stale = await deps.pool.query<ExportRow>(`SELECT * FROM app.report_exports WHERE status = 'running' AND started_at < $1`, [new Date(now.getTime() - STALE_RUNNING_MS)]);
-  for (const row of stale.rows) if (!active.has(row.id)) await fail(deps, row, 'EXPORT_INTERRUPTED');
+  for (const row of stale.rows) if (!active.has(row.id)) await failLogged(deps, row, 'EXPORT_INTERRUPTED');
 }
 
 export interface ExportRunner {

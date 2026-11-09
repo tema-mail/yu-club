@@ -253,7 +253,7 @@ async function main(): Promise<void> {
 
   // Процесс держат соединения pg-boss и LISTEN outbox; таймеры удержаний и уведомлений – unref.
   let stopping = false;
-  const shutdown = async (signal: string): Promise<void> => {
+  const shutdown = async (signal: string, code = 0): Promise<void> => {
     if (stopping) return;
     stopping = true;
     log('info', `остановка по ${signal}`);
@@ -268,13 +268,20 @@ async function main(): Promise<void> {
       await reportsPool?.end();
       await pool.end();
       log('info', 'остановлен');
-      process.exit(0);
+      process.exit(code);
     } catch (err) {
       log('error', 'ошибка при остановке', { err: errText(err) });
       process.exit(1);
     }
   };
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => void shutdown(signal));
+  // Необработанный отказ промиса – ошибка в коде задачи, состояние процесса неизвестно. Лог и штатная остановка с кодом 1:
+  // Docker (restart: unless-stopped) поднимет worker заново, задачи pg-boss и outbox лежат в базе и повторятся, зависший экспорт
+  // подберёт failStale. Продолжать после неизвестного сбоя опаснее перезапуска: известные источники ловятся на месте.
+  process.on('unhandledRejection', (err) => {
+    log('error', 'необработанный отказ промиса – остановка для перезапуска', { err: errText(err), stack: err instanceof Error ? err.stack : undefined });
+    void shutdown('unhandledRejection', 1);
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
