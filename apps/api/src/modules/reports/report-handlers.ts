@@ -14,7 +14,7 @@ import type { MetricDef, ReportEnv, ReportParams } from './framework.ts';
 import { LOYALTY_ACTION, loyaltyDefs, loyaltyDetail, loyaltyReport } from './loyalty.ts';
 import { applySegment } from './segment.ts';
 import { clientsSeriesDefs, daySeries, type DaySeries, type DaySeriesOpts } from './series.ts';
-import { staffDetail, staffReport } from './staff.ts';
+import { STAFF_ACTION, staffDetail, staffReport, staffSeriesDefs } from './staff.ts';
 import { utilizationDetail, utilizationReport, utilizationSeries, type UtilizationParams } from './utilization.ts';
 
 const UUID = z.string().uuid();
@@ -124,7 +124,12 @@ export const HANDLERS: Record<string, ReportHandler> = {
     detail: (env, q, p) => equipmentDetail(env, p, q.metric, page(q)),
   },
   staff: {
-    metrics: (env, _q, p) => staffReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => {
+      const r = await staffReport(env, p);
+      if (q.series === undefined) return r as unknown as Record<string, unknown>;
+      const s = await staffSeriesDefs(env, p);
+      return withSeries(env, q, r, STAFF_ACTION, p, s.defs, { networkRows: s.networkRows });
+    },
     detail: (env, q, p) => staffDetail(env, p, q.metric, page(q)),
   },
 };

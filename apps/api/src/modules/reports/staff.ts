@@ -118,6 +118,18 @@ async function forecastTotal(tx: Tx, windows: readonly BranchWindow[], feeMin: n
 
 const forecastOf = (minutes: number, hourly: number, fee: number, feeMin: number): number => Math.floor((minutes * hourly + 30) / 60) + (minutes >= feeMin ? fee : 0);
 
+/** Показатели для точек графика (series.ts): смены и пустые интервалы всем, деньги – с reports.payroll.view; выплата без филиала –
+ *  только в сетевой области (как moneyWindows), прогноз – не агрегат источника, точек не даёт. */
+export async function staffSeriesDefs(env: ReportEnv, p: ReportParams): Promise<{ defs: Record<string, MetricDef>; networkRows: boolean }> {
+  const defs: Record<string, MetricDef> = { ...shiftDefs(env.clock.now(), await feeMinOf(env)), ...gapDefs() };
+  const networkRows = env.ctx.network && !p.cityId && !p.branchIds?.length;
+  if (moneyAllowed(env)) {
+    const { paid, ...money } = moneyDefs();
+    Object.assign(defs, money, networkRows ? { paid } : {});
+  }
+  return { defs, networkRows };
+}
+
 export interface StaffResult {
   metrics: Record<StaffMetric, Metric>;
   labels: typeof STAFF_LABELS;
