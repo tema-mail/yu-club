@@ -201,3 +201,33 @@ test('Выбор из медиатеки: список при открытии, 
   await late;
   await expect(dlg.getByRole('button', { name: /^Выбрать:/ })).toHaveCount(1);
 });
+
+test('Новое мероприятие: смена заказчика меняет подставленные имя и телефон, ответ по прежнему клиенту не применяется', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/events');
+  await page.getByRole('button', { name: 'Новое мероприятие' }).click();
+  const form = page.getByTestId('event-form');
+  const pick = form.getByTestId('pick-customer');
+  const choose = async (q: string) => {
+    await pick.getByRole('searchbox').fill(q);
+    await pick.getByRole('button', { name: 'Найти' }).click();
+    await pick.getByRole('button', { name: new RegExp(`^${q}`) }).click();
+  };
+  await choose('Смирнова');
+  await expect(form.getByLabel('Заказчик: телефон')).toHaveValue('+79131234567');
+  const late = slow(page, (u) => u.pathname.endsWith('/clients/c0000000-0000-4000-8000-000000000001'));
+  await pick.getByRole('button', { name: 'Убрать' }).click();
+  await choose('Смирнова'); // ответ задержан
+  await pick.getByRole('button', { name: 'Убрать' }).click();
+  await choose('Петров');
+  await expect(form.getByLabel('Заказчик: имя')).toHaveValue('Петров Иван');
+  await expect(form.getByLabel('Заказчик: телефон')).toHaveValue('+79139876543');
+  await late;
+  await expect(form.getByLabel('Заказчик: телефон')).toHaveValue('+79139876543');
+  await form.getByLabel('Заказчик: телефон').fill('+7 913 000-00-01'); // руками – смена заказчика не трогает
+  await pick.getByRole('button', { name: 'Убрать' }).click();
+  await choose('Смирнова');
+  await expect(form.getByLabel('Заказчик: имя')).toHaveValue('Смирнова Ольга');
+  await pause(500);
+  await expect(form.getByLabel('Заказчик: телефон')).toHaveValue('+7 913 000-00-01');
+});
