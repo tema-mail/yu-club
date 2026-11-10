@@ -18,6 +18,7 @@ import { PgBoss } from 'pg-boss';
 import pg from 'pg';
 import { loadConfig } from './config.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
+import { startHeartbeat, workerDetails } from './core/heartbeat.ts';
 import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/outbox-worker.ts';
 import { systemClock, type Clock, type LocalTime, type TimeZone } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
@@ -108,6 +109,7 @@ export async function startWorkerTasks(opts: {
     ...(opts.outboxIntervalMs ? { intervalMs: opts.outboxIntervalMs } : {}),
     ...(opts.pollingIntervalSeconds ? { pollingIntervalSeconds: opts.pollingIntervalSeconds } : {}),
   });
+  const heartbeat = startHeartbeat({ pool: opts.pool, clock, service: 'worker', details: () => workerDetails(opts.boss), onError: (err) => logger.error({ err: errText(err) }, 'heartbeat: пульс worker не записан') }); // 17 §13.1, /health/deep
   const holds = startHoldExpiry({
     pool: opts.pool,
     clock,
@@ -202,6 +204,7 @@ export async function startWorkerTasks(opts: {
     outbox,
     reconcile,
     stop: async () => {
+      heartbeat.stop();
       exportGc?.stop();
       await exportRunner?.stop();
       mediaGc?.stop();
