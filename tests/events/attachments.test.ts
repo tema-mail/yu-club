@@ -228,6 +228,17 @@ describe('документ к расходу по HTTP', () => {
     expect((await post('admin', `/events/${eventId}/expense/${randomUUID()}/document`, { attachmentId: a2 })).statusCode).toBe(404);
   });
 
+  it('вложение, объявленное недействительным после привязки, – больше не документ расхода в GET money', async () => {
+    const eventId = await newEvent();
+    const a1 = (await upload('admin', eventId, Buffer.concat([PDF, Buffer.from('%inv')]))).json().attachmentId as string;
+    const op = (await post('admin', `/events/${eventId}/expense`, expenseBody({ attachmentId: a1 }))).json().id as string;
+    expect((await post('admin', `/attachments/${a1}/invalidate`, { reason: 'не тот чек' })).statusCode).toBe(200);
+    const money = (await get('owner', `/events/${eventId}/money`)).json();
+    const row = money.operations.find((o: { operation: { id: string } }) => o.operation.id === op);
+    expect(row.attachmentId).toBeNull();
+    expect((await expenseDocumentsOf(pool, eventId)).size).toBe(0);
+  });
+
   it('чужое вложение в расходе – 400, и операция не создаётся (одна транзакция)', async () => {
     const eventId = await newEvent();
     const other = await newEvent();
