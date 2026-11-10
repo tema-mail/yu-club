@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, request as pwRequest, type APIRequestContext, type APIResponse, type BrowserContext, type Page } from '@playwright/test';
 import {
-  CRM_URL, DEMO_DIRECTOR, OWNER, SITE_URL, SiteClient, branchBySlug, crmApi, crmLogin, dayIn, hydrated, nearestFree, newClient, resourcesOf, siteContext,
+  CRM_URL, DEMO_DIRECTOR, OWNER, SITE_URL, SiteClient, branchBySlug, crmApi, crmLogin, dayIn, gotoStand, hydrated, nearestFree, newClient, resourcesOf, siteContext,
   type BookingDto, type StandBranch,
 } from './stand.ts';
 
@@ -55,7 +55,7 @@ async function ok<T>(r: Promise<APIResponse> | APIResponse): Promise<T> {
   return (await res.json()) as T;
 }
 async function open(page: Page, path: string): Promise<void> {
-  const res = await page.goto(`${CRM_URL}${path}`);
+  const res = await gotoStand(page, `${CRM_URL}${path}`);
   expect(res?.status(), path).toBeLessThan(400);
   await hydrated(page);
 }
@@ -207,7 +207,7 @@ test('1. CMS: новость филиала – черновик не на са�
   await visitor.addCookies([{ name: 'yu_branch', value: 'moskva/arbat', url: SITE_URL }]);
   const news = await visitor.newPage();
   // картинки медиатеки стенд не отдаёт (Caddy, техдолг 1.9) – события load страница с обложками не дожидается
-  await news.goto('/news/', { waitUntil: 'domcontentloaded' });
+  await gotoStand(news, '/news/', { waitUntil: 'domcontentloaded' });
   await expect(news.getByTestId('pub-filter')).toContainText('Для клуба «Ю Клуб Арбат» и всей сети.');
   const card = news.locator('.pub-card').filter({ hasText: title });
   await expect(card.getByTestId('pub-scope')).toHaveText('Только в клубе «Ю Клуб Арбат»');
@@ -299,7 +299,7 @@ test('2. Уведомления: личное сообщение → журна�
   await expect(row).toContainText('Сотрудник: Вы');
   await expect(row).toContainText(/Нет доступного канала|Только в центре уведомлений/);
 
-  await site.goto('/account/notifications/');
+  await gotoStand(site, '/account/notifications/');
   await hydrated(site);
   const item = site.getByTestId('nc-item').filter({ hasText: msgTitle });
   await expect(item).toHaveCount(1);
@@ -312,7 +312,7 @@ test('2. Уведомления: личное сообщение → журна�
   expect(read.status).toMatch(/^(no_channel|inbox_only|sent_to_provider)$/);
 
   // реклама: согласие в ЛК → предпросмотр берёт клиента
-  await site.goto('/account/');
+  await gotoStand(site, '/account/');
   await hydrated(site);
   const ad = site.getByLabel(/Реклама и акции/);
   await expect(ad, 'переключатель рекламы в ЛК (нужен опубликованный текст согласия)').toBeVisible();
@@ -343,7 +343,7 @@ test('2. Уведомления: личное сообщение → журна�
   }
 
   // отказ в ЛК → та же кампания его уже не берёт
-  await site.goto('/account/');
+  await gotoStand(site, '/account/');
   await hydrated(site);
   await site.getByLabel(/Реклама и акции/).uncheck();
   await expect.poll(async () => (await settings()).marketingEnabled, { timeout: 15_000 }).toBe(false);
