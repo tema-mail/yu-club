@@ -10,10 +10,12 @@ import { createFileStore, type FileStore } from '../../apps/api/src/core/files.t
 import { noNetwork, type AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock, type Clock } from '../../apps/api/src/core/time.ts';
 import { withTx } from '../../apps/api/src/modules/clients/index.ts';
+import { postMoneyOperation } from '../../apps/api/src/modules/finance/cashbox.ts';
 import { cancelExport, downloadExport, flattenRow, getExport, listExports, requestExport, runExportGc, startExportRunner, type ExportRunDeps } from '../../apps/api/src/modules/reports/export.ts';
+import { financeReport } from '../../apps/api/src/modules/reports/finance.ts';
 import { DEFAULT_REPORT_LIMITS, setReportLimits, withReportTx } from '../../apps/api/src/modules/reports/framework.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
-import { reportFixtures, type Fx } from '../helpers/reports.ts';
+import { d, reportFixtures, type Fx } from '../helpers/reports.ts';
 
 const NOW = '2026-11-20T05:00:00Z';
 const clock = fixedClock(NOW);
@@ -169,6 +171,31 @@ describe('файл', () => {
     const csv = await text(owner(), job.id);
     expect(csv).toContain('Поступления от сеансов');
     expect(csv).toContain('Состоялось посещений;2;шт.');
+  });
+
+  it('повтор запроса после ready – новый расчёт по живой базе (K24 §2 «Актуальность»): итог файла = экран после новой оплаты, прежний файл скачивается', async () => {
+    // стенд 10.11: файл 15:05 (1700 ₽) отдавался прогону 16:00 вместо расчёта, а экран уже показывал 1800 ₽
+    const SESSION = { from: '2026-10-01', to: '2026-10-30' }; // свой период: params_hash не пересекается с другими проверками
+    const pay = (amountKop: number) =>
+      withTx(fx.app, (tx) => postMoneyOperation(tx, { kind: 'system', process: 'test' }, { branchId: nsk, kind: 'income', place: 'cash', method: 'cash', amountKop, source: 'session', ref: { type: 'payment', id: randomUUID() }, occurredAt: new Date('2026-10-15T04:00:00Z') }, { idempotencyKey: randomUUID() }, { actor: { kind: 'system', process: 'test' }, source: 'system', requestId: randomUUID() }, clock));
+    const body = { report: 'finance', format: 'csv', detail: true, params: { ...SESSION, metric: 'incomeSession' } };
+    const totalOf = async (id: string) => /Итого: Поступления от сеансов;([^\r\n]*)/.exec(await text(owner(), id))?.[1];
+    const screen = async () => {
+      const m = (await fx.run(owner(), (env) => financeReport(env, { period: { from: d(SESSION.from), to: d(SESSION.to) } }))).metrics.incomeSession;
+      return m.state === 'ok' ? (m.value / 100).toFixed(2).replace('.', ',') : m.state;
+    };
+    await pay(170_000);
+    const first = await request(owner(), body);
+    await drain();
+    expect(await totalOf(first.job.id)).toBe('1700,00');
+    await pay(10_000);
+    expect(await screen()).toBe('1800,00');
+    const again = await request(owner(), body);
+    expect(again.created).toBe(true);
+    expect(again.job.id).not.toBe(first.job.id);
+    await drain();
+    expect(await totalOf(again.job.id)).toBe(await screen());
+    expect(await totalOf(first.job.id)).toBe('1700,00'); // прежний файл живёт до срока, «Мои файлы» показывают оба
   });
 
   it('flattenRow: комментарий только с правом; маска только полного номера', () => {

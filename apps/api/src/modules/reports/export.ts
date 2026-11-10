@@ -1,7 +1,8 @@
 // S4-72. Задачи экспорта (K24 §7, §8; 14 §16, 17 §4.3). queued → running → ready → expired; queued|running → failed, cancelled.
 // Очередь – сама строка report_exports (как кампании K21 §6, таймером worker), а не pg-boss: постановка атомарна с аудитом и ключом идемпотентности,
 // ограничение «одна на сотрудника, всего 2» считается по строкам и переживает перезапуск.
-// Повтор того же запроса – та же задача (частичный UNIQUE). Файл считается теми же функциями, что экран, в одном снимке под yu_reports, по правам постановщика на момент расчёта.
+// Повтор того же запроса, пока задача queued/running, – та же задача (частичный UNIQUE, 0449); после ready – новая задача и новый расчёт
+// (K24 §2 «Актуальность», D5-13), прежний файл живёт до срока. Файл считается теми же функциями, что экран, в одном снимке под yu_reports, по правам постановщика на момент расчёта.
 // Права проверяются при постановке, при расчёте и при скачивании. Зона: у сотрудника без сети фильтр при постановке заменяется списком его филиалов,
 // поэтому файл никогда не шире зоны на момент постановки, а сужение зоны закрывает скачивание (EXPORT_FORBIDDEN).
 // Телефон в файле – маска, если нет export.pd, даже при client.view.full (K24 §6). Комментарии – только с reports.export.detail. Файл живёт reports.export_ttl_hours, уборка – reports:export-gc.
@@ -184,23 +185,27 @@ async function normalize(db: Db, ctx: AccessContext, raw: unknown, clock: Clock)
   return { report, format, detail, params };
 }
 
-/** K11 №243 внутри транзакции и обвязки идемпотентности. Тот же запрос – та же задача, аудит только у новой. */
+/** K11 №243 внутри транзакции и обвязки идемпотентности. Тот же запрос, пока прежний в работе, – та же задача, аудит только у новой. */
 export async function requestExport(tx: Tx, ctx: AccessContext, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<{ job: ExportJob; created: boolean }> {
   const staffId = staffIdOf(ctx);
   const n = await normalize(tx, ctx, raw, clock);
   const now = clock.now();
   const hash = paramsHash(staffId, n);
   const masked = !can(ctx, 'export.pd', { network: true });
-  // срок прошёл, а уборка ещё не дошла: такая задача больше не «та же», файл заберёт уборка как осиротевший
+  // срок прошёл, а уборка ещё не дошла: строка сразу expired (скачивание – 410), файл заберёт уборка как осиротевший
   await tx.query(`UPDATE app.report_exports SET status = 'expired', file_key = NULL WHERE staff_id = $1 AND params_hash = $2 AND status = 'ready' AND expires_at <= $3`, [staffId, hash, now]);
   const inserted = await tx.query<ExportRow>(
     `INSERT INTO app.report_exports (staff_id, report, format, params, params_hash, detail, masked, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (staff_id, params_hash) WHERE status IN ('queued','running','ready') DO NOTHING RETURNING *`,
+     ON CONFLICT (staff_id, params_hash) WHERE status IN ('queued','running') DO NOTHING RETURNING *`,
     [staffId, n.report, n.format, JSON.stringify(n.params), hash, n.detail, masked, now],
   );
   const row = inserted.rows[0];
   if (!row) {
-    const same = await tx.query<ExportRow>(`SELECT * FROM app.report_exports WHERE staff_id = $1 AND params_hash = $2 AND status IN ('queued','running','ready')`, [staffId, hash]);
+    // задача, с которой был конфликт, могла успеть стать ready между вставкой и чтением – это всё ещё она
+    const same = await tx.query<ExportRow>(
+      `SELECT * FROM app.report_exports WHERE staff_id = $1 AND params_hash = $2 AND status IN ('queued','running','ready') ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [staffId, hash],
+    );
     return { job: toJob(same.rows[0]!), created: false };
   }
   await writeAudit(tx, meta, { action: 'export.requested', object: { type: 'export', id: row.id }, after: { report: n.report, params: n.params, format: n.format, detail: n.detail, masked } }, clock);
