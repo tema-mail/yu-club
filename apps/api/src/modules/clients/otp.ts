@@ -395,15 +395,17 @@ export async function verifyOtp(
     } else {
       await tx.query('UPDATE app.clients SET last_login_at = $2, phone_verified_at = coalesce(phone_verified_at, $2) WHERE id = $1', [clientId, now]);
     }
-    const documentVersion = (input.documentVersion ?? cfg.consentDocumentVersion).slice(0, 64);
+    // K22 §7: версия согласия на ПДн – живая версия страницы personal-data-consent (то, что человек видел по ссылке у галочки);
+    // страница не опубликована (стенд до текстов юриста, Q-86) – присланная сайтом или константа конфигурации.
+    const marketing = isNew && input.consents?.marketing === true;
+    const live = needsConsent || marketing ? await legalVersions(tx) : null;
+    const documentVersion = (live?.personalDataConsent ?? input.documentVersion ?? cfg.consentDocumentVersion).slice(0, 64);
     if (needsConsent) await addConsent(tx, clock, meta, clientId, 'pd_processing', documentVersion);
     if (isNew) {
-      const marketing = input.consents?.marketing === true;
       if (marketing) {
         // версия согласия на рекламу – живая версия страницы, а не присланная сайтом (K9, K22 §7); текста нет – рекламы нет
-        const live = (await legalVersions(tx)).advertisingConsent;
-        if (!live) throw new AppError('MARKETING_DOCUMENT_MISSING', 409, 'Текст согласия на рекламу ещё не опубликован');
-        await addConsent(tx, clock, meta, clientId, 'marketing', live);
+        if (!live?.advertisingConsent) throw new AppError('MARKETING_DOCUMENT_MISSING', 409, 'Текст согласия на рекламу ещё не опубликован');
+        await addConsent(tx, clock, meta, clientId, 'marketing', live.advertisingConsent);
       }
       await tx.query(
         `INSERT INTO app.client_notification_prefs (client_id, marketing_enabled, updated_at) VALUES ($1, $2, $3)
