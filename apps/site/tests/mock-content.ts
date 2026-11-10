@@ -19,6 +19,10 @@ const KRASNY = '0b0b0000-0000-4000-8000-000000000011';
 const LENINA = '0b0b0000-0000-4000-8000-000000000021';
 const M = (n: number) => `aaaaaaaa-0000-4000-8000-0000000000${String(n).padStart(2, '0')}`;
 const seo = { title: null, description: null, h1: null, ogImage: null };
+/** Заглушка очищенного фото (versions.ts REMOVED, K22 §8): адресов нет – сайт не рисует картинку. */
+const REMOVED = { removed: true, alt: 'изображение удалено', width: null, height: null, url: null, variants: [] };
+/** Ручные SEO-поля (K23 §4) у баннера главной (переключатель home: 'seo'), игры Gran Turismo 7 и правил. */
+const HOME_SEO = { title: 'Ю-Клуб – игровые клубы рядом с домом', description: 'Компьютеры, VR и PlayStation 5: запись онлайн.', h1: 'Играй с друзьями – Ю-Клуб', ogImage: '/media/aa/61/img-1600.jpg' };
 
 function media(id: string, alt: string, kind: 'img' | 'pdf' = 'img') {
   if (kind === 'pdf') return { removed: false, alt, width: null, height: null, url: `/media/${id.slice(0, 2)}/rules-${id.slice(-2)}.pdf`, variants: [] };
@@ -35,12 +39,15 @@ interface Pub {
   resultsDate?: number; prize?: string; rulesBody?: string; rulesPdf?: boolean; version: string;
   /** Черновик без живой версии: API его не отдаёт (status ≠ 'published'). */
   draft?: boolean;
+  /** Обложка и картинка в тексте очищены по требованию субъекта (№227а): API отдаёт заглушку без адресов. */
+  purged?: boolean;
 }
 
 const PUBS: Pub[] = [
   { id: 'cccccccc-0000-4000-8000-000000000001', type: 'news', slug: 'live-news', title: 'Живая новость', lead: 'В сети обновили компьютеры в залах ПК.', body: 'Видеокарты заменили во **всех** клубах сети.\n\n[Записаться](/schedule/)', scope: { type: 'network' }, from: -3, to: null, version: 'v1' },
   { id: 'cccccccc-0000-4000-8000-000000000002', type: 'news', slug: 'tomsk-opening', title: 'Новый зал в Томске', lead: 'На Ленина открыли второй зал PS5.', body: 'Зал работает с 10:00.', scope: { type: 'branch', ids: [LENINA] }, from: -1, to: null, version: 'v1' },
   { id: 'cccccccc-0000-4000-8000-000000000003', type: 'news', slug: 'nsk-hours', title: 'Часы в Новосибирске', lead: 'Клубы Новосибирска работают до полуночи.', body: 'По пятницам и субботам.', scope: { type: 'city', ids: [NSK] }, from: -2, to: null, indexable: false, version: 'v1' },
+  { id: 'cccccccc-0000-4000-8000-000000000005', type: 'news', slug: 'photo-removed', title: 'Турнир прошёл', lead: 'Итоги субботнего турнира.', body: `Победила команда клуба.\n\n![](media:${'aaaaaaaa-0000-4000-8000-000000000005'})\n\nСпасибо всем.`, scope: { type: 'network' }, from: -10, to: null, purged: true, version: 'v2' },
   { id: 'cccccccc-0000-4000-8000-000000000004', type: 'news', slug: 'future-news', title: 'Будущая новость', lead: 'Ещё не наступила.', body: 'x', scope: { type: 'network' }, from: 2, to: null, version: 'v1' },
   { id: 'cccccccc-0000-4000-8000-000000000011', type: 'promotion', slug: 'happy-hours', title: 'Счастливые часы', lead: 'Будни с 10 до 14 – скидка на зал ПК.', body: 'Скидка считается в клубе при оплате.', scope: { type: 'network' }, from: -5, to: 20, conditions: 'Только по будням с 10:00 до 14:00.', restrictions: 'Не суммируется с другими акциями.', ctaLabel: 'Записаться на будни', ctaUrl: '/schedule/', version: 'v1' },
   { id: 'cccccccc-0000-4000-8000-000000000012', type: 'promotion', slug: 'summer-promo', title: 'Летняя акция', lead: 'Акция прошла летом.', body: 'Спасибо, что были с нами.', scope: { type: 'network' }, from: -120, to: -30, conditions: 'Летом.', version: 'v1' },
@@ -56,18 +63,18 @@ const PUBS: Pub[] = [
   { id: 'cccccccc-0000-4000-8000-000000000076', type: 'tournament', slug: 'draft-cup', title: 'ЧЕРНОВИК турнира', lead: 'Не опубликован.', body: 'x', scope: { type: 'network' }, from: -1, to: null, eventDate: 5, draft: true, version: 'v1' },
 ];
 
-interface Game { id: string; direction: 'pc' | 'vr' | 'playstation'; slug: string | null; title: string; short: string; full: string | null; genres: string[]; ageRating: string | null; platforms: string[]; at: Record<string, string | null> }
+interface Game { id: string; direction: 'pc' | 'vr' | 'playstation'; slug: string | null; title: string; short: string; full: string | null; genres: string[]; ageRating: string | null; platforms: string[]; at: Record<string, string | null>; seo?: typeof HOME_SEO }
 const GAMES: Game[] = [
   { id: 'dddddddd-0000-4000-8000-000000000001', direction: 'pc', slug: 'counter-strike-2', title: 'Counter-Strike 2', short: 'Командный шутер пять на пять.', full: 'Классический **командный** шутер.', genres: ['Шутер'], ageRating: '16+', platforms: [], at: { [KRASNY]: null, [LENINA]: 'Турнирные ПК' } },
   { id: 'dddddddd-0000-4000-8000-000000000002', direction: 'pc', slug: 'dota-2', title: 'Dota 2', short: 'Командная стратегия.', full: null, genres: ['Стратегия'], ageRating: '12+', platforms: [], at: { [KRASNY]: null } },
   { id: 'dddddddd-0000-4000-8000-000000000003', direction: 'vr', slug: 'alyx', title: 'Half-Life: Alyx', short: 'Сюжетный шутер в VR.', full: 'Полноценная VR-игра.', genres: ['Шутер', 'Приключения'], ageRating: '16+', platforms: [], at: { [KRASNY]: null } },
   { id: 'dddddddd-0000-4000-8000-000000000004', direction: 'vr', slug: 'beat-saber', title: 'Beat Saber', short: 'Ритм-игра со световыми мечами.', full: null, genres: ['Ритм'], ageRating: '6+', platforms: [], at: { [LENINA]: null } },
-  { id: 'dddddddd-0000-4000-8000-000000000005', direction: 'playstation', slug: 'gran-turismo-7', title: 'Gran Turismo 7', short: 'Гоночный симулятор.', full: 'Гонки на PlayStation 5 с рулём.', genres: ['Гонки'], ageRating: '6+', platforms: ['PS5'], at: { [LENINA]: 'С рулём' } },
+  { id: 'dddddddd-0000-4000-8000-000000000005', direction: 'playstation', slug: 'gran-turismo-7', title: 'Gran Turismo 7', short: 'Гоночный симулятор.', full: 'Гонки на PlayStation 5 с рулём.', genres: ['Гонки'], ageRating: '6+', platforms: ['PS5'], at: { [LENINA]: 'С рулём' }, seo: { title: 'Gran Turismo 7 на PS5 с рулём – Ю-Клуб на Ленина', description: 'Гоночный симулятор на руле Logitech.', h1: 'Gran Turismo 7 с рулём', ogImage: '/media/aa/55/img-1600.jpg' } },
 ];
 
-const PAGES: Record<string, { title: string; body: string; documentVersion: string | null; updatedAt: string; city?: string } | undefined> = {
+const PAGES: Record<string, { title: string; body: string; documentVersion: string | null; updatedAt: string; city?: string; seo?: { title: string; description: string; h1: string; ogImage: string | null } } | undefined> = {
   about: { title: 'О клубе', body: 'Ю-Клуб – сеть компьютерных клубов: **ПК, VR и PlayStation**.', documentVersion: null, updatedAt: '2026-11-03T10:00:00.000Z' },
-  rules: { title: 'Правила клуба', body: 'Приходите за 10 минут до начала сеанса.\n\nОтмена – не позже чем за 2 часа.', documentVersion: null, updatedAt: '2026-11-01T10:00:00.000Z' },
+  rules: { title: 'Правила клуба', body: 'Приходите за 10 минут до начала сеанса.\n\nОтмена – не позже чем за 2 часа.', documentVersion: null, updatedAt: '2026-11-01T10:00:00.000Z', seo: { title: 'Правила посещения клуба – Ю-Клуб', description: 'Как прийти, отменить и перенести сеанс.', h1: 'Правила посещения', ogImage: null } },
   contacts_intro: { title: 'Контакты', body: 'Звоните в клуб или пишите администратору.', documentVersion: null, updatedAt: '2026-11-02T10:00:00.000Z' },
   'privacy-policy': { title: 'Политика обработки персональных данных', body: 'Оператор – ООО «Ю-Клуб».', documentVersion: 'privacy-policy-2026-11-01', updatedAt: '2026-11-01T10:00:00.000Z' },
   'advertising-consent': { title: 'Согласие на получение рекламных сообщений', body: 'Я согласен получать рекламу.', documentVersion: 'advertising-consent-2026-11-01', updatedAt: '2026-11-01T10:00:00.000Z' },
@@ -82,7 +89,7 @@ const BRANCH_PAGES: Record<string, unknown> = {
   [LENINA]: { description: 'Клуб в центре Томска, **второй этаж**.', gallery: [M(41), M(42)], features: ['Парковка у входа', 'Кофе-автомат'], howToGet: 'Вход со двора, домофон 12.', postal: { street: 'проспект Ленина, 80', locality: 'Томск', region: 'Томская область', postalCode: '634050' }, geo: { lat: 56.4847, lng: 84.9482 } },
 };
 
-const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty', requisites: 'full' as 'full' | 'empty' };
+const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty' | 'seo', requisites: 'full' as 'full' | 'empty' };
 // №218: реквизиты оператора из настроек сети legal.* (K7) – заданные Владельцем; ОГРН и почта не заданы → null. 'empty' – как на старте сети.
 const REQUISITES = { operatorName: 'ООО «Ю-Клуб»', inn: '5405123456', ogrn: null, address: '630099, Новосибирск, Красный проспект, 25', phone: '+7 383 000-00-00', email: null };
 const NO_REQUISITES = { operatorName: null, inn: null, ogrn: null, address: null, phone: null, email: null };
@@ -101,7 +108,7 @@ function inScope(s: Scope, deps: ContentDeps, q: { city?: string; branch?: strin
 const live = (p: Pub) => !p.draft && p.from <= 0 && (p.to === null || p.to > 0);
 function card(p: Pub) {
   return {
-    id: p.id, type: p.type, slug: p.slug, title: p.title, lead: p.lead, cover: media(M(Number(p.id.slice(-2))), `Обложка: ${p.title}`),
+    id: p.id, type: p.type, slug: p.slug, title: p.title, lead: p.lead, cover: p.purged ? REMOVED : media(M(Number(p.id.slice(-2))), `Обложка: ${p.title}`),
     publishFrom: iso(p.from), publishTo: p.to === null ? null : iso(p.to), eventDate: p.eventDate === undefined ? null : iso(p.eventDate),
     onlyIn: p.scope.type === 'network' ? [] : p.scope.ids.map((id) => ({ type: p.scope.type as 'city' | 'branch', id, name: NAMES[id] ?? '' })),
   };
@@ -126,7 +133,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
   app.post('/__mock/content', async (req) => {
     const b = (req.body ?? {}) as Partial<typeof state>;
     if (typeof b.advertisingConsent === 'boolean') state.advertisingConsent = b.advertisingConsent;
-    if (b.home === 'full' || b.home === 'empty') state.home = b.home;
+    if (b.home === 'full' || b.home === 'empty' || b.home === 'seo') state.home = b.home;
     if (b.requisites === 'full' || b.requisites === 'empty') state.requisites = b.requisites;
     return state;
   });
@@ -145,7 +152,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
   app.get(`${P}/content/home`, async (req, reply) => {
     const { city } = req.query as { city?: string };
     if (badId(city)) return bad(reply);
-    if (state.home === 'empty') return cached(req, reply, [], { blocks: [], promos: [], news: [], games: [] });
+    if (state.home === 'empty') return cached(req, reply, [], { blocks: [], seo: null, promos: [], news: [], games: [] });
     const blocks = [
       { id: 'eeeeeeee-0000-4000-8000-000000000001', blockType: 'hero', cityOverride: false, payload: { title: 'Играй с друзьями в Ю-Клуб', subtitle: 'ПК, VR и PlayStation 5 рядом с домом.', mediaId: M(61), ctaLabel: 'Записаться онлайн', ctaUrl: '/schedule/' }, media: { [M(61)]: media(M(61), 'Зал клуба') } },
       { id: 'eeeeeeee-0000-4000-8000-000000000002', blockType: 'about', cityOverride: false, payload: { title: 'О клубе', body: 'Мы открыты **каждый день**.' }, media: {} },
@@ -153,7 +160,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
       { id: 'eeeeeeee-0000-4000-8000-000000000004', blockType: 'promo_strip', cityOverride: false, payload: { text: 'Счастливые часы по будням', url: '/promotions/happy-hours/' }, media: {} },
     ];
     const games = GAMES.map((g) => gameCard(g)).slice(0, 20);
-    return cached(req, reply, ['home'], { blocks, promos: list('promotion', { city }).slice(0, 6).map(card), news: list('news', { city }).slice(0, 3).map(card), games });
+    return cached(req, reply, ['home', state.home], { blocks, seo: state.home === 'seo' ? HOME_SEO : seo, promos: list('promotion', { city }).slice(0, 6).map(card), news: list('news', { city }).slice(0, 3).map(card), games });
   });
 
   // №208
@@ -200,7 +207,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
     if (!g) return notFound(reply);
     const c = gameCard(g);
     const availableIn = Object.keys(g.at).map((id) => ({ id, name: NAMES[id] ?? '', slug: id === KRASNY ? 'krasny-prospekt' : 'lenina', citySlug: id === KRASNY ? 'novosibirsk' : 'tomsk', note: g.at[id] ?? null }));
-    return cached(req, reply, [g.id], { ...c, full: g.full, media: c.cover ? { [M(50 + Number(g.id.slice(-1)))]: c.cover } : {}, availableIn, seo });
+    return cached(req, reply, [g.id], { ...c, full: g.full, media: c.cover ? { [M(50 + Number(g.id.slice(-1)))]: c.cover } : {}, availableIn, seo: g.seo ?? seo });
   });
 
   // №212: ключ вне списка – PAGE_KEY_UNKNOWN 404; не опубликована – 404
@@ -211,7 +218,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
     if (!PAGE_KEYS.includes(key)) return deps.fail(reply, 404, 'PAGE_KEY_UNKNOWN', 'Такой страницы нет');
     const p = key === 'advertising-consent' && !state.advertisingConsent ? undefined : PAGES[key];
     if (!p) return notFound(reply);
-    return cached(req, reply, [key], { key, title: p.title, body: p.body, documentVersion: p.documentVersion, updatedAt: p.updatedAt, media: {}, seo });
+    return cached(req, reply, [key], { key, title: p.title, body: p.body, documentVersion: p.documentVersion, updatedAt: p.updatedAt, media: {}, seo: p.seo ?? seo });
   });
 
   // №213, №214

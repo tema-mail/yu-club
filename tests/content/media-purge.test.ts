@@ -1,12 +1,13 @@
 // S4-45: принудительная очистка по ГК ст. 152.1 (K22 §8). После очистки ни один вариант файла не отдаётся; журнал не правится, живая сущность – новая версия без фото;
-// откат к старой версии показывает заглушку; Директор → 403; без основания – COMMENT_REQUIRED; аудит с основанием; файл заново не загрузить; настоящий HTTP.
+// откат к старой версии показывает заглушку; Директор → 403; код причины только из списка (№227а, reasonCode) – иначе VALIDATION_FAILED; аудит с основанием,
+// журнал journal.media_purged без свободного текста (0444); файл заново не загрузить; настоящий HTTP.
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config.ts';
 import { blockDef, ensureBlock } from '../../apps/api/src/modules/content/blocks.ts';
-import { getMediaRow, uploadMedia } from '../../apps/api/src/modules/content/media.ts';
+import { gcMedia, getMediaRow, uploadMedia } from '../../apps/api/src/modules/content/media.ts';
 import { stripMedia } from '../../apps/api/src/modules/content/media-purge.ts';
 import { publicationDef, type PublicationDraft } from '../../apps/api/src/modules/content/publications.ts';
 import { createEntity, listVersions, publish, rollback, saveDraft, type EntityRow } from '../../apps/api/src/modules/content/versions.ts';
@@ -29,7 +30,7 @@ async function login(key: string, role: string): Promise<void> {
   const res = await app.inject({ method: 'POST', url: `${BASE}/auth/login`, payload: { email: `${key}@yu.test`, password: PASSWORD } });
   cookies[key] = String(res.headers['set-cookie']).split(';')[0]!;
 }
-const purge = (who: string, id: string, payload: object = { reason: 'Требование субъекта', basis: BASIS }, key: string = randomUUID()) =>
+const purge = (who: string, id: string, payload: object = { reasonCode: 'subject_request', basis: BASIS }, key: string = randomUUID()) =>
   app.inject({ method: 'POST', url: `${BASE}/content/media/${id}/purge`, headers: { cookie: cookies[who]!, 'idempotency-key': key }, payload });
 const pubGet = (url: string) => app.inject({ method: 'GET', url: `${PUB}${url}` });
 
@@ -68,6 +69,22 @@ describe('S4-45: чистая замена', () => {
   });
 });
 
+describe('0444: журнал очисток journal.media_purged', () => {
+  it('только вставка: INSERT от yu_app проходит, UPDATE и DELETE → 42501; код причины – из списка; свободного текста в столбцах нет', async () => {
+    const insert = (code: string) =>
+      f.pool.query<{ id: string }>(`INSERT INTO journal.media_purged (media_id, sha256, reason_code, purged_by, purged_at, files, affected) VALUES ($1, $2, $3, $4, now(), 4, '[]') RETURNING id`, [randomUUID(), 'a'.repeat(64), code, f.staffId]);
+    const id = (await insert('subject_request')).rows[0]!.id;
+    await expect(f.pool.query(`UPDATE journal.media_purged SET reason_code = 'legal_order' WHERE id = $1`, [id])).rejects.toMatchObject({ code: '42501' });
+    await expect(f.pool.query(`DELETE FROM journal.media_purged WHERE id = $1`, [id])).rejects.toMatchObject({ code: '42501' });
+    await expect(insert('заявление Иванова')).rejects.toMatchObject({ code: '23514' });
+    const cols = await f.db.client.query<{ column_name: string; data_type: string }>(`SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'journal' AND table_name = 'media_purged' ORDER BY ordinal_position`);
+    expect(cols.rows.map((c) => c.column_name)).toEqual(['id', 'media_id', 'sha256', 'reason_code', 'purged_by', 'purged_at', 'files', 'affected']);
+    expect(cols.rows.filter((c) => c.data_type === 'text').map((c) => c.column_name)).toEqual(['sha256', 'reason_code']); // текстовые – только хеш и код
+    const v = await f.db.client.query(`SELECT * FROM journal.append_only_violations() WHERE table_name LIKE '%media_purged%'`);
+    expect(v.rows).toEqual([]);
+  });
+});
+
 describe('S4-45: очистка', () => {
   it('файлы всех вариантов удалены даже при использовании в версиях; живая – новая версия без фото; журнал не правлен; публичный API без адреса; аудит с основанием', async () => {
     const id = await f.image(91, 'Лицо Иванова');
@@ -76,7 +93,7 @@ describe('S4-45: очистка', () => {
     expect((await pubGet(`/publications/news/${inText.slug}`)).json().cover.url).toMatch(/^\/media\//);
     const res = await purge('owner', id);
     expect(res.statusCode).toBe(200);
-    expect(res.json().purged).toBe(true);
+    expect(res.json()).toMatchObject({ purged: true, filesPending: false });
     expect(res.json().affected).toEqual([{ entityType: 'publication', entityId: inText.row.id, versionNo: 2 }]);
     for (const v of row0.variants) expect(await f.store.exists(v.key)).toBe(false);
     expect(await f.store.exists(row0.storage_key)).toBe(false);
@@ -97,8 +114,14 @@ describe('S4-45: очистка', () => {
     const media = (await getMediaRow(f.pool, id))!;
     expect(media).toMatchObject({ status: 'purged', alt: null, title: null, original_name: null, variants: [] });
     const audit = await f.db.client.query<{ reason: string; after: { basis: string; affected: unknown[]; files: number } }>(`SELECT reason, after FROM journal.audit_events WHERE object_id = $1 AND action = 'media.purged'`, [id]);
-    expect(audit.rows[0]).toMatchObject({ reason: 'Требование субъекта', after: { basis: BASIS, files: row0.variants.length } });
+    expect(audit.rows[0]).toMatchObject({ reason: 'Требование человека на фото', after: { reasonCode: 'subject_request', basis: BASIS, files: row0.variants.length } });
     expect(audit.rows[0]!.after.affected).toHaveLength(1);
+    // журнал очисток (0444): код, хеш, число файлов и затронутые – без основания словами и без подписи
+    const journal = await f.db.client.query(`SELECT * FROM journal.media_purged WHERE media_id = $1`, [id]);
+    expect(journal.rows).toHaveLength(1);
+    expect(journal.rows[0]).toMatchObject({ sha256: row0.sha256, reason_code: 'subject_request', files: row0.variants.length, affected: res.json().affected });
+    expect(JSON.stringify(journal.rows[0])).not.toContain(BASIS);
+    expect(JSON.stringify(journal.rows[0])).not.toContain('Лицо Иванова');
     const left = await f.db.client.query(`SELECT 1 FROM app.content_media_usages WHERE media_id = $1`, [id]);
     expect(left.rowCount).toBe(0);
   });
@@ -139,25 +162,27 @@ describe('S4-45: очистка', () => {
     await fails(f.inTx((tx) => saveDraft(tx, c, publicationDef, onlyDraft.id, { rowVersion: onlyDraft.row_version, draft: onlyDraft.draft }, f.meta(c), clock)), 'VERSION_CONFLICT');
   });
 
-  it('Директор → 403; без причины или основания → COMMENT_REQUIRED, файл цел; мусор и чужой id → 404; повтор – без изменений', async () => {
+  it('Директор → 403; без кода причины или с кодом вне списка → VALIDATION_FAILED, файл цел; основание необязательно; мусор и чужой id → 404; повтор – без изменений и без второй строки журнала', async () => {
     const id = await f.image(94, 'Фото');
     const row = (await getMediaRow(f.pool, id))!;
     expect((await purge('director', id)).statusCode).toBe(403);
-    for (const body of [{ reason: 'x' }, { basis: 'y' }, { reason: ' ', basis: 'y' }, {}]) {
+    for (const body of [{ basis: 'y' }, { reasonCode: 'заявление Иванова', basis: 'y' }, { reason: 'x', basis: 'y' }, { reasonCode: 'subject_request', basis: 'б'.repeat(201) }, {}]) {
       const res = await purge('owner', id, body);
-      expect(res.statusCode).toBe(422);
-      expect(res.json().error.code).toBe('COMMENT_REQUIRED');
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe('VALIDATION_FAILED');
     }
     expect(await f.store.exists(row.storage_key)).toBe(true);
     expect((await purge('owner', randomUUID())).statusCode).toBe(404);
     expect((await purge('owner', 'мусор')).statusCode).toBe(404);
-    expect((await purge('owner', id)).json().affected).toEqual([]);
+    expect((await purge('owner', id, { reasonCode: 'legal_order' })).json().affected).toEqual([]);
     expect(await f.store.exists(row.storage_key)).toBe(false);
     const again = await purge('owner', id);
     expect(again.statusCode).toBe(200);
     expect(again.json().affected).toEqual([]);
-    const audit = await f.db.client.query(`SELECT 1 FROM journal.audit_events WHERE object_id = $1 AND action = 'media.purged'`, [id]);
-    expect(audit.rowCount).toBe(1);
+    const audit = await f.db.client.query<{ reason: string; after: { basis: string | null } }>(`SELECT reason, after FROM journal.audit_events WHERE object_id = $1 AND action = 'media.purged'`, [id]);
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]).toMatchObject({ reason: 'Предписание или решение суда', after: { basis: null } });
+    expect((await f.db.client.query(`SELECT reason_code FROM journal.media_purged WHERE media_id = $1`, [id])).rows).toEqual([{ reason_code: 'legal_order' }]);
   });
 
   it('подпись в тексте не возвращается после отката; поле условий тоже чистится; живой снимок без id и подписи', async () => {
@@ -209,16 +234,41 @@ describe('S4-45: очистка', () => {
     expect((await app.inject({ method: 'GET', url: `${BASE}/content/media/${media.id}`, headers: { cookie: cookies.owner! } })).statusCode).toBe(404);
   });
 
+  it('сбой удаления файла после фиксации: 200 с filesPending, запись очищена, повтор не врёт; файл уносит ночная content:media-gc', async () => {
+    const id = await f.image(101, 'Фото');
+    const row = (await getMediaRow(f.pool, id))!;
+    const broken = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), {
+      network: { pool: f.pool },
+      staff: { pool: f.pool, auth: staffAuthConfig('t'.repeat(40)), clock },
+      content: { mediaStore: { ...f.store, remove: async () => { throw new Error('диск недоступен'); } } },
+    });
+    try {
+      const res = await broken.inject({ method: 'POST', url: `${BASE}/content/media/${id}/purge`, headers: { cookie: cookies.owner!, 'idempotency-key': randomUUID() }, payload: { reasonCode: 'subject_request' } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ purged: true, filesPending: true });
+    } finally {
+      await broken.close();
+    }
+    expect((await getMediaRow(f.pool, id))!.status).toBe('purged');
+    expect(await f.store.exists(row.storage_key)).toBe(true);
+    // повтор, пока файл лежит, не говорит «удалено»
+    expect((await purge('owner', id)).json()).toMatchObject({ purged: true, filesPending: true, affected: [] });
+    const gc = await gcMedia(f.pool, f.store, new Date(Date.now() + 2 * 86_400_000));
+    expect(gc.removed).toEqual(expect.arrayContaining([row.storage_key, ...row.variants.map((v) => v.key)]));
+    expect(await f.store.exists(row.storage_key)).toBe(false);
+    expect((await purge('owner', id)).json()).toMatchObject({ purged: true, filesPending: false });
+  });
+
   it('сбой транзакции не стирает файлы: файлы удаляются только после фиксации', async () => {
     const id = await f.image(95, 'Фото');
     const row = (await getMediaRow(f.pool, id))!;
     // устаревшая версия: повтор ключа с другим телом → отказ до фиксации; файл цел
     const key = randomUUID();
-    await purge('owner', id, { reason: 'первая', basis: 'б' }, key);
+    await purge('owner', id, { reasonCode: 'subject_request', basis: 'б' }, key);
     expect(await f.store.exists(row.storage_key)).toBe(false);
     const id2 = await f.image(96, 'Фото');
     const row2 = (await getMediaRow(f.pool, id2))!;
-    const conflict = await purge('owner', id2, { reason: 'другая', basis: 'б' }, key);
+    const conflict = await purge('owner', id2, { reasonCode: 'legal_order', basis: 'б' }, key);
     expect(conflict.statusCode).toBeGreaterThanOrEqual(400);
     expect(await f.store.exists(row2.storage_key)).toBe(true);
   });

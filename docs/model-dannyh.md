@@ -1357,6 +1357,7 @@ GRANT UPDATE (status, invalid_reason, invalidated_by, invalidated_at) ON app.att
 | 0409 | `0409_rpt_comms.sql` | `rpt_notifications` (notifications), `rpt_consent_changes` (clients), `rpt_content_versions` (content) | – | – | S4-74 |
 | 0410 | `0410_rpt_e3.sql` | только недостающее по факту 0311 после сверки S4-76; расхождений нет – файла нет, номер свободен | – | – | S4-76 (ждёт Э3) |
 | 0411 | `0411_staff_feed.sql` | `staff_feed_events` (лента событий CRM, 13 §11) | `→ branches`, `→ staff` | – | S4-28 (ждёт Э3 и Q-147) |
+| 0444 | `0444_media_purge.sql` | `journal.media_purged` – только вставка: журнал принудительных очисток фото (K22 §8, K11 №227а, техдолг 4.1б): `media_id`, `sha256`, `reason_code` (`subject_request` / `consent_withdrawn` / `rights_claim` / `legal_order`), `purged_by`, `purged_at`, `files`, `affected jsonb`; свободного текста и ПДн нет, FK нет намеренно (читается без исходной базы, вход регламента восстановления) | – | – | S4-89 (остаток) |
 
 Общие правила Э4 (решение, продолжают раздел 0 и правила Э2):
 - Версии контента и получатели кампаний – журналы (`journal.*`, только вставка); черновики, статусы, связи – `app.*`.

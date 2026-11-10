@@ -6,7 +6,7 @@ import { writeAudit, type AuditRequestMeta, type Db } from '../../core/audit.ts'
 import { AppError } from '../../core/errors.ts';
 import { assertCan, type AccessContext, type Target } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { internalPath, seoShape, showMedia, uuid } from './common.ts';
+import { internalPath, seoDto, seoShape, showMedia, uuid, type SeoDto } from './common.ts';
 import { createEntity, type EntityDef, type EntityRow, type PublicMedia, type Snapshot } from './versions.ts';
 
 export const BLOCK_TYPES = ['hero', 'about', 'directions', 'advantages', 'promo_strip', 'cta'] as const;
@@ -32,6 +32,7 @@ export type BlockDraft = z.infer<typeof blockDraft>;
 function blockMedia(d: BlockDraft): Array<{ mediaId: string; field: string; altRequired: boolean }> {
   const refs: Array<{ mediaId: string; field: string; altRequired: boolean }> = [];
   if (d.blockType === 'hero' && d.payload.mediaId) refs.push({ mediaId: d.payload.mediaId, field: 'payload.mediaId', altRequired: true });
+  if (d.blockType === 'hero' && d.ogMediaId) refs.push({ mediaId: d.ogMediaId, field: 'og', altRequired: false }); // картинка для соцсетей – в снимок, иначе og:image не построить
   if (d.blockType === 'directions' || d.blockType === 'advantages') {
     d.payload.items.forEach((it, i) => {
       if (it.mediaId) refs.push({ mediaId: it.mediaId, field: `payload.items.${i}.mediaId`, altRequired: true });
@@ -102,8 +103,9 @@ interface LiveBlock {
   snapshot: Snapshot;
 }
 
-/** Блоки главной: опубликованные, городской подменяет сетевой того же типа; неопубликованный городской – сетевой остаётся. */
-export async function getHomeBlocks(db: Db, q: { cityId?: string | undefined }): Promise<{ blocks: HomeBlock[]; versionIds: string[] }> {
+/** Блоки главной: опубликованные, городской подменяет сетевой того же типа; неопубликованный городской – сетевой остаётся.
+ *  seo – ручные поля баннера hero (K23 §4) для мета главной: нет живого баннера – null. В payload SEO-поля не попадают. */
+export async function getHomeBlocks(db: Db, q: { cityId?: string | undefined }): Promise<{ blocks: HomeBlock[]; versionIds: string[]; seo: SeoDto | null }> {
   const r = await db.query<LiveBlock>(
     `SELECT b.id, b.block_type, b.city_id, b.sort_order, b.live_version_id, v.snapshot
        FROM app.content_home_blocks b JOIN journal.content_versions v ON v.id = b.live_version_id
@@ -117,7 +119,10 @@ export async function getHomeBlocks(db: Db, q: { cityId?: string | undefined }):
   }
   const chosen = [...byType.values()].sort((a, b) => a.sort_order - b.sort_order || BLOCK_TYPES.indexOf(a.block_type) - BLOCK_TYPES.indexOf(b.block_type));
   const media = await showMedia(db, chosen.map((b) => b.snapshot));
+  const heroAt = chosen.findIndex((b) => b.block_type === 'hero');
+  const heroPayload = heroAt >= 0 ? (chosen[heroAt]!.snapshot as Snapshot & { payload: { mediaId?: string } }).payload : null;
   return {
+    seo: heroAt >= 0 ? seoDto(chosen[heroAt]!.snapshot, media[heroAt]!, heroPayload?.mediaId) : null,
     blocks: chosen.map((b, i) => ({
       id: b.id,
       blockType: b.block_type,

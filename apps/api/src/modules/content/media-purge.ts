@@ -3,6 +3,8 @@
 // без фото (снимок живой версии минус ссылка, черновик в неё не попадает), черновики очищаются, а при показе любого старого снимка – в том числе после
 // отката – publicMedia подставляет заглушку «изображение удалено» (status = 'purged'). sha256 остаётся: тот же файл заново не загрузить.
 // Файлы стираются ПОСЛЕ фиксации транзакции (routes.media.ts): откат базы не должен оставить снимки без файлов; сбой удаления подберёт content:media-gc.
+// Причина – код из списка (№227а, reasonCode), основание словами необязательно и живёт только в аудите; журнал journal.media_purged (0444) –
+// только вставка и без свободного текста: по нему очистки повторяют после восстановления бэкапа старше очистки (техдолг 4.1б).
 import { writeAudit, type AuditRequestMeta, type Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { assertCan, type AccessContext } from '../../core/permissions.ts';
@@ -10,8 +12,11 @@ import { systemClock, type Clock } from '../../core/time.ts';
 import { MEDIA_COLUMNS, type MediaRow } from './media.ts';
 import { entityTable } from './preview.ts';
 import type { EntityType, Snapshot } from './versions.ts';
+import { PURGE_BASIS_MAX, PURGE_REASON_CODES, PURGE_REASON_LABEL, type PurgeReasonCode } from '../../../../../packages/contracts/src/media-purge.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Коды и подписи причин – общие с CRM (packages/contracts/src/media-purge.ts): одна подпись на экране, в аудите и в версии.
+export { PURGE_BASIS_MAX, PURGE_REASON_CODES, PURGE_REASON_LABEL, type PurgeReasonCode };
 const ENTITY_TYPES: readonly EntityType[] = ['publication', 'game', 'room_page', 'branch_page', 'content_page', 'home_block'];
 /** Столбцы живой версии со ссылкой на медиа (0404). */
 const LIVE_COLUMNS: Partial<Record<EntityType, readonly string[]>> = {
@@ -43,7 +48,10 @@ export interface PurgeAffected {
 }
 
 export interface PurgeResult {
+  /** Что стереть после фиксации: варианты, основной файл – последним (есть основной – значит, удалено не всё). */
   files: string[];
+  /** Основной файл: по нему повтор и ответ узнают, остались ли файлы на диске (варианты после очистки в строке не хранятся). */
+  storageKey: string;
   affected: PurgeAffected[];
 }
 
@@ -85,16 +93,19 @@ async function cleanDrafts(tx: Db, type: EntityType, mediaId: string): Promise<s
 }
 
 /** Очистка в транзакции. Файлы для удаления – в ответе, стирает вызывающий после фиксации. Повтор по очищенному – без изменений. */
-export async function purgeMedia(tx: Db, ctx: AccessContext, id: string, input: { reason: string; basis: string }, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<PurgeResult> {
+export async function purgeMedia(tx: Db, ctx: AccessContext, id: string, input: { reasonCode: string; basis?: string | null | undefined }, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<PurgeResult> {
   assertCan(ctx, 'content.media.purge', { network: true });
-  const reason = input.reason?.trim() ?? '';
-  const basis = input.basis?.trim() ?? '';
-  if (reason === '') throw new AppError('COMMENT_REQUIRED', 422, 'Укажите причину', { field: 'reason' });
-  if (basis === '') throw new AppError('COMMENT_REQUIRED', 422, 'Укажите основание', { field: 'basis' });
+  if (!(PURGE_REASON_CODES as readonly string[]).includes(input.reasonCode)) {
+    throw new AppError('VALIDATION_FAILED', 400, 'Укажите причину из списка', { issues: [{ path: 'reasonCode', message: 'код причины вне списка' }] });
+  }
+  const reasonCode = input.reasonCode as PurgeReasonCode;
+  const reason = PURGE_REASON_LABEL[reasonCode];
+  const basis = input.basis?.trim() || null;
+  if (basis && basis.length > PURGE_BASIS_MAX) throw new AppError('VALIDATION_FAILED', 400, `Основание не длиннее ${PURGE_BASIS_MAX} знаков`, { issues: [{ path: 'basis', message: `не длиннее ${PURGE_BASIS_MAX} знаков` }] });
   if (!UUID_RE.test(id)) throw new AppError('NOT_FOUND', 404, 'Не найдено');
   const row = (await tx.query<MediaRow>(`SELECT ${MEDIA_COLUMNS} FROM app.content_media WHERE id = $1 FOR UPDATE`, [id])).rows[0];
   if (!row) throw new AppError('NOT_FOUND', 404, 'Не найдено');
-  if (row.status === 'purged') return { files: [], affected: [] };
+  if (row.status === 'purged') return { files: [], storageKey: row.storage_key, affected: [] };
 
   const now = clock.now();
   const byEntity = new Map<string, PurgeAffected>();
@@ -108,8 +119,13 @@ export async function purgeMedia(tx: Db, ctx: AccessContext, id: string, input: 
   // Подписи тоже могут называть человека – очищаются вместе с файлом; sha256 держит запрет повторной загрузки.
   await tx.query(`UPDATE app.content_media SET status = 'purged', alt = NULL, title = NULL, original_name = NULL, variants = '[]', archived_at = COALESCE(archived_at, $2), row_version = row_version + 1 WHERE id = $1`, [id, now]);
   const affected = [...byEntity.values()];
-  const files = [...new Set([row.storage_key, ...row.variants.map((v) => v.key)])];
-  // Основание – без данных субъекта: его пишет Владелец, ФИО сюда не вносить (подсказка в CRM). Журнал очисток – вход регламента восстановления бэкапа.
-  await writeAudit(tx, meta, { action: 'media.purged', object: { type: 'media', id }, reason, after: { basis, sha256: row.sha256, files: files.length, affected } }, clock);
-  return { files, affected };
+  const files = [...new Set([...row.variants.map((v) => v.key).filter((k) => k !== row.storage_key), row.storage_key])];
+  // Журнал очисток (0444) – вход регламента восстановления бэкапа: код, хеш, число файлов, затронутые; свободного текста нет.
+  await tx.query(
+    `INSERT INTO journal.media_purged (media_id, sha256, reason_code, purged_by, purged_at, files, affected) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [id, row.sha256, reasonCode, ctx.actor.staffId, now, files.length, JSON.stringify(affected)],
+  );
+  // Основание словами – только в аудите и без данных субъекта: номер и дата документа, ФИО сюда не вносить (подсказка в CRM).
+  await writeAudit(tx, meta, { action: 'media.purged', object: { type: 'media', id }, reason, after: { reasonCode, basis, sha256: row.sha256, files: files.length, affected } }, clock);
+  return { files, storageKey: row.storage_key, affected };
 }
