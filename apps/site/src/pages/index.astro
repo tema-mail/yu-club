@@ -1,9 +1,11 @@
 ---
 // Главная (карта сайта 3.1, 12 §5): блоки CMS (S4-119, components/HomeBlocks.astro) с подменой городом выбранного клуба (K5 №207 ?city=),
 // после баннера – выбор клуба по городам (сеть из API, K5 №1–2). Контент не ответил – главная работает на сети: запасной баннер и клубы.
+// «Выбрать время» (19 §4.2, D4-66): в баннере и на телефоне липкой панелью – в расписание выбранного клуба, без выбора – список клубов /schedule/.
 import HomeBlocks from '../components/HomeBlocks.astro';
+import TimeCta from '../components/TimeCta.astro';
 import Site from '../layouts/Site.astro';
-import { branchPath } from '../lib/api.ts';
+import { branchPath, scheduleHref } from '../lib/api.ts';
 import { content, type HomeContent } from '../lib/content.ts';
 import { organizationLd, websiteLd } from '../lib/jsonld.ts';
 import { chosenBranch, displayZone } from '../lib/publications.ts';
@@ -24,9 +26,10 @@ const about = home?.blocks.find((b) => b.blockType === 'about');
 const plain = (s: unknown) => (typeof s === 'string' ? s.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_#>`]/g, '').replace(/\s+/g, ' ').trim() : '') || undefined;
 const heroTitle = typeof hero?.payload.title === 'string' && hero.payload.title.trim() ? hero.payload.title.trim() : undefined;
 const meta = metaFor({ page: 'home', singleCity: network?.length === 1 ? network[0]!.name : undefined, about: plain(about?.payload.body), hero: heroTitle });
+const bookHref = mine ? scheduleHref(mine.city.slug, mine.branch.slug) : '/schedule/';
 ---
 <Site title={meta.title} description={meta.description} jsonLd={[organizationLd(origin), websiteLd(origin)]}>
-  <HomeBlocks home={home} h1={meta.h1} lead="Игровые ПК, VR и PlayStation 5 в одной сети. Выберите свой клуб: адрес, часы и зоны." timeZone={displayZone(network, mine)}>
+  <HomeBlocks home={home} h1={meta.h1} lead="Игровые ПК, VR и PlayStation 5 в одной сети. Выберите свой клуб: адрес, часы и зоны." timeZone={displayZone(network, mine)} bookHref={bookHref}>
     <section class="yu-section" id="clubs" aria-labelledby="clubs-title" slot="clubs">
       <h2 id="clubs-title">Клубы</h2>
       {mine && <p><a class="yu-btn" href={branchPath(mine.city.slug, mine.branch.slug)} data-testid="my-branch">Ваш клуб: {mine.branch.name}</a></p>}
@@ -49,4 +52,5 @@ const meta = metaFor({ page: 'home', singleCity: network?.length === 1 ? network
       ))}
     </section>
   </HomeBlocks>
+  <TimeCta href={bookHref} />
 </Site>
