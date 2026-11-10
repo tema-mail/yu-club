@@ -280,17 +280,19 @@ async function main(): Promise<void> {
     console.log(`0) подтверждение брони без отчётов (${STREAMS} потока): ${fmt(baseMs)}; не 201: ${baseline.filter((x) => x.status !== 201).length}`);
 
     // ---- 1) планы: прирост seq_scan по app.bookings на каждый запрос, по одному
-    const seqScan = async () => {
+    const seqScan = async (table: 'app.bookings' | 'app.visits') => {
       await sql!.query('SELECT pg_stat_clear_snapshot()');
-      return Number((await sql!.query<{ n: string }>(`SELECT seq_scan n FROM pg_stat_user_tables WHERE relid = 'app.bookings'::regclass`)).rows[0]!.n);
+      return Number((await sql!.query<{ n: string }>(`SELECT seq_scan n FROM pg_stat_user_tables WHERE relid = $1::regclass`, [table])).rows[0]!.n);
     };
     const fullScans: string[] = [];
     for (const url of [...SUMMARY.map((r) => `/reports/${r}?${monthQs}`), ...SEARCHES.map((s) => `/search?q=${encodeURIComponent(s)}`)]) {
-      const before = await seqScan();
+      const before = await seqScan('app.bookings');
+      const beforeVisits = await seqScan('app.visits');
       const r = await crm('GET', url, ownerCookie, undefined, probeBase);
       await sleep(600); // соединение пула закрылось – статистика backend сброшена
-      const delta = (await seqScan()) - before;
-      console.log(`1) ${url.split('?')[0]}${url.startsWith('/search') ? ` «${decodeURIComponent(url.split('=')[1]!)}»` : ''}: ${r.status}, ${r.ms.toFixed(0)} мс, seq_scan bookings +${delta}`);
+      const delta = (await seqScan('app.bookings')) - before;
+      const deltaVisits = (await seqScan('app.visits')) - beforeVisits;
+      console.log(`1) ${url.split('?')[0]}${url.startsWith('/search') ? ` «${decodeURIComponent(url.split('=')[1]!)}»` : ''}: ${r.status}, ${r.ms.toFixed(0)} мс, seq_scan bookings +${delta}, visits +${deltaVisits}`);
       if (r.status !== 200) fail(`${url}: ${r.status} ${r.text.slice(0, 200)}`);
       if (delta > 0) fullScans.push(url.split('?')[0]!);
     }
@@ -323,6 +325,7 @@ async function main(): Promise<void> {
     let exportsDone = false;
     void waitExports.then(() => (exportsDone = true));
     const summaryMs: number[] = [];
+    const byReport = new Map<string, number[]>(SUMMARY.map((n) => [n, []]));
     const searchMs: number[] = [];
     const errors: string[] = [];
     const reportLoop = async (worker: number) => {
@@ -330,7 +333,10 @@ async function main(): Promise<void> {
         const name = SUMMARY[(round + worker) % SUMMARY.length]!;
         const r = await crm('GET', `/reports/${name}?${monthQs}`, ownerCookie);
         if (r.status !== 200) errors.push(`${name} ${r.status} ${r.text.slice(0, 120)}`);
-        else summaryMs.push(r.ms);
+        else {
+          summaryMs.push(r.ms);
+          byReport.get(name)!.push(r.ms);
+        }
       }
     };
     const searchLoop = async () => {
@@ -347,6 +353,7 @@ async function main(): Promise<void> {
     const loadConfirm = loaded.filter((x) => x.status === 201).map((x) => x.ms);
     console.log(`2) под нагрузкой ${(loadMs / 1000).toFixed(0)} с:`);
     console.log(`   сводка за месяц по сети: ${fmt(summaryMs)}`);
+    for (const [name, xs] of byReport) console.log(`     ${name}: ${xs.length ? fmt(xs) : 'нет ответов'}`); // dashboard – со снимком 60 с (D5-12)
     console.log(`   поиск: ${fmt(searchMs)}`);
     for (const e of exportRows) {
       const took = e.started_at && e.finished_at ? `${((e.finished_at.getTime() - e.started_at.getTime()) / 1000).toFixed(0)} с` : '–';
