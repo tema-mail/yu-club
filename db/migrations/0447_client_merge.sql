@@ -1,4 +1,4 @@
--- 0440_client_merge: слияние дублей клиентов (03 §11.2, §12; K9 «Слияние»; право client.merge K1; техдолг 5.15).
+-- 0447_client_merge: слияние дублей клиентов (03 §11.2, §12; K9 «Слияние»; право client.merge K1; техдолг 5.15).
 -- Вторая карточка после объединения – статус merged со ссылкой merged_into_id на основную; её телефон, имя, почта и дата
 -- рождения очищаются как при обезличивании, поэтому телефон у merged, как у anonymized, может быть NULL (освобождается
 -- для новой карточки). merged_into_id – ровно у merged. journal.client_merges – журнал объединений только на вставку
@@ -14,15 +14,15 @@ DECLARE c text;
 BEGIN
   SELECT conname INTO c FROM pg_constraint
    WHERE conrelid = 'app.clients'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%deletion_requested%';
-  IF c IS NULL THEN RAISE EXCEPTION '0440: CHECK статуса клиента не найден'; END IF;
+  IF c IS NULL THEN RAISE EXCEPTION '0447: CHECK статуса клиента не найден'; END IF;
   EXECUTE format('ALTER TABLE app.clients DROP CONSTRAINT %I', c);
   SELECT conname INTO c FROM pg_constraint
    WHERE conrelid = 'app.clients'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%phone_e164 IS NOT NULL%';
-  IF c IS NULL THEN RAISE EXCEPTION '0440: CHECK телефона клиента не найден'; END IF;
+  IF c IS NULL THEN RAISE EXCEPTION '0447: CHECK телефона клиента не найден'; END IF;
   EXECUTE format('ALTER TABLE app.clients DROP CONSTRAINT %I', c);
   SELECT conname INTO c FROM pg_constraint
    WHERE conrelid = 'journal.loyalty_batch_moves'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%accrual_reversal%';
-  IF c IS NULL THEN RAISE EXCEPTION '0440: CHECK вида движения партии не найден'; END IF;
+  IF c IS NULL THEN RAISE EXCEPTION '0447: CHECK вида движения партии не найден'; END IF;
   EXECUTE format('ALTER TABLE journal.loyalty_batch_moves DROP CONSTRAINT %I', c);
 END $$;
 
