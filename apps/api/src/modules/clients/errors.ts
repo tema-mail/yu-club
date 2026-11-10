@@ -6,4 +6,5 @@ export const errors = {
   CONSENT_REQUIRED: 422, // новый клиент без согласия на обработку ПДн
   SMS_UNAVAILABLE: 503, // провайдер не принял сообщение; запрос кода сохранён, повтор после resendAfterSec
   CLIENT_RESTRICTED: 403, // клиенту нельзя бронировать или входить (blocked, restricted, deletion_requested)
+  CLIENT_HAS_ACTIVE_RECORDS: 409, // обезличивание: у клиента бронь впереди или мероприятие в работе (details.blockers)
 } as const;
