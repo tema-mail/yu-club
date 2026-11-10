@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { addDays, inZone } from '../lib/booking.ts';
+import { useLatest } from '../lib/latest.ts';
 import {
   fmtDate, fmtMinutes, monthEnd, shiftError, SHIFT_STATUS, STATEMENT_STATUS, UNRESOLVED_REASON,
   type PayrollPeriod, type PayrollReport, type PayrollStatement, type ReportRow, type StatementStatus,
@@ -55,8 +56,10 @@ export default function PayrollTable({ initialPeriods, branches, today, penaltie
   const statementOf = (id: string) => statements.find((s) => s.staffId === id) ?? null;
 
   const query = (extra = '') => `/payroll/report?periodId=${enc(periodId)}${cityId ? `&cityId=${enc(cityId)}` : ''}${branchId ? `&branchIds=${enc(branchId)}` : ''}${extra}`;
+  const latest = useLatest(); // смена периода или фильтра: ответ прежнего запроса не подменяет свежую таблицу
   const load = async () => {
     if (!periodId) return;
+    const fresh = latest();
     setLoading(true);
     setError('');
     try {
@@ -64,14 +67,16 @@ export default function PayrollTable({ initialPeriods, branches, today, penaltie
         browserCall<PayrollReport>(query(`${staffId ? `&staffId=${enc(staffId)}` : ''}${statementFilter ? `&statementStatus=${statementFilter}` : ''}`)),
         browserCall<{ items: PayrollStatement[] }>(`/payroll/periods/${enc(periodId)}/statements`),
       ]);
+      if (!fresh()) return;
       setReport(r);
       setStatements(st.items);
       if (!staffId) setPeople(r.rows.map((x) => ({ id: x.staffId, name: x.name })));
     } catch (e) {
+      if (!fresh()) return;
       setError(shiftError(e));
       setReport(null);
     } finally {
-      setLoading(false);
+      if (fresh()) setLoading(false);
     }
   };
   const loadDetail = async (id: string) => {
