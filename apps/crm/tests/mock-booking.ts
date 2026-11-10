@@ -5,9 +5,11 @@
 // (opsState): одна картина занятости; брони отдаются обратно в ops (syncOps) для списков «затронутых».
 // Коды ошибок – как у сервера: SLOT_TAKEN, CLIENT_OVERLAP, RESOURCE_BLOCKED, OUTSIDE_SCHEDULE, OUTSIDE_BOOKING_WINDOW,
 // INVALID_DURATION, VERSION_CONFLICT, COMMENT_REQUIRED, INVALID_STATUS_TRANSITION, RANGE_TOO_LONG, IDEMPOTENCY_KEY_REQUIRED.
+// K11 №252 (S4-81): брони клиента для выбора записи в сообщении – как clientBookings в routes.crm.ts. Отличие данных мока:
+// у части броней засева id не UUID (bk-pc1-evening) – такие API не выдаст, в форме сообщения они дают 400.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import type { CalendarDto, CalendarItem, CrmBooking, CrmBookingRow } from '../../../packages/contracts/src/crm/booking.ts';
+import type { CalendarDto, CalendarItem, ClientBookingRow, CrmBooking, CrmBookingRow } from '../../../packages/contracts/src/crm/booking.ts';
 import { opsHoursOn, opsState } from './mock-ops.ts';
 
 type Rec = Record<string, unknown>;
@@ -357,6 +359,27 @@ export function registerBooking(app: FastifyInstance, P: string, d: BookingDeps)
       items: page.map((b) => row(b, now)),
       nextCursor: all.length > limit && last ? Buffer.from(JSON.stringify([cur(last).start, last.number])).toString('base64url') : null,
     };
+  });
+
+  // №252: schedule.view по филиалу брони; не-Владелец без броней клиента в зоне – 404; upcoming – живые по возрастанию, recent – остальные по убыванию
+  app.get(`${P}/clients/:clientId/bookings`, async (req, reply) => {
+    const s = d.current(req);
+    const id = (req.params as { clientId: string }).clientId.toLowerCase();
+    const q = req.query as { scope?: string; limit?: string };
+    const limit = q.limit === undefined ? 20 : Number(q.limit);
+    if (!['upcoming', 'recent'].includes(q.scope ?? '') || !Number.isInteger(limit) || limit < 1 || limit > 50) {
+      return invalid(reply, 'Неверные данные запроса', { issues: [{ path: 'query', message: 'Неверные данные запроса' }] });
+    }
+    if (!UUID.test(id)) return notFound(reply);
+    const mine = store.filter((b) => b.clientId === id && seesBranch(s, b.branchId));
+    if (!d.clients().some((c) => c.id === id) || (s.role !== 'owner' && mine.length === 0)) return notFound(reply);
+    const now = Date.now();
+    const isLive = (b: Bk) => ['confirmed', 'arrived'].includes(b.status) && ms(cur(b).end) > now;
+    const items = mine
+      .filter((b) => (q.scope === 'upcoming' ? isLive(b) : !isLive(b)))
+      .sort((a, b) => (q.scope === 'upcoming' ? 1 : -1) * (ms(cur(a).start) - ms(cur(b).start) || a.number - b.number))
+      .slice(0, limit);
+    return { items: items.map((b): ClientBookingRow => ({ ...row(b, now), branchId: b.branchId, timezone: d.branches().find((x) => x.id === b.branchId)!.timezone })) };
   });
 
   app.get(`${P}/bookings/:bookingId`, async (req, reply) => {

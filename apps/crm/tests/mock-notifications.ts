@@ -4,12 +4,14 @@
 // Отличия от API (данные мока): id филиалов и сотрудников засева – не UUID (b-nsk-krasny, s-owner), поэтому branchId, authorId и
 // области сегмента проверяются по справочнику мока, а не форматом; из условий сегмента выборку сужает только область; кампания
 // после подтверждения сразу разворачивается в строки (без pg-boss). Сброс – вместе с POST /__test/reset (хук onRequest).
+// S4-80 (11.11): имена авторов (authorName, confirmedByName, actorName) – из сотрудников мока, всем с notifications.view;
+// №208 campaignId; №251 GET /notifications/failures/summary – как journal.ts failuresSummary.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
 import { bookingFacts } from './mock-booking.ts';
 import { registerStaffFeed } from './mock-staff-feed.ts';
 import type {
-  Audience, AudiencePreviewDto, CampaignCategory, CampaignDetail, CampaignDto, CampaignListRow, ClientNotificationSummary, NotificationView, SegmentV1, TemplateDto, TimelineEvent,
+  Audience, AudiencePreviewDto, CampaignCategory, CampaignDetail, CampaignDto, CampaignListRow, ClientNotificationSummary, FailuresSummary, NotificationView, SegmentV1, TemplateDto, TimelineEvent,
 } from '../src/lib/notifications.ts';
 
 type Rec = Record<string, unknown>;
@@ -23,6 +25,8 @@ export interface NotificationsMockDeps {
   can: (s: Staffish, action: string) => boolean;
   branches: () => BranchLite[];
   clients: () => ClientLite[];
+  /** Сотрудники мока – имена авторов (staff/index.ts getStaffNames). */
+  staff: () => Array<{ id: string; firstName: string; lastName: string }>;
   /** Добавить действия K21 §10 в /me мока (как EQUIPMENT_ACTIONS). */
   grant: (role: Role, actions: string[]) => void;
 }
@@ -149,7 +153,7 @@ let extraAudience: Array<{ clientId: string; branchId: string }> = [];
 function row(n: number, v: Partial<NotificationView> & Pick<NotificationView, 'clientId' | 'category' | 'kind' | 'status' | 'plannedAt'>): NotificationView {
   const sent = v.status === 'sent_to_provider';
   return {
-    id: `d0000000-0000-4000-8000-${String(n).padStart(12, '0')}`, branchId: K, bookingId: null, source: 'system', initiatorId: null, title: 'Запись подтверждена', body: 'Ждём вас в клубе.',
+    id: `d0000000-0000-4000-8000-${String(n).padStart(12, '0')}`, branchId: K, bookingId: null, source: 'system', initiatorId: null, authorName: null, title: 'Запись подтверждена', body: 'Ждём вас в клубе.',
     url: null, sentAt: sent ? v.plannedAt : null, skipReason: null, error: null, attempts: sent ? 1 : 0, campaignId: null, retryOf: null, purpose: null, readAt: null, createdAt: v.plannedAt, ...v,
   };
 }
@@ -197,7 +201,7 @@ export function resetNotifications(): void {
 }
 
 function ev(objectId: string, action: string, at: string, actorId: string, after: unknown, reason: string | null = null, objectType = 'notification_campaign'): TimelineEvent {
-  return { id: String(timeline.length + 1000 + Math.floor(Math.random() * 1e6)), at, action, objectType, objectId, actorType: 'staff', actorId, actorRole: null, before: null, after, reason, result: 'success' };
+  return { id: String(timeline.length + 1000 + Math.floor(Math.random() * 1e6)), at, action, objectType, objectId, actorType: 'staff', actorId, actorRole: null, before: null, after, reason, result: 'success', actorName: null };
 }
 
 export function registerNotifications(app: FastifyInstance, P: string, d: NotificationsMockDeps): void {
@@ -215,6 +219,12 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
   });
 
   const branchIds = () => d.branches().map((b) => b.id);
+  /** getStaffNames: «Имя Фамилия»; неизвестный id – «Сотрудник» (journal.ts). */
+  const staffName = (id: string) => {
+    const x = d.staff().find((y) => y.id === id);
+    return x ? `${x.firstName} ${x.lastName}` : 'Сотрудник';
+  };
+  const named = (r: NotificationView): NotificationView => ({ ...r, authorName: r.initiatorId ? staffName(r.initiatorId) : null });
   const cityIds = () => [...new Set(d.branches().map((b) => b.cityId))];
   const inZone = (s: Staffish, branchId: string) => d.zone(s).network || d.zone(s).branchIds.includes(branchId);
   const campaignInZone = (s: Staffish, c: Pick<Campaign, 'areaType' | 'areaIds'>) => {
@@ -300,7 +310,7 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
     void _r;
     return rest;
   };
-  const listRow = (c: Campaign): CampaignListRow => ({ ...dto(c), counters: counters(c) });
+  const listRow = (c: Campaign): CampaignListRow => ({ ...dto(c), counters: counters(c), authorName: staffName(c.createdBy), confirmedByName: c.confirmedBy ? staffName(c.confirmedBy) : null });
 
   // №201
   app.get(`${P}/notifications/campaigns`, handle(async (req, _reply, s) => {
@@ -462,7 +472,7 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
   // №203
   app.get(`${P}/notifications/campaigns/:id`, handle(async (req, _reply, s): Promise<CampaignDetail> => {
     const c = load(s, idOf(req));
-    return { ...listRow(c), timeline: timeline.filter((e) => e.objectId === c.id).sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 100) };
+    return { ...listRow(c), timeline: timeline.filter((e) => e.objectId === c.id).sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 100).map((e) => ({ ...e, actorName: e.actorId ? staffName(e.actorId) : null })) };
   }));
 
   // №204 – без Idempotency-Key, повтор останавливает rowVersion
@@ -523,7 +533,7 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
         const sent = !c.plannedAt && r.decision === 'ok';
         rows.push({
           id: randomUUID(), clientId: r.clientId, branchId: c.areaType === 'branch' ? (c.areaIds[0] ?? null) : null, category: c.category, kind: c.audience.kind === 'segment' ? 'campaign' : 'personal',
-          bookingId: c.audience.kind === 'segment' ? null : (c.audience.bookingId ?? null), source: 'staff', initiatorId: s.id, title: c.title, body: c.body, url: c.url, plannedAt: c.plannedAt ?? now,
+          bookingId: c.audience.kind === 'segment' ? null : (c.audience.bookingId ?? null), source: 'staff', initiatorId: s.id, authorName: null, title: c.title, body: c.body, url: c.url, plannedAt: c.plannedAt ?? now,
           sentAt: sent ? now : null, status: c.plannedAt ? 'planned' : sent ? 'sent_to_provider' : c.category === 'marketing' ? 'inbox_only' : 'no_channel', skipReason: null, error: null, attempts: sent ? 1 : 0,
           campaignId: c.id, retryOf: null, purpose: c.purpose, readAt: null, createdAt: now,
         });
@@ -555,16 +565,29 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
   const listRows = (s: Staffish, q: Rec) => {
     const all = rows.filter((r) => visibleRow(s, r) && (!q.clientId || r.clientId === String(q.clientId).toLowerCase()) && (!q.bookingId || r.bookingId === String(q.bookingId).toLowerCase())
       && (!q.branchId || r.branchId === q.branchId) && (!q.status || r.status === q.status) && (!q.category || r.category === q.category) && (!q.kind || r.kind === q.kind)
-      && (!q.source || r.source === q.source) && (!q.from || Date.parse(r.plannedAt) >= Date.parse(String(q.from))) && (!q.to || Date.parse(r.plannedAt) < Date.parse(String(q.to))));
-    return pageOf(all, (r) => r.plannedAt, q.cursor as string | undefined, q.limit as number | undefined);
+      && (!q.source || r.source === q.source) && (!q.campaignId || r.campaignId === String(q.campaignId).toLowerCase()) && (!q.from || Date.parse(r.plannedAt) >= Date.parse(String(q.from))) && (!q.to || Date.parse(r.plannedAt) < Date.parse(String(q.to))));
+    const p = pageOf(all, (r) => r.plannedAt, q.cursor as string | undefined, q.limit as number | undefined);
+    return { items: p.items.map(named), nextCursor: p.nextCursor };
   };
   app.get(`${P}/notifications`, handle(async (req, _reply, s) => {
     const q = parse({
       clientId: opt(re(UUID)), bookingId: opt(re(UUID)), branchId: opt(ref(branchIds)), status: opt(str(0, 32, false)), category: opt(oneOf('service', 'reminder', 'marketing')),
-      kind: opt(str(0, 32, false)), source: opt(oneOf('system', 'staff')), from: when, to: when, ...page,
+      kind: opt(str(0, 32, false)), source: opt(oneOf('system', 'staff')), campaignId: opt(re(UUID)), from: when, to: when, ...page,
     }, req.query);
     if (q.branchId && !inZone(s, String(q.branchId))) throw notFound();
     return listRows(s, q);
+  }));
+
+  // №251 – journal.ts failuresSummary: сервисные error за [now − days, now) по plannedAt в зоне, без строк с уже сделанным повтором
+  app.get(`${P}/notifications/failures/summary`, handle(async (req, reply, s): Promise<FailuresSummary> => {
+    const q = parse({ days: opt(int(1, 90, true)) }, req.query);
+    reply.header('cache-control', 'no-store');
+    const days = (q.days as number | undefined) ?? 7;
+    const to = Date.now();
+    const from = to - days * 86_400_000;
+    const critical = rows.filter((r) => visibleRow(s, r) && r.category === 'service' && r.status === 'error' && Date.parse(r.plannedAt) >= from && Date.parse(r.plannedAt) < to
+      && !rows.some((x) => x.retryOf === r.id)).length;
+    return { critical, period: { from: iso(from), to: iso(to), days } };
   }));
 
   // №209
@@ -583,7 +606,7 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
       const r: NotificationView = { ...src, id: randomUUID(), source: 'staff', initiatorId: s.id, plannedAt: now, sentAt: null, status: 'planned', skipReason: null, error: null, attempts: 0, retryOf: id, readAt: null, createdAt: now };
       rows.push(r);
       timeline.push(ev(r.id, 'notification.retried', now, s.id, { retryOf: id, kind: src.kind }, String(body.reason), 'notification'));
-      return { status: 201, body: r };
+      return { status: 201, body: named(r) };
     });
   }));
 

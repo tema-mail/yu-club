@@ -3,12 +3,15 @@
 // кампании – по области (сетевую видит только Владелец). Чужое – как несуществующее. Endpoint и ключи подписок наружу не отдаются.
 // Повтор: новая строка с retry_of, исходная не меняется (журнал); реклама не повторяется – иначе ручной обход частоты.
 // В аудит повтора текст не пишется: в нём может быть подставленное имя (K21 §15).
+// Имена авторов (S4-80, решение 11.11.2026): authorName / confirmedByName / actorName отдаются всем, у кого есть notifications.view, –
+// это имя сотрудника рядом с его действием, не ПДн клиента; staff.view для них не нужен. Имена – из модуля staff (ADR 0002 п.1–2).
 import { objectTimeline, writeAudit, type AuditEventRow, type AuditRequestMeta, type Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { idempotencyScope, runIdempotent, type IdempotentResult } from '../../core/idempotency.ts';
 import { assertCan, branchScopeSql, roleAllows, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import type { Clock } from '../../core/time.ts';
 import { withTx, type Pool } from '../clients/index.ts';
+import { getStaffNames } from '../staff/index.ts';
 import { campaignDto, campaignInZone, type CampaignDto, type CampaignRow, type CampaignStatus } from './campaigns.ts';
 
 const notFound = () => new AppError('NOT_FOUND', 404, 'Не найдено');
@@ -40,7 +43,8 @@ export interface CampaignCounters {
   excluded: number;
   error: number;
 }
-export type CampaignListRow = CampaignDto & { counters: CampaignCounters };
+export type CampaignListRow = CampaignDto & { counters: CampaignCounters; authorName: string; confirmedByName: string | null };
+export type TimelineEventView = AuditEventRow & { actorName: string | null };
 export interface CampaignFilters {
   from?: Date | undefined;
   to?: Date | undefined;
@@ -118,22 +122,34 @@ export async function listCampaigns(db: Db, ctx: AccessContext, f: CampaignFilte
   );
   const rows = r.rows.slice(0, limit);
   const ids = rows.map((x) => x.id);
-  const [cnt, pending] = await Promise.all([countersOf(db, ids), pendingOf(db, ids)]);
+  const [cnt, pending, names] = await Promise.all([countersOf(db, ids), pendingOf(db, ids), getStaffNames(db, rows.flatMap((x) => (x.confirmed_by ? [x.created_by, x.confirmed_by] : [x.created_by])))]);
   const last = rows.at(-1);
   return {
-    items: rows.map((x) => ({ ...campaignDto(x), counters: counters(x, cnt.get(x.id), pending.get(x.id) ?? 0) })),
+    items: rows.map((x) => ({ ...campaignDto(x), counters: counters(x, cnt.get(x.id), pending.get(x.id) ?? 0), ...authors(x, names) })),
     nextCursor: r.rows.length > limit && last ? encodeCursor(last.created_at, last.id) : null,
   };
 }
 
-/** K11 №203: кампания, счётчики и история. Вне зоны – NOT_FOUND. */
-export async function getCampaignDetail(db: Db, ctx: AccessContext, id: string): Promise<CampaignListRow & { timeline: AuditEventRow[] }> {
+/** Подписи автора и подтвердившего; неизвестный id (нет такой строки staff) – «Сотрудник». */
+function authors(x: CampaignRow, names: Map<string, string>): { authorName: string; confirmedByName: string | null } {
+  return { authorName: names.get(x.created_by) ?? 'Сотрудник', confirmedByName: x.confirmed_by ? (names.get(x.confirmed_by) ?? 'Сотрудник') : null };
+}
+
+/** K11 №203: кампания, счётчики и история (с именами действующих лиц). Вне зоны – NOT_FOUND. */
+export async function getCampaignDetail(db: Db, ctx: AccessContext, id: string): Promise<CampaignListRow & { timeline: TimelineEventView[] }> {
   if (!UUID_RE.test(id)) throw notFound();
   const r = await db.query<CampaignRow>(`SELECT ${CAMPAIGN_COLUMNS} FROM app.notification_campaigns c WHERE c.id = $1`, [id]);
   const row = r.rows[0];
   if (!row || !campaignInZone(ctx, row)) throw notFound();
   const [cnt, pending, timeline] = await Promise.all([countersOf(db, [id]), pendingOf(db, [id]), objectTimeline(db, { objectType: 'notification_campaign', objectId: id }, { limit: 100 })]);
-  return { ...campaignDto(row), counters: counters(row, cnt.get(id), pending.get(id) ?? 0), timeline: timeline.items };
+  const staffIds = [row.created_by, ...(row.confirmed_by ? [row.confirmed_by] : []), ...timeline.items.flatMap((e) => (e.actorType === 'staff' && e.actorId ? [e.actorId] : []))];
+  const names = await getStaffNames(db, staffIds);
+  return {
+    ...campaignDto(row),
+    counters: counters(row, cnt.get(id), pending.get(id) ?? 0),
+    ...authors(row, names),
+    timeline: timeline.items.map((e) => ({ ...e, actorName: e.actorType === 'staff' && e.actorId ? (names.get(e.actorId) ?? null) : null })),
+  };
 }
 
 export interface NotificationView {
@@ -145,6 +161,8 @@ export interface NotificationView {
   bookingId: string | null;
   source: string;
   initiatorId: string | null;
+  /** Имя сотрудника-инициатора (source = 'staff'); у системных строк null. */
+  authorName: string | null;
   title: string;
   body: string;
   url: string | null;
@@ -189,7 +207,7 @@ interface NotificationRow {
 const NOTIFICATION_COLUMNS = `id, client_id, branch_id, category, kind, booking_id, source, initiator_id, title, body, url, planned_at, sent_at, status, skip_reason, error, attempts,
   campaign_id, retry_of, purpose, read_at, created_at`;
 
-const view = (r: NotificationRow): NotificationView => ({
+const view = (r: NotificationRow, names: Map<string, string>): NotificationView => ({
   id: r.id,
   clientId: r.client_id,
   branchId: r.branch_id,
@@ -198,6 +216,7 @@ const view = (r: NotificationRow): NotificationView => ({
   bookingId: r.booking_id,
   source: r.source,
   initiatorId: r.initiator_id,
+  authorName: r.initiator_id ? (names.get(r.initiator_id) ?? 'Сотрудник') : null,
   title: r.title,
   body: r.body,
   url: r.url,
@@ -222,6 +241,8 @@ export interface NotificationFilters {
   category?: string | undefined;
   kind?: string | undefined;
   source?: 'system' | 'staff' | undefined;
+  /** Строки одной рассылки (S4-80: ссылка «строки отправки» из карточки кампании). Индекс notifications_campaign_idx (0402). */
+  campaignId?: string | undefined;
   from?: Date | undefined;
   to?: Date | undefined;
   cursor?: string | undefined;
@@ -244,6 +265,7 @@ export async function listNotifications(db: Db, ctx: AccessContext, f: Notificat
   if (f.category) where.push(`category = ${p(f.category)}`);
   if (f.kind) where.push(`kind = ${p(f.kind)}`);
   if (f.source) where.push(`source = ${p(f.source)}`);
+  if (f.campaignId) where.push(`campaign_id = ${p(f.campaignId)}`);
   if (f.from) where.push(`planned_at >= ${p(f.from)}`);
   if (f.to) where.push(`planned_at < ${p(f.to)}`);
   if (f.cursor) {
@@ -256,7 +278,33 @@ export async function listNotifications(db: Db, ctx: AccessContext, f: Notificat
   );
   const rows = r.rows.slice(0, limit);
   const last = rows.at(-1);
-  return { items: rows.map(view), nextCursor: r.rows.length > limit && last ? encodeCursor(last.planned_at, last.id) : null };
+  const names = await getStaffNames(db, rows.flatMap((x) => (x.initiator_id ? [x.initiator_id] : [])));
+  return { items: rows.map((x) => view(x, names)), nextCursor: r.rows.length > limit && last ? encodeCursor(last.planned_at, last.id) : null };
+}
+
+export interface FailuresSummary {
+  /** Сервисные строки со статусом error за период, по которым ещё не делали повтор. */
+  critical: number;
+  period: { from: string; to: string; days: number };
+}
+
+/** K11 №251 (K21 §9, K24 §4 «предупреждения Владельца»): сбои критичных уведомлений за [now − days, now) по planned_at в зоне
+ *  notifications.view (сетевые строки – только зона сети). Строка с уже сделанным повтором не считается – неудачный повтор
+ *  считается сам. Индексы 0445. Без права – 0 (scopeFilter 'none'), как пустой список. */
+export async function failuresSummary(db: Db, ctx: AccessContext, input: { days: number; now: Date }): Promise<FailuresSummary> {
+  const days = Math.min(Math.max(Math.trunc(input.days), 1), 90);
+  const to = input.now;
+  const from = new Date(to.getTime() - days * 86_400_000);
+  const params: unknown[] = [];
+  const zone = branchScopeSql('n.branch_id', scopeFilter(ctx, 'notifications.view'), params);
+  params.push(from, to);
+  const r = await db.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM app.notifications n
+     WHERE ${zone} AND n.category = 'service' AND n.status = 'error' AND n.planned_at >= $${params.length - 1} AND n.planned_at < $${params.length}
+       AND NOT EXISTS (SELECT 1 FROM app.notifications r WHERE r.retry_of = n.id)`,
+    params,
+  );
+  return { critical: r.rows[0]?.n ?? 0, period: { from: from.toISOString(), to: to.toISOString(), days } };
 }
 
 export interface ClientNotificationSummary {
@@ -317,7 +365,7 @@ export async function retryNotification(pool: Pool, clock: Clock, ctx: AccessCon
       );
       const row = r.rows[0]!;
       await writeAudit(tx, meta, { action: 'notification.retried', object: { type: 'notification', id: row.id }, branchId: src.branch_id, reason, after: { retryOf: id, kind: src.kind } }, clock);
-      return { status: 201, body: view(row) };
+      return { status: 201, body: view(row, await getStaffNames(tx, [ctx.actor.staffId])) };
     }),
   );
 }
