@@ -142,6 +142,12 @@ describe('списки и зона', () => {
     expect(detail.timeline.map((e) => e.action).sort()).toEqual(['notification.campaign_confirmed', 'notification.campaign_created']);
     const byClient = await listCampaigns(pool, director, { clientId: a });
     expect(byClient.items.map((x) => x.id)).toContain(created.id);
+    // №208 campaignId: строки одной рассылки, в своей зоне; вместе с другими фильтрами; чужой или несуществующий id – пусто
+    const byCampaign = await listNotifications(pool, director, { campaignId: created.id });
+    expect(byCampaign.items).toHaveLength(total);
+    expect(byCampaign.items.every((x) => x.campaignId === created.id)).toBe(true);
+    expect((await listNotifications(pool, director, { campaignId: created.id, status: 'error' })).items.map((x) => x.clientId)).toEqual([c]);
+    expect((await listNotifications(pool, owner, { campaignId: randomUUID() })).items).toEqual([]);
     expect((await listCampaigns(pool, director, { status: 'done' })).items.map((x) => x.id)).not.toContain(created.id);
     expect((await listCampaigns(pool, director, { source: 'system' })).items).toEqual([]);
 

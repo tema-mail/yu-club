@@ -47,6 +47,7 @@ const notificationQuery = z.object({
   category: z.enum(['service', 'reminder', 'marketing']).optional(),
   kind: z.string().max(32).optional(),
   source: z.enum(['system', 'staff']).optional(),
+  campaignId: uuid.optional(),
   from: when.optional(),
   to: when.optional(),
   ...page,

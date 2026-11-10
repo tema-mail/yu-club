@@ -222,6 +222,8 @@ export interface NotificationFilters {
   category?: string | undefined;
   kind?: string | undefined;
   source?: 'system' | 'staff' | undefined;
+  /** Строки одной рассылки (S4-80: ссылка «строки отправки» из карточки кампании). Индекс notifications_campaign_idx (0402). */
+  campaignId?: string | undefined;
   from?: Date | undefined;
   to?: Date | undefined;
   cursor?: string | undefined;
@@ -244,6 +246,7 @@ export async function listNotifications(db: Db, ctx: AccessContext, f: Notificat
   if (f.category) where.push(`category = ${p(f.category)}`);
   if (f.kind) where.push(`kind = ${p(f.kind)}`);
   if (f.source) where.push(`source = ${p(f.source)}`);
+  if (f.campaignId) where.push(`campaign_id = ${p(f.campaignId)}`);
   if (f.from) where.push(`planned_at >= ${p(f.from)}`);
   if (f.to) where.push(`planned_at < ${p(f.to)}`);
   if (f.cursor) {

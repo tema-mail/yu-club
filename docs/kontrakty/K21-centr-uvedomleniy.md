@@ -203,7 +203,7 @@ draft → cancelled ; confirmed|expanding|sending → cancelled (остаток 
 | K11 №205 | `POST /notifications/campaigns/{id}/preview` | как №202 | `200 AudiencePreview` |
 | K11 №206 | `POST /notifications/campaigns/{id}/confirm` | как №202 (+ `send.mass` для `segment`) | `200 Campaign` (`confirmed`) |
 | K11 №207 | `POST /notifications/campaigns/{id}/cancel` | как №202 | `200 Campaign` |
-| K11 №208 | `GET /notifications?clientId=&bookingId=&status=&category=&from=&to=&cursor=` | `notifications.view` | `200 { items: NotificationView[], nextCursor }` |
+| K11 №208 | `GET /notifications?clientId=&bookingId=&campaignId=&status=&category=&kind=&source=&branchId=&from=&to=&cursor=` | `notifications.view` | `200 { items: NotificationView[], nextCursor }`; `campaignId` – строки одной рассылки (S4-80, 11.11.2026) |
 | K11 №209 | `POST /notifications/{id}/retry` | `notifications.retry` | `201 NotificationView` |
 | K11 №210 | `GET /notifications/templates` | `notifications.view` | `200 { items }` |
 | K11 №211 | `POST /notifications/templates`, `PATCH /notifications/templates/{id}` | `notifications.templates.manage` | `201` / `200` |
