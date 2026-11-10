@@ -63,7 +63,7 @@ export interface FeedInsert {
 }
 
 /** Строка ленты; повтор ключа – без изменений. true – вставлена (таймеры staff-feed-events.ts считают новые). */
-export async function insertFeed(tx: Tx, f: FeedInsert, now: Date): Promise<boolean> {
+export async function insertFeed(tx: Db, f: FeedInsert, now: Date): Promise<boolean> {
   const r = await tx.query(
     `INSERT INTO app.staff_feed_events (branch_id, staff_id, action, kind, ref_type, ref_id, title, body, dedupe_key, occurred_at, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (dedupe_key) DO NOTHING`,
