@@ -1,45 +1,215 @@
 ---
-// Филиалы текущего контекста: вся сеть или город. Контекст «филиал» сразу ведёт в карточку филиала.
-// S4-94: над списком – рабочий стол руководителя (13 §6.2–6.3) при праве на отчёты; у Владельца – предупреждения.
+// Главная CRM. Контекст «сеть» или «город» – филиалы контекста, над списком рабочий стол руководителя (S4-94; 13 §6.2–6.3) при
+// праве на отчёты; у Владельца – предупреждения. Контекст «филиал» – рабочий стол филиала (S4-94; 13 §6.1, K24 §4): что сегодня
+// в филиале – брони и приходы, требуют решения, кассовая смена (остаток – только с finance.view, 06 §14), открытые ремонты,
+// блокировки, мероприятия дня, лента событий, быстрые действия. Новых отчётных функций нет: каждый блок – существующий API
+// (K11 №3 брони дня, K17 №55 смена и №38 предпросмотр остатка, K19 ремонты, календарь филиала, K20 мероприятия, лента S4-28).
+// Блок без права не показывается; сбой API – «не удалось загрузить» в своём блоке, остальной стол работает.
 import Crm from '../layouts/Crm.astro';
 import Dashboard from '../islands/Dashboard.tsx';
-import { BRANCH_STATUS_LABEL } from '../lib/api.ts';
+import { rub } from '../islands/CashJournal.tsx';
+import { ApiError, BRANCH_STATUS_LABEL, serverCall } from '../lib/api.ts';
+import { STATUS_LABEL, fmtDay, fmtRange, inZone, today, zonedIso, addDays, type BookingPage, type CalendarDto } from '../lib/booking.ts';
+import { REPAIR_STATUS, PRIORITY, type RepairDto } from '../lib/equipment.ts';
+import { EVENT_STATUS, type EventRow } from '../lib/events.ts';
 
-const { branches, ctx, me } = Astro.locals;
-if (ctx.kind === 'branch') return Astro.redirect(`/branches/${encodeURIComponent(ctx.branch.id)}`);
-
+const { branches, ctx, me, cookie } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
 const list = ctx.kind === 'city' ? branches.filter((b) => b.cityId === ctx.cityId) : branches;
 const heading = ctx.kind === 'city' ? `Филиалы: ${ctx.cityName}` : 'Филиалы сети';
 const desk = me.actions.includes('reports.ops.view') || me.actions.includes('reports.finance.view');
 const timezone = list[0]?.timezone ?? branches[0]?.timezone ?? 'Asia/Novosibirsk';
+
+// ---- рабочий стол филиала
+type Got<T> = { ok: true; v: T } | { ok: false } | null;
+/** null – нет права (блока нет), ok:false – сбой или 403/404 (блок с сообщением). */
+async function load<T>(allowed: boolean, f: () => Promise<T>): Promise<Got<T>> {
+  if (!allowed) return null;
+  try {
+    return { ok: true, v: await f() };
+  } catch (e) {
+    if (e instanceof ApiError) return { ok: false };
+    throw e;
+  }
+}
+interface ShiftNow { enabled: boolean; openShift: { openedAt: string; openedBy: string } | null }
+interface FeedItem { id: string; kind: string; branchId: string; refType: 'shift' | 'repair' | 'client'; refId: string; title: string; body: string | null; occurredAt: string; read: boolean }
+const FEED_HREF = { shift: '/shifts/', repair: '/repairs/', client: '/clients/' } as const;
+
+const branch = ctx.kind === 'branch' ? ctx.branch : null;
+const tz = branch?.timezone ?? timezone;
+const day = today(tz);
+const now = Date.now();
+let bd: {
+  bookings: Got<BookingPage>; decide: Got<BookingPage>; shift: Got<ShiftNow>; cash: Got<{ cash: number; noncash: number }>;
+  repairs: Got<RepairDto[]>; calendar: Got<CalendarDto>; events: Got<EventRow[]>; feed: Got<FeedItem[]>;
+} | null = null;
+if (branch) {
+  const id = encodeURIComponent(branch.id);
+  const preview = (place: 'cash' | 'noncash') =>
+    serverCall<{ currentKop: number }>(cookie, `/branches/${id}/finance/preview`, { method: 'POST', body: { place, deltaKop: 0 } }).then((r) => r.currentKop);
+  const [bookings, decide, shift, cash, repairs, calendar, events, feed] = await Promise.all([
+    load(can('schedule.view'), () => serverCall<BookingPage>(cookie, `/branches/${id}/bookings?date=${day}&limit=100`)),
+    load(can('schedule.view'), () => serverCall<BookingPage>(cookie, `/branches/${id}/bookings?needsDecision=true&limit=100`)),
+    load(can('finance.shift.operate'), () => serverCall<ShiftNow>(cookie, `/branches/${id}/cash-shifts/current`)),
+    load(can('finance.view') && can('finance.expense.create'), async () => ({ cash: await preview('cash'), noncash: await preview('noncash') })),
+    load(can('equipment.view'), async () => (await serverCall<{ items: RepairDto[] }>(cookie, `/repairs?branchId=${id}&limit=100`)).items
+      .filter((r) => r.branchId === branch.id && r.status !== 'closed' && r.status !== 'cancelled')),
+    load(can('schedule.view'), () => serverCall<CalendarDto>(cookie, `/branches/${id}/calendar?from=${day}&to=${day}`)),
+    load(can('event.view'), async () => (await serverCall<{ items: EventRow[] }>(cookie,
+      `/events?branchId=${id}&from=${encodeURIComponent(zonedIso(day, '00:00', tz))}&to=${encodeURIComponent(zonedIso(addDays(day, 1), '00:00', tz))}&limit=50`)).items
+      .filter((e) => e.status !== 'cancelled' && e.status !== 'not_held')
+      .sort((a, b) => (a.plannedStart ?? '').localeCompare(b.plannedStart ?? ''))),
+    load(true, async () => (await serverCall<{ items: FeedItem[] }>(cookie, '/staff-feed?limit=20')).items.filter((x) => x.branchId === branch.id).slice(0, 6)),
+  ]);
+  bd = { bookings, decide, shift, cash, repairs, calendar, events, feed };
+}
+const live = bd?.bookings?.ok ? bd.bookings.v.items.filter((b) => !b.status.startsWith('cancelled') && (Date.parse(b.end) > now || b.status === 'arrived' || b.needsDecision)) : [];
+const arrivedCount = bd?.bookings?.ok ? bd.bookings.v.items.filter((b) => b.status === 'arrived' || b.status === 'completed').length : 0;
+const blocks = bd?.calendar?.ok ? bd.calendar.v.items.filter((i) => i.kind === 'block' && Date.parse(i.end) > now) : [];
+const resName = (ids: string[]) => ids.map((rid) => (bd?.calendar?.ok ? bd.calendar.v.resources.find((r) => r.id === rid)?.name : null) ?? rid).join(', ');
+const hm = (iso: string) => inZone(iso, tz).hm;
+const failed = 'Не удалось загрузить – обновите страницу.';
+const title = branch ? `${branch.name}: сегодня` : heading;
 ---
-<Crm title={heading}>
-  <div class="yc-head">
-    <h1>{heading}</h1>
-    {list.length > 0 && <p>Доступно филиалов: {list.length}</p>}
-  </div>
-  {desk && <Dashboard client:load cityId={ctx.kind === 'city' ? ctx.cityId : ''} timezone={timezone} warnings={me.access.network} />}
-  <section class="yc-panel" aria-label="Список филиалов">
-    {list.length === 0 ? (
-      <p class="yc-empty">Вам пока не назначен ни один филиал. Обратитесь к директору или владельцу сети.</p>
-    ) : (
-      <table class="yc-table" data-testid="branch-list">
-        <thead>
-          <tr><th scope="col">Филиал</th><th scope="col">Город</th><th scope="col">Адрес</th><th scope="col">Статус</th></tr>
-        </thead>
-        <tbody>
-          {list.map((b) => (
-            <tr>
-              <td class="yc-table__main"><a href={`/branches/${encodeURIComponent(b.id)}`}>{b.name}</a></td>
-              <td data-label="Город">{b.cityName}</td>
-              <td data-label="Адрес">{b.address}</td>
-              <td><span class={`yc-badge yc-badge--${b.status}`}>{BRANCH_STATUS_LABEL[b.status]}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    )}
-  </section>
+<Crm title={title}>
+  {branch && bd ? (
+    <>
+      <div class="yc-head">
+        <p class="yc-crumbs">{branch.cityName} · <span class={`yc-badge yc-badge--${branch.status}`}>{BRANCH_STATUS_LABEL[branch.status]}</span></p>
+        <h1>{branch.name}: сегодня</h1>
+        <p>{fmtDay(day, 'long')} · время филиала</p>
+      </div>
+      <div data-testid="branch-desk" style="display:grid;gap:var(--yc-sp-s);min-width:0">
+        <nav class="yc-panel" aria-label="Быстрые действия" style="display:flex;flex-wrap:wrap;gap:var(--yc-sp-xs)">
+          {can('booking.create') && <a class="yc-btn" href="/schedule">Создать бронь</a>}
+          {can('client.view.basic') && <a class="yc-btn yc-btn--ghost" href="/clients">Найти клиента</a>}
+          {can('repair.register') && <a class="yc-btn yc-btn--ghost" href="/repairs/new">Зарегистрировать неисправность</a>}
+          {can('finance.view.day') && <a class="yc-btn yc-btn--ghost" href={`/finance/${encodeURIComponent(branch.id)}`}>Касса филиала</a>}
+          <a class="yc-btn yc-btn--ghost" href={`/branches/${encodeURIComponent(branch.id)}`}>Карточка филиала</a>
+        </nav>
+        <div class="yc-desk">
+          {bd.bookings && (
+            <section class="yc-panel yc-desk__panel" aria-labelledby="bd-bookings-h" data-testid="bd-bookings">
+              <h2 id="bd-bookings-h">Брони и приходы <span class="yc-desk__count">{live.length}</span></h2>
+              {!bd.bookings.ok ? <p class="yc-alert yc-alert--error">{failed}</p> : live.length === 0 ? <p class="yc-empty">Впереди сегодня броней нет.</p> : (
+                <ul class="yc-desk__list">
+                  {live.slice(0, 10).map((b) => (
+                    <li class="yc-desk__row">
+                      <a href={`/bookings/${encodeURIComponent(b.id)}`}>№{b.number} · {fmtRange(b.start, b.end, tz, false)}</a>
+                      <span>{b.resourceName} · {b.client.name ?? 'Без имени'}{' '}
+                        <span class={`yc-badge yc-badge--bk-${b.status}${b.needsDecision ? ' yc-badge--decide' : ''}`}>{b.needsDecision ? 'Требует решения' : STATUS_LABEL[b.status]}</span></span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {bd.bookings.ok && <p class="yc-desk__hint">Пришли и завершили сегодня: {arrivedCount}{bd.decide?.ok && bd.decide.v.items.length > 0 ? ` · требуют решения за всё время: ${bd.decide.v.items.length}${bd.decide.v.nextCursor ? '+' : ''}` : ''}.</p>}
+              <p><a href="/schedule">Расписание и календарь</a></p>
+            </section>
+          )}
+          {bd.shift && (
+            <section class="yc-panel yc-desk__panel" aria-labelledby="bd-cash-h" data-testid="bd-cash">
+              <h2 id="bd-cash-h">Касса</h2>
+              {!bd.shift.ok ? <p class="yc-alert yc-alert--error">{failed}</p> : !bd.shift.v.enabled ? <p class="yc-empty">Кассовая смена в филиале не ведётся.</p>
+                : bd.shift.v.openShift ? <p>Смена открыта с {hm(bd.shift.v.openShift.openedAt)}{inZone(bd.shift.v.openShift.openedAt, tz).date !== day ? ` (${fmtDay(inZone(bd.shift.v.openShift.openedAt, tz).date)})` : ''}{bd.shift.v.openShift.openedBy === me.staff.id ? ', открыли вы' : ''}.</p>
+                : <p class="yc-alert">Смена не открыта – наличные не принять, пока её не открыть.</p>}
+              {bd.cash?.ok && (
+                <ul class="yc-desk__list">
+                  <li class="yc-desk__row"><span>Наличные сейчас: {rub(bd.cash.v.cash)}</span></li>
+                  <li class="yc-desk__row"><span>Безнал сейчас: {rub(bd.cash.v.noncash)}</span></li>
+                </ul>
+              )}
+              {bd.cash && !bd.cash.ok && <p class="yc-alert yc-alert--error">Остаток: {failed}</p>}
+              <p><a href={`/finance/${encodeURIComponent(branch.id)}`}>Касса и журнал за сегодня</a></p>
+            </section>
+          )}
+          {bd.repairs && (
+            <section class="yc-panel yc-desk__panel" aria-labelledby="bd-repairs-h" data-testid="bd-repairs">
+              <h2 id="bd-repairs-h">Открытые ремонты <span class="yc-desk__count">{bd.repairs.ok ? bd.repairs.v.length : ''}</span></h2>
+              {!bd.repairs.ok ? <p class="yc-alert yc-alert--error">{failed}</p> : bd.repairs.v.length === 0 ? <p class="yc-empty">Неисправностей нет.</p> : (
+                <ul class="yc-desk__list">
+                  {bd.repairs.v.slice(0, 8).map((r) => (
+                    <li class="yc-desk__row">
+                      <a href={`/repairs/${encodeURIComponent(r.id)}`}>{r.number} · {r.symptoms}</a>
+                      <span>{REPAIR_STATUS[r.status]} · приоритет {PRIORITY[r.priority].toLowerCase()}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+          {bd.calendar && (
+            <section class="yc-panel yc-desk__panel" aria-labelledby="bd-blocks-h" data-testid="bd-blocks">
+              <h2 id="bd-blocks-h">Блокировки сегодня <span class="yc-desk__count">{blocks.length}</span></h2>
+              {!bd.calendar.ok ? <p class="yc-alert yc-alert--error">{failed}</p> : blocks.length === 0 ? <p class="yc-empty">Заблокированных мест нет.</p> : (
+                <ul class="yc-desk__list">
+                  {blocks.map((b) => <li class="yc-desk__row"><strong>{b.block?.reasonName ?? 'Блокировка'}</strong><span>{resName(b.resourceIds)} · {fmtRange(b.start, b.end, tz)}</span></li>)}
+                </ul>
+              )}
+            </section>
+          )}
+          {bd.events && (
+            <section class="yc-panel yc-desk__panel" aria-labelledby="bd-events-h" data-testid="bd-events">
+              <h2 id="bd-events-h">Мероприятия дня <span class="yc-desk__count">{bd.events.ok ? bd.events.v.length : ''}</span></h2>
+              {!bd.events.ok ? <p class="yc-alert yc-alert--error">{failed}</p> : bd.events.v.length === 0 ? <p class="yc-empty">Сегодня мероприятий нет.</p> : (
+                <ul class="yc-desk__list">
+                  {bd.events.v.map((e) => (
+                    <li class="yc-desk__row">
+                      <a href={`/events/${encodeURIComponent(e.id)}`}>{e.plannedStart && e.plannedEnd ? `${fmtRange(e.plannedStart, e.plannedEnd, tz, false)} · ` : ''}{e.title}</a>
+                      <span>{e.number} · {EVENT_STATUS[e.status]}{e.participantsCount ? ` · гостей ${e.participantsCount}` : ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+          <section class="yc-panel yc-desk__panel" aria-labelledby="bd-feed-h" data-testid="bd-feed">
+            <h2 id="bd-feed-h">События филиала</h2>
+            {!bd.feed?.ok ? <p class="yc-alert yc-alert--error">{failed}</p> : bd.feed.v.length === 0 ? <p class="yc-empty">Новых событий нет.</p> : (
+              <ul class="yc-desk__list">
+                {bd.feed.v.map((x) => (
+                  <li class="yc-desk__row">
+                    <a href={`${FEED_HREF[x.refType]}${encodeURIComponent(x.refId)}`}>{x.title}</a>
+                    <span>{fmtDay(inZone(x.occurredAt, tz).date)}, {hm(x.occurredAt)}{x.read ? '' : ' · новое'}{x.body ? ` · ${x.body}` : ''}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p class="yc-desk__hint">Все события – значок в шапке.</p>
+          </section>
+        </div>
+      </div>
+    </>
+  ) : (
+    <>
+      <div class="yc-head">
+        <h1>{heading}</h1>
+        {list.length > 0 && <p>Доступно филиалов: {list.length}</p>}
+      </div>
+      {desk && <Dashboard client:load cityId={ctx.kind === 'city' ? ctx.cityId : ''} timezone={timezone} warnings={me.access.network} />}
+      <section class="yc-panel" aria-label="Список филиалов">
+        {list.length === 0 ? (
+          <p class="yc-empty">Вам пока не назначен ни один филиал. Обратитесь к директору или владельцу сети.</p>
+        ) : (
+          <table class="yc-table" data-testid="branch-list">
+            <thead>
+              <tr><th scope="col">Филиал</th><th scope="col">Город</th><th scope="col">Адрес</th><th scope="col">Статус</th></tr>
+            </thead>
+            <tbody>
+              {list.map((b) => (
+                <tr>
+                  <td class="yc-table__main"><a href={`/branches/${encodeURIComponent(b.id)}`}>{b.name}</a></td>
+                  <td data-label="Город">{b.cityName}</td>
+                  <td data-label="Адрес">{b.address}</td>
+                  <td><span class={`yc-badge yc-badge--${b.status}`}>{BRANCH_STATUS_LABEL[b.status]}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </>
+  )}
 </Crm>
 
 <style is:global>
