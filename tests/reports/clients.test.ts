@@ -121,7 +121,7 @@ describe('клиенты (S4-66)', () => {
       // тот же объект снимка (кэш привязан к нему): считаем запрос посещений на клиента и общий проход по истории (не по филиалам)
       env.tx.query = ((text: string, values?: unknown[]) => {
         if (text.includes('min(t.branch_id::text) AS branch_id, count(*) AS n')) reads.perClient += 1;
-        if (text.includes('rpt_client_first_visits') && text.includes('min(x.branch_id::text)')) reads.stats += 1; // агрегат 0442
+        if (text.includes('rpt_client_first_visits') && text.includes('min(x.branch_id::text)')) reads.stats += 1; // агрегат 0448
         return orig(text, values);
       }) as typeof env.tx.query;
       for (const m of ['visitsPerClient', 'profileVisits'] as const) {

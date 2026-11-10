@@ -2,7 +2,7 @@
 // посещаемости 3.2 и сюда не входят (приёмка 12). История посещений для «впервые», «вернувшихся» и «повторных» – вся сеть
 // (решение: первый приход в клуб – факт о клиенте, а не о филиале); в строках по филиалу считается филиал посещения, поэтому
 // итог сети не равен сумме филиалов (подпись). Новый профиль ≠ первый визит. Детализация обезличена без client.view.full (K24 §6).
-// История берётся из агрегата пар клиент × филиал (0442, D5-11), а не перебором всех посещений сети – смысл K24 §3.6 тот же.
+// История берётся из агрегата пар клиент × филиал (0448, D5-11), а не перебором всех посещений сети – смысл K24 §3.6 тот же.
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import {
@@ -14,7 +14,7 @@ export const CLIENTS_ACTION = 'reports.clients.view';
 export const CLIENTS_LABELS = { byBranch: 'Один клиент может быть в нескольких филиалах: итог сети не равен сумме филиалов' };
 
 const VISITS = 'app.rpt_visits';
-/** Первое посещение и число посещений пары клиент × филиал (0442, D5-11): история без чтения всех посещений сети. */
+/** Первое посещение и число посещений пары клиент × филиал (0448, D5-11): история без чтения всех посещений сети. */
 const FIRST_VISITS = 'app.rpt_client_first_visits';
 
 export type ClientsPeriodMetric = 'withVisit' | 'firstTime' | 'returning' | 'repeat' | 'notVisited' | 'profileVisits';
@@ -58,7 +58,7 @@ export function clientStatRows(tx: Tx, windows: readonly BranchWindow[], perBran
   return oncePerSnapshot(tx, `clients.stats:${perBranch}:${JSON.stringify(arr(windows))}`, () => readStatRows(tx, windows, perBranch));
 }
 
-/** История – агрегат пар клиент × филиал (0442): «было до периода» = первое посещение в филиале раньше начала его суток периода,
+/** История – агрегат пар клиент × филиал (0448): «было до периода» = первое посещение в филиале раньше начала его суток периода,
  *  сеть – min и сумма пар. Посещения периода – из rpt_visits по началу брони с охватом окон (индекс). Полного чтения посещений сети нет (S4-131). */
 async function readStatRows(tx: Tx, windows: readonly BranchWindow[], perBranch: boolean): Promise<StatRow[]> {
   const [ids, starts, ends] = arr(windows);

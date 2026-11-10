@@ -1,4 +1,4 @@
-// S4-131, 0442 (D5-11): первое посещение пары клиент × филиал. Агрегат пишут триггеры (вставка, в том числе пачкой; отмена отметки;
+// S4-131, 0448 (D5-11): первое посещение пары клиент × филиал. Агрегат пишут триггеры (вставка, в том числе пачкой; отмена отметки;
 // перенос брони с посещением) и он = группировке живых посещений; строки отчёта клиентов = прежнему расчёту перебором всей истории
 // посещений (оракул – прежний SQL) для сети, зоны и разбивки по филиалам; планы показателей клиентов – без полного просмотра visits и bookings.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -17,7 +17,7 @@ let fx: Fx;
 let b1: string;
 let b2: string;
 
-/** Прежний расчёт (до 0442): вся история посещений профилей сети. Оракул сверки. */
+/** Прежний расчёт (до 0448): вся история посещений профилей сети. Оракул сверки. */
 const ORACLE = (perBranch: boolean) => `WITH w AS (SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS x(branch_id, s, e)),
   v AS (SELECT client_id, branch_id, planned_start FROM app.rpt_visits WHERE client_kind = 'profile'),
   h AS (SELECT client_id, min(planned_start) AS first_at, count(*) AS total FROM v GROUP BY client_id),
@@ -37,7 +37,7 @@ async function windows(ids: string[], p: Period): Promise<BranchWindow[]> {
   return windowsOf([...(await getBranches(db.client, ids)).values()].sort((a, b) => a.id.localeCompare(b.id)), p);
 }
 
-/** Агрегат = группировка живых посещений по паре (то, что пересчитал бы бэкфил 0442). */
+/** Агрегат = группировка живых посещений по паре (то, что пересчитал бы бэкфил 0448). */
 async function aggregateMatchesVisits(): Promise<void> {
   const agg = await db.client.query(`SELECT client_id, branch_id, first_visit_at, visits_count FROM app.client_first_visits ORDER BY 1, 2`);
   const truth = await db.client.query(
@@ -90,7 +90,7 @@ afterAll(async () => {
   await db.drop();
 });
 
-describe('агрегат первого посещения (0442)', () => {
+describe('агрегат первого посещения (0448)', () => {
   it('вставка по одной и пачкой: агрегат = группировка живых посещений; yu_app писать в него не может', async () => {
     await aggregateMatchesVisits();
     const app = await fx.app.connect();
