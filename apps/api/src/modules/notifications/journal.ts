@@ -282,6 +282,31 @@ export async function listNotifications(db: Db, ctx: AccessContext, f: Notificat
   return { items: rows.map((x) => view(x, names)), nextCursor: r.rows.length > limit && last ? encodeCursor(last.planned_at, last.id) : null };
 }
 
+export interface FailuresSummary {
+  /** Сервисные строки со статусом error за период, по которым ещё не делали повтор. */
+  critical: number;
+  period: { from: string; to: string; days: number };
+}
+
+/** K11 №251 (K21 §9, K24 §4 «предупреждения Владельца»): сбои критичных уведомлений за [now − days, now) по planned_at в зоне
+ *  notifications.view (сетевые строки – только зона сети). Строка с уже сделанным повтором не считается – неудачный повтор
+ *  считается сам. Индексы 0445. Без права – 0 (scopeFilter 'none'), как пустой список. */
+export async function failuresSummary(db: Db, ctx: AccessContext, input: { days: number; now: Date }): Promise<FailuresSummary> {
+  const days = Math.min(Math.max(Math.trunc(input.days), 1), 90);
+  const to = input.now;
+  const from = new Date(to.getTime() - days * 86_400_000);
+  const params: unknown[] = [];
+  const zone = branchScopeSql('n.branch_id', scopeFilter(ctx, 'notifications.view'), params);
+  params.push(from, to);
+  const r = await db.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM app.notifications n
+     WHERE ${zone} AND n.category = 'service' AND n.status = 'error' AND n.planned_at >= $${params.length - 1} AND n.planned_at < $${params.length}
+       AND NOT EXISTS (SELECT 1 FROM app.notifications r WHERE r.retry_of = n.id)`,
+    params,
+  );
+  return { critical: r.rows[0]?.n ?? 0, period: { from: from.toISOString(), to: to.toISOString(), days } };
+}
+
 export interface ClientNotificationSummary {
   marketing: { enabled: boolean; changedAt: string | null; source: string | null };
   reminders: { enabled: boolean; changedAt: string | null };

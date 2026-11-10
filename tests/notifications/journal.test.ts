@@ -7,7 +7,7 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { expandCampaign } from '../../apps/api/src/modules/notifications/campaign-runner.ts';
 import { confirmCampaign, createCampaign, type CampaignDeps, type CampaignDto } from '../../apps/api/src/modules/notifications/campaigns.ts';
-import { clientNotificationSummary, getCampaignDetail, listCampaigns, listNotifications, retryNotification, type NotificationView } from '../../apps/api/src/modules/notifications/journal.ts';
+import { clientNotificationSummary, failuresSummary, getCampaignDetail, listCampaigns, listNotifications, retryNotification, type NotificationView } from '../../apps/api/src/modules/notifications/journal.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -38,15 +38,43 @@ async function client(branch = b1): Promise<string> {
   return id;
 }
 
-async function row(clientId: string, over: { branchId?: string | null; category?: string; kind?: string; status?: string; source?: string; bookingId?: string | null; initiatorId?: string | null } = {}): Promise<string> {
+async function row(clientId: string, over: { branchId?: string | null; category?: string; kind?: string; status?: string; source?: string; bookingId?: string | null; initiatorId?: string | null; plannedAt?: Date } = {}): Promise<string> {
   const status = over.status ?? 'error';
   const r = await db.client.query<{ id: string }>(
     `INSERT INTO app.notifications (client_id, branch_id, category, kind, booking_id, booking_version, source, initiator_id, title, body, planned_at, status, sent_at, dedupe_key)
      VALUES ($1, $2, $3, $4, $5, 1, $6, $10, 'Ваша запись', 'Текст', $7, $8, CASE WHEN $8 = 'sent_to_provider' THEN $7::timestamptz END, $9) RETURNING id`,
-    [clientId, over.branchId === undefined ? b1 : over.branchId, over.category ?? 'service', over.kind ?? 'booking_cancelled', over.bookingId ?? null, over.source ?? 'system', clock.now(), status, `t:${randomUUID()}`, over.initiatorId ?? null],
+    [clientId, over.branchId === undefined ? b1 : over.branchId, over.category ?? 'service', over.kind ?? 'booking_cancelled', over.bookingId ?? null, over.source ?? 'system', over.plannedAt ?? clock.now(), status, `t:${randomUUID()}`, over.initiatorId ?? null],
   );
   return r.rows[0]!.id;
 }
+
+describe('сбои критичных уведомлений для рабочего стола Владельца (K21 §9, K24 §4)', () => {
+  it('считает сервисные error за период по зоне; реклама, no_channel, старые и уже повторённые – нет; неудачный повтор – сам', async () => {
+    const c = await client();
+    const now = clock.now();
+    const dayAgo = new Date(now.getTime() - 86_400_000);
+    const own = await row(c, { plannedAt: dayAgo }); // b1, service, error – считается
+    await row(c, { branchId: b2, plannedAt: dayAgo }); // чужой филиал – только Владельцу
+    await row(c, { branchId: null, plannedAt: dayAgo }); // сетевая – только зона сети
+    await row(c, { category: 'marketing', kind: 'campaign', plannedAt: dayAgo }); // реклама – не критичное
+    await row(c, { status: 'no_channel', plannedAt: dayAgo }); // нет канала – не ошибка
+    await row(c, { plannedAt: new Date(now.getTime() - 10 * 86_400_000) }); // старше 7 дней
+    const retried = await row(c, { plannedAt: dayAgo });
+    await retryNotification(pool, clock, owner, meta(), retried, { reason: 'повтор' }, randomUUID()); // по ней повтор уже сделан – не считается, повтор planned – тоже
+    const failedRetry = await row(c, { plannedAt: dayAgo });
+    const r = (await retryNotification(pool, clock, owner, meta(), failedRetry, { reason: 'повтор' }, randomUUID())).body as NotificationView;
+    await db.client.query(`UPDATE app.notifications SET status = 'error' WHERE id = $1`, [r.id]); // повтор тоже упал – считается он сам, не исходная
+    const at = new Date(now.getTime() + 60_000); // «сейчас» рабочего стола – минутой позже повторов: период [from, to), строки в момент to не входят
+    const before = await failuresSummary(pool, director, { days: 7, now: at });
+    expect(before).toEqual({ critical: 2, period: { from: new Date(at.getTime() - 7 * 86_400_000).toISOString(), to: at.toISOString(), days: 7 } });
+    expect((await failuresSummary(pool, admin, { days: 7, now: at })).critical).toBe(2);
+    expect((await failuresSummary(pool, owner, { days: 7, now: at })).critical).toBe(4);
+    expect((await failuresSummary(pool, owner, { days: 30, now: at })).critical).toBe(5);
+    expect((await failuresSummary(pool, director, { days: 7, now: dayAgo })).critical).toBe(0);
+    await retryNotification(pool, clock, owner, meta(), own, { reason: 'повтор' }, randomUUID());
+    expect((await failuresSummary(pool, director, { days: 7, now: at })).critical).toBe(1);
+  });
+});
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
