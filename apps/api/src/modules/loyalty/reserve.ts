@@ -23,6 +23,9 @@ export interface ReserveBookings extends Pick<LoyaltyBookings, 'payableBooking' 
   holdBookings(tx: Tx, holdId: string): Promise<Array<{ bookingId: string; clientId: string; status: string; minutes: number }>>;
 }
 
+/** Бронь, на которую переходит резерв удержания: подтверждена, клиент пришёл или сеанс завершён (оплата – после прихода). */
+const LIVE_BOOKING = new Set(['confirmed', 'arrived', 'completed']);
+
 const invalidHold = () => new AppError('RESERVE_HOLD_INVALID', 409, 'Удержание истекло, уже подтверждено или не ваше');
 
 async function release(tx: Tx, reserveId: string, reason: ReleaseReason, now: Date): Promise<void> {
@@ -125,7 +128,8 @@ export async function convertReserves(tx: Tx, clientId: string, deps: { bookings
   );
   let made = 0;
   for (const res of holds.rows) {
-    const bookings = (await deps.bookings.holdBookings(tx, res.hold_id)).filter((b) => b.status === 'confirmed' && b.minutes > 0);
+    // живая бронь – и уже с приходом: worker мог обработать событие после «Пришёл» (стенд 10.11), резерв не теряется
+    const bookings = (await deps.bookings.holdBookings(tx, res.hold_id)).filter((b) => LIVE_BOOKING.has(b.status) && b.minutes > 0);
     const need = bookings.reduce((s, b) => s + b.minutes * 100, 0);
     const available = Math.max(0, Math.max(0, acc.balance) - (await reservedCenti(tx, acc.clientId, now, { holdId: res.hold_id })));
     if (available < need) {
