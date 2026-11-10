@@ -1,6 +1,7 @@
 // Состояние и правила сущностей мока CMS (S4-84…S4-89): то, что у сервера в versions.ts, publications.ts, games.ts, pages.ts, blocks.ts –
 // схема черновика (облегчённо), полнота K22 §9, ссылки на медиа, засев. Маршруты – mock-content.ts и mock-media.ts.
 import type { FastifyRequest } from 'fastify';
+import type { ContentStatus } from '../src/lib/content-dto.ts';
 import { createHash } from 'node:crypto';
 
 export type Rec = Record<string, unknown>;
@@ -53,7 +54,7 @@ export const SLUG_MAX: Record<string, number> = { city: 40, branch: 64, room: 64
 export type EntityType = 'publication' | 'game' | 'room_page' | 'branch_page' | 'content_page' | 'home_block';
 export type Scope = { type: 'network' } | { type: 'city'; cityIds: string[] } | { type: 'branch'; branchIds: string[] };
 export interface Row {
-  id: string; type: EntityType; status: string; draft: Rec; rowVersion: number; liveVersionId: string | null; draftUpdatedAt: string; draftUpdatedBy: string;
+  id: string; type: EntityType; status: ContentStatus; draft: Rec; rowVersion: number; liveVersionId: string | null; draftUpdatedAt: string; draftUpdatedBy: string;
   createdAt: string; archivedAt: string | null; col: Rec; liveScope: Scope | null; branches: Map<string, { available: boolean; note: string | null }>;
 }
 export interface Version { id: string; entityType: EntityType; entityId: string; versionNo: number; action: 'publish' | 'rollback_publish'; publishedBy: string; publishedByName: string | null; publishedAt: string; reason: string | null; sourceVersionId: string | null; snapshot: Rec }

@@ -7,6 +7,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { BLOCK_TYPES, type ContentMockDeps, DIRECTIONS, type EntityType, Fail, LEGAL_KEYS, PAGE_KEYS, PUBLICATION_TYPES, type Rec, type Ref, type Row, SLUG_MAX, SLUG_RE, STATUSES, type Scope, type Staffish, UUID, type Version, cms, complete, contentInvalid, forbidden, frozen, invalid, mkRow, notFound, parseDraft, refsOf, replays, resetContent, statusConflict, str } from './mock-cms.ts';
+import type { AllowedAction, DraftDto, PublicationDto, PublicationType, VersionDto } from '../src/lib/content-dto.ts';
 import { registerMedia } from './mock-media.ts';
 import { opsState } from './mock-ops.ts';
 
@@ -77,7 +78,7 @@ export function registerContent(app: FastifyInstance, P: string, d: ContentMockD
   const allowed = (s: Staffish, row: Row) => {
     const scopes = [row.draft.scope as Scope, ...(row.liveScope ? [row.liveScope] : [])];
     const ok = (local: string) => scopes.every((sc) => (sc.type === 'network' ? canT(s, 'content.network.manage', 'network') : targets(sc).every((t) => canT(s, local, t))));
-    const out: string[] = [];
+    const out: AllowedAction[] = [];
     if (row.status !== 'archived' && ok('content.draft.edit')) out.push('edit');
     if (ok('content.publish')) {
       if (row.status !== 'archived') out.push('publish');
@@ -93,8 +94,8 @@ export function registerContent(app: FastifyInstance, P: string, d: ContentMockD
     if (t.length > 0 && !t.some((x) => canT(s, 'content.view', x))) throw notFound();
   };
 
-  const dto = (r: Row) => ({ id: r.id, status: r.status, draft: r.draft, rowVersion: r.rowVersion, liveVersionId: r.liveVersionId, draftUpdatedAt: r.draftUpdatedAt, draftUpdatedBy: r.draftUpdatedBy, createdAt: r.createdAt, archivedAt: r.archivedAt });
-  const emptyDraft = { id: null, status: 'draft', draft: {}, rowVersion: 1, liveVersionId: null };
+  const dto = (r: Row): DraftDto => ({ id: r.id, status: r.status, draft: r.draft, rowVersion: r.rowVersion, liveVersionId: r.liveVersionId, draftUpdatedAt: r.draftUpdatedAt, draftUpdatedBy: r.draftUpdatedBy, createdAt: r.createdAt, archivedAt: r.archivedAt });
+  const emptyDraft = { id: null, status: 'draft', draft: {}, rowVersion: 1, liveVersionId: null } satisfies DraftDto;
   const find = (type: EntityType, id: string) => {
     if (!UUID.test(id)) throw notFound();
     const r = cms.rows.find((x) => x.type === type && x.id === id);
@@ -277,7 +278,7 @@ export function registerContent(app: FastifyInstance, P: string, d: ContentMockD
       }));
     }
   }
-  const versionsOf = (type: EntityType, row: Row | undefined) => ({
+  const versionsOf = (type: EntityType, row: Row | undefined): { items: VersionDto[] } => ({
     items: row ? cms.versions.filter((v) => v.entityType === type && v.entityId === row.id).sort((a, b) => b.versionNo - a.versionNo) : [],
   });
 
@@ -310,7 +311,7 @@ export function registerContent(app: FastifyInstance, P: string, d: ContentMockD
     const from = q.cursor ? Number(Buffer.from(q.cursor, 'base64url').toString()) : 0;
     if (Number.isNaN(from)) throw invalid([{ path: 'cursor', message: 'неверный курсор' }]);
     const page = list.slice(from, from + limit);
-    return { items: page.map((r) => ({ ...dto(r), type: r.col.pubType, slug: r.col.slug ?? null, allowedActions: allowed(s, r) })), nextCursor: from + limit < list.length ? Buffer.from(String(from + limit)).toString('base64url') : null };
+    return { items: page.map((r) => ({ ...dto(r), id: r.id, type: r.col.pubType as PublicationType, slug: (r.col.slug as string | undefined) ?? null, allowedActions: allowed(s, r) })), nextCursor: from + limit < list.length ? Buffer.from(String(from + limit)).toString('base64url') : null } satisfies { items: PublicationDto[]; nextCursor: string | null };
   }));
 
   app.post(`${P}/content/publications`, command('publication.create', (s, req) => {
@@ -329,7 +330,7 @@ export function registerContent(app: FastifyInstance, P: string, d: ContentMockD
     const row = find('publication', (req.params as { id: string }).id);
     viewPublication(s, row);
     const live = row.liveVersionId ? (cms.versions.find((v) => v.id === row.liveVersionId)?.snapshot ?? null) : null;
-    return { ...dto(row), type: row.col.pubType, slug: row.col.slug ?? null, live, allowedActions: allowed(s, row) };
+    return { ...dto(row), id: row.id, type: row.col.pubType as PublicationType, slug: (row.col.slug as string | undefined) ?? null, live, allowedActions: allowed(s, row) } satisfies PublicationDto;
   }));
   const pubOf = (_s: Staffish, p: Record<string, string>) => find('publication', p.id ?? '');
   actions('/content/publications/:id', 'publication', pubOf, { archive: true });
