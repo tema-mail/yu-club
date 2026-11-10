@@ -147,7 +147,7 @@ describe('S4-39: строки чужого города (K1: чужое – 404)
     const block = await call('owner', 'PUT', '/content/home-blocks', { blockType: 'cta', cityId: foreign.cityId, draft: { blockType: 'cta', payload: { title: secret, label: 'x', url: '/schedule/' } } });
     expect(block.statusCode).toBe(201);
     for (const who of ['director', 'admin']) {
-      for (const url of [`/content/pages/rules/draft?cityId=${foreign.cityId}`, `/content/pages/rules/versions?cityId=${foreign.cityId}`, `/content/home-blocks?cityId=${foreign.cityId}`, `/content/home-blocks/${block.json().id}/versions`]) {
+      for (const url of [`/content/pages/rules/draft?cityId=${foreign.cityId}`, `/content/pages/rules/versions?cityId=${foreign.cityId}`, `/content/home-blocks?cityId=${foreign.cityId}`, `/content/home-blocks/${block.json().id}/versions`, `/content/home-blocks/${block.json().id}/draft`]) {
         const res = await call(who, 'GET', url);
         expect(res.statusCode, `${who} ${url}`).toBe(404);
         expect(res.body).not.toContain(secret);
@@ -181,5 +181,11 @@ describe('S4-39: блоки главной', () => {
     expect((await pub('/home')).json().blocks.map((b: { blockType: string }) => b.blockType)).toEqual(['about', 'hero']);
     expect((await call('admin', 'GET', '/content/home-blocks')).json().items.map((b: { blockType: string; sortOrder: number }) => [b.blockType, b.sortOrder])).toEqual([['about', 0], ['hero', 1]]);
     expect((await call('owner', 'GET', `/content/home-blocks/${row.id}/versions`)).json().items).toHaveLength(1);
+    // один блок (№228, для истории версий и отката в CRM): draftDto с типом и уровнем; чужой id – 404
+    const one = await call('admin', 'GET', `/content/home-blocks/${row.id}/draft`);
+    expect(one.statusCode).toBe(200);
+    expect(one.json()).toMatchObject({ id: row.id, blockType: 'hero', cityId: null, sortOrder: 1, status: 'published', draft: { payload: { title: 'Клуб 2' } } });
+    expect(one.json().rowVersion).toBeGreaterThan(saved.json().rowVersion);
+    expect((await call('owner', 'GET', `/content/home-blocks/${randomUUID()}/draft`)).statusCode).toBe(404);
   });
 });
