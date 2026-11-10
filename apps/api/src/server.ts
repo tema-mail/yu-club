@@ -143,7 +143,13 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     if (typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 500) {
       return reply.code(400).send({ error: { code: 'VALIDATION_FAILED', message: 'Неверный запрос', requestId: request.id } });
     }
-    request.log.error(err);
+    // 17 §13.2: JSON с кодом, маршрутом и reqId (метка pino), без тела запроса и без detail/where ошибок pg –
+    // там значения строк (телефон, email). Стек и SQL-код ошибки – для разбора.
+    const e = err as Error & { code?: unknown };
+    request.log.error(
+      { code: 'INTERNAL', method: request.method, route: request.routeOptions.url ?? 'unknown', error: { type: e.name, message: e.message, pgCode: typeof e.code === 'string' ? e.code : undefined, stack: e.stack } },
+      'необработанная ошибка API',
+    );
     return reply.code(500).send({ error: { code: 'INTERNAL', message: 'Внутренняя ошибка', requestId: request.id } });
   });
 
