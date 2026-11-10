@@ -1624,6 +1624,26 @@ CREATE TABLE app.staff_feed_events (                     -- лента собы�
 CREATE INDEX staff_feed_events_branch_idx ON app.staff_feed_events (branch_id, created_at DESC);
 ```
 
+### 0447 – client_merge (clients; слияние дублей, K9 «Слияние», D5-01…D5-09)
+
+```sql
+ALTER TABLE app.clients ADD COLUMN merged_into_id uuid REFERENCES app.clients(id);
+-- статус merged; телефон NULL – у anonymized и merged; merged_into_id – ровно у merged
+ALTER TABLE app.clients ADD CONSTRAINT clients_status_check
+  CHECK (status IN ('guest','active','restricted','blocked','deletion_requested','anonymized','merged'));
+ALTER TABLE app.clients ADD CONSTRAINT clients_phone_or_closed_check CHECK (phone_e164 IS NOT NULL OR status IN ('anonymized','merged'));
+ALTER TABLE app.clients ADD CONSTRAINT clients_merged_into_check CHECK ((status = 'merged') = (merged_into_id IS NOT NULL));
+-- journal.loyalty_batch_moves.kind += 'merge' (перенос остатка баллов партиями)
+CREATE TABLE journal.client_merges (                      -- только вставка (make_append_only)
+  id uuid PRIMARY KEY, primary_client_id uuid NOT NULL REFERENCES app.clients(id),
+  secondary_client_id uuid NOT NULL REFERENCES app.clients(id),          -- UNIQUE: вторая объединяется один раз
+  reason text NOT NULL CHECK (reason IN ('same_person_confirmed','duplicate_registration','phone_changed')),
+  staff_id uuid NOT NULL, merged_at timestamptz NOT NULL,
+  results jsonb NOT NULL,                                                -- итоги модулей числами, без ПДн
+  CHECK (primary_client_id <> secondary_client_id)
+);
+```
+
 ### Ключевые правила Э4 → где гарантия
 
 | Правило | ТЗ / контракт | Гарантия |

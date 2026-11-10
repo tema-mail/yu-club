@@ -7,7 +7,7 @@
 ## Публичные функции модуля (`modules/clients/index.ts`)
 
 ```ts
-export type ClientStatus = 'guest' | 'active' | 'restricted' | 'blocked' | 'deletion_requested' | 'anonymized';
+export type ClientStatus = 'guest' | 'active' | 'restricted' | 'blocked' | 'deletion_requested' | 'anonymized' | 'merged'; // merged – 0447, «Слияние»
 
 export interface ClientRef { id: string; status: ClientStatus; firstName: string | null; lastName: string | null; phoneMasked: string }
 
@@ -108,6 +108,30 @@ export function registerClientAnonymizer(a: { name: string; blockers?(tx, client
 - Живая бронь (впереди или `arrived`) или мероприятие в работе → `409 CLIENT_HAS_ACTIVE_RECORDS` (`details.blockers`). Брони, деньги, баллы, сертификаты, журналы только на вставку не меняются – связь по id.
 - Аудит – `client.status_changed`, основание – код, без ПДн. Поиск CRM обезличенных не показывает без явного фильтра статуса; карточка – без ПДн.
 
+**Слияние дублей (03 §11, §12, §15; техдолг 5.15; внесено 10.11.2026, решения D5-01…D5-09).** `modules/clients/merge.ts`, маршруты CRM K11 №253 `GET /clients/{clientId}/merge-preview?with={secondaryId}` и №254 `POST /clients/{clientId}/merge { secondaryId, reason }` (`Idempotency-Key`), право `client.merge` (Владелец по сети; делегированное – только клиенты с бронями в зоне права), миграция 0447.
+
+```ts
+export type ClientStatus = … | 'merged';                     // вторая карточка после слияния; ClientCard.mergedIntoId
+export const MERGE_REASONS = ['same_person_confirmed', 'duplicate_registration', 'phone_changed'] as const;
+export function mergePreview(db: Db, ctx: AccessContext, input: { primaryId: string; secondaryId: string }, links?, clock?): Promise<MergePreview>;
+// MergePreview: { primary, secondary: ClientCard; modules: Record<модуль, { primary, secondary }>; conflicts: { field, primary, secondary }[];
+//                 fills: { field, value }[]; statusAfter; canMerge; blocker: 'primary_must_be_registered' | null }
+export function mergeClients(tx: Tx, ctx: AccessContext, input: { primaryId: string; secondaryId: string; reason: MergeReason }, meta, links?, clock?): Promise<MergeResult>;
+// MergeResult: { mergeId, primaryId, secondaryId, status: 'merged', results: Record<модуль, Record<string, number>> }
+/** Обработчик модуля-владельца таблиц со ссылкой на клиента (как registerClientAnonymizer). Обязательные – booking, finance, loyalty,
+ *  certificates, events, notifications; без любого процедура не запускается. prelock – замки модуля до строк клиентов (D5-08). */
+export function registerClientMerger(m: { name; prelock?(tx, from, to, now); preview(db, clientId, now); reassign(tx, from, to, ctx) }): void;
+/** Действующая карточка по merged_into_id цепочкой; карточка и все объединённые в неё – для коррекций операций до слияния (D5-09). */
+export function effectiveClientId(db: Db, clientId: string): Promise<string>;
+export function clientIdsMergedInto(db: Db, clientId: string): Promise<string[]>;
+```
+
+- Одна транзакция. Замки (D5-08): счета баллов → удержания и брони второй → её мероприятия → строки обеих карточек `FOR UPDATE` (меньший id первым) → остальное.
+- Модули: брони, удержания, время клиента, посещения, неявки, сеансы оплаты, мероприятия (заказчик, именинник), подарки, уведомления – `client_id` второй → основная, история и исходные id сохраняются; сертификаты – смена получателя с `certificate_holder_history` (D5-07); баллы – по правилу D5-02 (не складываются «в лоб»).
+- Основная: свои значения, пустые заполняются из второй, блокировка второй переходит (D5-04). Вторая: `merged`, `merged_into_id`, ПДн очищены как при обезличивании (телефон свободен), сессии и push-подписки отозваны, коды входа удалены.
+- Журнал `journal.client_merges` (только вставка; кто, когда, из какой в какую, основание, итоги модулей), аудит `client.merged` и `client.status_changed`, без ПДн.
+- `GET /clients/{вторая}` – 200 с `status: 'merged'`, `mergedIntoId`, `full: null`; поиск по старым контактам её не находит, по id – находит. Бронь на `merged` – `CLIENT_RESTRICTED`; обезличивание `merged` – `409 CLIENT_MERGED`; корректировка баллов и выдача товара на `merged` – `409 CLIENT_MERGED`.
+
 ## Бронь администратором без профиля (S1-13)
 
 Полный контракт маршрута – K11 №4; здесь – часть, которая касается клиента. Маршрут CRM `POST /api/crm/v1/branches/{branchId}/bookings` (`Idempotency-Key`, право `booking.create`):
@@ -133,6 +157,9 @@ type CrmCreateBooking = {
 | `AUTH_REQUIRED`, `SESSION_REVOKED` | 401 | нет / отозвана сессия |
 | `CLIENT_RESTRICTED` | 403 | `assertCanBook` (статус клиента) |
 | `CLIENT_HAS_ACTIVE_RECORDS` | 409 | обезличивание: бронь впереди или мероприятие в работе (`details.blockers`) |
+| `CLIENT_MERGED` | 409 | слияние, обезличивание, баллы: карточка уже объединена (`details.clientId`, `mergedIntoId`) |
+| `CLIENT_NOT_MERGEABLE` | 409 | слияние: обезличенная, с запросом на удаление; основная – гость при зарегистрированной второй (`details.reason`) |
+| `CLIENT_MERGE_CONFLICT` | 409 | слияние: пересечение времени броней, подарок в тот же год (`details.module`, `constraint`) или удержание занято (`reason: busy`) |
 | `LOYALTY_LIMIT_REACHED` | 403 | Э2: ворота loyalty в `assertCanBook` – баланс ≤ −50 (K15 §8, код объявляет модуль loyalty) |
 | `VALIDATION_FAILED` | 400 | телефон не разобран и т.п. |
 
