@@ -4,7 +4,7 @@
 // Охват (K22 §4): без выбора – всё; город – сеть + город + его филиалы; филиал – сеть + его город + он сам.
 // Срок показа – от «сейчас» процесса (зафиксирован tests/support/e2e.ts). Черновик лежит с флагом draft и не отдаётся ни одним маршрутом –
 // как `p.status = 'published'` в publications.ts: e2e проверяет, что сайт его не показывает.
-// Только для e2e: POST /__mock/content { advertisingConsent?: boolean, home?: 'full' | 'empty' } – переключатели состояния.
+// Только для e2e: POST /__mock/content { advertisingConsent?: boolean, home?: 'full' | 'empty', requisites?: 'full' | 'empty' } – переключатели состояния.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash } from 'node:crypto';
 
@@ -82,7 +82,10 @@ const BRANCH_PAGES: Record<string, unknown> = {
   [LENINA]: { description: 'Клуб в центре Томска, **второй этаж**.', gallery: [M(41), M(42)], features: ['Парковка у входа', 'Кофе-автомат'], howToGet: 'Вход со двора, домофон 12.', postal: { street: 'проспект Ленина, 80', locality: 'Томск', region: 'Томская область', postalCode: '634050' }, geo: { lat: 56.4847, lng: 84.9482 } },
 };
 
-const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty' };
+const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty', requisites: 'full' as 'full' | 'empty' };
+// №218: реквизиты оператора из настроек сети legal.* (K7) – заданные Владельцем; ОГРН и почта не заданы → null. 'empty' – как на старте сети.
+const REQUISITES = { operatorName: 'ООО «Ю-Клуб»', inn: '5405123456', ogrn: null, address: '630099, Новосибирск, Красный проспект, 25', phone: '+7 383 000-00-00', email: null };
+const NO_REQUISITES = { operatorName: null, inn: null, ogrn: null, address: null, phone: null, email: null };
 /** Живая версия согласия на рекламу (K5 №215) – её же пишет вход и настройки в журнал согласий (mock-clients.ts), как legalVersions в API. */
 export const liveAdvertisingVersion = () => (state.advertisingConsent ? PAGES['advertising-consent']!.documentVersion : null);
 
@@ -124,7 +127,14 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
     const b = (req.body ?? {}) as Partial<typeof state>;
     if (typeof b.advertisingConsent === 'boolean') state.advertisingConsent = b.advertisingConsent;
     if (b.home === 'full' || b.home === 'empty') state.home = b.home;
+    if (b.requisites === 'full' || b.requisites === 'empty') state.requisites = b.requisites;
     return state;
+  });
+
+  // №218: ETag – по значениям (у настроек версий сущностей нет)
+  app.get(`${P}/content/requisites`, async (req, reply) => {
+    const body = state.requisites === 'full' ? REQUISITES : NO_REQUISITES;
+    return cached(req, reply, [JSON.stringify(body)], body);
   });
 
   const list = (type: Pub['type'] | undefined, q: { city?: string; branch?: string }) => {
