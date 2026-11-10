@@ -5,10 +5,16 @@
 yu-club.168.113.179.49.nip.io {
 	tls internal
 	encode gzip zstd
+	# Защитные заголовки (tests/deploy/caddy-headers.test.ts). CSP – через `?` (только если ответ без своей): PDF медиатеки ниже и
+	# выдача вложений API ставят более строгую. Инлайн-скрипты и стили – сборка Astro (острова), поэтому 'unsafe-inline'; внешних
+	# ресурсов у сайта нет. Метрика (TEHDOLG 3.6) добавит mc.yandex.ru в script-src, img-src, connect-src. HSTS – только на бою (TEHDOLG 1.3).
 	header {
 		X-Robots-Tag "noindex, nofollow"
 		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		?Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 		-Server
 	}
 	request_body {
@@ -56,11 +62,17 @@ yu-club.168.113.179.49.nip.io {
 yu-crm.168.113.179.49.nip.io {
 	tls internal
 	encode gzip zstd
+	# Защитные заголовки (tests/deploy/caddy-headers.test.ts). Домен сайта в base-uri, style-src, img-src, font-src – предпросмотр
+	# черновика: <iframe srcdoc sandbox=""> наследует CSP страницы CRM, а страница сайта ставит <base href> на сайт и грузит оттуда
+	# стили и /media/ (проверено в Chromium 10.11). deploy.sh заменяет адрес стенда на боевой по всему файлу – домен здесь переедет сам.
+	# CSP через `?`: выдача вложения №350 приходит из API со своей `default-src 'none'; sandbox` и остаётся.
 	header {
 		X-Robots-Tag "noindex, nofollow"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		?Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://yu-club.168.113.179.49.nip.io; img-src 'self' data: blob: https://yu-club.168.113.179.49.nip.io; font-src 'self' data: https://yu-club.168.113.179.49.nip.io; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'self' https://yu-club.168.113.179.49.nip.io; form-action 'self'; object-src 'none'"
 		-Server
 	}
 	# Закрытые вложения Э3 (S3-94, K19 §9): только API с правом на объект. Каталог в Caddy не смонтирован; любой такой адрес – 404, не вход в CRM.
