@@ -67,3 +67,16 @@ test('отчёт: повтор тоже 503 – ошибка с секундам
   await expect(page.getByTestId('report')).toHaveAttribute('data-state', 'ready');
   expect(seen.calls).toBe(3);
 });
+
+test('рабочий стол: 503 REPORT_BUSY – та же фраза и один автоповтор, затем карточки', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  const seen = await busyReports(page, '**/api/crm/v1/reports/dashboard?*');
+  await open(page, '/');
+  const desk = page.getByTestId('dashboard');
+  await expect(desk.getByTestId('desk-card-created')).toBeVisible();
+  seen.busy = 1;
+  await desk.getByRole('button', { name: 'Этот месяц' }).click();
+  await expect(desk.getByRole('status')).toHaveText('Сейчас считается много отчётов – повторим через 1 с.');
+  await expect(desk.getByTestId('desk-card-created')).toBeVisible();
+  expect(seen.calls).toBe(2);
+});
