@@ -27,6 +27,8 @@ let b = '';
 let item1 = '';
 let r1 = '';
 let r2 = '';
+let contractor = '';
+let staffExecutor = '';
 
 const val = (m: Metric | undefined) => (m?.state === 'ok' ? m.value : m?.state === 'unavailable' ? `${m.state}/${m.reason}` : m?.state);
 const meta = (o: AccessContext): AuditRequestMeta => ({ actor: o.actor, access: o, source: 'crm', requestId: randomUUID() });
@@ -89,6 +91,12 @@ beforeAll(async () => {
   const wrong = await spend(7_000);
   await tx((t) => linkOperation(t, o, { operationId: wrong.id, ref: { type: 'repair', id: r2 }, role: 'expense' }, meta(o), clock));
   await tx((t) => reverseOperation(t, o, { operationId: wrong.id, reason: 'ошибка' }, meta(o), opts()));
+  // исполнители: подрядчик у r1, сотрудник (коллега) у r2
+  const executor = async (kind: string, name: string) => (await db.client.query<{ id: string }>(`INSERT INTO app.repair_executors (kind, name) VALUES ($1, $2) RETURNING id`, [kind, name])).rows[0]!.id;
+  contractor = await executor('contractor', 'ООО Ремонт');
+  staffExecutor = await executor('staff', 'Мастер Иванов');
+  await db.client.query(`UPDATE app.repairs SET executor_id = $2 WHERE id = $1`, [r1, contractor]);
+  await db.client.query(`UPDATE app.repairs SET executor_id = $2 WHERE id = $1`, [r2, staffExecutor]);
 }, 120_000);
 afterAll(async () => {
   await fx.close();
@@ -119,13 +127,23 @@ describe('показатели', () => {
   it('расход ремонта – по связи: привязанный вручную входит, сторнированный – нет; в «Финансах» тот же расход один раз', async () => {
     const r = await fx.run(fx.owner(), (env) => equipmentReport(env, { period: OCT, branchIds: [a] }));
     expect(val(r.metrics.repairExpenses)).toBe(5_000);
-    expect(r.groups.expensesByContractor).toEqual([{ contractorId: null, amountKop: 5_000 }]);
+    expect(r.groups.expensesByContractor).toEqual([{ contractorId: contractor, contractorName: 'ООО Ремонт', amountKop: 5_000 }]);
     const f = await fx.run(fx.owner(), (env) => financeReport(env, { period: OCT, branchIds: [a] }));
     expect(val(f.metrics.expenses)).toBe(5_000 + 7_000); // в 3.4 сторно – отдельной строкой исправлений, расход ремонта – одной операцией, без задвоения
   });
 });
 
 describe('права', () => {
+  it('исполнитель в строках – имя из справочника (провайдер equipment); имя коллеги-исполнителя – только роли со staff.view, Администратору – ID', async () => {
+    const byId = (rows: Array<{ id: string; contractorId: string | null; contractorName: string | null }>) => new Map(rows.map((x) => [x.id, [x.contractorId, x.contractorName]]));
+    const own = await fx.run(fx.owner(), (env) => equipmentDetail(env, { period: OCT, branchIds: [a] }, 'incidents'));
+    expect(byId(own.rows)).toEqual(new Map([[r1, [contractor, 'ООО Ремонт']], [r2, [staffExecutor, 'Мастер Иванов']]]));
+    const adm = await fx.run(fx.admin([a]), (env) => equipmentDetail(env, { period: OCT }, 'incidents'));
+    expect(byId(adm.rows)).toEqual(new Map([[r1, [contractor, 'ООО Ремонт']], [r2, [staffExecutor, null]]]));
+    const group = (await fx.run(fx.admin([a]), (env) => equipmentReport(env, { period: OCT }))).groups.expensesByContractor;
+    expect(group).toEqual([{ contractorId: contractor, contractorName: 'ООО Ремонт', amountKop: 5_000 }]);
+  });
+
   it('Администратор своего филиала видит отчёт; чужой филиал – 404, в агрегате его нет', async () => {
     const adm = fx.admin([a]);
     const r = await fx.run(adm, (env) => equipmentReport(env, { period: OCT }));
