@@ -49,6 +49,9 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      # Caddyfile проекта – тем же разбором, что на сервере (10.11: «handle» с двумя путями прошёл тесты, но Caddy отверг блок при выкладке)
+      - name: Caddyfile проходит caddy adapt
+        run: docker run --rm -v "$PWD/deploy:/d:ro" caddy:2 caddy adapt --config /d/Caddyfile.yu-club --adapter caddyfile > /dev/null
       - run: npm run build:crm
       - run: npm run build:site
       - run: npm test

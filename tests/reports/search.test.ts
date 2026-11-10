@@ -60,7 +60,8 @@ describe('поиск (S4-75)', () => {
   it('клиент вне зоны не находится по точному телефону; Владелец – находит; Директор зоны – только своих', async () => {
     const dir = fx.director([a]);
     expect(group(await search(dir, phoneB), 'client')!.items).toEqual([]);
-    expect(group(await search(fx.owner(), phoneB), 'client')!.items).toEqual([expect.objectContaining({ id: c.other })]);
+    // телефон в выдаче – маска и Владельцу, как в списке клиентов (03 §14); полный – только в карточке; имя – полное по client.view.full
+    expect(group(await search(fx.owner(), phoneB), 'client')!.items).toEqual([{ id: c.other, name: 'Пётр Чужой', phone: '+7 ••• ••• ••-01', kind: 'profile' }]);
     const nameOther = await search(dir, 'Чужой');
     expect(group(nameOther, 'client')!.items).toEqual([]);
     expect(JSON.stringify(nameOther)).not.toContain(c.other!);

@@ -1,9 +1,10 @@
 // S4-85: медиатека (K22 §8, K11 №224–227; 12 §10): загрузка с понятной ошибкой («Можно JPG, PNG, WebP до 10 МБ»), рекомендуемые пропорции,
 // alt и подпись (правка alt попадает на сайт только со следующей публикацией – снимок версии заморожен), «где используется», архив
 // (используемый живой версией – MEDIA_IN_USE со списком), удаление неиспользуемого – только Владелец. Загрузка идёт через прокси CRM потоком.
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { API_PREFIX, ApiError, browserCall, type ErrorBody } from '../lib/api.ts';
 import { useLatest } from '../lib/latest.ts';
+import { PURGE_REASON_CODES, PURGE_REASON_LABEL } from '../../../../packages/contracts/src/media-purge.ts';
 import { aria, ENTITY_LABEL, errorText, Field, FIELD_LABEL, fmtAt, type MediaDto } from '../lib/content.tsx';
 
 export const MAX_BYTES = 10 * 1024 * 1024;
@@ -59,6 +60,7 @@ function UsageList({ items }: { items: Usage[] }) {
   );
 }
 
+
 export interface MediaLibraryProps { canArchive: boolean; canDelete: boolean; timezone: string }
 
 export default function MediaLibrary(props: MediaLibraryProps) {
@@ -75,6 +77,8 @@ export default function MediaLibrary(props: MediaLibraryProps) {
   const [edit, setEdit] = useState({ alt: '', title: '' });
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [usages, setUsages] = useState<{ usages: Usage[]; inVersions: boolean } | null>(null);
+  const purgeDlg = useRef<HTMLDialogElement>(null);
+  const [purge, setPurge] = useState({ reasonCode: '', basis: '', confirmed: false, error: '', key: '' });
 
   const latest = useLatest(); // новый поиск или фильтр: ответ прежнего не подменяет список
   useEffect(() => {
@@ -180,6 +184,32 @@ export default function MediaLibrary(props: MediaLibraryProps) {
     }
   };
 
+  const askPurge = () => {
+    setPurge({ reasonCode: '', basis: '', confirmed: false, error: '', key: crypto.randomUUID() });
+    purgeDlg.current?.showModal();
+  };
+  const runPurge = async () => {
+    if (!sel) return;
+    if (!purge.reasonCode) return setPurge({ ...purge, error: 'Выберите причину очистки' });
+    if (!purge.confirmed) return setPurge({ ...purge, error: 'Подтвердите: файл удаляется насовсем, отменить нельзя' });
+    setBusy(true);
+    try {
+      const r = await browserCall<{ purged: boolean; affected: unknown[]; filesPending?: boolean }>(`/content/media/${sel.id}/purge`, { method: 'POST', body: { reasonCode: purge.reasonCode, ...(purge.basis.trim() ? { basis: purge.basis.trim() } : {}) }, key: purge.key });
+      purgeDlg.current?.close();
+      setSel(null);
+      setUsages(null);
+      setMsg(null);
+      // filesPending: запись очищена, но диск не удалил файлы – их уберёт ночная content:media-gc (K22 №227а); «удалены» не пишем.
+      const files = r.filesPending ? 'Очищено, файлы будут удалены ночной уборкой.' : 'Фото очищено: все размеры файла удалены с сервера.';
+      setUpMsg({ ok: true, text: `${files} Материалов без этого фото: ${r.affected.length}; на сайте вместо него ничего не показывается.` });
+      setReload((n) => n + 1);
+    } catch (err) {
+      setPurge({ ...purge, error: `Не очищено: ${errorText(err)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div class="yc-ct__editor">
       <div class="yc-ct__main">
@@ -249,6 +279,7 @@ export default function MediaLibrary(props: MediaLibraryProps) {
               <button type="button" class="yc-btn yc-btn--ghost" onClick={() => void showUsages()}>Где используется</button>
               {props.canArchive && sel.status === 'active' && <button type="button" class="yc-btn yc-btn--ghost yc-btn--danger-text" disabled={busy} onClick={() => void archive()}>В архив</button>}
               {props.canDelete && <button type="button" class="yc-btn yc-btn--ghost yc-btn--danger-text" disabled={busy} onClick={() => void remove()}>Удалить</button>}
+              {props.canDelete && sel.purpose === 'image' && <button type="button" class="yc-btn yc-btn--ghost yc-btn--danger-text" disabled={busy} onClick={askPurge}>Очистить по требованию…</button>}
             </div>
             <p class={`yc-alert ${msg ? (msg.ok ? 'yc-alert--ok' : 'yc-alert--error') : ''}`} role="status" aria-live="polite">{msg?.text ?? ''}</p>
             {usages && (usages.usages.length === 0 && !usages.inVersions ? <p class="yc-ct__muted">Файл нигде не используется.</p> : (
@@ -258,8 +289,29 @@ export default function MediaLibrary(props: MediaLibraryProps) {
               </>
             ))}
           </section>
-        ) : <p class="yc-ct__muted">Выберите файл, чтобы поправить описание, посмотреть, где он используется, или убрать в архив.</p>}
+        ) : <p class="yc-ct__muted" data-testid="media-none">Выберите файл, чтобы поправить описание, посмотреть, где он используется, или убрать в архив.</p>}
       </aside>
+      <dialog ref={purgeDlg} class="yc-dialog" aria-labelledby="purge-title">
+        <div class="yc-dialog__body">
+          <h2 id="purge-title">Очистить фото по требованию?</h2>
+          <p>Все размеры файла удаляются с сервера насовсем. Материалы, где фото показывается, получат новую версию без него; старые версии и откат покажут «изображение удалено». Отменить нельзя.</p>
+          <Field id="purge-reason" label="Причина">
+            <select id="purge-reason" class="yc-input" value={purge.reasonCode} onChange={(e) => setPurge({ ...purge, reasonCode: e.currentTarget.value, error: '' })}>
+              <option value="">Выберите…</option>
+              {PURGE_REASON_CODES.map((code) => <option value={code}>{PURGE_REASON_LABEL[code]}</option>)}
+            </select>
+          </Field>
+          <Field id="purge-basis" label="Основание (необязательно)" hint="Номер и дата документа. ФИО и содержание заявления не пишите – это попадает в журнал.">
+            <input {...aria('purge-basis', undefined, true)} class="yc-input" maxLength={200} value={purge.basis} onInput={(e) => setPurge({ ...purge, basis: e.currentTarget.value })} />
+          </Field>
+          <label class="yc-check"><input type="checkbox" checked={purge.confirmed} onChange={(e) => setPurge({ ...purge, confirmed: e.currentTarget.checked, error: '' })} /> Понимаю: файл удаляется насовсем</label>
+          {purge.error && <p class="yc-field__error" role="alert">{purge.error}</p>}
+          <div class="yc-dialog__actions">
+            <button type="button" class="yc-btn yc-btn--ghost" onClick={() => purgeDlg.current?.close()}>Отмена</button>
+            <button type="button" class="yc-btn yc-btn--danger" disabled={busy} onClick={() => void runPurge()}>Очистить</button>
+          </div>
+        </div>
+      </dialog>
     </div>
   );
 }

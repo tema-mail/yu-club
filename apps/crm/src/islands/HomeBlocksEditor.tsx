@@ -1,11 +1,14 @@
 // S4-87: блоки главной (K11 №228; 12 §5): фиксированные типы, содержимое по схеме типа, уровень сеть или город (городской опубликованный
 // подменяет сетевой). Порядок – перетаскиванием и кнопками «Выше/Ниже» (доступно с клавиатуры), сохраняется сразу и не версионируется.
 // Сеть правит Владелец (content.network.manage), город – Директор города (content.publish по cityId).
+// У баннера hero – SEO главной (title, description, H1; адрес «/» фиксирован, K23 §4); у каждого блока – история версий и откат (K22 §3).
 import { useEffect, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { DraftActions, errorText, fieldErrors, STATUS_BADGE, STATUS_LABEL, type DraftDto } from '../lib/content.tsx';
 import { RATIO_HINT } from './MediaLibrary.tsx';
 import MediaPicker from './MediaPicker.tsx';
+import SeoPanel, { seoLengthErrors, type SeoValue } from './SeoPanel.tsx';
+import VersionHistory from './VersionHistory.tsx';
 
 type BlockType = 'hero' | 'about' | 'directions' | 'advantages' | 'promo_strip' | 'cta';
 interface Block extends DraftDto { id: string; blockType: BlockType; cityId: string | null; sortOrder: number }
@@ -48,20 +51,35 @@ function toPayload(type: BlockType, form: Record<string, string>, old: Record<st
   return p;
 }
 
+const seoOf = (d: Record<string, unknown>): SeoValue => ({ slug: '', seoTitle: String(d.seoTitle ?? ''), seoDescription: String(d.seoDescription ?? ''), h1: String(d.h1 ?? '') });
+
+/** История версий блока – по кнопке: у каждого блока своя, монтируется одна на карточку (id полей окна не повторяются). */
+function BlockHistory(props: { id: string; canRollback: boolean }) {
+  const [open, setOpen] = useState(false);
+  return open
+    ? <VersionHistory versionsPath={`/content/home-blocks/${props.id}/versions`} draftPath={`/content/home-blocks/${props.id}/draft`} actionBase={`/content/home-blocks/${props.id}`} canRollback={props.canRollback} timezone="Asia/Novosibirsk" />
+    : <button type="button" class="yc-btn yc-btn--ghost" onClick={() => setOpen(true)}>История версий</button>;
+}
+
 function BlockCard(props: { block: Block | null; type: BlockType; cityId: string | null; canEdit: boolean; index: number; count: number; onMove: (dir: -1 | 1) => void; onChanged: () => void }) {
   const { block, type } = props;
   const payload = ((block?.draft.payload ?? {}) as Record<string, unknown>);
   const [form, setForm] = useState(toForm(type, payload));
+  const [seo, setSeo] = useState<SeoValue>(seoOf(block?.draft ?? {}));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const save = async () => {
-    setBusy(true);
     setErrors({});
     setMsg(null);
+    const long = type === 'hero' ? seoLengthErrors(seo) : {};
+    if (Object.keys(long).length) return setErrors(long);
+    setBusy(true);
     try {
-      const draft = { ...(block?.draft ?? {}), blockType: type, payload: toPayload(type, form, payload) };
+      const meta = type === 'hero' ? { seoTitle: seo.seoTitle.trim() || undefined, seoDescription: seo.seoDescription.trim() || undefined, h1: seo.h1.trim() || undefined } : {};
+      const draft: Record<string, unknown> = { ...(block?.draft ?? {}), blockType: type, payload: toPayload(type, form, payload), ...meta };
+      for (const k of Object.keys(meta) as Array<keyof typeof meta>) if (meta[k] === undefined) delete draft[k];
       await browserCall('/content/home-blocks', { method: 'PUT', body: { blockType: type, cityId: props.cityId, ...(block ? { rowVersion: block.rowVersion } : {}), draft } });
       setDirty(false);
       setMsg({ ok: true, text: block ? 'Черновик блока сохранён.' : 'Блок создан черновиком.' });
@@ -93,6 +111,10 @@ function BlockCard(props: { block: Block | null; type: BlockType; cityId: string
         ))}
         {type === 'hero' && <MediaPicker id={id('media')} label="Баннер" value={form.mediaId ?? ''} hint={RATIO_HINT.banner} disabled={!props.canEdit || busy} onChange={(v) => { setForm({ ...form, mediaId: v }); setDirty(true); }} />}
       </fieldset>
+      {type === 'hero' && (
+        <SeoPanel entityType="publication" parent="" entityId={block?.id ?? null} liveSlug={null} published={block?.status === 'published'} title="Ю-Клуб – компьютерный клуб: ПК, VR, PlayStation" lead={form.subtitle ?? ''}
+          titleSuffix="" descriptionFrom="текст «О клубе»" fixedPath="/" value={seo} onChange={(v) => { setSeo(v); setDirty(true); }} errors={errors} disabled={!props.canEdit || busy} />
+      )}
       <p class={`yc-alert ${msg ? (msg.ok ? 'yc-alert--ok' : 'yc-alert--error') : ''}`} role="status" aria-live="polite">{msg?.text ?? ''}</p>
       {block ? (
         <DraftActions base={`/content/home-blocks/${block.id}`} allowed={props.canEdit ? ['edit', 'publish', 'rollback', ...(block.status === 'published' ? (['unpublish'] as const) : [])] : []} status={block.status}
@@ -100,6 +122,7 @@ function BlockCard(props: { block: Block | null; type: BlockType; cityId: string
           onError={(e) => { const fe = fieldErrors(e); setErrors(fe); setMsg({ ok: false, text: fe._ ?? errorText(e) }); }} />
       ) : props.canEdit && <button type="button" class="yc-btn" disabled={busy} onClick={() => void save()}>Создать блок</button>}
       {Object.keys(errors).length > 0 && <span class="yc-ct__muted">Проверьте поля блока.</span>}
+      {block && <BlockHistory id={block.id} canRollback={props.canEdit} />}
     </div>
   );
 }

@@ -70,6 +70,25 @@ describe('S4-36: блоки главной', () => {
     expect((await block('promo_strip', { blockType: 'promo_strip', payload: { text: 'Другая' } })).id).toBe(strip.id); // тип на уровне один
   });
 
+  it('SEO баннера (K23 §4): ручные title, description, H1 и картинка для соцсетей – в ответе главной; нет баннера – seo null; городской баннер подменяет и seo', async () => {
+    const netHero = (await getHomeBlocks(f.pool, {})).blocks.find((b) => b.blockType === 'hero');
+    expect(netHero).toBeTruthy();
+    const fresh = (await f.db.client.query<EntityRow>(`SELECT * FROM app.content_home_blocks WHERE id = $1`, [netHero!.id])).rows[0]!;
+    const og = await f.image(23, 'Зал');
+    const saved = await f.inTx((tx) => saveDraft(tx, f.owner(), blockDef, fresh.id, { rowVersion: fresh.row_version, draft: { blockType: 'hero', payload: { title: 'Сетевой' }, seoTitle: 'Клуб – главная', seoDescription: 'Описание для поиска', h1: 'Заголовок H1', ogMediaId: og } }, f.meta(f.owner()), clock));
+    await pub(saved);
+    const home = await getHomeBlocks(f.pool, {});
+    expect(home.seo).toEqual({ title: 'Клуб – главная', description: 'Описание для поиска', h1: 'Заголовок H1', ogImage: expect.stringMatching(/^\/media\/.*\.jpg$/) });
+    expect(home.blocks.find((b) => b.blockType === 'hero')!.payload).toEqual({ title: 'Сетевой' }); // SEO-поля – не в payload
+    // городской баннер без ручных полей: шаблон сайта, seo пустое, но не null
+    const city = await block('hero', hero('Город Б'), cityB);
+    const cityFresh = (await f.db.client.query<EntityRow>(`SELECT * FROM app.content_home_blocks WHERE id = $1`, [city.id])).rows[0]!;
+    await pub(cityFresh);
+    expect((await getHomeBlocks(f.pool, { cityId: cityB })).seo).toEqual({ title: null, description: null, h1: null, ogImage: null });
+    await f.inTx((tx) => unpublish(tx, f.owner(), blockDef, saved.id, { reason: 'снято' }, f.meta(f.owner()), clock));
+    expect((await getHomeBlocks(f.pool, {})).seo).toBeNull();
+  });
+
   it('картинки: alt обязателен; в снимке заморожен', async () => {
     const noAlt = await f.image(21, null);
     const adv = await block('advantages', { blockType: 'advantages', payload: { items: [{ title: 'Быстро', mediaId: noAlt }] } });

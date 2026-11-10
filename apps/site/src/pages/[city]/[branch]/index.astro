@@ -9,6 +9,9 @@
 // кнопка в первом экране и на телефоне липкая панель внизу (components/TimeCta.astro); у закрытого ни того, ни другого.
 // S4-121: описание, особенности, как добраться, галерея, адрес и координаты для разметки – страница CMS (K5 №214). Нет страницы или API
 // контента молчит – страница работает на фактах network; кнопку записи и часы контент не меняет (приёмка 21).
+// Карта сайта 3.1: публикации филиала – №208 ?branch={этот филиал} (K22 §4: сеть + его город + он сам, все типы), новые сверху, до 6;
+// охват – по филиалу страницы, а не по выбору посетителя. Публикаций нет или API молчит – блока нет.
+import PublicationList from '../../../components/PublicationList.astro';
 import TimeCta from '../../../components/TimeCta.astro';
 import Site from '../../../layouts/Site.astro';
 import {
@@ -17,8 +20,10 @@ import {
 } from '../../../lib/api.ts';
 import { metaFor } from '../../../lib/seo.ts';
 import { branchLd, breadcrumbLd, organizationLd } from '../../../lib/jsonld.ts';
-import { content, type BranchPage } from '../../../lib/content.ts';
+import { content, type BranchPage, type PublicationCard } from '../../../lib/content.ts';
 import { renderRichText } from '../../../lib/rich-text.ts';
+
+const HUB_PUBLICATIONS = 6;
 
 const { city: citySlug = '', branch: branchSlug = '' } = Astro.params;
 const { network, origin } = Astro.locals;
@@ -40,12 +45,13 @@ if (found) {
 }
 if (failed) Astro.response.status = 503;
 let page: BranchPage | null = null;
+let publications: PublicationCard[] = [];
 if (found && !failed) {
-  try {
-    page = await content.branch(found.branch.id);
-  } catch (e) {
-    console.error('site: страница филиала из CMS не загрузилась – показываем факты', e);
-  }
+  const [cms, pubs] = await Promise.allSettled([content.branch(found.branch.id), content.publications({ branchId: found.branch.id, limit: HUB_PUBLICATIONS })]);
+  if (cms.status === 'fulfilled') page = cms.value;
+  else console.error('site: страница филиала из CMS не загрузилась – показываем факты', cms.reason);
+  if (pubs.status === 'fulfilled') publications = pubs.value.items;
+  else console.error('site: публикации филиала не загрузились – хаб без блока', pubs.reason);
 }
 const gallery = (page?.gallery ?? []).filter((m) => !m.removed && m.url);
 
@@ -165,6 +171,13 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
           </div>
         )}
       </section>
+
+      {publications.length > 0 && (
+        <section class="yu-section" aria-labelledby="pubs-title" data-testid="branch-publications">
+          <h2 id="pubs-title">Новости и акции клуба</h2>
+          <PublicationList items={publications} timeZone={branch.timezone} empty="" level={3} testid="branch-publications-list" />
+        </section>
+      )}
       {!closed && <TimeCta href={scheduleHref(city.slug, branch.slug)} />}
     </>
   )}
