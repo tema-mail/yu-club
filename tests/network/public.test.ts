@@ -124,6 +124,20 @@ describe('K5 №3–4: филиал и его ресурсы', () => {
     expect(list.every((b: object) => !('hoursToday' in b))).toBe(true);
   });
 
+  it('hoursToday: конец работы в полночь – «24:00», а не «00:00»', async () => {
+    const ex = await one(
+      `INSERT INTO app.calendar_exceptions (branch_id, scope_type, local_date, kind, open_time, close_time, reason, created_by)
+       VALUES ($1, 'branch', '2026-11-14', 'special_hours', '10:00', '24:00', 'до полуночи', $1) RETURNING id`,
+      [ids.krasny],
+    );
+    try {
+      const k = (await app.inject({ method: 'GET', url: `${P}/branches/${ids.krasny}` })).json();
+      expect(k.hoursToday).toEqual([{ start: '10:00', end: '24:00' }]);
+    } finally {
+      await db.client.query(`UPDATE app.calendar_exceptions SET status = 'cancelled', cancelled_at = now(), cancelled_by = $2 WHERE id = $1`, [ex.id, ids.krasny]);
+    }
+  });
+
 
   it('филиал по id; готовящийся, архивный, несуществующий и мусорный id – одинаковый 404', async () => {
     const r = await app.inject({ method: 'GET', url: `${P}/branches/${ids.akadem}` });

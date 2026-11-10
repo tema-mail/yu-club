@@ -14,6 +14,12 @@ import { instantToLocal, systemClock, todayIn, type Clock } from '../../core/tim
 import { listBookableResources } from '../resources/index.ts';
 import { BRANCH_COLUMNS, BRANCH_FROM, isUuid, openIntervals, toBranchInfo, type BranchRow } from './index.ts';
 
+/** Конец интервала по местному времени: полночь следующего дня – «24:00» (закрытие в конце суток), а не «00:00». */
+function endOfDayTime(end: Date, tz: Parameters<typeof instantToLocal>[1], today: string): string {
+  const e = instantToLocal(end, tz);
+  return e.date > today && e.time === '00:00' ? '24:00' : e.time;
+}
+
 export interface NetworkPublicDeps {
   pool: Db;
   clock?: Clock;
@@ -157,7 +163,7 @@ export async function networkPublicRoutes(app: FastifyInstance, deps: NetworkPub
     );
     const out: BranchDetailDto = {
       ...dto,
-      hoursToday: intervals.map((i) => ({ start: instantToLocal(i.start, info.timezone).time, end: instantToLocal(i.end, info.timezone).time })),
+      hoursToday: intervals.map((i) => ({ start: instantToLocal(i.start, info.timezone).time, end: endOfDayTime(i.end, info.timezone, today) })),
       weeklyHours: weekly.rows,
     };
     cached(reply);

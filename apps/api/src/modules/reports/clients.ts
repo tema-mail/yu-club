@@ -5,7 +5,7 @@
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import {
-  loadMaskedClients, noData, okMetric, pageByKey, pageLimit, prevPeriod, resolveBranches, uuidCursor, windowsOf,
+  loadMaskedClients, noData, okMetric, oncePerSnapshot, pageByKey, pageLimit, prevPeriod, resolveBranches, uuidCursor, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type Period, type ReportEnv, type ReportParams, DAY_RULE,
 } from './framework.ts';
 
@@ -146,8 +146,13 @@ async function countNew(tx: Tx, s: NewProfilesScope): Promise<number> {
 
 const DAY_SEC = 86_400;
 
-async function intervalRows(tx: Tx, windows: readonly BranchWindow[]): Promise<Array<{ client_id: string; branch_id: string; days: number }>> {
-  if (windows.length === 0) return [];
+/** Один раз на снимок (oncePerSnapshot): детализация листает страницы, итог экрана читает те же строки. */
+function intervalRows(tx: Tx, windows: readonly BranchWindow[]): Promise<Array<{ client_id: string; branch_id: string; days: number }>> {
+  if (windows.length === 0) return Promise.resolve([]);
+  return oncePerSnapshot(tx, `clients.intervals:${JSON.stringify(arr(windows))}`, () => readIntervalRows(tx, windows));
+}
+
+async function readIntervalRows(tx: Tx, windows: readonly BranchWindow[]): Promise<Array<{ client_id: string; branch_id: string; days: number }>> {
   const [ids, starts, ends] = arr(windows);
   const r = await tx.query<{ client_id: string; branch_id: string; days: string }>(
     `WITH v AS (

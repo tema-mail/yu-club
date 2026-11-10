@@ -111,13 +111,28 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
   if (closed && mode === 'attendance') {
     // Версия уже учтена начислением или системной корректировкой – событие опоздало: снимок и журнал не трогаем.
     const last = (await tx.query<{ fact_version: number; rate_id: string | null }>(`SELECT fact_version, rate_id FROM journal.payroll_accruals WHERE shift_id = $1 ORDER BY fact_version DESC LIMIT 1`, [shift.id])).rows[0];
-    const corrected = await tx.query<{ v: number | null }>(`SELECT max((refs->>'factVersion')::int) AS v FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND refs ? 'closedPeriodId'`, [account.id, shift.id]);
+    // Учтённая версия – и у снимка без денег (0436): разница 0 тоже «обработана».
+    const corrected = await tx.query<{ v: number | null }>(
+      `SELECT greatest((SELECT max((refs->>'factVersion')::int) FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND refs ? 'closedPeriodId'),
+                       (SELECT max(fact_version) FROM journal.payroll_closed_snapshots WHERE shift_id = $2)) AS v`,
+      [account.id, shift.id],
+    );
     if ((eventFactVersion ?? shift.fact_version) <= Math.max(last?.fact_version ?? 0, corrected.rows[0]?.v ?? 0)) return;
     // Цель – по ставке, с которой период закрыт, а не по новой (K18 §3); ручные корректировки в сумму не входят: их разницей не поглощаем.
     // Ставка – самой свежей записи смены: начисления или прежней системной корректировки (refs.rateId); нет ни той, ни другой – на дату.
     // Ставку корректировка пишет в refs: по ней сверка (rpt_payroll_accruals, 0413) считает ожидаемую сумму, а не по ставке на дату.
     // Порог доплаты за выход – тоже (refs.feeMinMinutes, 0414): истории настройки нет, без снимка сверка не отличит пропавшую доплату.
-    const prior = (await tx.query<{ rate_id: string; v: number }>(`SELECT refs->>'rateId' AS rate_id, (refs->>'factVersion')::int AS v FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND refs ? 'closedPeriodId' AND refs ? 'rateId' ORDER BY v DESC LIMIT 1`, [account.id, shift.id])).rows[0];
+    // Снимок без денег (0436) – такая же запись смены, как корректировка: сверка берёт ставку и порог у самой свежей из них.
+    const prior = (
+      await tx.query<{ rate_id: string; v: number }>(
+        `SELECT rate_id, v FROM (
+           SELECT refs->>'rateId' AS rate_id, (refs->>'factVersion')::int AS v FROM journal.ledger_entries WHERE account_id = $1 AND ref_type = 'shift' AND ref_id = $2 AND refs ? 'closedPeriodId' AND refs ? 'rateId'
+           UNION ALL
+           SELECT rate_id::text, fact_version FROM journal.payroll_closed_snapshots WHERE shift_id = $2 AND rate_id IS NOT NULL
+         ) p ORDER BY v DESC LIMIT 1`,
+        [account.id, shift.id],
+      )
+    ).rows[0];
     const appliedId = prior && prior.v > (last?.fact_version ?? 0) ? prior.rate_id : (last?.rate_id ?? null);
     const applied = appliedId ? (await tx.query<{ hourly_kop: string; attendance_fee_kop: string }>(`SELECT hourly_kop, attendance_fee_kop FROM journal.staff_rates WHERE id = $1`, [appliedId])).rows[0] : undefined;
     const closedRate = applied ? { hourlyKop: Number(applied.hourly_kop), attendanceFeeKop: Number(applied.attendance_fee_kop) } : rate;
@@ -135,6 +150,13 @@ export async function settleShift(tx: Tx, shiftId: string, mode: 'attendance' | 
         idempotencyKey: `payroll-correction:shift:${shift.id}:${shift.fact_version}`,
         author: SYSTEM_AUTHOR,
       });
+    } else {
+      // Разница 0 (например, порог сменился, а правка часов дала ту же сумму): деньги не проводим, но снимок условий
+      // (ставка, порог) этой версии пишем – иначе сверка считает ожидаемую сумму по прежнему порогу (0436).
+      await tx.query(
+        `INSERT INTO journal.payroll_closed_snapshots (shift_id, fact_version, rate_id, fee_min_minutes, closed_period_id, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [shift.id, shift.fact_version, closedRateId, feeMin, closed.id, clock.now()],
+      );
     }
     return;
   }

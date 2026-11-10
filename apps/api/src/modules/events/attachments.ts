@@ -39,7 +39,8 @@ async function documentOfEvent(tx: Tx, ctx: AccessContext, eventId: string, atta
   try {
     a = (await getAttachment(tx, ctx, attachmentId)).attachment;
   } catch (err) {
-    if (err instanceof AppError && err.code === 'NOT_FOUND') throw badDocument();
+    // чужая зона (404) и вложение другого владельца без права чтения (403) неотличимы от несуществующего id (K1)
+    if (err instanceof AppError && (err.code === 'NOT_FOUND' || err.code === 'FORBIDDEN')) throw badDocument();
     throw err;
   }
   if (a.ownerType !== 'event' || a.ownerId !== eventId || a.status !== 'active') throw badDocument();
@@ -90,10 +91,13 @@ export async function setExpenseDocument(
   return result;
 }
 
-/** Живые документы расходов мероприятия: operationId → attachmentId (для GET /events/:id/money). */
+/** Живые документы расходов мероприятия: operationId → attachmentId (для GET /events/:id/money). Вложение, объявленное
+ *  недействительным уже после привязки, документом не считается: у расхода документа нет, пока не поставят новый. */
 export async function expenseDocumentsOf(db: Db, eventId: string): Promise<Map<string, string>> {
   const r = await db.query<{ operation_id: string; attachment_id: string }>(
-    `SELECT operation_id, attachment_id FROM app.event_expense_documents WHERE event_id = $1 AND replaced_at IS NULL`,
+    `SELECT d.operation_id, d.attachment_id FROM app.event_expense_documents d
+       JOIN app.attachments a ON a.id = d.attachment_id AND a.status = 'active'
+      WHERE d.event_id = $1 AND d.replaced_at IS NULL`,
     [eventId],
   );
   return new Map(r.rows.map((x) => [x.operation_id, x.attachment_id]));
