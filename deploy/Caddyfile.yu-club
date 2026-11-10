@@ -14,9 +14,10 @@ yu-club.168.113.179.49.nip.io {
 	request_body {
 		max_size 2MB
 	}
-	# только проверка живости – в api напрямую. Всё остальное, включая /api/public/v1/*, – в site:
-	# его прокси проверяет X-Requested-With и Origin (защита от подделки запросов) и сам ходит в API по API_URL.
-	handle /health {
+	# только проверки живости – в api напрямую: /health (версия) и /health/deep (база, outbox, worker, диск – scripts/monitor-check.sh).
+	# Всё остальное, включая /api/public/v1/*, – в site: его прокси проверяет X-Requested-With и Origin
+	# (защита от подделки запросов) и сам ходит в API по API_URL.
+	handle /health /health/deep {
 		reverse_proxy yu-club-api:3000
 	}
 	# Предпросмотр черновиков и внутренний API – только по внутренней сети (CRM → сайт → API, K22 §11, S4-07):
