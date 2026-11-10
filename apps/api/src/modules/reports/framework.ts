@@ -312,6 +312,21 @@ async function totalOf(db: Db | Tx, def: MetricDef, windows: readonly BranchWind
   return v;
 }
 
+/** Значение, вычисляемое один раз на снимок отчёта по ключу (тот же снимок и ключ – тот же результат): детализация, которая
+ *  считает все строки в памяти и режет страницу, не перечитывает их на каждой странице. Вне снимка – вычисляется каждый раз. */
+const snapshotMemo = new WeakMap<object, Map<string, Promise<unknown>>>();
+
+export function oncePerSnapshot<T>(db: Db | Tx, key: string, compute: () => Promise<T>): Promise<T> {
+  const memo = snapshotMemo.get(db);
+  if (!memo) return compute();
+  const hit = memo.get(key);
+  if (hit) return hit as Promise<T>;
+  const p = compute();
+  memo.set(key, p);
+  p.catch(() => memo.delete(key));
+  return p;
+}
+
 export async function detailPage<R extends pg.QueryResultRow>(
   db: Db | Tx,
   def: MetricDef,
@@ -532,6 +547,7 @@ export async function withReportTx<T>(pool: ReportsPool, fn: (tx: Tx) => Promise
     query: <R extends pg.QueryResultRow>(text: string, values?: unknown[]) => (stopped ? Promise.reject(stopError()) : c.query<R>(text, values)),
   };
   snapshotTotals.set(tx, new Map());
+  snapshotMemo.set(tx, new Map());
   try {
     await tx.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     await tx.query(`SET LOCAL statement_timeout = ${Math.trunc(timeoutMs)}`);

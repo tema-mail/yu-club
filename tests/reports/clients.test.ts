@@ -96,6 +96,24 @@ describe('клиенты (S4-66)', () => {
     await expect(fx.run(fx.owner(), (env) => clientsDetail(env, { period: OCT }, 'нет'))).rejects.toMatchObject({ code: 'REPORT_FILTER_INVALID' });
   });
 
+  it('детализация avgIntervalDays: строки интервалов читаются один раз на снимок, а не на каждой странице', async () => {
+    const seen = await fx.run(fx.owner(), async (env) => {
+      const orig = env.tx.query.bind(env.tx);
+      let reads = 0;
+      // тот же объект снимка (кэш привязан к нему): считаем только запрос интервалов
+      env.tx.query = ((text: string, values?: unknown[]) => {
+        if (text.includes('lag(t.planned_start)')) reads += 1;
+        return orig(text, values);
+      }) as typeof env.tx.query;
+      const first = await clientsDetail(env, { period: OCT }, 'avgIntervalDays', { limit: 1 });
+      const again = await clientsDetail(env, { period: OCT }, 'avgIntervalDays', { limit: 1 });
+      expect(again).toEqual(first);
+      await clientsReport(env, { period: OCT }); // итог экрана в том же снимке – те же строки
+      return reads;
+    });
+    expect(seen).toBe(2); // текущий период (детализация и итог) + прошлый период для сравнения в отчёте
+  });
+
   it('пустой период – no_data, интервал и посещений на клиента не считаются из нуля', async () => {
     const r = await fx.run(fx.owner(), (env) => clientsReport(env, { period: { from: d('2026-03-01'), to: d('2026-03-31') } }));
     expect(r.metrics.withVisit).toEqual({ state: 'no_data' });
