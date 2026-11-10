@@ -4,7 +4,8 @@
 // /notifications/new – форма сообщения (есть право отправки хоть одной категории), ?clientId=&bookingId= – предзаполнение;
 // /notifications/campaigns/{id} – черновик (форма) или карточка рассылки (K11 №203).
 // /notifications/templates – шаблоны (K11 №210–211): видят все с notifications.view, правит Владелец.
-// Чужая кампания – 404 от API, страница отвечает так же (K1). Имена авторов – из /staff при staff.view; без права – «Вы» и «Сотрудник».
+// Чужая кампания – 404 от API, страница отвечает так же (K1). Имена авторов приходят в ответах API (S4-80); /staff при staff.view –
+// только для списка «Автор» в фильтре.
 import Crm from '../../layouts/Crm.astro';
 import CampaignForm from '../../islands/CampaignForm.tsx';
 import NotificationJournal, { type JournalFilters } from '../../islands/NotificationJournal.tsx';
@@ -34,7 +35,7 @@ const templates = !notFound && (view === 'new' || view === 'templates' || campai
   ? (await serverCall<{ items: TemplateDto[] }>(cookie, `/notifications/templates${view === 'templates' ? '' : '?status=active'}`)).items : [];
 
 const tab = q.get('tab') === 'rows' ? 'rows' : 'campaigns';
-const keys = ['from', 'to', 'branchId', 'category', 'source', 'authorId', 'status', 'clientId', 'kind'] as const;
+const keys = ['from', 'to', 'branchId', 'category', 'source', 'authorId', 'status', 'clientId', 'kind', 'campaignId'] as const;
 const filters = Object.fromEntries(keys.map((k) => [k, (q.get(k) ?? '').trim()])) as unknown as JournalFilters;
 
 const staffNames: Record<string, string> = {};

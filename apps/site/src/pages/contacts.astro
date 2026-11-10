@@ -1,10 +1,11 @@
 ---
 // S4-122. /contacts/ (карта сайта 3.3, 19 §4.10): все открытые клубы – адрес, телефон, часы по недельному графику из network (K5 №3 weeklyHours),
 // текст вступления – страница CMS contacts_intro (K5 №212; не опубликована – без текста). Архивный и готовящийся клубы API не отдаёт – их нет.
-// Реквизиты оператора – когда появятся в данных (N-01); выдуманных нет.
+// Реквизиты оператора – из настроек сети legal.* (K7, K5 №218): блок только при заполненных полях, пустые строки не рисуются; выдуманных нет (N-01).
+// Реквизиты не грузятся – страница живёт без блока (клубы важнее), ошибка в лог.
 import Site from '../layouts/Site.astro';
 import { branchPath, site, type BranchDetailDto } from '../lib/api.ts';
-import { content, type PublicPage } from '../lib/content.ts';
+import { content, type PublicPage, type Requisites } from '../lib/content.ts';
 import { breadcrumbLd } from '../lib/jsonld.ts';
 import { renderRichText } from '../lib/rich-text.ts';
 
@@ -12,15 +13,37 @@ const DAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const { network, origin } = Astro.locals;
 let details: Map<string, BranchDetailDto> | null = null;
 let intro: PublicPage | null = null;
+let requisites: Requisites | null = null;
 try {
   const branches = (network ?? []).flatMap((c) => c.branches);
-  const [list, page] = await Promise.all([Promise.all(branches.map((b) => site.branch(b.id))), content.page('contacts_intro').catch(() => null)]);
+  const [list, page, req] = await Promise.all([
+    Promise.all(branches.map((b) => site.branch(b.id))),
+    content.page('contacts_intro').catch(() => null),
+    content.requisites().catch((e: unknown) => {
+      console.error('site: контакты – реквизиты из API не загрузились', e);
+      return null;
+    }),
+  ]);
   details = new Map(list.map((d) => [d.id, d]));
   intro = page;
+  requisites = req;
 } catch (e) {
   console.error('site: контакты – клубы из API не загрузились', e);
 }
 if (!network || !details) Astro.response.status = 503;
+
+/** Строки блока реквизитов – только заполненные; телефон и почта – ссылками. */
+type RequisiteRow = { label: string; value: string; href: string | null };
+const requisiteRows: RequisiteRow[] = [];
+if (requisites) {
+  const add = (label: string, value: string | null, href: string | null = null) => value && requisiteRows.push({ label, value, href });
+  add('Оператор', requisites.operatorName);
+  add('ИНН', requisites.inn);
+  add('ОГРН', requisites.ogrn);
+  add('Адрес', requisites.address);
+  add('Телефон', requisites.phone, requisites.phone ? `tel:${requisites.phone.replace(/[^\d+]/g, '')}` : null);
+  add('Почта', requisites.email, requisites.email ? `mailto:${requisites.email}` : null);
+}
 
 /** Недельный график строками: одинаковые дни подряд – диапазоном («Пн–Пт 10:00–22:00»), дней без записи – «выходной». */
 function weekText(hours: BranchDetailDto['weeklyHours']): string[] {
@@ -63,10 +86,22 @@ function weekText(hours: BranchDetailDto['weeklyHours']): string[] {
       </section>
     ))
   )}
+  {requisiteRows.length > 0 && (
+    <section class="yu-section" aria-labelledby="requisites">
+      <h2 id="requisites">Реквизиты</h2>
+      <dl class="yu-facts contacts-requisites" data-testid="contacts-requisites">
+        {requisiteRows.map((r) => (
+          <div><dt>{r.label}</dt><dd>{r.href ? <a href={r.href}>{r.value}</a> : r.value}</dd></div>
+        ))}
+      </dl>
+    </section>
+  )}
 </Site>
 
 <style>
   .contacts-intro { max-width: var(--yu-measure); }
   .contacts-club__phone { position: relative; z-index: 1; display: inline-flex; align-items: center; min-height: var(--yu-tap); justify-self: start; }
   .contacts-club__hours { margin: var(--yu-sp-2xs) 0 0; padding: 0; list-style: none; color: var(--yu-muted); font-size: var(--yu-fs-s); }
+  .contacts-requisites { max-width: var(--yu-measure); overflow-wrap: anywhere; }
+  .contacts-requisites a { display: inline-flex; align-items: center; min-height: var(--yu-tap); }
 </style>

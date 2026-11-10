@@ -1,7 +1,7 @@
 // Мок ленты событий CRM строго по apps/api/src/modules/notifications/staff-feed.ts и routes.crm.ts (13 §11, S4-28, D4-46):
 // GET /staff-feed (cursor, limit 1..50, unread=true|false), GET /staff-feed/unread-count, POST /staff-feed/:id/read (204),
 // POST /staff-feed/read-all { before } → { marked }. Видимость: адресная строка – только адресату; строка зоны – право строки
-// (equipment.view / notifications.view) в зоне филиала; чужое – 404. Порядок (occurredAt DESC, id DESC). Прочтение – своё у каждого.
+// (equipment.view / notifications.view / schedule.view / block.manage / event.view / shift.manage, 0441) в зоне филиала; чужое – 404. Порядок (occurredAt DESC, id DESC). Прочтение – своё у каждого.
 // Отличие от API (данные мока): id филиалов и сотрудников засева – не UUID. Сброс – вместе с POST /__test/reset (хук onRequest).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
@@ -14,10 +14,15 @@ export interface StaffFeedMockDeps {
   branches: () => BranchLite[];
 }
 
-type Kind = 'shift_changed' | 'repair_registered' | 'repair_closed' | 'service_notification_failed';
+type Kind =
+  | 'shift_changed' | 'repair_registered' | 'repair_closed' | 'service_notification_failed'
+  | 'booking_created' | 'booking_rescheduled' | 'booking_cancelled' | 'block_created'
+  | 'shift_unfilled' | 'event_preparation' | 'warranty_ending';
+type Action = 'equipment.view' | 'notifications.view' | 'schedule.view' | 'block.manage' | 'event.view' | 'shift.manage';
+type RefType = 'shift' | 'repair' | 'client' | 'booking' | 'resource_block' | 'event' | 'equipment' | 'branch';
 interface Row {
-  id: string; branchId: string; staffId: string | null; action: 'equipment.view' | 'notifications.view' | null;
-  kind: Kind; refType: 'shift' | 'repair' | 'client'; refId: string; title: string; body: string | null; occurredAt: string;
+  id: string; branchId: string; staffId: string | null; action: Action | null;
+  kind: Kind; refType: RefType; refId: string; title: string; body: string | null; occurredAt: string;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -38,6 +43,21 @@ function seed(): Row[] {
       title: 'Новый ремонт № Т-3', body: 'Приоритет высокий, частичный простой', occurredAt: '2026-11-10T03:00:00.000Z' },
     { id: fid(5), branchId: K, staffId: null, action: 'equipment.view', kind: 'repair_closed', refType: 'repair', refId: 'e7000000-0000-4000-8000-000000000003',
       title: 'Ремонт № Р-9 закрыт', body: null, occurredAt: '2026-11-09T03:00:00.000Z' },
+    // остальные события 13 §11 (staff-feed.ts, staff-feed-events.ts) – старше прочих, Анна их уже прочла (reset)
+    { id: fid(6), branchId: K, staffId: null, action: 'schedule.view', kind: 'booking_created', refType: 'booking', refId: 'b0000000-0000-4000-8000-000000000061',
+      title: 'Новая запись № 1045', body: 'VR-место 1, 12 ноября, 15:00–16:00, с сайта', occurredAt: '2026-11-08T09:00:00.000Z' },
+    { id: fid(7), branchId: K, staffId: null, action: 'schedule.view', kind: 'booking_rescheduled', refType: 'booking', refId: 'b0000000-0000-4000-8000-000000000062',
+      title: 'Перенос записи № 1046', body: 'Было: 12 ноября, 15:00–16:00. Стало: 13 ноября, 12:00–13:00, VR-место 2', occurredAt: '2026-11-08T08:00:00.000Z' },
+    { id: fid(8), branchId: K, staffId: null, action: 'schedule.view', kind: 'booking_cancelled', refType: 'booking', refId: 'b0000000-0000-4000-8000-000000000063',
+      title: 'Отмена записи № 1047', body: '12 ноября, 15:00–16:00, отменил клиент', occurredAt: '2026-11-08T07:00:00.000Z' },
+    { id: fid(9), branchId: K, staffId: null, action: 'block.manage', kind: 'block_created', refType: 'resource_block', refId: 'b1000000-0000-4000-8000-000000000001',
+      title: 'Блокировка ресурса: Ремонт', body: 'VR-место 1, 12 ноября, 15:00–19:00. Замена кабеля', occurredAt: '2026-11-08T06:00:00.000Z' },
+    { id: fid(10), branchId: K, staffId: null, action: 'event.view', kind: 'event_preparation', refType: 'event', refId: 'ee000000-0000-4000-8000-000000000001',
+      title: 'Мероприятие № EV-0001: подготовка', body: 'Выпускной, 12 ноября, 14:00, не сделано пунктов чек-листа: 2', occurredAt: '2026-11-08T05:00:00.000Z' },
+    { id: fid(11), branchId: K, staffId: null, action: 'equipment.view', kind: 'warranty_ending', refType: 'equipment', refId: 'e0000000-0000-4000-8000-0000000000e1',
+      title: 'Гарантия на Шлем заканчивается 10.12.2026', body: 'INV-000101, гарантия производителя до 10.12.2026', occurredAt: '2026-11-08T04:00:00.000Z' },
+    { id: fid(12), branchId: K, staffId: null, action: 'shift.manage', kind: 'shift_unfilled', refType: 'branch', refId: K,
+      title: 'Смена 12 ноября не заполнена', body: 'Филиал открыт 10:00–22:00, ни одного сотрудника на смене', occurredAt: '2026-11-08T03:00:00.000Z' },
   ];
 }
 
@@ -45,7 +65,7 @@ let rows: Row[] = [];
 let reads = new Map<string, Set<string>>();
 function reset(): void {
   rows = seed();
-  reads = new Map([['s-admin', new Set([fid(5)])]]); // закрытый ремонт Анна уже прочла
+  reads = new Map([['s-admin', new Set([5, 6, 7, 8, 9, 10, 11].map(fid))]]); // закрытый ремонт и события 13 §11 Анна уже прочла
 }
 
 const fail = (reply: FastifyReply, status: number, code: string, message: string, details?: Record<string, unknown>) =>

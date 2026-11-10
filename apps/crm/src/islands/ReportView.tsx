@@ -5,12 +5,12 @@
 // Смена города сбрасывает филиал, смена филиала – зависимые фильтры. Сравнение при нулевой базе – «–», недоступное – словами.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, API_PREFIX } from '../lib/api.ts';
-import ReportChart from './ReportChart.tsx';
+import ReportChart, { type ChartSeries, type ReportChartProps } from './ReportChart.tsx';
 import ReportDetail from './ReportDetail.tsx';
 import UtilizationCalendar from './UtilizationCalendar.tsx';
 import {
-  BOOKING_STATUS_LABEL, METHOD_LABEL, RESOURCE_TYPE_LABEL, dateBasisOf, daysIn, fmtAt, fmtDelta, fmtMetric, fmtPeriod, metricTitle, presets, reportError, todayIn,
-  type Metric, type ReportInfo, type ReportResult,
+  BOOKING_STATUS_LABEL, METHOD_LABEL, RESOURCE_TYPE_LABEL, dateBasisOf, daysIn, fmtAt, fmtDelta, fmtMetric, fmtPeriod, metricTitle, presets, reportError, reportInfo, todayIn,
+  type Metric, type MetricUnit, type ReportInfo, type ReportResult, type SeriesPoint,
 } from '../lib/reports.ts';
 
 export interface ZoneBranch { id: string; name: string; cityId: string; cityName: string; timezone: string }
@@ -98,7 +98,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
     setState('loading');
     try {
       const p = reportQuery(next);
-      if (report.key === 'utilization') p.set('series', 'day'); // график по дням (K11 №240 series)
+      p.set('series', 'day'); // график по дням у любого отчёта, где API отдаёт series (K11 №240); без series – графика нет
       const r = await getJson<ReportResult>(`/reports/${report.key}?${p}`, c.signal);
       if (mine !== seq.current) return; // ответ на прежние фильтры – не показываем
       setApplied(next);
@@ -149,6 +149,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
   const metrics = result ? Object.entries(result.metrics) : [];
   const labels = result?.labels ? Object.entries(result.labels) : [];
   const sections = sectionsOf(report.key, metrics);
+  const chart = result ? chartOf(report, result, metric) : null;
 
   return (
     <div class="rp" data-testid="report" data-state={state} data-period={result ? `${result.period.from}..${result.period.to}` : ''}>
@@ -258,14 +259,11 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
               </table>
             </div>
           ))}
-          {result.series && result.series.points.length > 1 && (
-            <ReportChart title="Загрузка по дням" unit="minutes" buckets={result.series.points.map((x) => ({ key: x.bucket, label: x.bucket.slice(8), period: fmtPeriod({ from: x.bucket, to: x.bucket }) }))}
-              series={[
-                { key: 'booked', label: 'забронировано', color: '#7aa2e8', colorName: 'Голубой', values: result.series.points.map((x) => x.bookedMin) },
-                { key: 'used', label: 'использовано', color: '#1f4fb8', colorName: 'Синий', values: result.series.points.map((x) => x.usedMin) },
-              ]}
-              pickLabel="Единицы за этот день"
-              onPick={(day, label) => { setMetric('used'); setSegment({ key: `day:${day}`, label }); syncUrl(f, 'used'); }} />
+          {chart && (
+            <>
+              <ReportChart {...chart.props} {...(chart.metric ? { onPick: (day: string, label: string) => { setMetric(chart.metric!); setSegment({ key: `day:${day}`, label }); syncUrl(f, chart.metric!); } } : {})} />
+              {result.series?.zoneNote && <p class="yc-field__hint" style="margin:0">{result.series.zoneNote}</p>}
+            </>
           )}
           {result.rows && result.rows.length > 0 && (
             <div class="rp-units" style="display:grid;gap:var(--yc-sp-xs);min-width:0">
@@ -338,4 +336,49 @@ function prevText(m: Metric): string {
   if (m.state !== 'ok') return '–';
   if (m.prev === null || m.prev === undefined) return 'нет сравнения';
   return fmtMetric({ ...m, value: m.prev });
+}
+
+// ---- график (S4-91, S4-96; K11 №240): любой отчёт с series – компонент один. Точка: bucket (день или час) и числа показателей.
+// Ряд подписывается именем показателя отчёта (METRIC_TITLES), единица – из самого показателя (деньги – рубли, время – минуты);
+// ряды с другой единицей, чем у первого, не рисуются – один график не мешает рубли с минутами. Столбец дня открывает
+// записи сегмента day:… у показателя ряда (segment.ts), если у отчёта есть измерение day.
+
+const PALETTE: Array<[string, string]> = [['#7aa2e8', 'Голубой'], ['#1f4fb8', 'Синий'], ['#e08a3c', 'Оранжевый'], ['#2f9e63', 'Зелёный'], ['#8b5cf6', 'Фиолетовый'], ['#6b7280', 'Серый']];
+/** Какие поля точки рисовать и какой показатель открывает сегмент: у загрузки – забронировано и использовано (доступное время задавило бы столбцы). */
+const CHART_KEYS: Record<string, { keys: string[]; metric: string; pickLabel: string }> = { utilization: { keys: ['bookedMin', 'usedMin'], metric: 'used', pickLabel: 'Единицы за этот день' } };
+const SUFFIX_UNIT: Array<[string, MetricUnit]> = [['Min', 'minutes'], ['Minutes', 'minutes'], ['Kop', 'kop'], ['Centi', 'centi'], ['Count', 'count'], ['Pct', 'pct']];
+
+/** Поле точки → показатель отчёта: usedMin → used, incomeSession → incomeSession; единица – показателя, иначе по суффиксу, иначе штуки. */
+function metricOfKey(key: string, metrics: Record<string, Metric>): { metric: string | null; unit: MetricUnit } {
+  const names = [key, ...SUFFIX_UNIT.filter(([s]) => key.endsWith(s) && key.length > s.length).map(([s]) => key.slice(0, -s.length))];
+  const metric = names.find((n) => Object.hasOwn(metrics, n)) ?? null;
+  const m = metric ? metrics[metric] : undefined;
+  if (m?.state === 'ok') return { metric, unit: m.unit };
+  return { metric, unit: SUFFIX_UNIT.find(([s]) => key.endsWith(s))?.[1] ?? 'count' };
+}
+const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+const numbersOf = (p: SeriesPoint): Record<string, number> => Object.fromEntries(Object.entries(p).filter(([k, v]) => k !== 'bucket' && typeof v === 'number')) as Record<string, number>;
+
+function chartOf(report: Pick<ReportInfo, 'key' | 'title'>, r: ReportResult, selected: string): { props: Omit<ReportChartProps, 'onPick'>; metric: string | null } | null {
+  const points = r.series?.points ?? [];
+  if (points.length < 2) return null;
+  const plan = CHART_KEYS[report.key];
+  const keys = (plan?.keys ?? Object.keys(numbersOf(points[0]!))).filter((k) => points.some((p) => typeof p[k] === 'number')).slice(0, PALETTE.length);
+  if (keys.length === 0) return null;
+  const first = metricOfKey(keys[0]!, r.metrics);
+  const series: ChartSeries[] = [];
+  const drawnMetrics: string[] = [];
+  keys.forEach((k) => {
+    const { metric, unit } = metricOfKey(k, r.metrics);
+    if (unit !== first.unit) return;
+    const [color, colorName] = PALETTE[series.length]!;
+    series.push({ key: k, label: lowerFirst(metricTitle(metric ?? k)), color, colorName, values: points.map((p) => Number(p[k] ?? 0)) });
+    if (metric) drawnMetrics.push(metric);
+  });
+  const byHour = points.every((p) => /^\d{2}$/.test(p.bucket));
+  const buckets = points.map((p) => ({ key: p.bucket, label: byHour ? p.bucket : p.bucket.slice(8), period: byHour ? `${p.bucket}:00` : fmtPeriod({ from: p.bucket, to: p.bucket }) }));
+  const canPick = !byHour && (reportInfo(report.key)?.segments ?? []).includes('day');
+  const metric = canPick ? (plan?.metric ?? (drawnMetrics.includes(selected) ? selected : drawnMetrics[0] ?? null)) : null;
+  const title = report.key === 'utilization' ? `Загрузка по ${byHour ? 'часам' : 'дням'}` : `${report.title} по ${byHour ? 'часам' : 'дням'}`;
+  return { props: { title, unit: first.unit, buckets, series, pickLabel: plan?.pickLabel ?? 'Записи за этот день' }, metric };
 }

@@ -3,8 +3,10 @@
 // /info/{key}/ (этот файл); прямой заход на /info/… – 301 на канонический (там же). Текст – только через rich-text.ts.
 // Не опубликована: юридическая и правила – «Документ готовится» (19 §4.1, 4.10), «О клубе» – 404 (в карте сайта её тогда нет).
 // Индексация – K23 §2: юридические noindex всегда, «О клубе» и правила – индекс.
+// Юридические: блок «Оператор персональных данных» из настроек legal.* (K5 №218) – оператор назван всегда (152-ФЗ ст. 18.1),
+// даже если в тексте юриста его нет; пустые поля не рисуются, реквизиты не загрузились – страница без блока, ошибка в лог.
 import Site from '../../layouts/Site.astro';
-import { content, type PageKey, type PublicPage } from '../../lib/content.ts';
+import { content, type PageKey, type PublicPage, type Requisites } from '../../lib/content.ts';
 import { breadcrumbLd } from '../../lib/jsonld.ts';
 import { renderRichText } from '../../lib/rich-text.ts';
 import { metaFor } from '../../lib/seo.ts';
@@ -33,6 +35,24 @@ try {
   Astro.response.status = 503;
 }
 if (!failed && !page && key === 'about') return Astro.rewrite('/404/');
+let requisites: Requisites | null = null;
+if (def.legal) {
+  try {
+    requisites = await content.requisites();
+  } catch (e) {
+    console.error('site: реквизиты оператора не загрузились – юридическая страница без блока', e);
+  }
+}
+const operatorLines = requisites
+  ? ([
+      requisites.operatorName,
+      requisites.inn && `ИНН ${requisites.inn}`,
+      requisites.ogrn && `${requisites.ogrn.length === 15 ? 'ОГРНИП' : 'ОГРН'} ${requisites.ogrn}`,
+      requisites.address && `Адрес: ${requisites.address}`,
+      requisites.phone && `Телефон: ${requisites.phone}`,
+      requisites.email && `Почта для обращений по персональным данным: ${requisites.email}`,
+    ].filter(Boolean) as string[])
+  : [];
 
 const path = `/${key}/`;
 const title = page?.title || def.title;
@@ -56,11 +76,18 @@ const updated = page ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month:
     ) : (
       <p class="yu-notice" role="status" data-testid="doc-pending">Документ готовится и появится здесь до открытия онлайн-записи.</p>
     )}
+    {operatorLines.length > 0 && (
+      <section class="info__operator" aria-labelledby="operator-title" data-testid="operator">
+        <h2 id="operator-title">Оператор персональных данных</h2>
+        <ul>{operatorLines.map((l) => <li>{l}</li>)}</ul>
+      </section>
+    )}
   </article>
 </Site>
 
 <style>
   .info { display: grid; gap: var(--yu-sp-m); max-width: 760px; overflow-wrap: anywhere; }
   .info > * { margin: 0; min-width: 0; }
+  .info__operator ul { margin: 0; padding-left: 1.2em; }
   .info__meta { color: var(--yu-dim); font-size: var(--yu-fs-s); }
 </style>

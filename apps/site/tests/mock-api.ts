@@ -82,6 +82,10 @@ export function buildMock() {
         { path: '/novosibirsk/krasny-prospekt/', title: null, lastmod: '2026-11-02T10:00:00.000Z' },
         { path: '/news/live-news/', title: 'Живая новость', lastmod: '2026-11-03T10:00:00.000Z' },
         { path: '/games/vr/alyx/', title: 'Half-Life: Alyx', lastmod: '2026-11-03T10:00:00.000Z' },
+        // Живые турниры mock-content.ts; завершённый (spring-cup), отложенный и черновик API в карту не отдаёт – с ними хаб /tournaments/ входит в карту (K23 §2).
+        { path: '/tournaments/cs2-cup-december/', title: 'Кубок сети по Counter-Strike 2', lastmod: '2026-11-06T10:00:00.000Z' },
+        { path: '/tournaments/dota-autumn/', title: 'Осенний турнир по Dota 2', lastmod: '2026-11-05T10:00:00.000Z' },
+        { path: '/tournaments/fifa-lenina/', title: 'FIFA на Ленина', lastmod: '2026-11-08T10:00:00.000Z' },
       ],
     };
   });

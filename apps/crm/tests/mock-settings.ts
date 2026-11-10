@@ -28,7 +28,8 @@ type C =
   | { kind: 'integer'; min: number | null; max: number | null; nullable: boolean }
   | { kind: 'boolean' | 'list' | 'time' | 'datetime' | 'hours'; nullable: boolean }
   | { kind: 'enum'; options: string[]; nullable: boolean }
-  | { kind: 'multi'; options: string[]; minItems: number; nullable: boolean };
+  | { kind: 'multi'; options: string[]; minItems: number; nullable: boolean }
+  | { kind: 'text'; maxLength: number; nullable: boolean; pattern?: RegExp };
 interface Def { levels: Stored[]; editAction: string; systemDefault: unknown; constraints: C }
 const NB: Stored[] = ['network', 'branch'];
 const N: Stored[] = ['network'];
@@ -73,6 +74,13 @@ const DEFS: Record<string, Def> = {
   'loyalty.accrue_for_points': d(bool, false, N, NET),
   'loyalty.accrue_for_certificate': d(bool, true, N, NET),
   'payroll.penalties_enabled': d(bool, false, N, NET),
+  // Реквизиты оператора (K7 «Реквизиты оператора»): текст с пределом длины, пустая строка – «не задано»; ИНН и ОГРН – по форме.
+  'legal.operator_name': d({ kind: 'text', maxLength: 200, nullable: false }, '', N, NET),
+  'legal.inn': d({ kind: 'text', maxLength: 12, nullable: false, pattern: /^(\d{10}|\d{12})?$/ }, '', N, NET),
+  'legal.ogrn': d({ kind: 'text', maxLength: 15, nullable: false, pattern: /^(\d{13}|\d{15})?$/ }, '', N, NET),
+  'legal.address': d({ kind: 'text', maxLength: 300, nullable: false }, '', N, NET),
+  'legal.phone': d({ kind: 'text', maxLength: 30, nullable: false }, '', N, NET),
+  'legal.email': d({ kind: 'text', maxLength: 120, nullable: false, pattern: /^$|^[^\s@]+@[^\s@]+\.[^\s@]+$/ }, '', N, NET),
 };
 const KEYS = Object.keys(DEFS);
 
@@ -86,6 +94,7 @@ function valid(c: C, v: unknown): boolean {
     case 'multi': return Array.isArray(v) && v.length >= c.minItems && v.every((x) => c.options.includes(x)) && new Set(v).size === v.length;
     case 'list': return Array.isArray(v) && v.every((x) => typeof x === 'string' && /^[a-z][a-z0-9_]*$/.test(x)) && new Set(v).size === v.length;
     case 'time': return typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+    case 'text': return typeof v === 'string' && v.length <= c.maxLength && (!c.pattern || c.pattern.test(v));
     case 'datetime': return typeof v === 'string' && !Number.isNaN(Date.parse(v)) && v.endsWith('Z');
     case 'hours': {
       const h = v as { open?: unknown; close?: unknown };

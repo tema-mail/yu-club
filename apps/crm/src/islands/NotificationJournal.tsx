@@ -3,6 +3,8 @@
 // период, филиал, категория, источник, автор, статус, клиент; адрес хранит условия, «Сбросить» – ссылка без них.
 // Время – в зоне филиала строки (K8), у сетевой – в зоне контекста. Пустая выдача показывает условия и сброс (13 §7.4),
 // ошибка загрузки – отдельно, с повтором. Повтор критичного сервисного – только при notifications.retry, с причиной, один ключ на попытку.
+// Имя автора – из ответа API (authorName, решение S4-80: видно всем с notifications.view); staffNames – только для списка «Автор» в фильтре.
+// campaignId (K11 №208) – строки одной рассылки: ссылка из карточки рассылки, условие держится скрытым полем формы.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { browserCall } from '../lib/api.ts';
 import {
@@ -11,7 +13,7 @@ import {
 } from '../lib/notifications.ts';
 
 export interface JournalFilters {
-  from: string; to: string; branchId: string; category: string; source: string; authorId: string; status: string; clientId: string; kind: string;
+  from: string; to: string; branchId: string; category: string; source: string; authorId: string; status: string; clientId: string; kind: string; campaignId: string;
 }
 export interface NotificationJournalProps {
   tab: 'campaigns' | 'rows';
@@ -43,9 +45,9 @@ export default function NotificationJournal({ tab, filters: f, branches, timezon
   const branchName = (id: string | null) => (id ? (branches.find((b) => b.id === id)?.name ?? 'Филиал') : 'Вся сеть');
   const cityName = (id: string) => branches.find((b) => b.cityId === id)?.cityName ?? 'Город';
   const tzOf = (branchId: string | null) => branches.find((b) => b.id === branchId)?.timezone ?? timezone;
-  const author = (id: string | null) => (!id ? 'Система' : id === meId ? 'Вы' : (staffNames[id] ?? 'Сотрудник'));
+  const author = (id: string | null, name?: string | null) => (!id ? 'Система' : id === meId ? 'Вы' : (name ?? staffNames[id] ?? 'Сотрудник'));
   const periodTz = tzOf(f.branchId || null);
-  const clientBad = f.clientId !== '' && !UUID.test(f.clientId);
+  const clientBad = (f.clientId !== '' && !UUID.test(f.clientId)) || (tab === 'rows' && f.campaignId !== '' && !UUID.test(f.campaignId));
 
   const query = (after: string | null) => {
     const p = new URLSearchParams({ limit: String(PAGE) });
@@ -54,13 +56,14 @@ export default function NotificationJournal({ tab, filters: f, branches, timezon
     for (const k of ['branchId', 'category', 'source', 'status', 'clientId'] as const) if (f[k]) p.set(k, f[k]);
     if (tab === 'campaigns' && f.authorId) p.set('authorId', f.authorId);
     if (tab === 'rows' && f.kind) p.set('kind', f.kind);
+    if (tab === 'rows' && f.campaignId) p.set('campaignId', f.campaignId);
     if (after) p.set('cursor', after);
     return p;
   };
   const load = async (after: string | null) => {
     if (clientBad) {
       setState('error');
-      setError('ID клиента – 36 символов вида 1b4e28ba-2fa1-11d2-883f-0016d3cca427. Скопируйте его из карточки клиента.');
+      setError(f.clientId !== '' && !UUID.test(f.clientId) ? 'ID клиента – 36 символов вида 1b4e28ba-2fa1-11d2-883f-0016d3cca427. Скопируйте его из карточки клиента.' : 'Ссылка на рассылку неверная. Откройте строки из карточки рассылки.');
       return;
     }
     if (!after) setState('loading');
@@ -112,6 +115,7 @@ export default function NotificationJournal({ tab, filters: f, branches, timezon
   if (f.status) applied.push(`статус «${(tab === 'campaigns' ? CAMPAIGN_STATUS[f.status as CampaignStatus] : ROW_STATUS[f.status as RowStatus]) ?? f.status}»`);
   if (tab === 'rows' && f.kind) applied.push(`вид «${KIND_LABEL[f.kind] ?? f.kind}»`);
   if (f.clientId) applied.push('один клиент');
+  if (tab === 'rows' && f.campaignId) applied.push('одна рассылка');
   const reset = `/notifications${tab === 'rows' ? '?tab=rows' : ''}`;
   const statuses = tab === 'campaigns' ? Object.entries(CAMPAIGN_STATUS) : Object.entries(ROW_STATUS).filter(([k]) => k !== 'delivered');
   const categories = tab === 'campaigns' ? (['service', 'marketing'] as const) : (['service', 'reminder', 'marketing'] as const);
@@ -122,6 +126,7 @@ export default function NotificationJournal({ tab, filters: f, branches, timezon
         <h2 id="nt-filter">Фильтры</h2>
         <form class="yc-eq__filters" method="get" action="/notifications">
           {tab === 'rows' && <input type="hidden" name="tab" value="rows" />}
+          {tab === 'rows' && f.campaignId && <input type="hidden" name="campaignId" value={f.campaignId} />}
           <label class="yc-field"><span class="yc-field__label">Период с</span><input class="yc-input" type="date" name="from" value={f.from} /></label>
           <label class="yc-field"><span class="yc-field__label">по</span><input class="yc-input" type="date" name="to" value={f.to} /></label>
           {branches.length > 1 && (
@@ -183,7 +188,7 @@ export default function NotificationJournal({ tab, filters: f, branches, timezon
                     <td class="yc-table__main"><a href={`/notifications/campaigns/${c.id}`}>{c.title}</a></td>
                     <td data-label="Создана / отправка">{fmtAt(c.createdAt, tz)}<br />{c.plannedAt ? `план ${fmtAt(c.plannedAt, tz)}` : fmtAt(c.confirmedAt, tz)}</td>
                     <td data-label="Категория">{CATEGORY_LABEL[c.category]}</td>
-                    <td data-label="Источник, автор">{SOURCE_LABEL.staff}: {author(c.createdBy)}</td>
+                    <td data-label="Источник, автор">{SOURCE_LABEL.staff}: {author(c.createdBy, c.authorName)}</td>
                     <td data-label="Аудитория">{describeAudience(c.audience, { branch: branchName, city: cityName })}</td>
                     <td data-label="Адресатов">{c.total ?? '–'}</td>
                     <td data-label="Отправлено / центр / исключено / ошибка" data-testid="counters">{`${c.counters.sent} / ${c.counters.inboxOnly} / ${c.counters.excluded} / ${c.counters.error}`}</td>
@@ -205,7 +210,7 @@ export default function NotificationJournal({ tab, filters: f, branches, timezon
                     <td class="yc-table__main">{n.title}</td>
                     <td data-label="Создано / отправлено">{fmtAt(n.plannedAt, tz)}<br />{fmtAt(n.sentAt, tz)}</td>
                     <td data-label="Категория, вид">{CATEGORY_LABEL[n.category]}<br />{KIND_LABEL[n.kind] ?? n.kind}{n.retryOf ? ' (повтор)' : ''}</td>
-                    <td data-label="Источник, автор">{n.source === 'system' ? SOURCE_LABEL.system : `${SOURCE_LABEL.staff}: ${author(n.initiatorId)}`}</td>
+                    <td data-label="Источник, автор">{n.source === 'system' ? SOURCE_LABEL.system : `${SOURCE_LABEL.staff}: ${author(n.initiatorId, n.authorName)}`}</td>
                     <td data-label="Получатель, филиал"><a href={`/clients/${n.clientId}`}>Карточка клиента</a><br />{branchName(n.branchId)}</td>
                     <td data-label="Статус">
                       <span class={`yc-badge yc-badge--${ROW_BADGE[n.status] ?? 'archived'}`}>{ROW_STATUS[n.status] ?? n.status}</span>

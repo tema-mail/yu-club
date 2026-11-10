@@ -2,8 +2,9 @@
 // пути, параметры (type/direction – перечисления, city/branch – UUID, иначе 400 VALIDATION_FAILED), ответы DTO
 // (publications.ts, games.ts, pages.ts, blocks.ts), 404 NOT_FOUND / PAGE_KEY_UNKNOWN, Cache-Control: public, max-age=60 и ETag с 304.
 // Охват (K22 §4): без выбора – всё; город – сеть + город + его филиалы; филиал – сеть + его город + он сам.
-// Срок показа – от «сейчас» процесса (зафиксирован tests/support/e2e.ts). Черновики здесь не лежат вовсе: API их не отдаёт.
-// Только для e2e: POST /__mock/content { advertisingConsent?: boolean, home?: 'full' | 'empty' } – переключатели состояния.
+// Срок показа – от «сейчас» процесса (зафиксирован tests/support/e2e.ts). Черновик лежит с флагом draft и не отдаётся ни одним маршрутом –
+// как `p.status = 'published'` в publications.ts: e2e проверяет, что сайт его не показывает.
+// Только для e2e: POST /__mock/content { advertisingConsent?: boolean, home?: 'full' | 'empty', requisites?: 'full' | 'empty' } – переключатели состояния.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash } from 'node:crypto';
 
@@ -32,6 +33,8 @@ interface Pub {
   id: string; type: 'news' | 'promotion' | 'giveaway' | 'tournament'; slug: string; title: string; lead: string; body: string; scope: Scope;
   from: number; to: number | null; indexable?: boolean; eventDate?: number; conditions?: string; restrictions?: string; ctaLabel?: string; ctaUrl?: string;
   resultsDate?: number; prize?: string; rulesBody?: string; rulesPdf?: boolean; version: string;
+  /** Черновик без живой версии: API его не отдаёт (status ≠ 'published'). */
+  draft?: boolean;
 }
 
 const PUBS: Pub[] = [
@@ -43,6 +46,14 @@ const PUBS: Pub[] = [
   { id: 'cccccccc-0000-4000-8000-000000000012', type: 'promotion', slug: 'summer-promo', title: 'Летняя акция', lead: 'Акция прошла летом.', body: 'Спасибо, что были с нами.', scope: { type: 'network' }, from: -120, to: -30, conditions: 'Летом.', version: 'v1' },
   { id: 'cccccccc-0000-4000-8000-000000000021', type: 'giveaway', slug: 'autumn-giveaway', title: 'Осенний розыгрыш', lead: 'Разыгрываем три часа в комнате PS5.', body: 'Подпишитесь на клуб и запишитесь на любой сеанс до конца ноября.', scope: { type: 'city', ids: [NSK] }, from: -4, to: 25, eventDate: 20, resultsDate: 26, prize: 'Три часа в комнате PS5 на компанию', rulesBody: 'Организатор – Ю-Клуб. Участие бесплатное.', version: 'v1' },
   { id: 'cccccccc-0000-4000-8000-000000000022', type: 'giveaway', slug: 'pdf-giveaway', title: 'Розыгрыш с правилами в PDF', lead: 'Правила – файлом.', body: 'Условия в правилах.', scope: { type: 'network' }, from: -2, to: 10, resultsDate: 12, prize: 'Сертификат на 1000 ₽', rulesPdf: true, version: 'v1' },
+  // Турниры (S4-116): предстоящий сетевой с кнопкой, прошедший городской с итогами в тексте, предстоящий одного клуба (Event JSON-LD),
+  // завершённый (срок показа вышел – плашка, noindex, не в списке), отложенный (publishFrom впереди – 404) и черновик (не отдаётся).
+  { id: 'cccccccc-0000-4000-8000-000000000071', type: 'tournament', slug: 'cs2-cup-december', title: 'Кубок сети по Counter-Strike 2', lead: 'Командный турнир 5×5 во всех клубах сети.', body: 'Заявки от команд принимают администраторы клубов.\n\n[Расписание](/schedule/)', scope: { type: 'network' }, from: -5, to: null, eventDate: 30, ctaLabel: 'Подать заявку', ctaUrl: '/schedule/', version: 'v1' },
+  { id: 'cccccccc-0000-4000-8000-000000000072', type: 'tournament', slug: 'dota-autumn', title: 'Осенний турнир по Dota 2', lead: 'Турнир прошёл в клубах Новосибирска.', body: '**Итоги:** 1 место – команда «Север», 2 место – «Академ».', scope: { type: 'city', ids: [NSK] }, from: -20, to: null, eventDate: -7, version: 'v1' },
+  { id: 'cccccccc-0000-4000-8000-000000000073', type: 'tournament', slug: 'fifa-lenina', title: 'FIFA на Ленина', lead: 'Турнир один на один на PlayStation 5.', body: 'Регистрация у администратора клуба.', scope: { type: 'branch', ids: [LENINA] }, from: -3, to: null, eventDate: 10, version: 'v1' },
+  { id: 'cccccccc-0000-4000-8000-000000000074', type: 'tournament', slug: 'spring-cup', title: 'Весенний кубок', lead: 'Турнир весны.', body: 'Итоги опубликованы весной.', scope: { type: 'network' }, from: -200, to: -100, eventDate: -150, ctaLabel: 'Подать заявку', ctaUrl: '/schedule/', version: 'v1' },
+  { id: 'cccccccc-0000-4000-8000-000000000075', type: 'tournament', slug: 'future-cup', title: 'Будущий турнир', lead: 'Ещё не анонсирован.', body: 'x', scope: { type: 'network' }, from: 3, to: null, eventDate: 40, version: 'v1' },
+  { id: 'cccccccc-0000-4000-8000-000000000076', type: 'tournament', slug: 'draft-cup', title: 'ЧЕРНОВИК турнира', lead: 'Не опубликован.', body: 'x', scope: { type: 'network' }, from: -1, to: null, eventDate: 5, draft: true, version: 'v1' },
 ];
 
 interface Game { id: string; direction: 'pc' | 'vr' | 'playstation'; slug: string | null; title: string; short: string; full: string | null; genres: string[]; ageRating: string | null; platforms: string[]; at: Record<string, string | null> }
@@ -71,7 +82,10 @@ const BRANCH_PAGES: Record<string, unknown> = {
   [LENINA]: { description: 'Клуб в центре Томска, **второй этаж**.', gallery: [M(41), M(42)], features: ['Парковка у входа', 'Кофе-автомат'], howToGet: 'Вход со двора, домофон 12.', postal: { street: 'проспект Ленина, 80', locality: 'Томск', region: 'Томская область', postalCode: '634050' }, geo: { lat: 56.4847, lng: 84.9482 } },
 };
 
-const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty' };
+const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty', requisites: 'full' as 'full' | 'empty' };
+// №218: реквизиты оператора из настроек сети legal.* (K7) – заданные Владельцем; ОГРН и почта не заданы → null. 'empty' – как на старте сети.
+const REQUISITES = { operatorName: 'ООО «Ю-Клуб»', inn: '5405123456', ogrn: null, address: '630099, Новосибирск, Красный проспект, 25', phone: '+7 383 000-00-00', email: null };
+const NO_REQUISITES = { operatorName: null, inn: null, ogrn: null, address: null, phone: null, email: null };
 /** Живая версия согласия на рекламу (K5 №215) – её же пишет вход и настройки в журнал согласий (mock-clients.ts), как legalVersions в API. */
 export const liveAdvertisingVersion = () => (state.advertisingConsent ? PAGES['advertising-consent']!.documentVersion : null);
 
@@ -83,8 +97,8 @@ function inScope(s: Scope, deps: ContentDeps, q: { city?: string; branch?: strin
   return s.type === 'city' ? s.ids.includes(city ?? '') : s.ids.some((b) => branches.includes(b));
 }
 
-/** Действует сейчас: дни – от «сейчас» процесса. */
-const live = (p: Pub) => p.from <= 0 && (p.to === null || p.to > 0);
+/** Опубликовано и действует сейчас: дни – от «сейчас» процесса; черновик – никогда. */
+const live = (p: Pub) => !p.draft && p.from <= 0 && (p.to === null || p.to > 0);
 function card(p: Pub) {
   return {
     id: p.id, type: p.type, slug: p.slug, title: p.title, lead: p.lead, cover: media(M(Number(p.id.slice(-2))), `Обложка: ${p.title}`),
@@ -113,7 +127,14 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
     const b = (req.body ?? {}) as Partial<typeof state>;
     if (typeof b.advertisingConsent === 'boolean') state.advertisingConsent = b.advertisingConsent;
     if (b.home === 'full' || b.home === 'empty') state.home = b.home;
+    if (b.requisites === 'full' || b.requisites === 'empty') state.requisites = b.requisites;
     return state;
+  });
+
+  // №218: ETag – по значениям (у настроек версий сущностей нет)
+  app.get(`${P}/content/requisites`, async (req, reply) => {
+    const body = state.requisites === 'full' ? REQUISITES : NO_REQUISITES;
+    return cached(req, reply, [JSON.stringify(body)], body);
   });
 
   const list = (type: Pub['type'] | undefined, q: { city?: string; branch?: string }) => {
@@ -151,7 +172,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
     const { type, slug } = req.params as { type: string; slug: string };
     const { branch } = req.query as { branch?: string };
     if (!['news', 'promotion', 'giveaway', 'tournament'].includes(type) || slug.length > 200 || badId(branch)) return bad(reply);
-    const p = PUBS.find((x) => x.type === type && x.slug === slug && x.from <= 0);
+    const p = PUBS.find((x) => x.type === type && x.slug === slug && !x.draft && x.from <= 0);
     if (!p) return notFound(reply);
     const ended = p.to !== null && p.to <= 0;
     const rules = p.rulesPdf ? media(M(90), 'Правила розыгрыша', 'pdf') : null;
