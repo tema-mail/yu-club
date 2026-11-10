@@ -1,6 +1,7 @@
 // K9 «Слияние»: обработчики certificates и events на настоящих командах модулей (продажа сертификата, выдача подарка).
 // Сертификаты: держатель → основная со строкой истории, остаток на счёте сертификата не меняется; у второй в ЛК пусто.
 // Мероприятия: заказчик и именинник → основная; подарок – тоже; два подарка одного года – 409 CLIENT_MERGE_CONFLICT.
+// Уведомления: сообщения → основная; настройки – у основной свои, нет – напоминания второй, реклама выключена (D5-05).
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -13,6 +14,7 @@ import { withTx } from '../../apps/api/src/modules/clients/index.ts';
 import { clearClientMergers, mergeClients, registerClientMerger, REQUIRED_CLIENT_MERGERS } from '../../apps/api/src/modules/clients/merge.ts';
 import { issueGift } from '../../apps/api/src/modules/events/gifts.ts';
 import { eventsClientMerger } from '../../apps/api/src/modules/events/merge.ts';
+import { notificationsClientMerger } from '../../apps/api/src/modules/notifications/merge.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -44,8 +46,9 @@ beforeAll(async () => {
   clearClientMergers();
   registerClientMerger(certificatesClientMerger);
   registerClientMerger(eventsClientMerger);
+  registerClientMerger(notificationsClientMerger);
   for (const name of REQUIRED_CLIENT_MERGERS) {
-    if (name !== 'certificates' && name !== 'events') registerClientMerger({ name, preview: async () => ({}), reassign: async () => ({}) });
+    if (!['certificates', 'events', 'notifications'].includes(name)) registerClientMerger({ name, preview: async () => ({}), reassign: async () => ({}) });
   }
 });
 afterAll(async () => {
@@ -113,5 +116,38 @@ describe('events', () => {
     await expect(merge(a, b)).rejects.toMatchObject({ code: 'CLIENT_MERGE_CONFLICT', details: { module: 'events', constraint: 'birthday_gifts_one_per_year' } });
     expect((await db.client.query('SELECT status FROM app.clients WHERE id = $1', [b])).rows[0].status).toBe('active');
     expect((await db.client.query('SELECT count(*)::int AS n FROM app.birthday_gifts WHERE client_id = $1', [b])).rows[0].n).toBe(1);
+  });
+});
+
+describe('notifications', () => {
+  const note = (clientId: string, status: string) =>
+    db.client.query(
+      `INSERT INTO app.notifications (client_id, category, kind, source, title, body, planned_at, status, sent_at, push, dedupe_key)
+       VALUES ($1, 'service', 'booking_confirmed', 'system', 'Т', 'Б', now(), $2, CASE WHEN $2 = 'sent_to_provider' THEN now() END, true, $3)`,
+      [clientId, status, `t:${randomUUID()}`],
+    );
+
+  it('сообщения → основная; настройки: свои у основной остаются, нет строки – напоминания второй, реклама выключена', async () => {
+    const a = await addClient();
+    const b = await addClient();
+    await note(b, 'sent_to_provider');
+    await note(b, 'planned');
+    await db.client.query('INSERT INTO app.client_notification_prefs (client_id, reminders_enabled, marketing_enabled) VALUES ($1, false, true)', [b]);
+    expect(await notificationsClientMerger.preview(pool, b, clock.now())).toEqual({ messages: 2, planned: 1, subscriptions: 0 });
+    const r = await merge(a, b);
+    expect(r.results.notifications).toEqual({ messages: 2 });
+    expect(await notificationsClientMerger.preview(pool, b, clock.now())).toEqual({ messages: 0, planned: 0, subscriptions: 0 });
+    expect((await notificationsClientMerger.preview(pool, a, clock.now())) as { messages: number }).toMatchObject({ messages: 2 });
+    expect((await db.client.query('SELECT reminders_enabled, marketing_enabled FROM app.client_notification_prefs WHERE client_id = $1', [a])).rows).toEqual([
+      { reminders_enabled: false, marketing_enabled: false },
+    ]);
+
+    const c = await addClient();
+    const d = await addClient();
+    await db.client.query('INSERT INTO app.client_notification_prefs (client_id, reminders_enabled, marketing_enabled) VALUES ($1, true, true), ($2, false, false)', [c, d]);
+    await merge(c, d);
+    expect((await db.client.query('SELECT reminders_enabled, marketing_enabled FROM app.client_notification_prefs WHERE client_id = $1', [c])).rows).toEqual([
+      { reminders_enabled: true, marketing_enabled: true },
+    ]);
   });
 });

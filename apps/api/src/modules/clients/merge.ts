@@ -236,10 +236,11 @@ export async function mergeClients(
     [s.id, now],
   );
   if (s.phone_e164) await tx.query('DELETE FROM app.client_otp_challenges WHERE phone_e164 = $1', [s.phone_e164]);
-  // Настройки уведомлений: у основной свои; нет строки – берём строку второй (решение D5-05).
+  // Настройки уведомлений: у основной свои; нет строки – напоминания как у второй, реклама выключена: согласие на рекламу
+  // в журнале согласий у основной не записано, без него рассылка не включается (K21 §4, решение D5-05).
   await tx.query(
     `INSERT INTO app.client_notification_prefs (client_id, reminders_enabled, marketing_enabled, updated_at)
-     SELECT $2::uuid, reminders_enabled, marketing_enabled, $3::timestamptz FROM app.client_notification_prefs WHERE client_id = $1
+     SELECT $2::uuid, reminders_enabled, false, $3::timestamptz FROM app.client_notification_prefs WHERE client_id = $1
      ON CONFLICT (client_id) DO NOTHING`,
     [s.id, p.id, now],
   );
