@@ -1656,6 +1656,7 @@ ALTER TABLE app.clients ADD CONSTRAINT clients_status_check
 ALTER TABLE app.clients ADD CONSTRAINT clients_phone_or_closed_check CHECK (phone_e164 IS NOT NULL OR status IN ('anonymized','merged'));
 ALTER TABLE app.clients ADD CONSTRAINT clients_merged_into_check CHECK ((status = 'merged') = (merged_into_id IS NOT NULL));
 -- journal.loyalty_batch_moves.kind += 'merge' (перенос остатка баллов партиями)
+CREATE INDEX ledger_entries_from_batch_idx ON journal.ledger_entries ((refs ->> 'fromBatchId')) WHERE refs ? 'fromBatchId';  -- поиск перенесённой партии (D5-09)
 CREATE TABLE journal.client_merges (                      -- только вставка (make_append_only)
   id uuid PRIMARY KEY, primary_client_id uuid NOT NULL REFERENCES app.clients(id),
   secondary_client_id uuid NOT NULL REFERENCES app.clients(id),          -- UNIQUE: вторая объединяется один раз

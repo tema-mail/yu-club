@@ -3,7 +3,8 @@
 -- рождения очищаются как при обезличивании, поэтому телефон у merged, как у anonymized, может быть NULL (освобождается
 -- для новой карточки). merged_into_id – ровно у merged. journal.client_merges – журнал объединений только на вставку
 -- (кто, когда, из какой в какую, основание кодом, итоги по модулям); вторая карточка объединяется один раз (UNIQUE).
--- Движение партий баллов при переносе остатка (K15 §2, модуль loyalty) – новый вид merge в journal.loyalty_batch_moves.
+-- Движение партий баллов при переносе остатка (K15 §2, модуль loyalty) – новый вид merge в journal.loyalty_batch_moves;
+-- индекс записей K3 по refs.fromBatchId – поиск перенесённой партии.
 -- Имена CHECK 0105/0203 не задавались – ищем по определению, чтобы не зависеть от автоимён Postgres.
 
 -- migrate:up
@@ -36,6 +37,9 @@ CREATE INDEX clients_merged_into_idx ON app.clients (merged_into_id) WHERE merge
 
 ALTER TABLE journal.loyalty_batch_moves ADD CONSTRAINT loyalty_batch_moves_kind_check
   CHECK (kind IN ('spend_time','spend_goods','penalty','expire','return','debt_cover','manual','accrual_reversal','merge'));
+-- Поиск партии, в которую переехала партия при слиянии или переносе после коррекции (loyalty/merged.ts batchCarriedTo):
+-- записи прихода переноса несут refs.fromBatchId. Частичный индекс – только такие записи; запрос повторяет условие refs ?.
+CREATE INDEX ledger_entries_from_batch_idx ON journal.ledger_entries ((refs ->> 'fromBatchId')) WHERE refs ? 'fromBatchId';
 
 CREATE TABLE journal.client_merges (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -53,6 +57,7 @@ SELECT journal.make_append_only('journal.client_merges');
 
 -- migrate:down
 DROP TABLE journal.client_merges;
+DROP INDEX journal.ledger_entries_from_batch_idx;
 ALTER TABLE journal.loyalty_batch_moves DROP CONSTRAINT loyalty_batch_moves_kind_check;
 ALTER TABLE journal.loyalty_batch_moves ADD CONSTRAINT loyalty_batch_moves_kind_check
   CHECK (kind IN ('spend_time','spend_goods','penalty','expire','return','debt_cover','manual','accrual_reversal'));

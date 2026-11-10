@@ -165,7 +165,7 @@ export async function batchCarriedTo(tx: Tx, batchId: string, ownerId: string): 
     const r = (
       await tx.query<{ id: string; client_id: string; remaining_centi: string }>(
         `SELECT b.id, b.client_id, b.remaining_centi FROM app.loyalty_batches b JOIN journal.ledger_entries e ON e.id = b.accrual_entry_id
-         WHERE e.refs ->> 'fromBatchId' = ANY($1::text[]) ORDER BY b.remaining_centi DESC, b.id`,
+         WHERE e.refs ? 'fromBatchId' AND e.refs ->> 'fromBatchId' = ANY($1::text[]) ORDER BY b.remaining_centi DESC, b.id`,
         [frontier],
       )
     ).rows;
