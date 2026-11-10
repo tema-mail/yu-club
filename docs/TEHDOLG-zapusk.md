@@ -101,3 +101,24 @@
 3. Скилл/процедура проверки безопасности (заголовки, открытые порты, ключи) и юридическая проверка сайта.
 4. Ночная сверка Э3 на стенде без расхождений: `DATABASE_URL=… node apps/api/src/modules/reports/reconcile.ts`, код выхода 0 (`payroll_accrual`, `payroll_balance`, `event_expense`, `repair_expense`, `operation_link`).
 5. Пилот на одном филиале 2–4 недели (Э5), затем остальные.
+
+## 8. Добавлено 10.11.2026 (вечер)
+
+| № | Что | Зачем | Где |
+|---|---|---|---|
+| 8.1 | GitHub: secrets `YU_STAND_ADMIN_LOGIN`, `YU_STAND_ADMIN_PASS`, `YU_STAND_DEMO_PASS`, `YU_STAND_SSH_KEY`; vars `YU_STAND_SITE_URL`, `YU_STAND_CRM_URL`, `YU_STAND_SSH_HOST`, `YU_STAND_SSH_HOSTKEY`, `YU_STAND_NIGHTLY=true` | без них не запускаются `stand-e2e` и ночная проверка пересечений | `.github/workflows/stand-e2e.yml`, `races-nightly.yml` |
+| 8.2 | Оповещение об аварии: куда слать (Telegram/почта, Q-97) и cron с `scripts/monitor-check.sh` (код 1 – авария) | 18 §9.4 «мониторинг и уведомления об авариях» | `scripts/monitor-check.sh`, `/health/deep` |
+| 8.3 | `UNSUBSCRIBE_SECRET` в `.env` стенда и боя | без него рекламная рассылка не подтверждается (503) | `deploy/.env.example` |
+| 8.4 | Медиатека в общем Caddy (см. 1.9) – картинки CMS на стенде 404 | `deploy.sh` печатает `!!! медиатека` | 1.9 |
+| 8.5 | HSTS `max-age=31536000; includeSubDomains` на боевых доменах после выпуска сертификата | на стенде нельзя (`tls internal`) | `deploy/Caddyfile.yu-club` |
+| 8.6 | Перед боем `curl -sI` обоих доменов (CSP, X-Frame, nosniff, Referrer, Permissions, HSTS), `docker ps` без публикации портов; открыть сайт, медиатеку и предпросмотр CRM – CSP их не ломает | проверка защиты | 7.3 |
+| 8.7 | Метрика: дописать `mc.yandex.ru` в CSP сайта (script/img/connect); позже `'unsafe-inline'` → nonce | при подключении 3.6 | `deploy/Caddyfile.yu-club` |
+| 8.8 | Лимиты брони и доступности в памяти процесса – при нескольких экземплярах API перенести в базу | масштабирование | `booking/routes.public.ts` |
+| 8.9 | `read_only: true` + tmpfs `/tmp` для api, worker, crm, site – сначала на стенде (sharp, экспорт) | защита контейнеров | `deploy/compose.yml` |
+| 8.10 | IDOR-тесты чужого филиала: `GET content/branches/:branchId/versions`, `GET settings/:key/history` | полнота «чужое = 404» | `tests/` |
+| 8.11 | Реплика БД для `yu_reports` или предел отчётов 1 на процесс – подтверждение брони под отчётами ×2,24 | S4-131, решение техлида | OTCHET §1 п.3 |
+| 8.12 | Скрипта боевого восстановления нет: порядок собран из `restore-check.sh` и `deploy.sh --reset-stage` – прогнать на стенде; образы без версии (`:local`), откат – через git + `deploy.sh` | регламент сбоя | `docs/ekspluatatsiya/` |
+| 8.13 | В логах при `LOG_LEVEL=info` Fastify пишет адрес со строкой запроса – вырезать ПДн из query (как токен отписки) | 152-ФЗ | `apps/api/src/server.ts` |
+| 8.14 | 2FA сотрудникам (TOTP, заготовка `staff/auth.ts:24`) – предложить, по желанию; WAF/фильтр от DDoS – переключение DNS | решения заказчика | – |
+| 8.15 | Согласование расходов в finance (событие ленты «операция ожидает согласования» 13 §11) – механизма нет; у ремонта статус `awaiting_approval` без события outbox | решение заказчика | `notifications/staff-feed-events.ts` |
+
