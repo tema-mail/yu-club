@@ -9,7 +9,7 @@ import { AppError } from '../../core/errors.ts';
 import { roleAllows, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 
-/** merged – вторая карточка после слияния (03 §11.2, миграция 0447): ПДн пусты, ссылка merged_into_id на основную. */
+/** merged – вторая карточка после слияния (03 §11.2, миграция 0450): ПДн пусты, ссылка merged_into_id на основную. */
 export const CLIENT_STATUSES = ['guest', 'active', 'restricted', 'blocked', 'deletion_requested', 'anonymized', 'merged'] as const;
 export type ClientStatus = (typeof CLIENT_STATUSES)[number];
 

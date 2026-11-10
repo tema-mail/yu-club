@@ -1612,7 +1612,7 @@ ALTER TABLE journal.reconcile_discrepancies DROP CONSTRAINT reconcile_discrepanc
 
 ### 0448 – client_first_visits (booking; D5-11, S4-131)
 
-История посещений для отчёта клиентов (K24 §3.6) без перебора всех посещений сети. Номер 0448, а не зарезервированный 0442: стенд обновляется поверх, на нём применены 0441–0446, 0447 – слияние клиентов, раннер отвергает миграцию младше применённых.
+История посещений для отчёта клиентов (K24 §3.6) без перебора всех посещений сети. Номер 0448, а не зарезервированный 0442: стенд обновляется поверх, на нём применены 0441–0446; 0447 не используется (ветка слияния клиентов позже ушла в 0450), раннер отвергает миграцию младше применённых.
 
 ```sql
 CREATE TABLE app.client_first_visits (                   -- строка на пару клиент × филиал с живым посещением
@@ -1657,7 +1657,7 @@ CREATE TABLE app.staff_feed_events (                     -- лента собы�
 CREATE INDEX staff_feed_events_branch_idx ON app.staff_feed_events (branch_id, created_at DESC);
 ```
 
-### 0447 – client_merge (clients; слияние дублей, K9 «Слияние», D5-01…D5-09)
+### 0450 – client_merge (clients; слияние дублей, K9 «Слияние», D5-01…D5-09)
 
 ```sql
 ALTER TABLE app.clients ADD COLUMN merged_into_id uuid REFERENCES app.clients(id);

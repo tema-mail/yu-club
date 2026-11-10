@@ -1,4 +1,4 @@
-// Слияние дублей (03 §11.2, K9 «Слияние», миграция 0447): объединённая карточка в базе, карточке CRM и поиске.
+// Слияние дублей (03 §11.2, K9 «Слияние», миграция 0450): объединённая карточка в базе, карточке CRM и поиске.
 // База: статус merged, merged_into_id обязателен ровно у merged, телефон у merged может быть NULL (освобождается),
 // journal.client_merges – только вставка у yu_app. Поиск CRM: по старым контактам не находит (они пустые),
 // по id – находит с фактом объединения; в общем списке merged нет. Запись merged клиенту закрыта (CLIENT_RESTRICTED).
@@ -45,7 +45,7 @@ afterAll(async () => {
   await db.drop();
 });
 
-describe('миграция 0447', () => {
+describe('миграция 0450', () => {
   it('статус merged есть в списке и в CHECK; merged_into_id ровно у merged; телефон у merged может быть NULL', async () => {
     expect(CLIENT_STATUSES).toContain('merged');
     const a = await addClient('Анна');

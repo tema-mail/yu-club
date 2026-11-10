@@ -7,7 +7,7 @@
 ## Публичные функции модуля (`modules/clients/index.ts`)
 
 ```ts
-export type ClientStatus = 'guest' | 'active' | 'restricted' | 'blocked' | 'deletion_requested' | 'anonymized' | 'merged'; // merged – 0447, «Слияние»
+export type ClientStatus = 'guest' | 'active' | 'restricted' | 'blocked' | 'deletion_requested' | 'anonymized' | 'merged'; // merged – 0450, «Слияние»
 
 export interface ClientRef { id: string; status: ClientStatus; firstName: string | null; lastName: string | null; phoneMasked: string }
 
@@ -108,7 +108,7 @@ export function registerClientAnonymizer(a: { name: string; blockers?(tx, client
 - Живая бронь (впереди или `arrived`) или мероприятие в работе → `409 CLIENT_HAS_ACTIVE_RECORDS` (`details.blockers`). Брони, деньги, баллы, сертификаты, журналы только на вставку не меняются – связь по id.
 - Аудит – `client.status_changed`, основание – код, без ПДн. Поиск CRM обезличенных не показывает без явного фильтра статуса; карточка – без ПДн.
 
-**Слияние дублей (03 §11, §12, §15; техдолг 5.15; внесено 10.11.2026, решения D5-01…D5-09).** `modules/clients/merge.ts`, маршруты CRM K11 №253 `GET /clients/{clientId}/merge-preview?with={secondaryId}` и №254 `POST /clients/{clientId}/merge { secondaryId, reason }` (`Idempotency-Key`), право `client.merge` (Владелец по сети; делегированное – только клиенты с бронями в зоне права), миграция 0447.
+**Слияние дублей (03 §11, §12, §15; техдолг 5.15; внесено 10.11.2026, решения D5-01…D5-09).** `modules/clients/merge.ts`, маршруты CRM K11 №253 `GET /clients/{clientId}/merge-preview?with={secondaryId}` и №254 `POST /clients/{clientId}/merge { secondaryId, reason }` (`Idempotency-Key`), право `client.merge` (Владелец по сети; делегированное – только клиенты с бронями в зоне права), миграция 0450.
 
 ```ts
 export type ClientStatus = … | 'merged';                     // вторая карточка после слияния; ClientCard.mergedIntoId

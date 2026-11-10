@@ -21,7 +21,7 @@ import {
 export const POINTS_MIN_BALANCE = -5000;
 export const SYSTEM_AUTHOR = { type: 'system', id: null } as const;
 
-export type MoveKind = 'spend_time' | 'spend_goods' | 'penalty' | 'expire' | 'return' | 'debt_cover' | 'manual' | 'accrual_reversal' | 'merge'; // merge – перенос остатка при слиянии карточек (0447)
+export type MoveKind = 'spend_time' | 'spend_goods' | 'penalty' | 'expire' | 'return' | 'debt_cover' | 'manual' | 'accrual_reversal' | 'merge'; // merge – перенос остатка при слиянии карточек (0450)
 export type Author = PostingInput['author'];
 
 export const accountRef = (clientId: string): AccountRef => ({ kind: 'loyalty_client', ownerType: 'client', ownerId: clientId.toLowerCase() });

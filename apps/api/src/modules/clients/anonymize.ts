@@ -73,7 +73,7 @@ export async function anonymizeClient(
   const row = cur.rows[0];
   if (!row) throw new AppError('NOT_FOUND', 404, 'Не найдено');
   if (row.status === 'anonymized') return { clientId, status: 'anonymized', alreadyAnonymized: true, affected: {} };
-  // Объединённая карточка (0447) уже без ПДн; её данные живут в основной – обезличивать нужно основную.
+  // Объединённая карточка (0450) уже без ПДн; её данные живут в основной – обезличивать нужно основную.
   if (row.status === 'merged') {
     throw new AppError('CLIENT_MERGED', 409, 'Карточка объединена – обезличьте основную', { clientId, mergedIntoId: row.merged_into_id });
   }
