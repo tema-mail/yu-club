@@ -59,6 +59,44 @@ test('страница «О клубе»: SEO без поля адреса – �
   await expect(page.getByTestId('seo-panel').getByLabel('Title')).toHaveValue('О сети Ю-Клуб – компьютерные клубы');
 });
 
+test('баннер главной: SEO главной в блоке hero; публикация – новая версия; история версий и откат к версии 1 с причиной', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/content/home');
+  const hero = page.getByTestId('block-hero');
+  await hero.locator('summary', { hasText: 'Изменить содержимое' }).click();
+  const seo = hero.getByTestId('seo-panel');
+  await expect(seo.getByTestId('seo-snippet')).toContainText('yu-club.ru/');
+  await seo.getByLabel('Title').fill('Компьютерный клуб Ю-Клуб – ПК, VR, PlayStation');
+  await seo.getByLabel('H1').fill('Играй с друзьями');
+  await hero.getByRole('button', { name: 'Сохранить черновик' }).click();
+  await expect(hero.getByRole('status').filter({ hasText: 'Черновик блока сохранён' })).toBeVisible();
+  await hero.getByRole('button', { name: 'Опубликовать…' }).click();
+  await hero.getByRole('dialog').getByRole('button', { name: 'Опубликовать' }).click();
+  await expect(hero.getByRole('status').filter({ hasText: 'Опубликовано' })).toBeVisible();
+  await hero.getByRole('button', { name: 'История версий' }).click();
+  const versions = hero.getByTestId('version-list');
+  await expect(versions.locator('li')).toHaveCount(2);
+  await expect(hero.getByTestId('version-2')).toContainText('на сайте');
+  await expect(hero.getByTestId('version-diff').locator('tr[data-field="h1"]')).toBeVisible();
+  await hero.getByTestId('version-1').getByRole('button', { name: 'Откатить к этой версии…' }).click();
+  const dlg = hero.getByRole('dialog', { name: 'Откатить к версии 1?' });
+  await dlg.getByRole('button', { name: 'Откатить' }).click();
+  await expect(dlg.getByText('Укажите причину отката')).toBeVisible();
+  await dlg.getByLabel('Причина').fill('Вернули прежний баннер');
+  await dlg.getByRole('button', { name: 'Откатить' }).click();
+  await expect(hero.getByRole('status').filter({ hasText: 'Откат выполнен: опубликована версия 3 с содержимым версии 1' })).toBeVisible();
+});
+
+test('блоки главной: Директор видит историю версий сетевого блока, отката нет', async ({ page }) => {
+  await login(page, 'director@yu.test');
+  await open(page, '/content/home');
+  const hero = page.getByTestId('block-hero');
+  await hero.locator('summary', { hasText: 'Изменить содержимое' }).click();
+  await hero.getByRole('button', { name: 'История версий' }).click();
+  await expect(hero.getByTestId('version-1')).toBeVisible();
+  await expect(hero.getByRole('button', { name: /Откатить/ })).toHaveCount(0);
+});
+
 test('игра: Директор видит SEO-панель только для чтения', async ({ page }) => {
   await login(page, 'director@yu.test');
   await open(page, `/content/games/${CONTENT_IDS.gameCs}`);
