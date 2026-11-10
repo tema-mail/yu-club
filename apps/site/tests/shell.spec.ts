@@ -60,6 +60,27 @@ test('390 px: меню за кнопкой, открывается и закры
   await expect(page).toHaveURL(/\/contacts\/$/);
 });
 
+test('390 и 320 px: раскрытый список выбора клуба целиком в экране, без горизонтальной прокрутки', async ({ page }) => {
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto('/');
+    const picker = page.getByTestId('branch-picker');
+    await picker.getByRole('button', { name: 'Выберите клуб' }).click();
+    const panel = picker.locator('.yu-picker__panel');
+    await expect(panel.getByRole('button', { name: /Ю-Клуб на Ленина/ })).toBeVisible();
+    const box = await panel.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, right: r.right };
+    });
+    expect(box.left, `${width}: список уходит за левый край`).toBeGreaterThanOrEqual(0);
+    expect(box.right, `${width}: список уходит за правый край`).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `${width}: ширина страницы`).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: `test-results/screens/${width}-picker-open.png` });
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+  }
+});
+
 test('подвал: все разделы, карта сайта и юридические страницы – 200', async ({ page, request }) => {
   await page.goto('/');
   const footerNav = page.getByTestId('footer-nav').getByRole('link');
