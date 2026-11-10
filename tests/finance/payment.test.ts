@@ -9,8 +9,10 @@ import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
 import { AppError } from '../../apps/api/src/core/errors.ts';
 import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
+import { confirmHold } from '../../apps/api/src/modules/booking/confirm.ts';
 import { createHold } from '../../apps/api/src/modules/booking/hold.ts';
 import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
+import { markArrived } from '../../apps/api/src/modules/booking/visit.ts';
 import { bookingLookup, paymentBookingProvider } from '../../apps/api/src/modules/booking/providers.ts';
 import { createCertificatePaymentMethod, verifyCertificatePin } from '../../apps/api/src/modules/certificates/payment-method.ts';
 import { sellCertificate } from '../../apps/api/src/modules/certificates/sale.ts';
@@ -18,7 +20,7 @@ import { clearPaymentMethods, registerPaymentMethod } from '../../apps/api/src/m
 import { getPayment, getPaymentStatus, paymentLookup, recordPayment, type PaymentDeps } from '../../apps/api/src/modules/finance/payment.ts';
 import { createBatch, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { pointsPaymentMethod } from '../../apps/api/src/modules/loyalty/payment-method.ts';
-import { reserveForHold } from '../../apps/api/src/modules/loyalty/reserve.ts';
+import { convertReserves, reserveForHold } from '../../apps/api/src/modules/loyalty/reserve.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const PEPPER = 'cert-pepper-'.padEnd(40, 'z');
@@ -326,5 +328,26 @@ describe('гонки', () => {
       expect([p, r].sort()).toEqual(['POINTS_INSUFFICIENT', 'ok']);
       expect((await getBalance(pool, c, clock.now())).balanceCenti).toBe(p === 'ok' ? 0 : 6_000);
     }
+  });
+
+  it('бронь из удержания с резервом, worker ещё не обработал booking.confirmed: оплата баллами проходит; потом событие – резервов нет, списание одно', async () => {
+    const c = await clientWith(6_000);
+    const start = new Date(Date.parse('2026-11-14T05:30:00Z')); // приход открыт: «сейчас» 05:00, начало через 30 минут
+    const h = await runOccupancyCommand(pool, (t) =>
+      createHold(t, { clientId: c, visitorId: null }, { branchId: ids.b1!, items: [{ resourceId: ids.pc!, start, end: new Date(start.getTime() + 3_600_000) }] }, clock),
+    );
+    const clientMeta: AuditRequestMeta = { actor: { kind: 'client', clientId: c, sessionId: randomUUID() }, source: 'site', requestId: randomUUID() };
+    await tx((t) => reserveForHold(t, { clientId: c, holdId: h.id }, clientMeta, clock));
+    const b = (await runOccupancyCommand(pool, (t) => confirmHold(t, c, h.id, clock))).bookings[0]!.id;
+    const rv = Number((await one<{ row_version: number }>('SELECT row_version FROM app.bookings WHERE id = $1', [b])).row_version);
+    await runOccupancyCommand(pool, (t) => markArrived(t, b, { ctx: owner, rowVersion: rv }, meta(owner), clock));
+    const due = (await paymentBookingProvider.payableBooking(pool, b))!.priceKop;
+    const r = await pay(b, [{ method: 'points', amountKop: due }]); // до исправления – POINTS_INSUFFICIENT (свой резерв удержания)
+    expect((await getPayment(pool, r.paymentId))!.lines).toMatchObject([{ method: 'points', pointsCenti: 6_000 }]);
+    // worker позже: резерв удержания закрыт, на оплаченную бронь не создан
+    await tx((t) => convertReserves(t, c, { bookings: paymentBookingProvider, payments: paymentLookup, clock }));
+    const res = await db.client.query(`SELECT status FROM app.loyalty_reserves WHERE client_id = $1`, [c]);
+    expect(res.rows.map((x) => x.status)).toEqual(['converted']);
+    expect(await getBalance(pool, c, clock.now())).toMatchObject({ balanceCenti: 0, reservedCenti: 0 });
   });
 });
