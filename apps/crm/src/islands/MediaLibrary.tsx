@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { API_PREFIX, ApiError, browserCall, type ErrorBody } from '../lib/api.ts';
 import { useLatest } from '../lib/latest.ts';
+import { PURGE_REASON_CODES, PURGE_REASON_LABEL } from '../../../../packages/contracts/src/media-purge.ts';
 import { aria, ENTITY_LABEL, errorText, Field, FIELD_LABEL, fmtAt, type MediaDto } from '../lib/content.tsx';
 
 export const MAX_BYTES = 10 * 1024 * 1024;
@@ -59,13 +60,6 @@ function UsageList({ items }: { items: Usage[] }) {
   );
 }
 
-/** №227а: причина очистки – код из списка (media-purge.ts PURGE_REASON_LABEL); основание словами – без ФИО. */
-export const PURGE_REASONS: Record<string, string> = {
-  subject_request: 'Требование человека на фото (ГК ст. 152.1)',
-  consent_withdrawn: 'Отзыв согласия на использование изображения',
-  rights_claim: 'Претензия правообладателя',
-  legal_order: 'Предписание или решение суда',
-};
 
 export interface MediaLibraryProps { canArchive: boolean; canDelete: boolean; timezone: string }
 
@@ -200,12 +194,14 @@ export default function MediaLibrary(props: MediaLibraryProps) {
     if (!purge.confirmed) return setPurge({ ...purge, error: 'Подтвердите: файл удаляется насовсем, отменить нельзя' });
     setBusy(true);
     try {
-      const r = await browserCall<{ purged: boolean; affected: unknown[] }>(`/content/media/${sel.id}/purge`, { method: 'POST', body: { reasonCode: purge.reasonCode, ...(purge.basis.trim() ? { basis: purge.basis.trim() } : {}) }, key: purge.key });
+      const r = await browserCall<{ purged: boolean; affected: unknown[]; filesPending?: boolean }>(`/content/media/${sel.id}/purge`, { method: 'POST', body: { reasonCode: purge.reasonCode, ...(purge.basis.trim() ? { basis: purge.basis.trim() } : {}) }, key: purge.key });
       purgeDlg.current?.close();
       setSel(null);
       setUsages(null);
       setMsg(null);
-      setUpMsg({ ok: true, text: `Фото очищено: все размеры файла удалены с сервера. Материалов без этого фото: ${r.affected.length}; на сайте вместо него ничего не показывается.` });
+      // filesPending: запись очищена, но диск не удалил файлы – их уберёт ночная content:media-gc (K22 №227а); «удалены» не пишем.
+      const files = r.filesPending ? 'Очищено, файлы будут удалены ночной уборкой.' : 'Фото очищено: все размеры файла удалены с сервера.';
+      setUpMsg({ ok: true, text: `${files} Материалов без этого фото: ${r.affected.length}; на сайте вместо него ничего не показывается.` });
       setReload((n) => n + 1);
     } catch (err) {
       setPurge({ ...purge, error: `Не очищено: ${errorText(err)}` });
@@ -302,7 +298,7 @@ export default function MediaLibrary(props: MediaLibraryProps) {
           <Field id="purge-reason" label="Причина">
             <select id="purge-reason" class="yc-input" value={purge.reasonCode} onChange={(e) => setPurge({ ...purge, reasonCode: e.currentTarget.value, error: '' })}>
               <option value="">Выберите…</option>
-              {Object.entries(PURGE_REASONS).map(([code, label]) => <option value={code}>{label}</option>)}
+              {PURGE_REASON_CODES.map((code) => <option value={code}>{PURGE_REASON_LABEL[code]}</option>)}
             </select>
           </Field>
           <Field id="purge-basis" label="Основание (необязательно)" hint="Номер и дата документа. ФИО и содержание заявления не пишите – это попадает в журнал.">

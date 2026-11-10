@@ -123,6 +123,22 @@ test('очистка фото №227а: Владелец – причина из
   await expect(page.getByTestId('version-list').locator('li').first()).toContainText('Очистка фото');
 });
 
+test('очистка фото: подписи причин – из общего списка API; диск не удалил файлы – «Очищено, файлы будут удалены ночной уборкой»', async ({ page, request }) => {
+  expect((await request.post(`${process.env.MOCK_URL ?? 'http://127.0.0.1:4012'}/__test/media-remove-fails`)).ok()).toBe(true);
+  await login(page, 'owner@yu.test');
+  await open(page, '/content/media');
+  await page.getByTestId('media-grid').locator('li').filter({ hasText: 'zal-krasny.jpg' }).getByRole('button').click();
+  await page.getByTestId('media-card').getByRole('button', { name: 'Очистить по требованию…' }).click();
+  const dlg = page.getByRole('dialog', { name: 'Очистить фото по требованию?' });
+  await expect(dlg.getByLabel('Причина').locator('option')).toHaveText(['Выберите…', 'Требование человека на фото', 'Отзыв согласия на использование изображения', 'Претензия правообладателя', 'Предписание или решение суда']);
+  await dlg.getByLabel('Причина').selectOption('subject_request');
+  await dlg.getByLabel('Понимаю: файл удаляется насовсем').check();
+  await dlg.getByRole('button', { name: 'Очистить' }).click();
+  await expect(page.getByTestId('media-upload-msg')).toContainText('Очищено, файлы будут удалены ночной уборкой');
+  await expect(page.getByTestId('media-upload-msg')).not.toContainText('удалены с сервера');
+  await expect(dlg).toBeHidden();
+});
+
 test('очистка фото: у Директора кнопки нет', async ({ page }) => {
   await login(page, 'director@yu.test');
   await open(page, '/content/media');

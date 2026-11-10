@@ -6,6 +6,7 @@
 // в списке и по id её и так нет (у API status = 'purged'); повтор отвечает 404, а не 200 без изменений.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
+import { PURGE_REASON_CODES } from '../../../packages/contracts/src/media-purge.ts';
 import { Fail, MAX_BYTES, type Media, type Rec, type Staffish, UUID, cms, invalid, notFound, refsOf, storageKey, str } from './mock-cms.ts';
 
 type Handler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
@@ -130,7 +131,16 @@ export function registerMedia(app: FastifyInstance, P: string, h: MediaHelpers):
     const m = mediaRow((req.params as { id: string }).id);
     return { usages: usages(m.id), inVersions: inVersions(m.id) };
   }));
-  const PURGE_CODES = ['subject_request', 'consent_withdrawn', 'rights_claim', 'legal_order'];
+  const PURGE_CODES: readonly string[] = PURGE_REASON_CODES;
+  // Сбой удаления файлов после фиксации (routes.media.ts): POST /__test/media-remove-fails – следующая очистка ответит filesPending: true.
+  let removeFails = false;
+  app.addHook('onRequest', async (req) => {
+    if (req.method === 'POST' && req.url === '/__test/reset') removeFails = false;
+  });
+  app.post('/__test/media-remove-fails', async () => {
+    removeFails = true;
+    return { removeFails };
+  });
   /** stripMedia сервера: поле-идентификатор и элемент массива исчезают, картинка в Markdown вырезается. */
   const strip = (value: unknown, id: string): unknown => {
     if (typeof value === 'string') return value.replace(new RegExp(`!\\[[^\\]]*\\]\\(media:${id}\\)`, 'gi'), '');
@@ -162,7 +172,9 @@ export function registerMedia(app: FastifyInstance, P: string, h: MediaHelpers):
       }
     }
     cms.media = cms.media.filter((x) => x.id !== m.id);
-    return { status: 200, body: { purged: true, affected } };
+    const filesPending = removeFails;
+    removeFails = false;
+    return { status: 200, body: { purged: true, affected, filesPending } };
   }));
   app.delete(`${P}/content/media/:id`, command('media.delete', (s, req) => {
     assertRole(s, 'content.media.purge');
