@@ -159,6 +159,41 @@ describe('оплата в CRM', () => {
     expect(paid.statusCode, paid.body).toBe(201);
   });
 
+  it('№19: удержание на 2 брони, бронь 1 удлинена до worker – доступно только своя доля резерва удержания и свободный баланс', async () => {
+    // тариф, место и рабочий филиал – из предыдущего теста
+    const clientId = (await db.client.query<{ id: string }>(`INSERT INTO app.clients (phone_e164, first_name, status, created_by_type, registered_at) VALUES ('+79130000006', 'Д', 'active', 'system', now()) RETURNING id`)).rows[0]!.id;
+    const branchId = ids.lenina!;
+    const resourceId = ids[`pc_${branchId}`]!;
+    const at = (iso: string) => ({ resourceId, start: new Date(iso), end: new Date(Date.parse(iso) + 30 * 60_000) });
+    const h = await runOccupancyCommand(pool, (t) => createHold(t, { clientId, visitorId: null }, { branchId, items: [at('2026-11-17T04:00:00Z'), at('2026-11-17T06:00:00Z')] }, clock));
+    const c = await pool.connect();
+    try {
+      await c.query('BEGIN');
+      await openAccount(c, clientId, clock.now());
+      const p = await postPoints(c, clientId, { amount: 6_000, type: 'loyalty.accrual', branchId: null, occurredAt: clock.now() }, randomUUID(), SYSTEM_AUTHOR);
+      await createBatch(c, { clientId, entryId: p.entryId, amount: 6_000, balanceBefore: p.balanceBefore, source: 'visit', branchId: null, expiresAt: null, accruedAt: clock.now() });
+      await c.query('COMMIT');
+      await c.query('BEGIN');
+      await reserveForHold(c, { clientId, holdId: h.id }, { actor: { kind: 'client', clientId, sessionId: randomUUID() }, source: 'site', requestId: randomUUID() }, clock); // 6000: по 3000 на бронь
+      await c.query('COMMIT');
+    } finally {
+      c.release();
+    }
+    const confirmed = (await runOccupancyCommand(pool, (t) => confirmHold(t, clientId, h.id, clock))).bookings;
+    const first = confirmed.find((x) => x.start === '2026-11-17T04:00:00.000Z')!.id;
+    // перенос удлинил бронь 1 до 60 минут (новая версия), затем приход; событие подтверждения ещё в очереди
+    await db.client.query(
+      `INSERT INTO journal.booking_versions (booking_id, version, resource_id, period, branch_timezone, unit_ids, resource_snapshot, tariff_id, price_kop, price_snapshot, reason, created_by_type, created_by_id)
+       SELECT booking_id, 2, resource_id, tstzrange('2026-11-17T04:00:00Z', '2026-11-17T05:00:00Z', '[)'), branch_timezone, unit_ids, resource_snapshot, tariff_id, 400, price_snapshot, 'удлинили', 'staff', $2
+       FROM journal.booking_versions WHERE booking_id = $1 AND version = 1`,
+      [first, ids.owner],
+    );
+    await db.client.query(`UPDATE app.bookings SET current_version = 2, status = 'arrived' WHERE id = $1`, [first]);
+    const v = (await req('admin', 'GET', `/bookings/${first}/payment`)).json();
+    expect(v).toMatchObject({ pointsAvailableCenti: 3_000, pointsRequiredCenti: 6_000 }); // до исправления – 6000: съедалась доля брони 2
+    expect(v.allowedMethods).not.toContain('points');
+  });
+
   it('№20: Администратор проводит; повтор с ключом – тот же paymentId; новый ключ – ALREADY_PAID; без ключа – 400', async () => {
     const b = await booking(ids.lenina!);
     const key = randomUUID();

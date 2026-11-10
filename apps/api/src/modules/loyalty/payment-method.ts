@@ -13,7 +13,7 @@ import { AppError } from '../../core/errors.ts';
 import type { Tx } from '../../core/ledger.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import type { ChargeInput, ChargeResult, PaymentMethodHandler, RefundInput, RefundResult } from '../finance/methods.ts';
-import { debitBatches, openAccount, postPoints, reservedCenti, returnSpend } from './account.ts';
+import { debitBatches, getBalance, openAccount, postPoints, reservedCenti, returnSpend } from './account.ts';
 import type { PaymentLookup } from './accrual.ts';
 import { settleStaleReserves, type ReserveBookings } from './reserve.ts';
 
@@ -53,6 +53,13 @@ export async function reservedAgainstBookingCenti(
     others += b.minutes * 100;
   }
   return all - Math.max(0, holdLive - others);
+}
+
+/** Доступно для оплаты этой брони в CRM (K10 №19) – как в chargePoints: max(0, баланс) − reservedAgainstBookingCenti. */
+export async function pointsAvailableForBooking(db: Tx, clientId: string, at: Date, bookingId: string, holdId: string | null): Promise<number> {
+  const id = clientId.toLowerCase();
+  const { balanceCenti } = await getBalance(db, id, at);
+  return Math.max(0, Math.max(0, balanceCenti) - (await reservedAgainstBookingCenti(db, id, at, bookingId, holdId, registeredDeps)));
 }
 
 export async function chargePoints(tx: Tx, input: ChargeInput, deps: PointsDeps | undefined = registeredDeps): Promise<ChargeResult> {
