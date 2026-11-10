@@ -93,7 +93,20 @@ interface MyBookingDto extends BookingDto {   // BookingDto – K5; без inter
 
 **Версия документа согласия (Э4, K22 §7; внесено S4-00 04.11.2026; шаг S4-20).** `documentVersion` в записи `client_consents(kind='marketing', granted=true)` – это `document_version` **живой** версии страницы `advertising-consent` (K22 §7, чтение через `content/index.ts`), а не константа `MARKETING_DOCUMENT_VERSION` Э1. Касается входа (№2 `consents.marketing`), `PUT /me/notification-settings` и CRM-правки согласия: страница не опубликована → включить рекламу нельзя, `409 MARKETING_DOCUMENT_MISSING` (выключить – можно всегда). База держит то же самое: CHECK 0401 `kind = 'marketing' AND granted → document_version IS NOT NULL` (K21 §4). Старые согласия при новой редакции текста не переписываются и действуют до ответа Q-149. Отписка по ссылке (K21 §11 №206) пишет `granted=false` с `source='site'` – CHECK `source` 0105 не меняется. Сайт берёт живые версии для галочек из K5 №215.
 
-**Обезличивание (Э4, K21 §15).** При переходе клиента в `anonymized` модуль `notifications` заменяет в его строках `notifications.title/body` подставленные имена текстом шаблона без подстановки (регистрация обработчика в процедуре обезличивания – S4-15).
+**Обезличивание (Э4, K21 §15; 03 §13; внесено 10.11.2026, решения D4-60…D4-65).** `modules/clients/anonymize.ts`, маршрут CRM K11 №249 `POST /clients/{clientId}/anonymize` `{ reason: 'client_request' | 'retention_expired' }`, право `client.anonymize` (только Владелец).
+
+```ts
+/** Одна транзакция вызывающего. Обезличенная карточка – тот же ответ без записи (идемпотентно). */
+export function anonymizeClient(tx: Tx, clientId: string, input: { reason: AnonymizeReason }, meta: AuditRequestMeta, clock?: Clock): Promise<AnonymizeResult>;
+interface AnonymizeResult { clientId: string; status: 'anonymized'; alreadyAnonymized: boolean; affected: Record<string, number> }
+/** Обработчик модуля-владельца таблиц с ПДн: blockers – живые записи (мешают), run – затирает. Обязательные – booking, events, notifications. */
+export function registerClientAnonymizer(a: { name: string; blockers?(tx, clientId, now): Promise<number>; run(tx, clientId, now): Promise<number> }): void;
+```
+
+- `clients`: телефон, подтверждение телефона, имя, фамилия, почта, дата рождения, причина и срок статуса → NULL, статус `anonymized`; сессии отозваны (`blocked`, `user_agent = NULL`), push-подписки отозваны (`unsubscribed`, `endpoint` – заглушка), коды входа на телефон удалены, рассылки выключены, в `client_consents` – отказ от `pd_processing`, `marketing`, `reminders`.
+- Обработчики: `notifications` – `anonymizeClientNotifications` (имена в `notifications.title/body`); `events` – K20 §14 (D4-64); `booking` – ПДн нет, только проверка живых броней.
+- Живая бронь (впереди или `arrived`) или мероприятие в работе → `409 CLIENT_HAS_ACTIVE_RECORDS` (`details.blockers`). Брони, деньги, баллы, сертификаты, журналы только на вставку не меняются – связь по id.
+- Аудит – `client.status_changed`, основание – код, без ПДн. Поиск CRM обезличенных не показывает без явного фильтра статуса; карточка – без ПДн.
 
 ## Бронь администратором без профиля (S1-13)
 
@@ -119,6 +132,7 @@ type CrmCreateBooking = {
 | `SMS_UNAVAILABLE` | 503 | провайдер ответил `rejected`/`unknown` при запросе кода; challenge сохраняется, повтор после `resendAfterSec` (без двойной отправки: `idempotencyKey = challengeId`) |
 | `AUTH_REQUIRED`, `SESSION_REVOKED` | 401 | нет / отозвана сессия |
 | `CLIENT_RESTRICTED` | 403 | `assertCanBook` (статус клиента) |
+| `CLIENT_HAS_ACTIVE_RECORDS` | 409 | обезличивание: бронь впереди или мероприятие в работе (`details.blockers`) |
 | `LOYALTY_LIMIT_REACHED` | 403 | Э2: ворота loyalty в `assertCanBook` – баланс ≤ −50 (K15 §8, код объявляет модуль loyalty) |
 | `VALIDATION_FAILED` | 400 | телефон не разобран и т.п. |
 
