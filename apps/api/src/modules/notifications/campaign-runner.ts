@@ -129,7 +129,7 @@ export async function expandCampaign(pool: Pool, clock: Clock, id: string, batch
       ).rows[0];
       if (!c || (c.status !== 'confirmed' && c.status !== 'expanding')) return true;
       // строки клиентов FOR KEY SHARE: обезличивание (FOR UPDATE) либо ждёт конца пачки и затирает уже вставленное имя
-      // (anonymizeClientNotifications), либо идёт первым – тогда пачка ждёт его и по перечитанной строке клиента пропускает (D4-65)
+      // (anonymizeClientNotifications), либо идёт первым – тогда пачка ждёт его и по перечитанной строке клиента пропускает (D4-63)
       const r = await tx.query<RecipientRow>(
         `SELECT r.id, r.client_id, r.home_branch_id, r.decision, cl.first_name, b.name AS branch_name, b.address AS branch_address, b.timezone AS branch_timezone, ci.name AS city_name
          FROM journal.notification_campaign_recipients r
