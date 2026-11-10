@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { browserCall } from '../lib/api.ts';
 import { addDays, inZone } from '../lib/booking.ts';
+import { useLatest } from '../lib/latest.ts';
 import { GIFT_BADGE, GIFT_STATUS, dayText, eventError, WEEKDAY, weekdayOf, type EventCardDto, type Gift, type GiftTerms, type Holiday } from '../lib/events.ts';
 import { Modal, ReasonDialog } from './EventParts.tsx';
 
@@ -87,7 +88,12 @@ export default function GiftPanel(p: GiftPanelProps) {
     await p.onChanged?.('Подарок выдан.');
   };
 
+  // Смена филиала или дня: ответ прежнего не подменяет свежий – иначе окна одного дня показаны под другим и запись уходит не на тот день
+  const daysLatest = useLatest();
+  const slotsLatest = useLatest();
   const offerDays = async (g: Gift, b: string) => {
+    const fresh = daysLatest();
+    slotsLatest(); // окна прежнего филиала, если ещё в пути, уже не нужны
     const branch = p.branches.find((x) => x.id === b);
     setDays([]);
     setDate('');
@@ -98,6 +104,7 @@ export default function GiftPanel(p: GiftPanelProps) {
     try {
       const q = new URLSearchParams({ from, to: g.validUntil, ...(branch ? { cityId: branch.cityId } : {}) });
       const r = await browserCall<{ items: Holiday[] }>(`/holidays?${q}`);
+      if (!fresh()) return;
       const off = new Set(r.items.map((h) => h.date));
       const out: string[] = [];
       for (let d = from; d <= g.validUntil; d = addDays(d, 1)) {
@@ -106,7 +113,7 @@ export default function GiftPanel(p: GiftPanelProps) {
       }
       setDays(out);
     } catch (err) {
-      setBookError(eventError(err));
+      if (fresh()) setBookError(eventError(err));
     }
   };
   const openBook = (g: Gift) => {
@@ -120,6 +127,7 @@ export default function GiftPanel(p: GiftPanelProps) {
   };
   const pickDay = async (d: string) => {
     if (!booking) return;
+    const fresh = slotsLatest();
     setDate(d);
     setSlot('');
     setSlots(null);
@@ -127,10 +135,11 @@ export default function GiftPanel(p: GiftPanelProps) {
     if (!d) return;
     try {
       const r = await browserCall<{ closedReason: string | null; slots: Array<{ start: string; end: string }> }>(`/gifts/${booking.id}/slots?branchId=${branchId}&date=${d}`);
+      if (!fresh()) return;
       setClosedReason(r.closedReason);
       setSlots(r.slots);
     } catch (err) {
-      setBookError(eventError(err));
+      if (fresh()) setBookError(eventError(err));
     }
   };
   const book = async (e: Event) => {

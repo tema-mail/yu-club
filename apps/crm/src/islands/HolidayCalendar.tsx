@@ -3,6 +3,7 @@
 // отменённые – отдельным разделом. Директору и остальным – только чтение. Даты – локальные, без сдвига зоны.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { browserCall } from '../lib/api.ts';
+import { useLatest } from '../lib/latest.ts';
 import { WEEKDAY, dayText, eventError, weekdayOf, type Holiday } from '../lib/events.ts';
 import { ReasonDialog } from './EventParts.tsx';
 
@@ -25,11 +26,15 @@ export default function HolidayCalendar(p: HolidayCalendarProps) {
   const [busy, setBusy] = useState(false);
   const [cancelling, setCancelling] = useState<Holiday | null>(null);
   const key = useRef(crypto.randomUUID());
+  const latest = useLatest(); // листание года: ответ прежнего года не подменяет список
   const load = async () => {
+    const fresh = latest();
     try {
       const r = await browserCall<{ items: Holiday[] }>(`/holidays?from=${year}-01-01&to=${year}-12-31&includeCancelled=true`);
+      if (!fresh()) return;
       setItems(r.items);
     } catch (err) {
+      if (!fresh()) return;
       setError(eventError(err));
       setItems([]);
     }
