@@ -135,7 +135,7 @@ test.beforeAll(async ({ browser }) => {
   // бронь для неявки – сразу, чтобы её начало прошло, пока идут сценарии 1–4
   // вечером после закрытия сегодня слотов нет: тогда сценарий 5 пропускается с причиной, а не роняет весь набор
   const today = await nearestFree(client, branch, vr, Date.now() + 60_000, 1);
-  if (today) {
+  if (today && minutesUntil(today.slot.start) <= 35) { // ждать начала сеанса – минуты, не часы до открытия
     [noShow] = await client.book(branch.id, [{ resourceId: today.r.id, start: today.slot.start, end: today.slot.end }]) as [BookingDto];
     leftovers.push(noShow.id);
     busyUntil = Date.parse(noShow.end);
@@ -290,7 +290,7 @@ test('4. полный возврат денег по брони 1: начисл�
 });
 
 test('5. штрафы включены: неявка → −5, баланс −50 → предзапись на сайте закрыта текстом 07 §9.2', async () => {
-  test.skip(!noShow, 'сегодня свободных слотов уже нет (прогон после закрытия клуба) – неявку проверить нельзя, прогонять днём');
+  test.skip(!noShow, 'клуб закрыт: ближайший слот VR не в ближайшие 35 мин – неявку (после начала сеанса) проверить нельзя, прогонять днём');
   if (!noShow) return;
   // к −45 – корректировкой Директора (ниже −50 он не может, до −50 – да)
   const start = (await loyalty()).balanceCenti;
