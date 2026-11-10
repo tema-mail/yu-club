@@ -213,7 +213,9 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
           pointsAvailable: async (_db, clientId, at, bookingId) => {
             const c = await staff.pool.connect();
             try {
-              return await loyaltyAvailableForBooking(c, clientId, at, bookingId);
+              // удержание брони – через провайдер booking (ADR 0002): его резерв до обработки booking.confirmed – резерв этой брони
+              const holdId = (await paymentBookingProvider.payableBooking(c, bookingId))?.holdId ?? null;
+              return await loyaltyAvailableForBooking(c, clientId, at, bookingId, holdId);
             } finally {
               c.release();
             }

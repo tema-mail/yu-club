@@ -8,10 +8,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config.ts';
 import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
+import { confirmHold } from '../../apps/api/src/modules/booking/confirm.ts';
+import { createHold } from '../../apps/api/src/modules/booking/hold.ts';
+import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
 import { createCertificatePaymentMethod } from '../../apps/api/src/modules/certificates/payment-method.ts';
 import { sellCertificate } from '../../apps/api/src/modules/certificates/sale.ts';
 import { createBatch, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { registerPaymentMethod } from '../../apps/api/src/modules/finance/methods.ts';
+import { reserveForHold } from '../../apps/api/src/modules/loyalty/reserve.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -121,6 +125,38 @@ describe('оплата в CRM', () => {
     const paid = await req('admin', 'POST', `/bookings/${b}/payment`, { lines: [{ method: 'points', amountKop: 30_000 }] });
     expect(paid.statusCode).toBe(201);
     expect(paid.json().session.status).toBe('paid');
+  });
+
+  it('№19: бронь из удержания, worker ещё не перенёс резерв удержания на бронь – он не вычитается, points предлагается', async () => {
+    const clientId = (await db.client.query<{ id: string }>(`INSERT INTO app.clients (phone_e164, first_name, status, created_by_type, registered_at) VALUES ('+79130000005', 'У', 'active', 'system', now()) RETURNING id`)).rows[0]!.id;
+    const branchId = ids.lenina!;
+    const resourceId = ids[`pc_${branchId}`]!;
+    await db.client.query(`INSERT INTO app.tariffs (branch_id, resource_type, name, unit_minutes, price_per_unit_kop, valid_from, status, created_by) VALUES ($1, 'pc', 'ПК', 30, 100, '2026-01-01', 'active', $2)`, [branchId, ids.owner]);
+    const u = await db.client.query<{ id: string }>(`INSERT INTO app.occupancy_units (branch_id, code, name) VALUES ($1, 'PC-H', 'PC-H') RETURNING id`, [branchId]);
+    await db.client.query(`INSERT INTO app.resource_units (resource_id, unit_id, valid_from) VALUES ($1, $2, '2026-01-01')`, [resourceId, u.rows[0]!.id]);
+    await db.client.query(`UPDATE app.branches SET status = 'active' WHERE id = $1`, [branchId]); // удержание – только в работающем филиале
+    const start = new Date('2026-11-16T07:00:00Z');
+    const h = await runOccupancyCommand(pool, (t) => createHold(t, { clientId, visitorId: null }, { branchId, items: [{ resourceId, start, end: new Date(start.getTime() + 3_600_000) }] }, clock));
+    const c = await pool.connect();
+    try {
+      await c.query('BEGIN');
+      await openAccount(c, clientId, clock.now());
+      const p = await postPoints(c, clientId, { amount: 6_000, type: 'loyalty.accrual', branchId: null, occurredAt: clock.now() }, randomUUID(), SYSTEM_AUTHOR);
+      await createBatch(c, { clientId, entryId: p.entryId, amount: 6_000, balanceBefore: p.balanceBefore, source: 'visit', branchId: null, expiresAt: null, accruedAt: clock.now() });
+      await c.query('COMMIT');
+      await c.query('BEGIN');
+      await reserveForHold(c, { clientId, holdId: h.id }, { actor: { kind: 'client', clientId, sessionId: randomUUID() }, source: 'site', requestId: randomUUID() }, clock);
+      await c.query('COMMIT');
+    } finally {
+      c.release();
+    }
+    const b = (await runOccupancyCommand(pool, (t) => confirmHold(t, clientId, h.id, clock))).bookings[0]!.id;
+    await db.client.query(`UPDATE app.bookings SET status = 'arrived' WHERE id = $1`, [b]); // приход отмечен, событие подтверждения ещё в очереди
+    const v = (await req('admin', 'GET', `/bookings/${b}/payment`)).json();
+    expect(v).toMatchObject({ pointsAvailableCenti: 6_000, pointsRequiredCenti: 6_000 }); // до исправления – 0: свой резерв удержания
+    expect(v.allowedMethods).toContain('points');
+    const paid = await req('admin', 'POST', `/bookings/${b}/payment`, { lines: [{ method: 'points', amountKop: v.amountDueKop }] });
+    expect(paid.statusCode, paid.body).toBe(201);
   });
 
   it('№20: Администратор проводит; повтор с ключом – тот же paymentId; новый ключ – ALREADY_PAID; без ключа – 400', async () => {

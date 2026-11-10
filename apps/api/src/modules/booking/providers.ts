@@ -105,6 +105,9 @@ export interface PayableBookingRow {
   resourceType: string;
   start: Date;
   end: Date;
+  /** Удержание, подтверждением которого создана бронь (K15 §3: резерв баллов удержания, пока worker не перенёс его
+   *  на бронь, – это резерв самой брони, его не вычитают при её оплате); бронь без удержания (CRM) – null. */
+  holdId: string | null;
 }
 
 export interface HoldBookingRow {
@@ -124,7 +127,8 @@ export const paymentBookingProvider = {
     const r = await tx.query<Omit<PayableBookingRow, 'payable' | 'priceKop'> & { priceKop: string }>(
       `SELECT b.id AS "bookingId", b.branch_id AS "branchId", v.branch_timezone AS "branchTimezone", b.client_id AS "clientId",
               b.status, b.current_version AS version, v.price_kop AS "priceKop", ${minutesSql('v.period')} AS minutes,
-              v.resource_id AS "resourceId", r.resource_type AS "resourceType", lower(v.period) AS start, upper(v.period) AS "end"
+              v.resource_id AS "resourceId", r.resource_type AS "resourceType", lower(v.period) AS start, upper(v.period) AS "end",
+              b.hold_id AS "holdId"
        FROM app.bookings b
        JOIN journal.booking_versions v ON v.booking_id = b.id AND v.version = b.current_version
        JOIN app.resources r ON r.id = v.resource_id

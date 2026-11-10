@@ -17,6 +17,7 @@ import { markArrived, markNoShow } from '../../apps/api/src/modules/booking/visi
 import type { PaymentMethod } from '../../apps/api/src/modules/finance/methods.ts';
 import { availableForBookingCenti, createBatch, debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import type { PaymentLookup } from '../../apps/api/src/modules/loyalty/accrual.ts';
+import { chargePoints } from '../../apps/api/src/modules/loyalty/payment-method.ts';
 import { registerReserveHandlers, reserveForHold, RESERVE_HANDLERS, settleStaleReserves } from '../../apps/api/src/modules/loyalty/reserve.ts';
 import { lockAccounts } from '../../apps/api/src/core/ledger.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -248,6 +249,61 @@ describe('резерв брони', () => {
   it('оплачено наличными до события booking.confirmed: резерва брони нет, доступно = баланс', async () => {
     const c = await paidBeforeEvent('cash');
     expect(await bal(c)).toMatchObject({ balanceCenti: 5000, reservedCenti: 0, availableCenti: 5000 });
+  });
+
+  // стенд 10.11 (отчёт, «Баллы и worker»): бронь подтверждена и клиент пришёл, а worker ещё не перенёс резерв удержания
+  // на бронь. Резерв удержания – это резерв самой брони: при её оплате не вычитается (holdId из payableBooking)
+  async function paidByPointsBeforeEvent(): Promise<{ c: string; id: string }> {
+    const c = await clientWith(9000);
+    const other = await hold(c, [slot(ids.b1pc2!, 30)]); // чужой резерв: бронь 30 минут, уже перенесён worker
+    await reserve(c, other.id);
+    await confirmed(c, other);
+    const s = slot(ids.b1pc1!, 60);
+    const h = await hold(c, [s]);
+    await reserve(c, h.id);
+    const id = (await runOccupancyCommand(pool, (tx) => confirmHold(tx, c, h.id, clock))).bookings[0]!.id;
+    now = new Date(s.start.getTime() - 60_000);
+    const rv = Number((await one<{ row_version: number }>('SELECT row_version FROM app.bookings WHERE id = $1', [id])).row_version);
+    await runOccupancyCommand(pool, (tx) => markArrived(tx, id, { ctx: owner, rowVersion: rv }, staffMeta(), clock));
+    const b = (await paymentBookingProvider.payableBooking(pool, id))!;
+    await inTx((tx) =>
+      chargePoints(tx, {
+        session: { id, bookingId: id, branchId: b.branchId, clientId: c, amountDueKop: b.priceKop, bookingVersion: b.version, status: 'unpaid', activePaymentId: null, rowVersion: 1 },
+        holdId: b.holdId, lineNo: 1, amountKop: b.priceKop, minutes: b.minutes, resourceType: b.resourceType,
+        idempotencyKey: `payment:${id}:1:1`, author: { type: 'staff', id: ids.owner! }, occurredAt: now, mode: 'exact',
+      }),
+    );
+    return { c, id };
+  }
+  const spends = (c: string) =>
+    db.client.query<{ n: number }>(`SELECT count(*)::int AS n FROM journal.ledger_entries e JOIN app.ledger_accounts a ON a.id = e.account_id WHERE a.owner_id = $1 AND e.entry_type = 'loyalty.spend_time'`, [c]).then((r) => r.rows[0]!.n);
+
+  it('бронь подтверждена, worker ещё не обработал: оплата баллами в arrived проходит; доступно = баланс − чужие резервы', async () => {
+    const saved = now;
+    try {
+      const { c } = await paidByPointsBeforeEvent(); // до исправления – POINTS_INSUFFICIENT: 9000 − 3000 − 6000 (свой резерв удержания)
+      expect(await spends(c)).toBe(1);
+      expect((await bal(c)).balanceCenti).toBe(3000);
+    } finally {
+      now = saved;
+    }
+  });
+
+  it('после этого worker обрабатывает booking.confirmed: резерва этой брони не остаётся, списание одно', async () => {
+    const saved = now;
+    try {
+      const { c, id } = await paidByPointsBeforeEvent();
+      live.set(id, ['points']);
+      await deliver(RESERVE_HANDLERS.bookingConfirmed, await eventOf('booking.confirmed', 'bookingId', id));
+      await deliver(RESERVE_HANDLERS.bookingConfirmed, await eventOf('booking.confirmed', 'bookingId', id)); // повтор – ничего
+      // резерв удержания закрыт (converted), на оплаченную бронь не создан; живой – только чужой резерв брони 30 минут
+      expect((await reserves(c)).map((x) => `${x.status}:${x.amount_centi}`).sort()).toEqual(['booking:3000', 'converted:3000', 'converted:6000']);
+      expect(await db.client.query(`SELECT 1 FROM app.loyalty_reserves WHERE booking_id = $1`, [id]).then((r) => r.rowCount)).toBe(0);
+      expect(await bal(c)).toMatchObject({ balanceCenti: 3000, reservedCenti: 3000, availableCenti: 0 });
+      expect(await spends(c)).toBe(1);
+    } finally {
+      now = saved;
+    }
   });
 
   it('отмена брони → booking_cancelled; неявка → no_show без списания; оплата наличными → paid_other', async () => {

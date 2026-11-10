@@ -34,9 +34,10 @@ import {
 export interface PaymentBookings {
   /** Бронь без блокировки: филиал и клиент – чтобы взять счета до строки брони (bookingLookup.facts). */
   facts(db: Db, bookingId: string): Promise<{ branchId: string; clientId: string } | null>;
-  /** Бронь под FOR SHARE (paymentBookingProvider.payableBooking, S2-05). */
+  /** Бронь под FOR SHARE (paymentBookingProvider.payableBooking, S2-05); holdId – удержание брони (для points, K15 §3). */
   payableBooking(db: Db, bookingId: string): Promise<{
     bookingId: string; branchId: string; clientId: string; status: string; payable: boolean; version: number; priceKop: number; minutes: number; resourceType: string;
+    holdId: string | null;
   } | null>;
 }
 
@@ -403,7 +404,7 @@ export async function recordPayment(
     } else {
       const handler = paymentMethodHandler(l.method as 'points' | 'certificate')!;
       const r = await handler.charge(tx, {
-        session, lineNo, amountKop: drain ? due : l.amountKop, minutes: b.minutes, resourceType: b.resourceType,
+        session, holdId: b.holdId, lineNo, amountKop: drain ? due : l.amountKop, minutes: b.minutes, resourceType: b.resourceType,
         ...(l.certificate ? { certificate: l.certificate } : {}),
         idempotencyKey: key, author, occurredAt: now, mode: drain ? 'drain' : 'exact', paymentId, meta,
         ...(input.receiptIssued !== undefined ? { receiptIssued: input.receiptIssued } : {}),

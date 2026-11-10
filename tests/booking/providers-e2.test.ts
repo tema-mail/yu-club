@@ -68,6 +68,21 @@ describe('payableBooking (K10 §4 п.1)', () => {
     expect(await p.payableBooking(pool, randomUUID())).toBeNull();
   });
 
+  it('holdId – удержание, из которого создана бронь; бронь без удержания (CRM) – null', async () => {
+    expect((await p.payableBooking(pool, bookings[0]!))?.holdId).toBe(ids.hold);
+    const crm = await one(
+      `INSERT INTO app.bookings (checkout_id, branch_id, client_id, resource_id, period, price_kop, source, created_by_type, status)
+       VALUES (gen_random_uuid(), $1, $2, $3, tstzrange('2026-11-16T07:00:00Z', '2026-11-16T08:00:00Z', '[)'), 200, 'crm', 'staff', 'arrived') RETURNING id`,
+      [ids.b1, ids.client, ids.pc2],
+    );
+    await db.client.query(
+      `INSERT INTO journal.booking_versions (booking_id, version, resource_id, period, branch_timezone, unit_ids, resource_snapshot, price_kop, price_snapshot, created_by_type)
+       VALUES ($1, 1, $2, tstzrange('2026-11-16T07:00:00Z', '2026-11-16T08:00:00Z', '[)'), 'Asia/Novosibirsk', ARRAY[gen_random_uuid()], '{"name":"ПК"}', 200, '{}', 'staff')`,
+      [crm.id, ids.pc2],
+    );
+    expect((await p.payableBooking(pool, crm.id))?.holdId).toBeNull();
+  });
+
   it('перенос – цена и минуты новой версии', async () => {
     const c = bookings[2]!;
     await db.client.query(
