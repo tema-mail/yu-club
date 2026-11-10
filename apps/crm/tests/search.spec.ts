@@ -1,5 +1,7 @@
-// S4-95: глобальный поиск в шапке – группы по типам в пределах прав, маска клиента без client.view.full, «ничего не найдено» – не
-// ошибка, короткий запрос – подсказка; клавиатура: «/» – фокус, стрелки – по найденному, Enter – открыть, Escape – закрыть.
+// S4-95: глобальный поиск в шапке – группы по типам в пределах прав; телефон клиента – маской «+7 ••• ••• ••-NN» всем ролям, и Владельцу
+// (как в списке клиентов, 03 §14; search.ts – maskClient без полного номера), полный – только в карточке; имя – полное с client.view.full,
+// иначе «Иван П.». «Ничего не найдено» – не ошибка, короткий запрос – подсказка; клавиатура: «/» – фокус, стрелки – по найденному,
+// Enter – открыть, Escape – закрыть.
 import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 
@@ -21,12 +23,13 @@ async function open(page: Page, url: string) {
 const box = (page: Page) => page.getByRole('combobox', { name: 'Поиск по CRM' });
 const results = (page: Page) => page.getByTestId('search-results');
 
-test('Владелец: клиенты и сотрудники отдельными группами, бронь по номеру', async ({ page }) => {
+test('Владелец: клиенты (полное имя, телефон маской) и сотрудники отдельными группами, бронь по номеру', async ({ page }) => {
   await login(page, 'owner@yu.test');
   await open(page, '/reports');
   await box(page).fill('Ольга');
   await expect(results(page).getByTestId('search-group-client')).toContainText('Ольга Смирнова');
-  await expect(results(page).getByTestId('search-group-client')).toContainText('+79131234567');
+  await expect(results(page).getByTestId('search-group-client')).toContainText('+7 ••• ••• ••-67');
+  await expect(results(page).getByTestId('search-group-client')).not.toContainText('+79131234567');
   await expect(results(page).getByTestId('search-group-staff')).toContainText('Ольга Владимирова');
   await expect(results(page).getByTestId('search-group-staff')).toContainText('Владелец');
   await expect(results(page).getByRole('group')).toHaveCount(2);
@@ -73,7 +76,7 @@ test('Администратор: клиент своей зоны в маске
   await box(page).fill('Ив');
   const clients = results(page).getByTestId('search-group-client');
   await expect(clients).toContainText('Иван П.');
-  await expect(clients).toContainText('+7 *** ***-65-43');
+  await expect(clients).toContainText('+7 ••• ••• ••-43');
   await expect(clients).not.toContainText('Петров');
   await box(page).fill('Ма'); // Мария – клиент Томска, вне зоны
   await expect(results(page).getByTestId('search-empty')).toBeVisible();

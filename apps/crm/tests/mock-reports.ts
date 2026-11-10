@@ -8,6 +8,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import type { ExportJob, Metric, MetricUnit, Period, ReconcileRun, SearchGroup } from '../src/lib/reports.ts';
+import { maskPhone } from './mock-clients.ts';
 
 type Rec = Record<string, unknown>;
 type Role = 'owner' | 'director' | 'admin';
@@ -253,7 +254,7 @@ const bTz = (env: Env, id: unknown) => env.branches.find((b) => b.id === id)?.ti
 function maskedClient(env: Env, person: number, branchId: string) {
   const [first, last, phone] = PEOPLE[person]!;
   const full = env.deps.can(env.s, 'client.view.full') && (env.zone.network || env.zone.branchIds.includes(branchId));
-  return { id: hex('c0000000-0000-4000-8000-', person + 1), kind: 'profile', name: full ? `${first} ${last}` : `${first} ${last[0]}.`, phone: full ? phone : `+7 *** ***-${phone.slice(-4, -2)}-${phone.slice(-2)}` };
+  return { id: hex('c0000000-0000-4000-8000-', person + 1), kind: 'profile', name: full ? `${first} ${last}` : `${first} ${last[0]}.`, phone: full ? phone : maskPhone(phone) };
 }
 
 const REPORTS: Record<string, ReportDef> = {
@@ -585,9 +586,9 @@ function search(env: Env, raw: unknown): { groups: SearchGroup[] } {
   const clients = can('client.view.basic') && !isDate && (!phoneLike || digits.length >= 4)
     ? env.deps.clients().filter((c) => (env.zone.network || c.links.some(inZone)) && c.firstName && (phoneLike ? (c.phoneE164 ?? '').endsWith(digits) : `${c.firstName} ${c.lastName}`.toLowerCase().split(' ').some((w) => w.startsWith(lower))))
     : [];
-  const full = can('client.view.full');
+  const full = can('client.view.full'); // search.ts: имя – по client.view.full (maskClient), телефон – maskPhone всем ролям, и Владельцу (03 §14)
   if (can('client.view.basic')) out.push(group('client', clients.map((c) => ({ id: c.id, name: full ? `${c.firstName} ${c.lastName ?? ''}`.trim() : `${c.firstName}${c.lastName ? ` ${c.lastName[0]}.` : ''}`,
-    phone: full ? c.phoneE164 : `+7 *** ***-${(c.phoneE164 ?? '').slice(-4, -2)}-${(c.phoneE164 ?? '').slice(-2)}`, kind: c.status === 'guest' ? 'guest' : 'profile' }))));
+    phone: maskPhone(c.phoneE164), kind: c.status === 'guest' ? 'guest' : 'profile' }))));
   if (can('schedule.view')) out.push(group('booking', seed.bookings.filter((b) => inZone(b.branchId) && (String(b.number) === q || localDate(String(b.startAt), 'Asia/Novosibirsk') === q))
     .map((b) => ({ id: b.id, number: b.number, branchId: b.branchId, branchName: bName(env, b.branchId), startLocal: fmtLocal(String(b.startAt), bTz(env, b.branchId)), status: b.status, resourceName: b.resourceName }))));
   if (can('finance.view')) out.push(group('finance_operation', seed.finance.filter((f) => inZone(f.branchId) && (String(f.number) === q || (!isNumber && String(f.comment ?? '').toLowerCase().includes(lower))))
