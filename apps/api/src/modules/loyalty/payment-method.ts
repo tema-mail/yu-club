@@ -1,8 +1,10 @@
 // K10 §5, K15 §6: обработчик способа оплаты points. finance вызывает его по реестру способов (finance/methods.ts),
 // регистрирует server.ts – модули друг друга не импортируют (ADR 0002).
 // charge: минуты брони × 100 (1 балл = 1 минута, 07 §6.1), доступно для этой брони = max(0, баланс) − резервы других
-// удержаний и броней (резерв самой брони и удержания, из которого она создана, – не вычитаются: worker мог ещё не
-// обработать booking.confirmed; позже convertReserves закроет резерв удержания, на оплаченную бронь не создаст); меньше – POINTS_INSUFFICIENT с двумя числами, доплата не предлагается (07 §6.2). Расход FEFO,
+// удержаний и броней. Резерв самой брони не вычитается; резерв удержания, из которого она создана (worker мог ещё не
+// обработать booking.confirmed), – только его остаток сверх долей остальных живых неоплаченных броней удержания
+// (минуты × 100; бронь могли удлинить переносом – доля соседней брони не съедается). Позже convertReserves закроет
+// резерв удержания, на оплаченную бронь не создаст; меньше – POINTS_INSUFFICIENT с двумя числами, доплата не предлагается (07 §6.2). Расход FEFO,
 // loyalty.spend_time, резерв брони → spent. Списание никогда не уводит баланс ниже 0 (минус бывает только от штрафа).
 // refund: только целиком (частичный режет finance – REFUND_PARTIAL_NOT_ALLOWED); возврат в исходные партии (§7):
 // истёкшая часть – «не возвращено»; всё истекло – outcome 'not_restored'.
@@ -11,14 +13,56 @@ import { AppError } from '../../core/errors.ts';
 import type { Tx } from '../../core/ledger.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import type { ChargeInput, ChargeResult, PaymentMethodHandler, RefundInput, RefundResult } from '../finance/methods.ts';
-import { debitBatches, openAccount, postPoints, reservedCenti, returnSpend } from './account.ts';
-import { settleStaleReserves } from './reserve.ts';
+import { debitBatches, getBalance, openAccount, postPoints, reservedCenti, returnSpend } from './account.ts';
+import type { PaymentLookup } from './accrual.ts';
+import { settleStaleReserves, type ReserveBookings } from './reserve.ts';
 
 async function postingOf(tx: Tx, entryId: number): Promise<string> {
   return (await tx.query<{ posting_id: string }>('SELECT posting_id FROM journal.ledger_entries WHERE id = $1', [entryId])).rows[0]!.posting_id;
 }
 
-export async function chargePoints(tx: Tx, input: ChargeInput): Promise<ChargeResult> {
+/** Брони удержания – провайдер booking (holdBookings), оплата – finance (livePayment); связывает server.ts (ADR 0002). */
+export interface PointsDeps {
+  bookings: Pick<ReserveBookings, 'holdBookings'>;
+  payments?: PaymentLookup;
+}
+
+const LIVE_BOOKING = new Set(['confirmed', 'arrived', 'completed']);
+let registeredDeps: PointsDeps | undefined;
+
+/** server.ts – вместе с registerPaymentMethod(pointsPaymentMethod), как реестры способов и ворот записи: один раз на процесс. */
+export function setPointsPaymentDeps(deps: PointsDeps): void {
+  registeredDeps = deps;
+}
+
+/** Занятые резервы клиента против оплаты этой брони: без резерва самой брони и без своей доли резерва удержания
+ *  holdId = max(0, резерв удержания − Σ минут × 100 остальных живых неоплаченных броней удержания).
+ *  Без deps (провайдер не подключён – тесты способа) – весь резерв удержания считается своим. */
+export async function reservedAgainstBookingCenti(
+  tx: Tx, clientId: string, at: Date, bookingId: string, holdId: string | null | undefined, deps?: PointsDeps,
+): Promise<number> {
+  const all = await reservedCenti(tx, clientId, at, { bookingId });
+  if (!holdId) return all;
+  const holdLive = all - (await reservedCenti(tx, clientId, at, { bookingId, holdId }));
+  if (holdLive <= 0) return all;
+  if (!deps) return all - holdLive;
+  let others = 0;
+  for (const b of await deps.bookings.holdBookings(tx, holdId)) {
+    if (b.bookingId === bookingId || !LIVE_BOOKING.has(b.status) || b.minutes <= 0) continue;
+    if (deps.payments && (await deps.payments.livePayment(tx, b.bookingId))) continue;
+    others += b.minutes * 100;
+  }
+  return all - Math.max(0, holdLive - others);
+}
+
+/** Доступно для оплаты этой брони в CRM (K10 №19) – как в chargePoints: max(0, баланс) − reservedAgainstBookingCenti. */
+export async function pointsAvailableForBooking(db: Tx, clientId: string, at: Date, bookingId: string, holdId: string | null): Promise<number> {
+  const id = clientId.toLowerCase();
+  const { balanceCenti } = await getBalance(db, id, at);
+  return Math.max(0, Math.max(0, balanceCenti) - (await reservedAgainstBookingCenti(db, id, at, bookingId, holdId, registeredDeps)));
+}
+
+export async function chargePoints(tx: Tx, input: ChargeInput, deps: PointsDeps | undefined = registeredDeps): Promise<ChargeResult> {
   const { session } = input;
   const acc = await openAccount(tx, session.clientId, input.occurredAt);
   const allowed = (await resolveSetting(tx, 'loyalty.points_resource_types', { branchId: session.branchId }, input.occurredAt)).value;
@@ -31,7 +75,7 @@ export async function chargePoints(tx: Tx, input: ChargeInput): Promise<ChargeRe
   const prior = (await tx.query<{ id: string; posting_id: string }>('SELECT id, posting_id FROM journal.ledger_entries WHERE idempotency_key = $1', [`${input.idempotencyKey}#0`])).rows[0];
   if (prior) return { postingId: prior.posting_id, amountKop: input.amountKop, pointsCenti: required };
   await settleStaleReserves(tx, acc.clientId, input.occurredAt);
-  const available = Math.max(0, Math.max(0, acc.balance) - (await reservedCenti(tx, acc.clientId, input.occurredAt, { bookingId: session.bookingId, ...(input.holdId ? { holdId: input.holdId } : {}) })));
+  const available = Math.max(0, Math.max(0, acc.balance) - (await reservedAgainstBookingCenti(tx, acc.clientId, input.occurredAt, session.bookingId, input.holdId, deps)));
   if (available < required) {
     throw new AppError('POINTS_INSUFFICIENT', 409, 'Баллов недостаточно для оплаты сеанса', { availableCenti: available, requiredCenti: required });
   }

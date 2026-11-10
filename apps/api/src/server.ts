@@ -43,8 +43,9 @@ import { giftCrmRoutes, giftPublicRoutes } from './modules/events/routes.gifts.t
 import { eventCrmRoutes } from './modules/events/routes.crm.ts';
 import { eventPublicRoutes } from './modules/events/routes.public.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
+import { paymentLookup } from './modules/finance/payment.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
-import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
+import { pointsAvailableForBooking, pointsPaymentMethod, setPointsPaymentDeps } from './modules/loyalty/payment-method.ts';
 import { loyaltyCrmRoutes } from './modules/loyalty/routes.crm.ts';
 import { loyaltyPublicRoutes } from './modules/loyalty/routes.public.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
@@ -55,7 +56,6 @@ import { pricingRoutes } from './modules/pricing/routes.ts';
 import { settingsRoutes } from './modules/settings/routes.crm.ts';
 import { financeCrmRoutes } from './modules/finance/routes.crm.ts';
 import { paymentRoutes } from './modules/finance/routes.payments.ts';
-import { availableForBookingCenti as loyaltyAvailableForBooking } from './modules/loyalty/account.ts';
 import { createCertificatePaymentMethod, verifyCertificatePin } from './modules/certificates/payment-method.ts';
 import { certificateCrmRoutes } from './modules/certificates/routes.crm.ts';
 import { certificatePublicRoutes } from './modules/certificates/routes.public.ts';
@@ -96,6 +96,7 @@ function registerModuleHooks(): void {
   if (hooksRegistered) return;
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
+  setPointsPaymentDeps({ bookings: paymentBookingProvider, payments: paymentLookup }); // доля резерва удержания брони
   registerEquipmentAttachmentOwners(); // K19 §9: вложения оборудования и ремонта
   registerEventAttachmentOwner(); // K19 §9, 11 §11.4: документ к расходу мероприятия
   registerEventSources(); // K6, K20 §4: блокировка видит мероприятие по строке занятости (S3-52)
@@ -213,9 +214,9 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
           pointsAvailable: async (_db, clientId, at, bookingId) => {
             const c = await staff.pool.connect();
             try {
-              // удержание брони – через провайдер booking (ADR 0002): его резерв до обработки booking.confirmed – резерв этой брони
+              // удержание брони – через провайдер booking (ADR 0002): до обработки booking.confirmed доля этой брони в его резерве – её
               const holdId = (await paymentBookingProvider.payableBooking(c, bookingId))?.holdId ?? null;
-              return await loyaltyAvailableForBooking(c, clientId, at, bookingId, holdId);
+              return await pointsAvailableForBooking(c, clientId, at, bookingId, holdId);
             } finally {
               c.release();
             }
