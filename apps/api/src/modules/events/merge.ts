@@ -8,6 +8,11 @@ import type { ClientMerger } from '../clients/merge.ts';
 
 export const eventsClientMerger: ClientMerger = {
   name: 'events',
+  /** Мероприятия второй карточки – до строк клиентов: правка мероприятия берёт его, затем клиента (events.ts), иначе дедлок.
+   *  Подарки – после клиентов, как в gift-booking (клиент → подарок). */
+  async prelock(tx: Tx, from: string): Promise<void> {
+    await tx.query('SELECT id FROM app.events WHERE customer_client_id = $1 OR birthday_client_id = $1 ORDER BY id FOR UPDATE', [from]);
+  },
   async preview(db: Db, clientId: string) {
     const r = await db.query<{ events: number; live: number; gifts: number }>(
       `SELECT (SELECT count(*)::int FROM app.events WHERE customer_client_id = $1 OR birthday_client_id = $1) AS events,

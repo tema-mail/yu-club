@@ -1,6 +1,7 @@
 // K9 «Слияние» против параллельной записи: две настоящие транзакции на одной базе, настоящие команды брони и все шесть
 // обработчиков модулей. Порядок замков слияния – счёт баллов → удержания и брони второй → строки клиентов (меньший id первым),
-// как у подтверждения, отмены и брони администратором: кто второй – ждёт, взаимоблокировки нет (40P01 упал бы тестом).
+// как у подтверждения, отмены и брони администратором; мероприятия второй – тоже до клиентов (events.ts: мероприятие → клиент).
+// Кто второй – ждёт, взаимоблокировки нет (40P01 упал бы тестом).
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -16,6 +17,7 @@ import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupanc
 import { certificatesClientMerger } from '../../apps/api/src/modules/certificates/merge.ts';
 import { withTx } from '../../apps/api/src/modules/clients/index.ts';
 import { clearClientMergers, mergeClients, registerClientMerger } from '../../apps/api/src/modules/clients/merge.ts';
+import { createEvent, updateEvent } from '../../apps/api/src/modules/events/events.ts';
 import { eventsClientMerger } from '../../apps/api/src/modules/events/merge.ts';
 import { financeClientMerger } from '../../apps/api/src/modules/finance/merge.ts';
 import { loyaltyClientMerger } from '../../apps/api/src/modules/loyalty/merge.ts';
@@ -146,5 +148,21 @@ describe('слияние ↔ запись: две транзакции', () => {
     const codes = await Promise.all([codeOf(withTx(pool, (t) => doMerge(t, a, b))), codeOf(withTx(pool, (t) => doMerge(t, c, b)))]);
     expect(codes.sort()).toEqual(['CLIENT_MERGED', 'ok']);
     expect((await db.client.query('SELECT count(*)::int AS n FROM journal.client_merges WHERE secondary_client_id = $1', [b])).rows[0].n).toBe(1);
+  });
+
+  it('правка мероприятия второй карточки держит его и берёт клиента-основную: слияние ждёт мероприятие, дедлока нет', async () => {
+    const a = await addClient();
+    const b = await addClient();
+    const typeId = (await db.client.query<{ id: string }>(`SELECT id FROM app.event_types WHERE code = 'other'`)).rows[0]!.id;
+    const e = await withTx(pool, (tx) => createEvent(tx, owner, { typeId, branchId, customer: { clientId: b, name: 'Аглая', phone: '+79131234567' } }, meta(), clock));
+    const tx = await openTx();
+    await tx.query('SELECT id FROM app.events WHERE id = $1 FOR UPDATE', [e.id]); // первый шаг updateEvent – замок мероприятия
+    const second = codeOf(withTx(pool, (t) => doMerge(t, a, b)));
+    await waitForLockWait();
+    // второй шаг – клиент-именинник (основная карточка): слияние ещё не держит строки клиентов
+    await updateEvent(tx, owner, e.id, { rowVersion: e.rowVersion, birthdayPerson: { clientId: a } }, meta(), clock);
+    await commit(tx);
+    expect(await second).toBe('ok');
+    expect((await db.client.query('SELECT customer_client_id, birthday_client_id FROM app.events WHERE id = $1', [e.id])).rows[0]).toEqual({ customer_client_id: a, birthday_client_id: a });
   });
 });
