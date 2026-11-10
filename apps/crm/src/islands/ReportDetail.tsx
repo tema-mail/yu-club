@@ -1,6 +1,6 @@
 // Детализация показателя (S4-91; 14 §15, K24 §2, K11 №241): исходные записи с теми же фильтрами, что у карточки, и условием сегмента.
 // Итог считает сервер тем же условием, что число карточки (TC-20): «Итог» показывается рядом и должен совпадать. Курсор – по 100 строк.
-// Номер брони ведёт в карточку брони, операция кассы – в кассу филиала (карточки операции в CRM нет). Таблица прокручивается
+// Номер брони ведёт в карточку брони, операция кассы – в карточку операции (S4-95). Таблица прокручивается
 // по горизонтали только внутри своего блока: страница на 390 px не уезжает. Недоступный показатель – причина словами, строк нет.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { BOOKING_STATUS_LABEL, METHOD_LABEL, fmtMetric, fmtValue, metricTitle, reportError, type DetailResult, type Metric, type MetricUnit } from '../lib/reports.ts';
@@ -38,7 +38,7 @@ function cell(col: string, row: Record<string, unknown>, unit: MetricUnit | null
   if (v === null || v === undefined || v === '') return '–';
   if (col === 'number' && typeof row.bookingId === 'string') return <a href={`/bookings/${encodeURIComponent(row.bookingId)}`}>№ {String(v)}</a>;
   if (col === 'number' && typeof row.eventId === 'string') return <a href={`/events/${encodeURIComponent(row.eventId)}`}>{String(v)}</a>;
-  if (col === 'number' && row.occurredLocal && typeof row.branchId === 'string') return <a href={`/finance/${encodeURIComponent(row.branchId)}`}>№ {String(v)}</a>;
+  if (col === 'number' && row.occurredLocal && typeof row.id === 'string') return <a href={`/finance/operations/${encodeURIComponent(row.id)}`}>№ {String(v)}</a>;
   if (col === 'client' && typeof v === 'object') {
     const c = v as { id: string; name: string | null; phone: string };
     return <a href={`/clients/${encodeURIComponent(c.id)}`}>{c.name ?? 'Без имени'}<span class="rp-sub" style="display:block;font-size:var(--yc-fs-xs);color:var(--yc-muted)">{c.phone}</span></a>;

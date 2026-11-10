@@ -75,6 +75,9 @@ test('Администратор: только своя зона, без сет�
   await expect(campaigns(page)).toHaveCount(3);
   await expect(page.getByTestId(`campaign-${CAMPAIGN_IDS.network}`)).toHaveCount(0);
   await expect(page.locator('main [name=branchId]')).toHaveCount(0);
+  // имена авторов – от API (S4-80): у Администратора нет /staff, имя Директора всё равно видно
+  await expect(page.getByTestId(`campaign-${CAMPAIGN_IDS.krasnyAd}`)).toContainText('Денис Директоров');
+  await expect(page.getByTestId(`campaign-${CAMPAIGN_IDS.personal}`)).toContainText('Вы');
   await open(page, '/notifications?tab=rows');
   await expect(rows(page)).toHaveCount(5);
   await expect(page.getByTestId(`row-${ROW_IDS.networkAd}`)).toHaveCount(0);
@@ -124,4 +127,17 @@ test('Отправки: время по зоне филиала, 1440 и 390 px 
   await expect(campaigns(page)).toHaveCount(5);
   expect(await noScroll(page)).toBe(true);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/notifications-390.png`, fullPage: true });
+});
+
+test('строки одной рассылки: фильтр campaignId из адреса, автор строки по имени, условие словами и сброс', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await open(page, `/notifications?tab=rows&campaignId=${CAMPAIGN_IDS.krasnyAd}`);
+  await expect(rows(page)).toHaveCount(1);
+  await expect(page.getByTestId('rows')).toContainText('Сотрудник: Денис Директоров');
+  await page.getByLabel('Категория').selectOption({ label: 'Реклама' });
+  await page.getByRole('button', { name: 'Найти' }).click();
+  await expect(page).toHaveURL(new RegExp(`campaignId=${CAMPAIGN_IDS.krasnyAd}`)); // условие рассылки не теряется при смене фильтров
+  await expect(rows(page)).toHaveCount(1);
+  await open(page, `/notifications?tab=rows&campaignId=${CAMPAIGN_IDS.krasnyAd}&status=error`);
+  await expect(page.getByTestId('journal-empty')).toContainText('одна рассылка');
 });

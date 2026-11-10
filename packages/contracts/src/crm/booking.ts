@@ -99,8 +99,13 @@ export const CalendarDto = z.strictObject({
   items: z.array(CalendarItem),
 });
 export const CrmBookingList = z.strictObject({ items: z.array(CrmBookingRow), nextCursor: z.string().nullable() });
+/** K11 №252 (S4-81): брони клиента для выбора записи в ручном сообщении – с филиалом и его зоной (время по K8). */
+export const ClientBookingsQuery = z.object({ scope: z.enum(['upcoming', 'recent']), limit: z.coerce.number().int().min(1).max(50).default(20) });
+export const ClientBookingRow = CrmBookingRow.extend({ branchId: Uuid, timezone: z.string() });
+export const ClientBookingList = z.strictObject({ items: z.array(ClientBookingRow) });
 
 export type CrmBookingRow = z.infer<typeof CrmBookingRow>;
+export type ClientBookingRow = z.infer<typeof ClientBookingRow>;
 export type CrmBooking = z.infer<typeof CrmBooking>;
 export type CalendarItem = z.infer<typeof CalendarItem>;
 export type CalendarDto = z.infer<typeof CalendarDto>;

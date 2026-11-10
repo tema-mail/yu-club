@@ -8,6 +8,8 @@ fixE2eClock();
 // Порты можно сдвинуть через E2E_PORT_BASE (несколько прогонов на одной машине): мок = база, CRM = база+320, сайт = база+321.
 const BASE = Number(process.env.E2E_PORT_BASE ?? 4012);
 const MOCK_PORT = BASE;
+// Спеки берут адрес мока из MOCK_URL – задаём его здесь, чтобы E2E_PORT_BASE хватало одного (воркеры наследуют env).
+process.env.MOCK_URL ??= `http://127.0.0.1:${MOCK_PORT}`;
 const CRM_PORT = BASE + 320;
 // Предпросмотр K22 §11: «сайт» внутренней сети поднимает сам tests/content-preview.spec.ts.
 export const SITE_PORT = BASE + 321;

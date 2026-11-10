@@ -10,7 +10,8 @@ type Constraints =
   | { kind: 'integer'; min: number | null; max: number | null; nullable: boolean }
   | { kind: 'boolean' | 'list' | 'time' | 'datetime' | 'hours'; nullable: boolean }
   | { kind: 'enum'; options: string[]; nullable: boolean }
-  | { kind: 'multi'; options: string[]; minItems: number; nullable: boolean };
+  | { kind: 'multi'; options: string[]; minItems: number; nullable: boolean }
+  | { kind: 'text'; maxLength: number; nullable: boolean };
 
 export interface SettingItem {
   key: string; value: unknown; systemDefault: unknown;
@@ -61,6 +62,14 @@ const META: Record<string, Meta> = {
   'loyalty.points_resource_types': { label: 'Места, которые оплачиваются баллами', hint: 'Коды типов мест через запятую (pc, vr_seat, ps_room…). Пусто – баллами не оплачивается ничего.' },
   'loyalty.accrue_for_points': { label: 'Баллы за оплату баллами', hint: 'Начислять баллы, если сеанс оплачен баллами.' },
   'loyalty.accrue_for_certificate': { label: 'Баллы за оплату сертификатом', hint: 'Начислять баллы, если сеанс оплачен сертификатом.' },
+  'notifications.marketing_title_prefix': { label: 'Пометка рекламного сообщения', hint: 'С этих слов начинается заголовок каждой рекламной рассылки.' },
+  // Реквизиты оператора (K7): сайт показывает блок на «Контактах» только из заполненных полей; пусто – блока нет.
+  'legal.operator_name': { label: 'Юридическое лицо', nullLabel: 'Не указано', hint: 'Оператор персональных данных: ООО или ИП, как в документах. Показывается на сайте в «Контактах» и в юридических текстах.' },
+  'legal.inn': { label: 'ИНН', nullLabel: 'Не указан', hint: '10 цифр у организации, 12 – у ИП.' },
+  'legal.ogrn': { label: 'ОГРН', nullLabel: 'Не указан', hint: '13 цифр у организации, 15 – ОГРНИП.' },
+  'legal.address': { label: 'Юридический адрес', nullLabel: 'Не указан', hint: 'Адрес оператора персональных данных с индексом.' },
+  'legal.phone': { label: 'Телефон оператора', nullLabel: 'Не указан', hint: 'Телефон для обращений по персональным данным и реквизитам.' },
+  'legal.email': { label: 'Почта оператора', nullLabel: 'Не указана', hint: 'Почта для обращений по персональным данным.' },
 };
 const GROUPS: Array<{ prefix: string[]; title: string }> = [
   { prefix: ['booking', 'visit'], title: 'Запись и посещения' },
@@ -70,6 +79,7 @@ const GROUPS: Array<{ prefix: string[]; title: string }> = [
   { prefix: ['loyalty'], title: 'Баллы' },
   { prefix: ['staff', 'client'], title: 'Вход сотрудников и клиентов' },
   { prefix: ['branch'], title: 'Новые филиалы' },
+  { prefix: ['legal'], title: 'Реквизиты оператора' },
 ];
 const LEVEL_LABEL: Record<Level, string> = { system: 'система', network: 'сеть', city: 'город', branch: 'филиал' };
 const STATUS_LABEL: Record<HistoryRow['status'], string> = { active: 'Действует', planned: 'Запланировано', ended: 'Завершено' };
@@ -80,7 +90,7 @@ const meta = (key: string): Meta => META[key] ?? { label: key, hint: '' };
 
 function show(item: Pick<SettingItem, 'key' | 'constraints'>, value: unknown): string {
   const m = meta(item.key);
-  if (value === null || value === undefined) return m.nullLabel ?? 'Не задано';
+  if (value === null || value === undefined || value === '') return m.nullLabel ?? 'Не задано'; // пустой текст – «не задано» (реквизиты)
   if (typeof value === 'boolean') return value ? 'Да' : 'Нет';
   if (typeof value === 'number') return m.money ? `${(value / 100).toLocaleString('ru-RU')} ₽` : `${value}${m.unit ? ` ${m.unit}` : ''}`;
   if (Array.isArray(value)) return value.length === 0 ? 'Ничего' : value.map((v) => m.options?.[String(v)] ?? String(v)).join(', ');
@@ -159,6 +169,10 @@ function parseInput(item: SettingItem, raw: Draft): { value: unknown } | { error
       return { value: raw.text.split(',').map((s) => s.trim()).filter(Boolean) };
     case 'time':
       return /^\d\d:\d\d$/.test(raw.text) ? { value: raw.text } : { error: 'Укажите время ЧЧ:ММ.' };
+    case 'text': {
+      const t = raw.text.trim();
+      return t.length <= c.maxLength ? { value: t } : { error: `Не длиннее ${c.maxLength} знаков.` };
+    }
     case 'datetime':
       return raw.text ? { value: new Date(raw.text).toISOString() } : { error: 'Укажите дату и время.' };
     case 'hours':
@@ -334,11 +348,11 @@ export default function SettingsScreen({ page, cityLabel, isOwner }: SettingsPro
             ))}
           </fieldset>
         )}
-        {(c.kind === 'list' || c.kind === 'time' || c.kind === 'datetime') && (
+        {(c.kind === 'list' || c.kind === 'text' || c.kind === 'time' || c.kind === 'datetime') && (
           <div class="yc-field">
             <label class="yc-field__label" for={id}>Новое значение</label>
-            {c.kind === 'list' ? (
-              <input id={id} class="yc-input" type="text" value={d.text} disabled={disabled} onInput={(e) => set({ text: input(e) })} />
+            {c.kind === 'list' || c.kind === 'text' ? (
+              <input id={id} class="yc-input" type="text" maxLength={c.kind === 'text' ? c.maxLength : undefined} value={d.text} disabled={disabled} onInput={(e) => set({ text: input(e) })} />
             ) : (
               <input id={id} class="yc-input" type={c.kind === 'time' ? 'time' : 'datetime-local'} value={d.text} disabled={disabled} onInput={(e) => set({ text: input(e) })} />
             )}

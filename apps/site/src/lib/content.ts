@@ -47,6 +47,8 @@ export interface BranchPage {
   geo: { lat: number; lng: number } | null; media: MediaMap; seo: SeoDto;
 }
 export interface LegalVersions { privacyPolicy: string | null; personalDataConsent: string | null; cookiePolicy: string | null; advertisingConsent: string | null }
+/** K5 №218: реквизиты оператора из настроек сети legal.* (K7); не заданы – null, блок на /contacts/ не рисуется. */
+export interface Requisites { operatorName: string | null; inn: string | null; ogrn: string | null; address: string | null; phone: string | null; email: string | null }
 
 // ---- кэш
 
@@ -179,4 +181,5 @@ export const content = {
   room: (roomId: string) => contentCache.get<RoomPage>(`/content/rooms/${seg(roomId)}`),
   branch: (branchId: string) => contentCache.get<BranchPage>(`/content/branches/${seg(branchId)}`),
   legalVersions: () => must(contentCache.get<LegalVersions>('/content/legal-versions')),
+  requisites: () => must(contentCache.get<Requisites>('/content/requisites')),
 };
