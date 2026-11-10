@@ -18,6 +18,13 @@ import { reverseOperation } from '../../apps/api/src/modules/finance/corrections
 import { recordExpense } from '../../apps/api/src/modules/finance/cashbox.ts';
 import { createBatch, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { pointsPaymentMethod } from '../../apps/api/src/modules/loyalty/payment-method.ts';
+import { bookingClientMerger } from '../../apps/api/src/modules/booking/merge.ts';
+import { certificatesClientMerger } from '../../apps/api/src/modules/certificates/merge.ts';
+import { clearClientMergers, mergeClients, registerClientMerger } from '../../apps/api/src/modules/clients/merge.ts';
+import { eventsClientMerger } from '../../apps/api/src/modules/events/merge.ts';
+import { financeClientMerger } from '../../apps/api/src/modules/finance/merge.ts';
+import { loyaltyClientMerger } from '../../apps/api/src/modules/loyalty/merge.ts';
+import { notificationsClientMerger } from '../../apps/api/src/modules/notifications/merge.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const PEPPER = 'cert-pepper-'.padEnd(40, 'z');
@@ -284,5 +291,79 @@ describe('гонка', () => {
     // ждавшие блокировку со старым rowVersion – VERSION_CONFLICT, начавшие после – REFUND_EXCEEDS_PAID
     for (const c of res.filter((x) => x !== 'ok')) expect(['VERSION_CONFLICT', 'REFUND_EXCEEDS_PAID']).toContain(c);
     expect(await cash()).toBe(before - 30_000);
+  });
+});
+
+describe('возврат баллов после слияния карточек (D5-08, D5-09)', () => {
+  beforeAll(() => {
+    clearClientMergers();
+    for (const m of [bookingClientMerger, financeClientMerger, loyaltyClientMerger, certificatesClientMerger, eventsClientMerger, notificationsClientMerger]) registerClientMerger(m);
+  });
+  afterAll(() => clearClientMergers());
+
+  const merge = (p: string, s: string) => tx((t) => mergeClients(t, owner, { primaryId: p, secondaryId: s, reason: 'same_person_confirmed' }, meta(owner), undefined, clock));
+  const points = async (id: string) => (await getBalance(pool, id, clock.now())).balanceCenti;
+  async function waitForLockWait(): Promise<void> {
+    for (let i = 0; i < 60; i++) {
+      const r = await db.client.query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`);
+      if (r.rows[0]!.n > 0) return;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    throw new Error('возврат не ждёт замка');
+  }
+
+  it('счёт объединённой карточки списания берётся до сеанса: пока он занят, сеанс свободен; затем баллы – у основной', async () => {
+    const m = await clientWith(6_000);
+    const p = await clientWith(1_000);
+    const b = await booking({ clientId: m });
+    const pm = await pay(b, [{ method: 'points', amountKop: 30_000 }]);
+    await merge(p, m);
+    const hold = await pool.connect();
+    try {
+      await hold.query('BEGIN');
+      await hold.query(`SELECT id FROM app.ledger_accounts WHERE kind = 'loyalty_client' AND owner_id = $1 FOR UPDATE`, [m]);
+      const r = codeOf(refund(pm.paymentId, { lines: [{ lineNo: 1 }] }));
+      await waitForLockWait();
+      // возврат ждёт счёт второй и ещё не держит сеанс (до правки держал – взаимоблокировка с командами «счёт → сеанс»)
+      const probe = await pool.connect();
+      try {
+        await probe.query('BEGIN');
+        expect(await codeOf(probe.query(`SELECT 1 FROM app.payment_sessions WHERE booking_id = $1 FOR UPDATE NOWAIT`, [b]))).toBe('ok');
+      } finally {
+        await probe.query('ROLLBACK');
+        probe.release();
+      }
+      await hold.query('COMMIT');
+      expect(await r).toBe('ok');
+    } finally {
+      hold.release();
+    }
+    expect(await points(p)).toBe(7_000);
+    expect(await points(m)).toBe(0);
+  });
+
+  it('карточку сеанса объединили, пока возврат ждал её счёт, – CLIENT_MERGED; повтор возвращает баллы последней в цепочке', async () => {
+    const m = await clientWith(6_000);
+    const p = await clientWith(100);
+    const q = await clientWith(100);
+    const b = await booking({ clientId: m });
+    const pm = await pay(b, [{ method: 'points', amountKop: 30_000 }]);
+    await merge(p, m);
+    const c = await pool.connect();
+    let r: Promise<string>;
+    try {
+      await c.query('BEGIN');
+      await mergeClients(c, owner, { primaryId: q, secondaryId: p, reason: 'same_person_confirmed' }, meta(owner), undefined, clock);
+      r = codeOf(refund(pm.paymentId, { lines: [{ lineNo: 1 }] }));
+      await waitForLockWait();
+      await c.query('COMMIT');
+    } finally {
+      c.release();
+    }
+    expect(await r).toBe('CLIENT_MERGED');
+    expect(await codeOf(refund(pm.paymentId, { lines: [{ lineNo: 1 }] }))).toBe('ok');
+    expect(await points(q)).toBe(6_200);
+    expect(await points(p)).toBe(0);
+    expect(await points(m)).toBe(0);
   });
 });
