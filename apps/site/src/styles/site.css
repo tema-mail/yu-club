@@ -525,6 +525,20 @@ a.yu-zone__room-name:hover { color: var(--yu-accent); }
 .yu-footer__link:hover { color: var(--yu-text); text-decoration: underline; }
 .yu-footer__copy { margin: 0; color: var(--yu-dim); font-size: var(--yu-fs-xs); }
 
+/* ── Липкая панель «Выбрать время» (components/TimeCta.astro) ── */
+/* Телефон: панель во всю ширину у нижнего края экрана, пока виден main; в конце страницы уезжает с содержимым. С 900 px – нет. */
+.yu-cta-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  margin: var(--yu-sp-l) calc(-1 * var(--yu-gutter)) 0;
+  padding: var(--yu-sp-2xs) var(--yu-gutter) calc(var(--yu-sp-2xs) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--yu-line-soft);
+  background: rgb(11 13 18 / 0.92);
+  backdrop-filter: blur(10px);
+}
+.yu-cta-bar__btn { width: 100%; }
+
 /* ── Брейкпоинты ────────────────────────────────────────── */
 @media (min-width: 440px) {
   .yu-brand__name { display: inline; }
@@ -540,6 +554,7 @@ a.yu-zone__room-name:hover { color: var(--yu-accent); }
 }
 
 @media (min-width: 900px) {
+  .yu-cta-bar { display: none; }
   .yu-hero { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); align-items: end; }
   .yu-footer__row { grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr)); }
 }
