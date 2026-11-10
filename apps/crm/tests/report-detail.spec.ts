@@ -36,12 +36,12 @@ test('итог детализации = число карточки, номер 
   await expect(detail(page)).toHaveCount(0);
 });
 
-test('операция кассы ведёт в кассу филиала; адрес с metric открывает записи сразу', async ({ page }) => {
+test('операция кассы ведёт в карточку операции; адрес с metric открывает записи сразу', async ({ page }) => {
   await login(page, 'owner@yu.test');
   await open(page, `/reports/finance?${P}&metric=refunds`);
   const value = (await page.getByTestId('card-refunds').getByTestId('value').textContent())!.trim();
   await expect(detail(page).getByTestId('detail-total')).toContainText(`Итог: ${value} – совпадает с карточкой`);
-  await expect(detail(page).getByTestId('detail-table').locator('tbody tr').first().getByRole('link').first()).toHaveAttribute('href', /^\/finance\/b-/);
+  await expect(detail(page).getByTestId('detail-table').locator('tbody tr').first().getByRole('link').first()).toHaveAttribute('href', /^\/finance\/operations\/f0000000-/);
   await expect(detail(page).getByTestId('detail-table')).toContainText('Возврат');
 });
 
