@@ -25,6 +25,12 @@ export interface DaySeriesOpts {
 
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/;
 
+/** Окно записей без филиала (сетевая область): сутки UTC периода, как дата записи K3 (staff.ts moneyWindows). Одно правило для карточки,
+ *  точек и детализации дня: окно «от раннего начала суток филиалов до позднего конца» брало запись у края в два соседних периода. */
+export function noBranchWindow(period: Period): BranchWindow {
+  return { branchId: null, start: new Date(`${period.from}T00:00:00Z`), end: new Date(`${addDays(period.to, 1)}T00:00:00Z`) };
+}
+
 function days(p: Period): LocalDate[] {
   const out: LocalDate[] = [];
   for (let d = p.from; d <= p.to; d = addDays(d, 1)) out.push(d);
@@ -62,7 +68,7 @@ export async function daySeries(env: ReportEnv, action: string, p: ReportParams,
       dayOf.push(d);
     }
     if (networkWide) {
-      windows.push({ branchId: null, start: new Date(`${d}T00:00:00Z`), end: new Date(`${addDays(d, 1)}T00:00:00Z`) });
+      windows.push(noBranchWindow({ from: d, to: d }));
       dayOf.push(d);
     }
   }

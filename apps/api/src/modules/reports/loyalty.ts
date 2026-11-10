@@ -11,6 +11,7 @@ import {
   computeMetrics, DAY_RULE, detailPage, loadMaskedClients, localAt, metricDef, noData, okMetric, pageLimit, prevPeriod, resolveBranches, uuidCursor, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
+import { noBranchWindow } from './series.ts';
 
 export const LOYALTY_ACTION = 'reports.loyalty.view';
 const BLOCK_CENTI = -5000;
@@ -32,12 +33,10 @@ export function loyaltyDefs(): Record<LoyaltyMoveMetric, MetricDef> {
   };
 }
 
-/** Окна области: сетевая область без фильтра включает записи без филиала – границы всех филиалов сети. */
+/** Окна области: сетевая область без фильтра включает записи без филиала – сутки UTC периода (series.ts noBranchWindow). */
 function moveWindows(env: ReportEnv, p: ReportParams, branches: readonly BranchInfo[], period: Period): BranchWindow[] {
   const w = windowsOf(branches, period);
-  if (env.ctx.network && !p.cityId && !p.branchIds?.length && w.length > 0) {
-    w.push({ branchId: null, start: new Date(Math.min(...w.map((x) => x.start.getTime()))), end: new Date(Math.max(...w.map((x) => x.end.getTime()))) });
-  }
+  if (env.ctx.network && !p.cityId && !p.branchIds?.length && w.length > 0) w.push(noBranchWindow(period));
   return w;
 }
 
