@@ -218,6 +218,7 @@ describe('очередь', () => {
     const a1 = await queued(directorId, 'q1');
     const a2 = await queued(directorId, 'q2');
     const b1 = await queued(otherId, 'q3');
+    setReportLimits(fx.reports, { export: 2 }); // предел K24 §9 «всего 2» проверяется на процессе, которому полоса D5-10 разрешает 2
     const runner = startExportRunner(run, { start: false });
     await runner.tick(); // по одной на сотрудника: вторая задача того же сотрудника ждёт
     expect((await status(b1)).status).toBe('ready');
@@ -226,6 +227,7 @@ describe('очередь', () => {
     expect((await status(a1)).status).toBe('ready');
     expect((await status(a2)).status).toBe('ready');
     await runner.stop();
+    setReportLimits(fx.reports, DEFAULT_REPORT_LIMITS);
   });
 
   it('отмена очереди – файла нет, cancelled, аудит; завершённую отмена не меняет', async () => {
@@ -246,6 +248,20 @@ describe('очередь', () => {
     await db.client.query(`UPDATE app.report_exports SET status = 'running', started_at = $2 WHERE id = $1`, [id, new Date(Date.parse(NOW) - 3_600_000)]);
     await drain();
     expect(await status(id)).toEqual({ status: 'failed', error_code: 'EXPORT_INTERRUPTED' });
+  });
+
+  it('раннер берёт не больше, чем пускает полоса экспорта процесса (D5-10): вторая задача не стартует и не мигает running → queued', async () => {
+    setReportLimits(fx.reports, DEFAULT_REPORT_LIMITS); // экспорт ≤ 1
+    const x = await queued(directorId, 'lane-1');
+    const y = await queued(otherId, 'lane-2');
+    const runner = startExportRunner(run, { start: false });
+    await runner.tick();
+    const st = (await db.client.query<{ id: string; status: string; started_at: Date | null }>(`SELECT id, status, started_at FROM app.report_exports WHERE id = ANY($1::uuid[])`, [[x, y]])).rows;
+    expect(st.map((r) => r.status).sort()).toEqual(['queued', 'ready']);
+    expect(st.find((r) => r.status === 'queued')!.started_at).toBeNull();
+    await runner.tick();
+    expect([(await status(x)).status, (await status(y)).status]).toEqual(['ready', 'ready']);
+    await runner.stop();
   });
 
   it('полоса «экспорт ≤ 1» занята (D5-10): задача возвращается в очередь без ошибки и идёт следующим проходом', async () => {

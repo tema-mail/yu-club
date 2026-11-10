@@ -536,6 +536,11 @@ function gateOf(pool: ReportsPool): Gate {
   return g;
 }
 
+/** Действующие пределы пула: раннер экспорта не берёт задач больше, чем пустит полоса (иначе лишняя ждёт и уходит в очередь по кругу). */
+export function reportLimits(pool: ReportsPool): ReportLimits {
+  return gateOf(pool).limits;
+}
+
 export function setReportLimits(pool: ReportsPool, limits: Partial<ReportLimits>): void {
   const g = gateOf(pool);
   g.limits = { ...g.limits, ...limits };

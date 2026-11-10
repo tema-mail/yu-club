@@ -20,7 +20,7 @@ import type { BranchInfo } from '../network/index.ts';
 import { dashboard } from './dashboard.ts';
 import { EXPORT_MIME, exportStream, type CellValue, type ColumnKind, type ExportColumn, type ExportDocument, type ExportFormat, type HeaderLine, type WriteProgress } from './export-files.ts';
 import { COLUMN_TITLES, DATE_BASIS_TITLES, METRIC_TITLES, REPORT_TITLES, UNIT_TITLES, UNITS_NOTE } from './export-labels.ts';
-import { DAY_RULE, EXPORT_TIMEOUT_MS, parsePeriod, resolveBranches, withReportTx, type Metric, type MetricUnit, type ReportEnv, type ReportParams, type ReportsPool } from './framework.ts';
+import { DAY_RULE, EXPORT_TIMEOUT_MS, parsePeriod, reportLimits, resolveBranches, withReportTx, type Metric, type MetricUnit, type ReportEnv, type ReportParams, type ReportsPool } from './framework.ts';
 import { defined, HANDLERS, parseQuery, segmented, type Query } from './report-handlers.ts';
 
 export const REQUEST_ROUTE = 'POST /api/crm/v1/reports/exports';
@@ -555,7 +555,7 @@ export interface ExportRunner {
 
 export function startExportRunner(deps: ExportRunDeps, opts: { intervalMs?: number; maxRunning?: number; start?: boolean } = {}): ExportRunner {
   const clock = deps.clock ?? systemClock;
-  const maxRunning = opts.maxRunning ?? EXPORT_MAX_RUNNING;
+  const maxRunning = opts.maxRunning ?? EXPORT_MAX_RUNNING; // K24 §9: всего по всем worker (claim)
   const active = new Map<string, { abort: AbortController; done: Promise<void> }>();
   let stopping = false;
   /** Отмены, зависшие, новые задачи. Начатые задачи не ждёт: иначе отмена и вторая задача встанут до конца первой. */
@@ -569,7 +569,8 @@ export function startExportRunner(deps: ExportRunDeps, opts: { intervalMs?: numb
       for (const [id, job] of active) if (!alive.has(id)) job.abort.abort();
     }
     await failStale(deps, new Set(active.keys()), clock.now());
-    while (!stopping && active.size < maxRunning) {
+    // в этом процессе – не больше полосы экспорта (D5-10): лишняя задача ждала бы 10 с, уходила в очередь и снова (running ↔ queued)
+    while (!stopping && active.size < Math.min(maxRunning, reportLimits(deps.reports).export)) {
       const row = await claim(deps.pool, clock.now(), maxRunning);
       if (!row) break;
       const abort = new AbortController();
