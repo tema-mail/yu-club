@@ -1,15 +1,18 @@
-// K11 №15–16: поиск и карточка клиента в CRM (/api/crm/v1/clients). Тонкий слой (ADR 0002 п.7):
+// K11 №15–16: поиск и карточка клиента в CRM (/api/crm/v1/clients); №249 – обезличивание (K9, только Владелец). Тонкий слой (ADR 0002 п.7):
 // Zod-разбор → функции модуля (index.ts) → AppError в ответ. Вход сотрудника (authenticate) передаёт server.ts.
 // Телефон в списке всегда маскирован (03 §14); полный – только в карточке с правом client.view.full.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import type { AuditRequestMeta, Db } from '../../core/audit.ts';
+import type { AuditRequestMeta } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import { roleAllows, type AccessContext } from '../../core/permissions.ts';
-import { CLIENT_STATUSES, getClientCard, noBranchLinks, searchClients, type ClientBranchLinks, type ClientStatus } from './index.ts';
+import { assertCanAudited, roleAllows, type AccessContext } from '../../core/permissions.ts';
+import { systemClock, type Clock } from '../../core/time.ts';
+import { ANONYMIZE_REASONS, anonymizeClient } from './anonymize.ts';
+import { CLIENT_STATUSES, getClientCard, noBranchLinks, searchClients, withTx, type ClientBranchLinks, type ClientStatus, type Pool } from './index.ts';
 
 export interface ClientsCrmDeps {
-  pool: Db;
+  pool: Pool;
+  clock?: Clock;
   authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<{ access: AccessContext; meta: AuditRequestMeta }>;
   /** Связь клиент – филиал (брони). До S1-07 – noBranchLinks. */
   links?: ClientBranchLinks;
@@ -28,6 +31,7 @@ const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 const cardParams = z.object({ clientId: z.string().max(64) });
+const anonymizeBody = z.object({ reason: z.enum(ANONYMIZE_REASONS) });
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const r = schema.safeParse(value ?? {});
@@ -61,5 +65,17 @@ export async function clientCrmRoutes(app: FastifyInstance, deps: ClientsCrmDeps
     assertBasic(access);
     const { clientId } = parse(cardParams, request.params);
     return getClientCard(deps.pool, access, clientId, links);
+  });
+
+  // №249: необратимо; право client.anonymize (только Владелец, D4-60), отказ – в аудит отдельной транзакцией.
+  app.post('/:clientId/anonymize', async (request, reply) => {
+    const { access, meta } = await deps.authenticate(request, reply);
+    const { clientId } = parse(cardParams, request.params);
+    await assertCanAudited(deps.pool, meta, access, 'client.anonymize', { network: true }, {
+      action: 'client.status_changed',
+      object: { type: 'client', id: clientId },
+    });
+    const body = parse(anonymizeBody, request.body);
+    return withTx(deps.pool, (tx) => anonymizeClient(tx, clientId, body, meta, deps.clock ?? systemClock));
   });
 }

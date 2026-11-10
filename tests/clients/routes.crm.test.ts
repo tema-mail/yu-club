@@ -104,3 +104,39 @@ describe('GET /clients/{id}', () => {
     expect(foreign.body).not.toContain('Смирнова');
   });
 });
+
+// K11 №249, K9 «Обезличивание»: только Владелец (client.anonymize), обработчики модулей регистрирует buildServer.
+describe('POST /clients/{id}/anonymize', () => {
+  const post = (key: string | null, id: string, payload: object) =>
+    app.inject({ method: 'POST', url: `${URL}/${id}/anonymize`, headers: key ? { cookie: cookies[key]! } : {}, payload });
+
+  it('без входа – 401; Администратор – 403 FORBIDDEN, отказ в аудите, карточка цела', async () => {
+    expect((await post(null, clientId, { reason: 'client_request' })).statusCode).toBe(401);
+    const res = await post('admin', clientId, { reason: 'client_request' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toMatchObject({ code: 'FORBIDDEN', details: { action: 'client.anonymize' } });
+    const denied = await db.client.query(`SELECT count(*)::int AS n FROM journal.audit_events WHERE object_id = $1 AND result = 'denied'`, [clientId]);
+    expect(denied.rows[0].n).toBe(1);
+    expect((await db.client.query('SELECT status FROM app.clients WHERE id = $1', [clientId])).rows[0].status).toBe('active');
+  });
+
+  it('неверное основание – 400, неизвестный клиент – 404', async () => {
+    expect((await post('owner', clientId, { reason: 'просто так' })).statusCode).toBe(400);
+    expect((await post('owner', clientId, {})).statusCode).toBe(400);
+    expect((await post('owner', '00000000-0000-4000-8000-000000000000', { reason: 'client_request' })).statusCode).toBe(404);
+  });
+
+  it('Владелец – 200; карточка без ПДн, поиск не находит; повтор – 200 alreadyAnonymized', async () => {
+    const res = await post('owner', clientId, { reason: 'client_request' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ clientId, status: 'anonymized', alreadyAnonymized: false, affected: { booking: 0, events: 0, notifications: 0 } });
+
+    const card = await get('owner', `${URL}/${clientId}`);
+    expect(card.json()).toMatchObject({ id: clientId, status: 'anonymized', firstName: null, lastName: null, phoneMasked: '', full: { phoneE164: null, email: null, birthDate: null } });
+    for (const q of ['Смирнова', '4567', 'olga@yu.test']) expect((await get('owner', `${URL}?q=${encodeURIComponent(q)}`)).json().items).toEqual([]);
+
+    const again = await post('owner', clientId, { reason: 'client_request' });
+    expect(again.statusCode).toBe(200);
+    expect(again.json()).toMatchObject({ alreadyAnonymized: true });
+  });
+});

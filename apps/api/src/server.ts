@@ -8,6 +8,10 @@ import { blockRoutes } from './modules/booking/blocks.ts';
 import { blockListRoutes } from './modules/booking/blocks.routes.list.ts';
 import { clientAuthConfig, createDevSmsSender, unconfiguredSmsSender } from './modules/clients/otp.ts';
 import { registerBookingGate } from './modules/clients/index.ts';
+import { registerClientAnonymizer } from './modules/clients/anonymize.ts';
+import { bookingClientAnonymizer } from './modules/booking/anonymize.ts';
+import { eventsClientAnonymizer } from './modules/events/anonymize.ts';
+import { anonymizeClientNotifications } from './modules/notifications/campaign-runner.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
@@ -97,6 +101,10 @@ function registerModuleHooks(): void {
   registerEventSources(); // K6, K20 §4: блокировка видит мероприятие по строке занятости (S3-52)
   registerEventSummaries(eventSummaries); // K19 §18: номер, статус и время затронутого мероприятия в предложении блокировки
   registerGiftGrant(); // K5, K20 §8.2: подарочный ресурс открывается только правом подарка
+  // K9 «Обезличивание»: ПДн и живые записи клиента в чужих таблицах (K20 §14, K21 §15); без любого процедура не запускается
+  registerClientAnonymizer(bookingClientAnonymizer);
+  registerClientAnonymizer(eventsClientAnonymizer);
+  registerClientAnonymizer({ name: 'notifications', run: anonymizeClientNotifications });
   hooksRegistered = true;
 }
 
@@ -268,7 +276,12 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     );
     void app.register(
       async (scope) =>
-        clientCrmRoutes(scope, { pool: staff.pool, links: clientBranchLinks, authenticate: (request, reply) => authenticate(staff, request, reply) }),
+        clientCrmRoutes(scope, {
+          pool: staff.pool,
+          links: clientBranchLinks,
+          ...(staff.clock ? { clock: staff.clock } : {}),
+          authenticate: (request, reply) => authenticate(staff, request, reply),
+        }),
       { prefix: '/api/crm/v1/clients' },
     );
     // K19 №331–337: оборудование (S3-33)
