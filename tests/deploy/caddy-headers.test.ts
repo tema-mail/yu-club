@@ -78,3 +78,14 @@ describe('Caddyfile: защитные заголовки на обоих дом�
     expect(site).toMatch(/header @pdf Content-Security-Policy "sandbox"/);
   });
 });
+
+// 10.11.2026: «handle /health /health/deep {» прошёл тесты, но Caddy отверг блок при выкладке (handle берёт один сопоставитель).
+// Полный разбор – `caddy adapt` в CI (ci.yml, check); здесь – дешёвая проверка без Docker.
+describe('Caddyfile: handle и handle_path – не больше одного сопоставителя', () => {
+  it('несколько путей – только через именованный @сопоставитель', () => {
+    const bad = caddy.split('\n').map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      .filter(({ line }) => /^handle(_path)?\s/.test(line))
+      .filter(({ line }) => line.replace(/^handle(_path)?\s+/, '').replace(/\{\s*$/, '').trim().split(/\s+/).filter(Boolean).length > 1);
+    expect(bad.map(({ n, line }) => `${n}: ${line}`)).toEqual([]);
+  });
+});
