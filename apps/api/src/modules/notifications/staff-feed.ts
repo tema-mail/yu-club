@@ -1,6 +1,8 @@
 // Лента событий CRM (13 §11; S4-28, D4-46; таблицы 0420). Без push, почты и мессенджеров сотрудникам (Q-147 по умолчанию).
 // Источники: обработчики outbox shift.changed (K18 §11) → адресно сотруднику смены; repair.registered / repair.closed (K19 §11) →
-// зоне филиала с правом equipment.view; ошибка критичного сервисного клиенту (K21 §9) → зоне с notifications.view (триггер 0420).
+// зоне филиала с правом equipment.view; ошибка критичного сервисного клиенту (K21 §9) → зоне с notifications.view (триггер 0420);
+// брони booking.confirmed / rescheduled / cancelled (K11) → зоне с schedule.view; resource_block.created (K6) → зоне с block.manage.
+// Таймерные события (пустая смена, подготовка мероприятия, окончание гарантии) – staff-feed-events.ts, CHECK-списки – 0441.
 // Каждый обработчик – в транзакции processEvent (processed_events гасит повторную доставку); dedupe_key '<kind>:<eventId>' UNIQUE
 // гасит и повтор мимо processed_events. Видимость (K1): адресная строка – только адресату; строка зоны – по scopeFilter её права
 // (роль и выданные права, сеть – всё); чужое – 404, как несуществующее. Прочтение – своё у каждого сотрудника (staff_feed_reads).
@@ -15,12 +17,19 @@ export const FEED_HANDLERS = {
   shiftChanged: 'notifications.feedShiftChanged',
   repairRegistered: 'notifications.feedRepairRegistered',
   repairClosed: 'notifications.feedRepairClosed',
+  bookingConfirmed: 'notifications.feedBookingConfirmed',
+  bookingRescheduled: 'notifications.feedBookingRescheduled',
+  bookingCancelled: 'notifications.feedBookingCancelled',
+  blockCreated: 'notifications.feedBlockCreated',
 } as const;
 
-/** Права строк зоны (CHECK в 0420). */
-export const FEED_ACTIONS = ['equipment.view', 'notifications.view'] as const;
-export type FeedKind = 'shift_changed' | 'repair_registered' | 'repair_closed' | 'service_notification_failed';
-export type FeedRefType = 'shift' | 'repair' | 'client';
+/** Права строк зоны (CHECK в 0420, расширен 0441). */
+export const FEED_ACTIONS = ['equipment.view', 'notifications.view', 'schedule.view', 'block.manage', 'event.view', 'shift.manage'] as const;
+export type FeedKind =
+  | 'shift_changed' | 'repair_registered' | 'repair_closed' | 'service_notification_failed'
+  | 'booking_created' | 'booking_rescheduled' | 'booking_cancelled' | 'block_created'
+  | 'shift_unfilled' | 'event_preparation' | 'warranty_ending'; // три последних – таймеры staff-feed-events.ts
+export type FeedRefType = 'shift' | 'repair' | 'client' | 'booking' | 'resource_block' | 'event' | 'equipment' | 'branch';
 
 export interface FeedItem {
   id: string;
@@ -40,7 +49,7 @@ export interface FeedPage {
   unread: number;
 }
 
-interface FeedInsert {
+export interface FeedInsert {
   branchId: string;
   staffId: string | null;
   action: (typeof FEED_ACTIONS)[number] | null;
@@ -53,12 +62,14 @@ interface FeedInsert {
   occurredAt: Date;
 }
 
-async function insertFeed(tx: Tx, f: FeedInsert, now: Date): Promise<void> {
-  await tx.query(
+/** Строка ленты; повтор ключа – без изменений. true – вставлена (таймеры staff-feed-events.ts считают новые). */
+export async function insertFeed(tx: Tx, f: FeedInsert, now: Date): Promise<boolean> {
+  const r = await tx.query(
     `INSERT INTO app.staff_feed_events (branch_id, staff_id, action, kind, ref_type, ref_id, title, body, dedupe_key, occurred_at, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (dedupe_key) DO NOTHING`,
     [f.branchId, f.staffId, f.action, f.kind, f.refType, f.refId, f.title.slice(0, 200), f.body?.slice(0, 500) ?? null, f.dedupeKey, f.occurredAt, now],
   );
+  return (r.rowCount ?? 0) > 0;
 }
 
 const SHIFT_TITLE = { created: 'Вам назначена смена', updated: 'Ваша смена изменена', cancelled: 'Ваша смена отменена' } as const;
@@ -104,6 +115,61 @@ export async function onRepairClosed(tx: Tx, e: EventEnvelope<'repair.closed'>, 
   }, deps.clock.now());
 }
 
+// ---- брони (13 §11 «новая бронь или изменение записи», «отмена/перенос»; события K11) → зона филиала с schedule.view.
+// Источник записи (сайт / CRM) – в тексте: лента общая для зоны, а не только для автора (в отличие от смены K18 §5).
+
+const bookingBase = (p: { bookingId: string; branchId: string }) => ({ branchId: p.branchId, staffId: null, action: 'schedule.view' as const, refType: 'booking' as const, refId: p.bookingId });
+
+/** booking.confirmed: сайт или администратор в CRM. */
+export async function onBookingConfirmed(tx: Tx, e: EventEnvelope<'booking.confirmed'>, deps: { clock: Clock }): Promise<void> {
+  const p = e.payload;
+  await insertFeed(tx, {
+    ...bookingBase(p), kind: 'booking_created', title: `Новая запись № ${p.number}`,
+    body: `${p.resourceName}, ${slotText(p, p.branchTimezone)}, ${p.source === 'site' ? 'с сайта' : 'из CRM'}`,
+    dedupeKey: `booking_created:${e.eventId}`, occurredAt: new Date(e.occurredAt),
+  }, deps.clock.now());
+}
+
+/** booking.rescheduled: было/стало по зоне филиала, новый ресурс. */
+export async function onBookingRescheduled(tx: Tx, e: EventEnvelope<'booking.rescheduled'>, deps: { clock: Clock }): Promise<void> {
+  const p = e.payload;
+  await insertFeed(tx, {
+    ...bookingBase(p), kind: 'booking_rescheduled', title: `Перенос записи № ${p.number}`,
+    body: `Было: ${slotText(p.previous, p.branchTimezone)}. Стало: ${slotText(p.current, p.branchTimezone)}, ${p.current.resourceName}`,
+    dedupeKey: `booking_rescheduled:${e.eventId}`, occurredAt: new Date(e.occurredAt),
+  }, deps.clock.now());
+}
+
+/** booking.cancelled: кто отменил; публичная причина – только у отмены клубом (K11). */
+export async function onBookingCancelled(tx: Tx, e: EventEnvelope<'booking.cancelled'>, deps: { clock: Clock }): Promise<void> {
+  const p = e.payload;
+  const who = p.cancelledBy === 'client' ? 'отменил клиент' : `отменил клуб${p.publicReason ? `: ${p.publicReason}` : ''}`;
+  await insertFeed(tx, {
+    ...bookingBase(p), kind: 'booking_cancelled', title: `Отмена записи № ${p.number}`, body: `${slotText(p, p.branchTimezone)}, ${who}`,
+    dedupeKey: `booking_cancelled:${e.eventId}`, occurredAt: new Date(e.occurredAt),
+  }, deps.clock.now());
+}
+
+/** resource_block.created (K6, 13 §11 «блокировка ресурса») → зона с block.manage. Блокировка ремонта (repair_blocks, K19) – пропуск:
+ *  о ней уже сказала строка repair_registered («ресурс заблокирован»). Связь пишется в той же транзакции, что и блокировка. */
+export async function onBlockCreated(tx: Tx, e: EventEnvelope<'resource_block.created'>, deps: { clock: Clock }): Promise<void> {
+  const p = e.payload;
+  const linked = await tx.query(`SELECT 1 FROM app.repair_blocks WHERE block_id = $1`, [p.blockId]);
+  if ((linked.rowCount ?? 0) > 0) return;
+  const tz = (await tx.query<{ timezone: string }>(`SELECT timezone FROM app.branches WHERE id = $1`, [p.branchId])).rows[0]?.timezone ?? 'UTC';
+  const names = (await tx.query<{ name: string }>(
+    `SELECT name FROM app.rooms WHERE id = ANY($1::uuid[]) UNION ALL SELECT name FROM app.resources WHERE id = ANY($1::uuid[])
+     UNION ALL SELECT name FROM app.occupancy_units WHERE id = ANY($1::uuid[])`,
+    [p.targetIds],
+  )).rows.map((r) => r.name);
+  const target = names.length > 3 ? `${names.slice(0, 3).join(', ')} и ещё ${names.length - 3}` : names.join(', ');
+  await insertFeed(tx, {
+    branchId: p.branchId, staffId: null, action: 'block.manage', kind: 'block_created', refType: 'resource_block', refId: p.blockId,
+    title: `Блокировка ресурса: ${p.reasonName}`, body: `${target ? `${target}, ` : ''}${slotText(p, tz)}${p.comment ? `. ${p.comment}` : ''}`,
+    dedupeKey: `block_created:${e.eventId}`, occurredAt: new Date(e.occurredAt),
+  }, deps.clock.now());
+}
+
 /** Регистрация подписок ленты (один раз на процесс; повторный вызов ничего не делает). */
 export function registerStaffFeedHandlers(deps: { clock?: Clock } = {}): void {
   if (listSubscriptions().some((s) => s.name === FEED_HANDLERS.shiftChanged)) return;
@@ -111,6 +177,10 @@ export function registerStaffFeedHandlers(deps: { clock?: Clock } = {}): void {
   subscribe('shift.changed', FEED_HANDLERS.shiftChanged, (tx, e) => onShiftChanged(tx, e, d));
   subscribe('repair.registered', FEED_HANDLERS.repairRegistered, (tx, e) => onRepairRegistered(tx, e, d));
   subscribe('repair.closed', FEED_HANDLERS.repairClosed, (tx, e) => onRepairClosed(tx, e, d));
+  subscribe('booking.confirmed', FEED_HANDLERS.bookingConfirmed, (tx, e) => onBookingConfirmed(tx, e, d));
+  subscribe('booking.rescheduled', FEED_HANDLERS.bookingRescheduled, (tx, e) => onBookingRescheduled(tx, e, d));
+  subscribe('booking.cancelled', FEED_HANDLERS.bookingCancelled, (tx, e) => onBookingCancelled(tx, e, d));
+  subscribe('resource_block.created', FEED_HANDLERS.blockCreated, (tx, e) => onBlockCreated(tx, e, d));
 }
 
 // ---- чтение и прочтение (API CRM: GET /staff-feed, /staff-feed/unread-count, POST /staff-feed/:id/read, /staff-feed/read-all)
