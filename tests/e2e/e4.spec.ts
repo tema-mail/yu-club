@@ -261,7 +261,12 @@ test('2. Уведомления: личное сообщение → журна�
   await crm.getByLabel('Категория').selectOption('service');
   await expect(crm.getByRole('button', { name: 'Один клиент' })).toHaveAttribute('aria-pressed', 'true');
   await expect(crm.getByTestId('cf-client')).toBeVisible();
-  await crm.getByLabel('Запись клиента (ID)').fill(booking!.id);
+  // запись – выбором из списка ближайших записей клиента в зоне (K11 №252), поля «Запись клиента (ID)» больше нет
+  const bookings = crm.getByTestId('cf-bookings');
+  await expect(bookings.getByRole('button', { name: 'Ближайшие' })).toHaveAttribute('aria-pressed', 'true');
+  const pick = bookings.getByRole('radio', { name: new RegExp(`^№${booking!.number} · `) });
+  await expect(pick).toHaveValue(booking!.id);
+  await pick.check();
   await crm.getByLabel('Назначение').fill('e2e: проверка экрана сообщения');
   await crm.getByLabel('Заголовок', { exact: true }).fill(msgTitle);
   await crm.locator('textarea[name=body]').fill('{client.firstName}, это проверочное сообщение стенда про вашу запись в {branch.name}.');
