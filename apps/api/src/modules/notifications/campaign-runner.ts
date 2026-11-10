@@ -128,13 +128,16 @@ export async function expandCampaign(pool: Pool, clock: Clock, id: string, batch
         )
       ).rows[0];
       if (!c || (c.status !== 'confirmed' && c.status !== 'expanding')) return true;
+      // строки клиентов FOR KEY SHARE: обезличивание (FOR UPDATE) либо ждёт конца пачки и затирает уже вставленное имя
+      // (anonymizeClientNotifications), либо идёт первым – тогда пачка ждёт его и по перечитанной строке клиента пропускает (D4-65)
       const r = await tx.query<RecipientRow>(
         `SELECT r.id, r.client_id, r.home_branch_id, r.decision, cl.first_name, b.name AS branch_name, b.address AS branch_address, b.timezone AS branch_timezone, ci.name AS city_name
          FROM journal.notification_campaign_recipients r
          JOIN app.clients cl ON cl.id = r.client_id
          LEFT JOIN app.branches b ON b.id = r.home_branch_id
          LEFT JOIN app.cities ci ON ci.id = b.city_id
-         WHERE r.campaign_id = $1 AND r.id > $2::bigint ORDER BY r.id LIMIT $3`,
+         WHERE r.campaign_id = $1 AND r.id > $2::bigint AND cl.status <> 'anonymized' ORDER BY r.id LIMIT $3
+         FOR KEY SHARE OF cl`,
         [id, cursor, batchSize],
       );
       if (r.rows.length === 0) {
