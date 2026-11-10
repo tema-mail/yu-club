@@ -16,6 +16,7 @@ import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
+import { createDeepHealth, type HealthThresholds } from './core/health.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { registerEventSummaries } from './modules/equipment/items.ts';
 import { equipmentCrmRoutes } from './modules/equipment/routes.crm.ts';
@@ -87,6 +88,8 @@ export interface ServerDeps {
   content?: { mediaStore: FileStore; previewSecret?: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
+  /** GET /health/deep (core/health.ts): пороги и срок кэша – тесты; по умолчанию DEFAULT_THRESHOLDS и 5 с. */
+  health?: { thresholds?: Partial<HealthThresholds>; cacheMs?: number };
 }
 
 /** Реестры модулей на процесс (ворота записи K9, способы оплаты K10 §5), а buildServer зовут повторно (тесты) –
@@ -145,6 +148,19 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
   });
 
   app.get('/health', async () => ({ status: 'ok', version: config.GIT_SHA }));
+  // 17 §13.1: база, outbox, пульс worker и очередь, диск, ошибки сервисных уведомлений – без авторизации, без ПДн и секретов.
+  // Тело: { status, version, checkedAt, checks } – status первым ключом (scripts/monitor-check.sh читает его без jq); down → 503.
+  const deepHealth = createDeepHealth({
+    pool: deps.network?.pool ?? deps.staff?.pool,
+    version: config.GIT_SHA,
+    dirs: { media: config.MEDIA_DIR, attachments: config.ATTACHMENTS_DIR },
+    ...(deps.health?.thresholds ? { thresholds: deps.health.thresholds } : {}),
+    ...(deps.health?.cacheMs !== undefined ? { cacheMs: deps.health.cacheMs } : {}),
+  });
+  app.get('/health/deep', async (_request, reply) => {
+    const r = await deepHealth();
+    return reply.code(r.status === 'down' ? 503 : 200).header('cache-control', 'no-store').send(r);
+  });
 
   if (deps.staff) {
     const staff: StaffDeps = { network: networkLookup, ...deps.staff };
