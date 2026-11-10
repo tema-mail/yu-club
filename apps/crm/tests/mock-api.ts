@@ -614,7 +614,10 @@ export function buildMock() {
 
   registerNetwork(app, P);
   registerDictionaries(app, P);
-  registerClients(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), fail, page });
+  registerClients(app, P, {
+    current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), fail, page,
+    audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest), grant: (r, a) => { ACTIONS[r] = [...new Set([...ACTIONS[r], ...a])]; },
+  });
   registerOps(app, P, {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
     reasons: () => dict.reasons, resourceTypes: () => dict['resource-types'], fail, audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),

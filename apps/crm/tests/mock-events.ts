@@ -68,6 +68,8 @@ interface EvType { id: string; code: string; name: string; status: 'active' | 'a
 interface Pack { id: string; typeId: string; name: string; lines: Array<Rec & { name: string; priceKop: number }>; approxPriceKop: number | null; status: 'active' | 'archived'; rowVersion: number }
 
 let events: Ev[] = [];
+/** Мероприятия клиента – заказчик или именинник (для обезличивания K9 в mock-clients.ts, как events/anonymize.ts). */
+export const eventsOfClient = (clientId: string) => events.filter((e) => e.customerClientId === clientId || e.birthdayClientId === clientId);
 let types: EvType[] = [];
 let packs: Pack[] = [];
 let evSeq = 123;

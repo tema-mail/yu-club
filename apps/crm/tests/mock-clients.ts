@@ -2,8 +2,13 @@
 // Вынесено из mock-api.ts (файл упёрся в 800 строк): состояние клиентов, засев, маска телефона, зона и маршруты.
 // Связь клиент – филиал (брони, S1-07) в моке – поле links: так не-Владелец видит клиентов своей зоны.
 // Пока бронирования нет, настоящий бэкенд связей не даёт (noBranchLinks) – находит только по точному телефону.
+// №249 обезличивание (K9, D4-60…D4-65) – по clients/anonymize.ts: право client.anonymize (только Владелец), основание – код,
+// живые записи (бронь confirmed впереди или arrived, мероприятие не завершено) – 409 CLIENT_HAS_ACTIVE_RECORDS, повтор – 200 alreadyAnonymized.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
+import { bookingFacts } from './mock-booking.ts';
+import { eventsOfClient } from './mock-events.ts';
+import { opsState } from './mock-ops.ts';
 
 type Rec = Record<string, unknown>;
 interface Staffish { id: string; role: string }
@@ -15,7 +20,13 @@ export interface ClientsMockDeps {
   can: (s: Staffish, action: string) => boolean;
   fail: (reply: FastifyReply, status: number, code: string, message: string, details?: Rec) => unknown;
   page: <T>(all: T[], q: { cursor?: string; limit?: string }) => { items: T[]; nextCursor: string | null };
+  audit: (s: Staffish, objectType: string, objectId: string, action: string, before: object, after: object, reason: string | null) => void;
+  /** Добавить действия K1 в /me мока (как NOTIFICATION_ACTIONS). */
+  grant: (role: 'owner' | 'director' | 'admin', actions: string[]) => void;
 }
+
+/** D4-61: основание обезличивания – только код. */
+const ANONYMIZE_REASONS = ['client_request', 'retention_expired'];
 
 export const CLIENT_STATUSES = ['guest', 'active', 'restricted', 'blocked', 'deletion_requested', 'anonymized'] as const;
 type ClientStatus = (typeof CLIENT_STATUSES)[number];
@@ -131,5 +142,40 @@ export function registerClients(app: FastifyInstance, P: string, d: ClientsMockD
         : null,
       rowVersion: c.rowVersion,
     };
+  });
+
+  // №249: порядок проверок как у маршрута – параметры, право (403), тело (400), затем процедура K9.
+  d.grant('owner', ['client.anonymize']);
+  app.post(`${P}/clients/:clientId/anonymize`, async (req, reply) => {
+    const s = d.current(req);
+    const id = (req.params as { clientId: string }).clientId;
+    if (id.length > 64) return invalid(reply, [{ path: 'clientId', message: 'Too big' }]);
+    if (!d.can(s, 'client.anonymize') || !d.zone(s).network) return d.fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав', { action: 'client.anonymize' });
+    const body = req.body;
+    const reason = body && typeof body === 'object' ? (body as Rec).reason : undefined;
+    if (typeof reason !== 'string' || !ANONYMIZE_REASONS.includes(reason)) return invalid(reply, [{ path: 'reason', message: 'Invalid option' }]);
+    const c = UUID.test(id) ? clients.find((x) => x.id === id) : undefined;
+    if (!c) return notFound(reply);
+    if (c.status === 'anonymized') return { clientId: c.id, status: 'anonymized', alreadyAnonymized: true, affected: {} };
+    const now = Date.now();
+    const bookings = opsState().bookings.map((b) => bookingFacts(b.id)).filter((b) => b !== undefined && b.clientId === c.id &&
+      (b.status === 'arrived' || (b.status === 'confirmed' && Date.parse(b.versions[b.versions.length - 1]!.end) > now))).length;
+    const events = eventsOfClient(c.id);
+    const live = events.filter((e) => !['completed', 'cancelled', 'not_held'].includes(e.status)).length;
+    const blockers = { ...(bookings ? { booking: bookings } : {}), ...(live ? { events: live } : {}) };
+    if (bookings || live) return d.fail(reply, 409, 'CLIENT_HAS_ACTIVE_RECORDS', 'Сначала завершите или отмените живые брони и мероприятия клиента', { blockers });
+    // events/anonymize.ts: заказчик – заглушки имени и телефона; имя именинника и пожелания – NULL.
+    let touched = 0;
+    for (const e of events) {
+      if (e.customerClientId === c.id) Object.assign(e, { customerName: 'Обезличено', customerPhone: '+70000000000' });
+      Object.assign(e, { birthdayName: null, wishes: null, rowVersion: e.rowVersion + 1 });
+      touched++;
+    }
+    const affected = { booking: 0, events: touched, notifications: 0 };
+    const before = { status: c.status };
+    Object.assign(c, { phoneE164: null, phoneVerifiedAt: null, firstName: null, lastName: null, email: null, birthDate: null,
+      status: 'anonymized', statusReason: null, statusUntil: null, rowVersion: c.rowVersion + 1 });
+    d.audit(s, 'client', c.id, 'client.status_changed', before, { status: 'anonymized', affected }, reason);
+    return { clientId: c.id, status: 'anonymized', alreadyAnonymized: false, affected };
   });
 }
