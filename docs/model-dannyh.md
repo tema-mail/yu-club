@@ -1599,6 +1599,7 @@ CREATE TABLE app.report_exports (                        -- K24 §7
   CHECK (status <> 'failed' OR error_code IS NOT NULL)
 );
 CREATE UNIQUE INDEX report_exports_same_request ON app.report_exports (staff_id, params_hash) WHERE status IN ('queued','running','ready');
+-- с 0449 (D5-13) – WHERE status IN ('queued','running'): после ready повтор запроса – новая задача и новый расчёт
 -- 0408 и 0311 пересоздают CHECK полным списком на свой момент – применённая позже содержит всё (K24 §12)
 ALTER TABLE journal.reconcile_discrepancies DROP CONSTRAINT reconcile_discrepancies_check_name_check,
   ADD CONSTRAINT reconcile_discrepancies_check_name_check CHECK (check_name IN ('ledger_balance','loyalty_points','loyalty_batch',
@@ -1630,6 +1631,16 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON app.client_first_visits FROM yu_app; 
 ```
 Сеть: первое посещение клиента = min по парам, всего посещений = сумма; область – пары её филиалов, «было до периода» = `first_visit_at` раньше начала суток периода филиала. Пара, а не строка на клиента: иначе «не посещавшие в периоде» в зоне Директора снова читали бы историю.
 
+### 0449 – report_exports_same_request_active (reports; D5-13)
+
+Частичный UNIQUE «тот же запрос – та же задача» сужен до задач в работе: повтор запроса после `ready` в пределах срока файла отдавал файл прежнего расчёта (стенд 10.11: файл 15:05 – 1700 ₽, экран 16:00 – 1800 ₽), а K24 §2 требует расчёта по живой базе в момент запроса.
+
+```sql
+DROP INDEX app.report_exports_same_request;
+CREATE UNIQUE INDEX report_exports_same_request ON app.report_exports (staff_id, params_hash) WHERE status IN ('queued','running');
+-- вниз: из нескольких ready одного запроса остаётся самая новая, остальные – expired без file_key (файлы заберёт уборка)
+```
+
 ### 0411 – staff_feed (notifications; ждёт Э3 и Q-147)
 
 ```sql
@@ -1658,4 +1669,4 @@ CREATE INDEX staff_feed_events_branch_idx ON app.staff_feed_events (branch_id, c
 | Медиа не дублируются | K22 §8 | `content_media.sha256` UNIQUE |
 | Зарезервированные слова не становятся городом | карта сайта п.2.8; K23 §9 | CHECK `cities_slug_reserved` (0405) |
 | Отчёт не пишет и не читает в обход `rpt_*` | 17 §6; K24 §9 | роль `yu_reports` (только `SELECT` на `rpt_*`, read only) |
-| Одинаковый экспорт – одна задача | K24 §7 | `report_exports_same_request` |
+| Одинаковый экспорт, пока в работе, – одна задача; после ready – новый расчёт | K24 §7; D5-13 | `report_exports_same_request` (0449) |

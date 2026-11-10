@@ -90,3 +90,43 @@ describe('итоговый набор миграций', () => {
     await db.client.query('RESET ROLE');
   });
 });
+
+// 0449 (D5-13): «тот же запрос – та же задача» только пока задача queued/running; после ready повтор – новая задача (K24 §2 «Актуальность»).
+describe('миграция 0449: одинаковый запрос держится только в работе', () => {
+  const LAST_0449 = '0449_report_exports_same_request_active.sql';
+  let db: TestDatabase;
+  let dir: string;
+  let staff = '';
+  beforeAll(async () => {
+    db = await createTestDatabase();
+    dir = await mkdtemp(join(tmpdir(), 'yu-0449-'));
+    for (const f of await readdir(MIGRATIONS_DIR)) if (f <= LAST_0449 && f.endsWith('.sql')) await copyFile(join(MIGRATIONS_DIR, f), join(dir, f));
+    await migrateUp(db.client, dir);
+    staff = (await db.client.query<{ id: string }>(`INSERT INTO app.staff (first_name, last_name, email, role, password_hash) VALUES ('И', 'Ф', 'e449@yu.test', 'owner', 'x') RETURNING id`)).rows[0]!.id;
+  }, 120_000);
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+    await db.drop();
+  });
+  const add = (status: 'queued' | 'ready', at: string) =>
+    db.client.query<{ id: string }>(
+      `INSERT INTO app.report_exports (staff_id, report, format, params, params_hash, detail, masked, status, file_key, expires_at, created_at)
+       VALUES ($1, 'finance', 'csv', '{}', 'h449', false, true, $2, $3, $4, $5) RETURNING id`,
+      [staff, status, status === 'ready' ? `f-${at}` : null, status === 'ready' ? '2099-01-01T00:00:00Z' : null, at],
+    );
+  const statusOf = async (id: string) => (await db.client.query<{ status: string; file_key: string | null }>(`SELECT status, file_key FROM app.report_exports WHERE id = $1`, [id])).rows[0]!;
+
+  it('две ready одного запроса – можно, вторая в работе – нет; вниз: из ready остаётся новая, старая expired; вверх – снова можно', async () => {
+    const old = (await add('ready', '2026-11-10T15:05:00Z')).rows[0]!.id;
+    const fresh = (await add('ready', '2026-11-10T16:00:00Z')).rows[0]!.id;
+    await add('queued', '2026-11-10T16:01:00Z');
+    await expect(add('queued', '2026-11-10T16:02:00Z')).rejects.toMatchObject({ code: '23505' });
+    await db.client.query(`UPDATE app.report_exports SET status = 'cancelled' WHERE status = 'queued' AND params_hash = 'h449'`);
+    await migrateDown(db.client, 1, dir);
+    expect(await statusOf(old)).toEqual({ status: 'expired', file_key: null });
+    expect((await statusOf(fresh)).status).toBe('ready');
+    await expect(add('ready', '2026-11-10T17:00:00Z')).rejects.toMatchObject({ code: '23505' });
+    await migrateUp(db.client, dir);
+    await expect(add('ready', '2026-11-10T17:00:00Z')).resolves.toBeTruthy();
+  });
+});
