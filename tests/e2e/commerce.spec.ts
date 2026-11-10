@@ -102,7 +102,9 @@ async function arrive(id: string) {
 async function paymentOf(id: string) {
   const r = await director.get(`/api/crm/v1/bookings/${id}/payment`);
   expect(r.ok()).toBe(true);
-  return (await r.json()) as { payment: { id: string; status: string; lines: Array<{ method: string; amountKop: number }> } | null; amountDueKop: number };
+  return (await r.json()) as {
+    payment: { id: string; status: string; lines: Array<{ method: string; amountKop: number }> } | null; amountDueKop: number; pointsAvailableCenti: number | null;
+  };
 }
 async function operations() {
   const r = await director.get(`/api/crm/v1/branches/${branch.id}/finance/operations?limit=200`);
@@ -207,7 +209,10 @@ test('2. резерв баллов на сайте → оплата баллам
   const b = (await client.my('upcoming')).items.find((x) => x.resourceId === r.id && Date.parse(x.start) === Date.parse(slot.start))!;
   expect(b).toBeTruthy();
   leftovers.push(b.id);
-  expect((await loyalty()).reservedCenti).toBe(need); // резерв перешёл на бронь
+  expect((await loyalty()).reservedCenti).toBe(need); // резерв занят: пока удержания, после события – брони
+  // резерв переходит на бронь в worker по booking.confirmed (на стенде 1–14 с); до этого он держит баллы против самой
+  // брони – ждём перехода, как администратор, который видит клиента не в ту же секунду после записи (стенд 10.11)
+  await expect.poll(async () => (await paymentOf(b.id)).pointsAvailableCenti, { timeout: 45_000, intervals: [1000] }).toBeGreaterThanOrEqual(need);
 
   const pay = await arrive(b.id);
   const form = pay.getByTestId('pay-form');
