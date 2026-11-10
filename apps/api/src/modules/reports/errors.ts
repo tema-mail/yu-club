@@ -8,6 +8,7 @@ export const errors = {
   REPORT_FILTER_INVALID: 422, // фильтр не по схеме
   REPORT_CANCELLED: 409, // клиент закрыл запрос: отвечать некому, в логе не ошибка
   REPORT_TIMEOUT: 504, // statement_timeout пула отчётов: «сузьте период или сформируйте файл»
+  REPORT_BUSY: 503, // предел одновременных отчётов на процесс (D5-10): места не дождались, details.retryAfterSec → Retry-After
   EXPORT_TOO_LARGE: 422, // больше 200 000 строк
   EXPORT_NOT_READY: 409, // файл ещё не готов
   EXPORT_EXPIRED: 410, // прошло reports.export_ttl_hours

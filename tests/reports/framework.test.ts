@@ -3,7 +3,7 @@
 // оплата K10 проходит при исчерпанном пуле отчётов; маска ПДн на сервере; область: чужой филиал – 404.
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
 import { AppError } from '../../apps/api/src/core/errors.ts';
 import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
@@ -11,7 +11,8 @@ import { fixedClock, type LocalDate } from '../../apps/api/src/core/time.ts';
 import { bookingLookup, paymentBookingProvider } from '../../apps/api/src/modules/booking/providers.ts';
 import { recordPayment, type PaymentDeps } from '../../apps/api/src/modules/finance/payment.ts';
 import {
-  aggregate, computeMetrics, createReportsPool, detailPage, loadMaskedClients, okMetric, parsePeriod, prevPeriod, resolveBranches, where, windowsOf, withReportTx, type MetricDef,
+  aggregate, computeMetrics, createReportsPool, DEFAULT_REPORT_LIMITS, detailPage, loadMaskedClients, okMetric, parsePeriod, prevPeriod, resolveBranches, setReportLimits, where,
+  windowsOf, withReportTx, type MetricDef,
 } from '../../apps/api/src/modules/reports/framework.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -250,7 +251,8 @@ describe('пул yu_reports и изоляция (17 §6)', () => {
   it('pg_sleep дольше тайм-аута → REPORT_TIMEOUT; пул отчётов занят целиком, оплата K10 в основном пуле проходит', async () => {
     const nsk = branches.nsk!.id;
     const paid = await booking(nsk, clients[2]!, '2026-11-19T04:00:00Z', { status: 'arrived', price: 30_000 });
-    const sleepers = Array.from({ length: 3 }, () => withReportTx(reports, (tx) => tx.query('SELECT pg_sleep(5)'), { timeoutMs: 700 }));
+    // два экранных + один экспорт – полосы D5-10 пускают ровно столько, сколько соединений в пуле
+    const sleepers = (['screen', 'screen', 'export'] as const).map((lane) => withReportTx(reports, (tx) => tx.query('SELECT pg_sleep(5)'), { timeoutMs: 700, lane }));
     await new Promise((r) => setTimeout(r, 150)); // все три соединения заняты
     expect(reports.waitingCount + reports.totalCount).toBeGreaterThanOrEqual(3);
     const bookings: PaymentDeps['bookings'] = { facts: (t, id) => bookingLookup.facts(t, id), payableBooking: (t, id) => paymentBookingProvider.payableBooking(t, id) };
@@ -274,5 +276,65 @@ describe('пул yu_reports и изоляция (17 §6)', () => {
     // деньги видны в представлении платежей отчётов
     const pay = await withReportTx(reports, (tx) => tx.query(`SELECT method, amount_kop::int AS a FROM app.rpt_payments WHERE booking_id = $1`, [paid]));
     expect(pay.rows).toEqual([{ method: 'cash', a: 30_000 }]);
+  });
+});
+
+describe('предел одновременных отчётов на процесс (D5-10)', () => {
+  const sleep = (lane: 'screen' | 'export' | 'search', sec: number, signal?: AbortSignal) =>
+    withReportTx(reports, (tx) => tx.query(`SELECT pg_sleep(${sec})`), { timeoutMs: 5_000, lane, ...(signal ? { signal } : {}) });
+  const one = (lane: 'screen' | 'export' | 'search' = 'screen') => withReportTx(reports, async (tx) => (await tx.query<{ n: number }>('SELECT 1 AS n')).rows[0]!.n, { lane });
+  const codeOf = (e: unknown) => (e instanceof AppError ? { code: e.code, httpStatus: e.httpStatus, retryAfterSec: e.details?.retryAfterSec } : e);
+  afterEach(() => setReportLimits(reports, DEFAULT_REPORT_LIMITS));
+
+  it('третий экранный отчёт ждёт свободного места и выполняется, когда один из двух закончился', async () => {
+    setReportLimits(reports, { screen: 2, waitMs: 3_000 });
+    const busy = [sleep('screen', 0.4), sleep('screen', 0.4)];
+    await new Promise((r) => setTimeout(r, 50));
+    const started = Date.now();
+    expect(await one()).toBe(1);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250); // не раньше, чем освободилось место
+    await Promise.all(busy);
+  });
+
+  it('места не дождались – 503 REPORT_BUSY с Retry-After; после освобождения отчёты идут', async () => {
+    setReportLimits(reports, { screen: 2, waitMs: 150 });
+    const busy = [sleep('screen', 0.7), sleep('screen', 0.7)];
+    await new Promise((r) => setTimeout(r, 50));
+    expect(codeOf(await one().catch((e: unknown) => e))).toEqual({ code: 'REPORT_BUSY', httpStatus: 503, retryAfterSec: 5 });
+    await Promise.all(busy);
+    expect(await one()).toBe(1);
+  });
+
+  it('экспорт – своя полоса: второй экспорт ждёт или 503, экранный отчёт при этом проходит', async () => {
+    setReportLimits(reports, { export: 1, waitMs: 150 });
+    const busy = sleep('export', 0.6);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await one('screen')).toBe(1);
+    expect(codeOf(await one('export').catch((e: unknown) => e))).toMatchObject({ code: 'REPORT_BUSY' });
+    await busy;
+    expect(await one('export')).toBe(1);
+  });
+
+  it('поиск предел отчётов не держит (свой предел в search.ts, K24 §5)', async () => {
+    setReportLimits(reports, { screen: 1, waitMs: 100 });
+    const busy = sleep('screen', 0.5);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await one('search')).toBe(1);
+    expect(await one('search')).toBe(1);
+    await busy;
+  });
+
+  it('закрытый запрос выходит из очереди с REPORT_CANCELLED, место не теряется', async () => {
+    setReportLimits(reports, { screen: 1, waitMs: 5_000 });
+    const busy = sleep('screen', 0.5);
+    await new Promise((r) => setTimeout(r, 50));
+    const ctrl = new AbortController();
+    const waiting = one().catch((e: unknown) => e);
+    setTimeout(() => ctrl.abort(), 30);
+    const cancelled = sleep('screen', 0.1, ctrl.signal).catch((e: unknown) => e);
+    expect(codeOf(await cancelled)).toMatchObject({ code: 'REPORT_CANCELLED', httpStatus: 409 });
+    expect(await waiting).toBe(1); // ждавший без отмены получил место после спящего
+    await busy;
+    expect(await one()).toBe(1);
   });
 });
