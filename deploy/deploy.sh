@@ -172,4 +172,11 @@ printf '%s http://%s/health → %s\n' "$(curl -s -o /dev/null -m 20 -w '%{http_c
 printf '%s https://%s/ (сайт)\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$DOMAIN/")" "$DOMAIN"
 printf '%s https://%s/login\n' "$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$CRM_DOMAIN/login")" "$CRM_DOMAIN"
 printf '%s http://%s/login → %s\n' "$(curl -s -o /dev/null -m 20 -w '%{http_code}' "http://$CRM_DOMAIN/login")" "$CRM_DOMAIN" "$(curl -s -o /dev/null -m 20 -w '%{redirect_url}' "http://$CRM_DOMAIN/login")"
+# медиа CMS отдаёт общий Caddy (техдолг 1.9): любой файл медиатеки должен открываться по /media/<ключ>
+MEDIA_KEY=$("${SSH[@]}" "cd $ROOT/media 2>/dev/null && find . -type f -name '*.webp' | head -1 | sed 's|^\./||'" || true)
+if [ -n "$MEDIA_KEY" ]; then
+  MC=$(curl -sk -o /dev/null -m 20 -w '%{http_code}' "https://$DOMAIN/media/$MEDIA_KEY")
+  [ "$MC" = 200 ] && echo "200 https://$DOMAIN/media/… (медиатека)" \
+    || echo "!!! медиатека: /media/$MEDIA_KEY → $MC – том $ROOT/media не смонтирован в общий Caddy как /srv/yu-club/media (техдолг 1.9)"
+fi
 case "$HEALTH" in *"\"version\":\"$REV\""*) echo "→ готово: https://$DOMAIN, CRM https://$CRM_DOMAIN (ревизия $REV)";; *) echo "!!! /health не отдал версию $REV"; exit 1;; esac
