@@ -13,6 +13,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { debitBatches, openAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
 import type { LoyaltyBookings } from './accrual.ts';
+import { sweepMerged } from './merged.ts';
 
 /** Номинал штрафа −5 баллов (07 §8.1) – константа подтверждённого правила. */
 export const PENALTY_CENTI = 500;
@@ -144,9 +145,14 @@ export async function revertPenalty(tx: Tx, input: { bookingId: string }, deps: 
     }
     let reversalEntryId: number | null = null;
     if (row.ledger_entry_id !== null) {
+      const key = `loyalty-penalty-reversal:${row.id}`;
+      // штраф до слияния карточек – на объединённой (merged): её счёт после основной, сторно там, остаток – к основной (D5-09)
+      const merged = row.client_id !== acc.clientId;
+      if (merged) await openAccount(tx, row.client_id, now);
       const r = await reverseWithBatches(tx, {
-        clientId: row.client_id, entryId: Number(row.ledger_entry_id), reason: 'неявка исправлена', idempotencyKey: `loyalty-penalty-reversal:${row.id}`, author: SYSTEM_AUTHOR, occurredAt: now,
+        clientId: row.client_id, entryId: Number(row.ledger_entry_id), reason: 'неявка исправлена', idempotencyKey: key, author: SYSTEM_AUTHOR, occurredAt: now,
       });
+      if (merged) await sweepMerged(tx, row.client_id, acc.clientId, key, SYSTEM_AUTHOR, now);
       reversalEntryId = r.entryId;
     }
     await tx.query(`UPDATE app.loyalty_penalties SET status = 'reversed', reversal_entry_id = $2 WHERE id = $1`, [row.id, reversalEntryId]);
