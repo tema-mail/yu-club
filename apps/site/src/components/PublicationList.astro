@@ -52,5 +52,5 @@ const srcset = (c: PublicationCard['cover']) => c?.variants.filter((v) => v.form
   .pub-card__title { font-size: var(--yu-fs-l); line-height: var(--yu-lh-head); }
   .pub-card__link { display: inline-block; min-height: var(--yu-tap); padding-block: 10px; text-decoration: none; color: var(--yu-text); }
   .pub-card__link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
-  .pub-card__lead { color: var(--yu-muted); font-size: var(--yu-fs-s); }
+  .pub-card__lead { color: var(--yu-muted); font-size: var(--yu-fs-m); } /* основной текст карточки – 16 px (S4-133) */
 </style>

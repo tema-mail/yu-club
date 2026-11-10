@@ -12,7 +12,7 @@ import type { Clock } from '../../apps/api/src/core/time.ts';
 import { clientAuthConfig, createDevSmsSender } from '../../apps/api/src/modules/clients/otp.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { buildServer } from '../../apps/api/src/server.ts';
-import { CalendarDto, CrmBooking, CrmBookingCard, CrmBookingList } from '../../packages/contracts/src/crm/booking.ts';
+import { CalendarDto, ClientBookingList, CrmBooking, CrmBookingCard, CrmBookingList } from '../../packages/contracts/src/crm/booking.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const SYS = '00000000-0000-0000-0000-000000000001';
@@ -259,7 +259,7 @@ describe('карточка и команды (K11 №5–12)', () => {
   });
 
   it('перенос начавшегося сеанса (start <= now) – 409 INVALID_STATUS_TRANSITION, версия не меняется', async () => {
-    const b = valid(CrmBooking, (await create('admin', { ...slot(ids.pc1!, '2026-11-21T05:00:00Z'), client: { clientId: ids.client } })).json());
+    const b = valid(CrmBooking, (await create('admin', { ...slot(ids.pc1!, '2026-11-18T09:00:00Z'), client: { clientId: ids.client } })).json());
     for (const at of ['2026-11-21T05:00:00Z', '2026-11-21T05:10:00Z']) {
       await setTime(at);
       const r = await req('admin', 'POST', `/bookings/${b.id}/reschedule`, { rowVersion: 1, ...slot(ids.pc1!, '2026-11-21T08:00:00Z'), reason: 'опоздал' });
@@ -272,5 +272,59 @@ describe('карточка и команды (K11 №5–12)', () => {
   it('в ответах CRM нет полного телефона клиента (03 §14)', () => {
     const all = bodies.join('\n');
     for (const phone of ['+79131112233', '79131112233', '+79135554433']) expect(all).not.toContain(phone);
+  });
+});
+
+describe('брони клиента для выбора записи в сообщении (K11 №252, S4-81)', () => {
+  it('upcoming по возрастанию и только живые, recent по убыванию; зона по филиалу брони; клиент вне зоны – 404; scope и limit – 400', async () => {
+    await setTime('2026-11-14T05:00:00Z');
+    const up1 = valid(CrmBooking, (await create('admin', { ...slot(ids.pc1!, '2026-11-25T09:00:00Z'), client: { clientId: ids.client } })).json()).id;
+    const up2 = valid(CrmBooking, (await create('admin', { ...slot(ids.pc1!, '2026-11-24T09:00:00Z'), client: { clientId: ids.client } })).json()).id;
+    // бронь того же клиента в чужом филиале – SQL (ресурсов в b2 нет)
+    const res2 = (await one(`INSERT INTO app.resources (branch_id, resource_type, name) VALUES ($1, 'pc', 'ПК-2') RETURNING id`, [ids.b2])).id;
+    const other = async (clientId: string) => {
+      const b = (await one(
+        `INSERT INTO app.bookings (checkout_id, branch_id, client_id, status, resource_id, period, price_kop, source, created_by_type)
+         VALUES (gen_random_uuid(), $1, $2, 'confirmed', $3, tstzrange('2026-11-19 05:00+00', '2026-11-19 06:00+00', '[)'), 0, 'crm', 'system') RETURNING id`,
+        [ids.b2, clientId, res2],
+      )).id;
+      await db.client.query(
+        `INSERT INTO journal.booking_versions (booking_id, version, resource_id, period, branch_timezone, unit_ids, resource_snapshot, price_kop, price_snapshot, created_by_type)
+         VALUES ($1, 1, $2, tstzrange('2026-11-19 05:00+00', '2026-11-19 06:00+00', '[)'), 'Asia/Novosibirsk', ARRAY[gen_random_uuid()], '{"name":"ПК-2"}', 0, '{}', 'system')`,
+        [b, res2],
+      );
+      return b;
+    };
+    const far = await other(ids.client!);
+    const now = Date.parse('2026-11-14T05:00:00Z');
+
+    const mine = valid(ClientBookingList, (await req('admin', 'GET', `/clients/${ids.client}/bookings?scope=upcoming`)).json());
+    const ids1 = mine.items.map((b) => b.id);
+    expect(ids1.indexOf(up2)).toBeGreaterThanOrEqual(0);
+    expect(ids1.indexOf(up2)).toBeLessThan(ids1.indexOf(up1)); // по возрастанию начала
+    expect(ids1).not.toContain(far);
+    const upStarts = mine.items.map((b) => Date.parse(b.start));
+    expect([...upStarts].sort((a, b) => a - b)).toEqual(upStarts);
+    expect(mine.items.every((b) => ['confirmed', 'arrived'].includes(b.status) && Date.parse(b.end) > now && b.branchId === ids.b1 && b.timezone === 'Asia/Novosibirsk')).toBe(true);
+    const all = valid(ClientBookingList, (await req('owner', 'GET', `/clients/${ids.client}/bookings?scope=upcoming`)).json());
+    expect(all.items.map((b) => b.id)).toEqual([...ids1, far].sort((a, b) => Date.parse(all.items.find((x) => x.id === a)!.start) - Date.parse(all.items.find((x) => x.id === b)!.start)));
+    expect((await req('foreign', 'GET', `/clients/${ids.client}/bookings?scope=upcoming`)).json().items.map((b: { id: string }) => b.id)).toEqual([far]);
+
+    const recent = valid(ClientBookingList, (await req('admin', 'GET', `/clients/${ids.client}/bookings?scope=recent&limit=3`)).json());
+    expect(recent.items.length).toBeLessThanOrEqual(3);
+    expect(recent.items.every((b) => b.branchId === ids.b1 && !(['confirmed', 'arrived'].includes(b.status) && Date.parse(b.end) > now))).toBe(true);
+    const starts = recent.items.map((b) => Date.parse(b.start));
+    expect([...starts].sort((a, b) => b - a)).toEqual(starts);
+    expect(recent.items.length).toBeGreaterThan(0);
+    expect(recent.items.some((b) => ids1.includes(b.id))).toBe(false); // upcoming и recent не пересекаются
+
+    const stranger = (await one(`INSERT INTO app.clients (phone_e164, first_name, status, created_by_type) VALUES ('+79137770001', 'Гость', 'active', 'system') RETURNING id`)).id;
+    await other(stranger);
+    expect((await req('admin', 'GET', `/clients/${stranger}/bookings?scope=upcoming`)).statusCode).toBe(404); // нет броней в зоне – как несуществующий (K1)
+    expect((await req('owner', 'GET', `/clients/${stranger}/bookings?scope=upcoming`)).json().items).toHaveLength(1);
+    expect((await req('owner', 'GET', `/clients/${randomUUID()}/bookings?scope=upcoming`)).statusCode).toBe(404);
+    expect((await req('admin', 'GET', `/clients/${ids.client}/bookings?scope=all`)).statusCode).toBe(400);
+    expect((await req('admin', 'GET', `/clients/${ids.client}/bookings?scope=upcoming&limit=0`)).statusCode).toBe(400);
+    expect(JSON.stringify([mine, all, recent])).not.toContain('1112233');
   });
 });

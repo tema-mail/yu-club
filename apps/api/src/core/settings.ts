@@ -31,6 +31,8 @@ export interface SettingDef<T> {
 
 const int = (min: number, max: number) => z.number().int().min(min).max(max);
 const HHMM = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'время HH:mm');
+/** Свободный текст до `max` знаков; пустая строка – «не задано» (ключ без null: сайт и CRM проверяют на пустоту). */
+const text = (max: number) => z.string().max(max);
 const NB = ['network', 'branch'] as const;
 const N = ['network'] as const;
 const BRANCH = 'settings.branch.manage' as const;
@@ -142,6 +144,18 @@ export const SETTINGS = {
   'reports.export_ttl_hours': def(int(1, 168), 24, N, NET), // Q-145
   'reports.loyalty_threshold_warn_centi': def(int(-1_000_000, 0), -4500, N, NET), // Q-80; пределы – решение S4-00
   'reports.repeat_breakdown_days': def(int(7, 365), 90, N, NET),
+  // ---- Реквизиты оператора (K7 «Реквизиты оператора»; карта сайта 3.3 и вопрос 12, 19 §4.10, 152-ФЗ ст. 18.1): один набор на сеть,
+  // меняет Владелец. Пусто – сайт блок не показывает (выдуманных реквизитов нет, N-01). Те же ключи – оператор ПДн и адрес для юридических текстов.
+  'legal.operator_name': def(text(200), '', N, NET), // юридическое лицо или ИП – оператор персональных данных
+  'legal.inn': def(z.string().regex(/^(\d{10}|\d{12})?$/, 'ИНН – 10 или 12 цифр').max(12), '', N, NET),
+  'legal.ogrn': def(z.string().regex(/^(\d{13}|\d{15})?$/, 'ОГРН – 13 цифр, ОГРНИП – 15').max(15), '', N, NET),
+  'legal.address': def(text(300), '', N, NET), // юридический адрес
+  'legal.phone': def(text(30), '', N, NET),
+  'legal.email': def(z.string().regex(/^$|^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'адрес почты').max(120), '', N, NET),
+  // ---- лента событий CRM (13 §11; S4-28/S4-97, D4-46): пороги таймерных событий staff-feed-events.ts (K7 «Лента событий CRM»).
+  'notifications.feed_shift_unfilled_hours': def(int(1, 168), 24, N, NET), // пустая смена: за N часов до открытия филиала
+  'notifications.feed_event_prepare_days': def(int(0, 30), 3, N, NET), // подготовка мероприятия: за N дней до начала; 0 – выключено
+  'notifications.feed_warranty_days': def(int(1, 365), 30, N, NET), // окончание гарантии: за N дней до ends_on
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;

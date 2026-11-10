@@ -36,12 +36,12 @@ test('итог детализации = число карточки, номер 
   await expect(detail(page)).toHaveCount(0);
 });
 
-test('операция кассы ведёт в кассу филиала; адрес с metric открывает записи сразу', async ({ page }) => {
+test('операция кассы ведёт в карточку операции; адрес с metric открывает записи сразу', async ({ page }) => {
   await login(page, 'owner@yu.test');
   await open(page, `/reports/finance?${P}&metric=refunds`);
   const value = (await page.getByTestId('card-refunds').getByTestId('value').textContent())!.trim();
   await expect(detail(page).getByTestId('detail-total')).toContainText(`Итог: ${value} – совпадает с карточкой`);
-  await expect(detail(page).getByTestId('detail-table').locator('tbody tr').first().getByRole('link').first()).toHaveAttribute('href', /^\/finance\/b-/);
+  await expect(detail(page).getByTestId('detail-table').locator('tbody tr').first().getByRole('link').first()).toHaveAttribute('href', /^\/finance\/operations\/f0000000-/);
   await expect(detail(page).getByTestId('detail-table')).toContainText('Возврат');
 });
 
@@ -85,4 +85,39 @@ test('график загрузки: точные значения по наве
   await chart.locator('summary').click();
   await expect(chart.getByTestId('chart-table').locator('tbody tr')).toHaveCount(10);
   if (process.env.CRM_SHOTS) await page.screenshot({ path: `${process.env.CRM_SHOTS}/report-chart-1440.png`, fullPage: true });
+});
+
+// S4-96: график – у любого отчёта, где API отдаёт series в форме загрузки ({ points: [{ bucket, <показатель>: число }], zoneNote }).
+// Ряды подписываются именами показателей, единица – из показателя отчёта (деньги – рубли), столбец дня открывает записи сегмента.
+// series у финансов подставляется перехватом ответа: мок отдаёт его только у загрузки, форма – K11 №240.
+test('график у любого отчёта с series: финансы по дням – ряды словами, рубли, столбец открывает записи дня', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  const asked: string[] = [];
+  await page.route((u) => u.pathname === '/api/crm/v1/reports/finance', async (route) => {
+    asked.push(new URL(route.request().url()).searchParams.get('series') ?? '');
+    const res = await route.fetch();
+    const json = (await res.json()) as Record<string, unknown>;
+    const points = Array.from({ length: 10 }, (_, i) => ({ bucket: `2026-11-${String(i + 1).padStart(2, '0')}`, incomeSession: (i + 1) * 10_000, refunds: i % 3 === 0 ? 5_000 : 0 }));
+    await route.fulfill({ response: res, json: { ...json, series: { points, zoneNote: null } } });
+  });
+  await open(page, `/reports/finance?${P}`);
+  const chart = page.getByTestId('chart');
+  await expect(chart.locator('figcaption')).toHaveText('Финансы и касса по дням');
+  expect(asked).toEqual(['day']);
+  await expect(chart.getByTestId('legend').locator('li')).toHaveText(['Голубой – поступления от сеансов', 'Синий – возвраты']);
+  await expect(chart.locator('g[role=button]')).toHaveCount(10);
+  await chart.getByTestId('bar-2026-11-05').hover();
+  const tip = chart.getByTestId('chart-tip');
+  await expect(tip).toContainText('05.11.2026');
+  await expect(tip).toContainText('Голубой – поступления от сеансов: 500,00 ₽');
+  await expect(tip).toContainText('Синий – возвраты: 0,00 ₽');
+  await chart.getByTestId('bar-2026-11-04').dispatchEvent('click');
+  await tip.getByRole('button', { name: 'Записи за этот день' }).click();
+  await expect(detail(page)).toContainText('Поступления от сеансов: записи – 04.11.2026');
+  await expect(detail(page).getByTestId('detail-total')).toContainText('Итог:');
+  await expect(page).toHaveURL(/metric=incomeSession/);
+  // отчёт без series – графика нет, остальное на месте
+  await open(page, `/reports/bookings?${P}`);
+  await expect(page.getByTestId('cards')).toBeVisible();
+  await expect(page.getByTestId('chart')).toHaveCount(0);
 });

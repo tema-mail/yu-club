@@ -110,6 +110,34 @@ test('Директор: ключи Владельца только смотри�
   await expect(page.getByTestId('not-found')).toBeVisible();
 });
 
+test('Реквизиты оператора: на сети Владелец заполняет текстом, ИНН не по форме – отказ, пустое – «Не указан»; на филиале – только сеть', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/settings?scope=network');
+  await expect(page.getByRole('heading', { name: 'Реквизиты оператора' })).toBeVisible();
+  await expect(row(page, 'legal.operator_name').getByTestId('value')).toHaveText('Не указано');
+  const inn = row(page, 'legal.inn');
+  await expect(inn.getByTestId('value')).toHaveText('Не указан');
+  await inn.getByRole('button', { name: 'Изменить' }).click();
+  const field = inn.getByLabel('Новое значение');
+  await expect(field).toHaveAttribute('type', 'text');
+  await field.fill('12345');
+  await inn.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(inn.getByRole('status')).toHaveText('Такое значение не подходит.');
+  await field.fill(' 5405123456 ');
+  await inn.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(inn.getByRole('status')).toContainText('Сохранено: 5405123456');
+  await expect(inn.getByTestId('value')).toHaveText('5405123456');
+  await expect(inn.getByTestId('source')).toHaveText('Свой уровень');
+  const name = row(page, 'legal.operator_name');
+  await name.getByRole('button', { name: 'Изменить' }).click();
+  await name.getByLabel('Новое значение').fill('ООО «Ю-Клуб»');
+  await name.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(name.getByTestId('value')).toHaveText('ООО «Ю-Клуб»');
+  await open(page, BRANCH);
+  await expect(row(page, 'legal.inn')).toContainText('Задаётся на уровне: сеть.');
+  await expect(row(page, 'legal.inn').getByRole('button', { name: 'Изменить' })).toHaveCount(0);
+});
+
 test('Администратор: пункта меню нет, экран недоступен', async ({ page }) => {
   await login(page, 'admin@yu.test');
   await expect(page.getByRole('link', { name: 'Настройки' })).toHaveCount(0);

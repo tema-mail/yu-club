@@ -176,7 +176,7 @@ export default function PartyRequest({ branches, formats, maxGuests, today, pres
       </label>
       <label class="yu-check">
         <input type="checkbox" checked={consent} onChange={(e) => setConsent((e.target as HTMLInputElement).checked)} />
-        <span>Даю <a href="/personal-data-consent/" target="_blank" rel="noopener">согласие на обработку персональных данных</a></span>
+        <span>Мне есть 18 лет, и я даю <a href="/personal-data-consent/" target="_blank" rel="noopener">согласие на обработку персональных данных</a></span>
       </label>
       {fieldError('consent')}
       {error && error.field === null && <p class="yu-alert" role="alert">{error.text}</p>}

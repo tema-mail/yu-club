@@ -6,9 +6,13 @@ import { fixE2eClock } from '../../tests/support/e2e.ts';
 // Весь прогон – в одном зафиксированном «сейчас»: засевы от текущего времени не зависят от часа запуска (tests/support/e2e.ts).
 fixE2eClock();
 
-export const MOCK_PORT = 4022;
-export const STAGE_PORT = 4342;
-export const PROD_PORT = 4343;
+// Порты можно сдвинуть через E2E_PORT_BASE (несколько прогонов на одной машине): мок = база, стенд = база+320, прод = база+321.
+const BASE = Number(process.env.E2E_PORT_BASE ?? 4022);
+export const MOCK_PORT = BASE;
+// Спеки берут адрес мока из MOCK_URL – задаём его здесь, чтобы E2E_PORT_BASE хватало одного (воркеры наследуют env).
+process.env.MOCK_URL ??= `http://127.0.0.1:${MOCK_PORT}`;
+export const STAGE_PORT = BASE + 320;
+export const PROD_PORT = BASE + 321;
 export const PREVIEW_SECRET = 'e2e-preview-secret-not-for-production';
 
 export default defineConfig({

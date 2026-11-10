@@ -18,6 +18,7 @@ import { PgBoss } from 'pg-boss';
 import pg from 'pg';
 import { loadConfig } from './config.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
+import { startHeartbeat, workerDetails } from './core/heartbeat.ts';
 import { startOutboxWorker, type OutboxWorker, type WorkerLogger } from './core/outbox-worker.ts';
 import { systemClock, type Clock, type LocalTime, type TimeZone } from './core/time.ts';
 import { startHoldExpiry } from './modules/booking/hold.ts';
@@ -36,6 +37,7 @@ import { startGiftExpiry } from './modules/events/gifts.ts';
 import { startRequestHoldExpiry } from './modules/events/resources.ts';
 import { registerNotificationHandlers } from './modules/notifications/handlers.ts';
 import { startDispatcher } from './modules/notifications/sender.ts';
+import { startStaffFeedTimers } from './modules/notifications/staff-feed-events.ts';
 import { registerStaffFeedHandlers } from './modules/notifications/staff-feed.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
 import { startExportGc, startExportRunner } from './modules/reports/export.ts';
@@ -73,6 +75,8 @@ export async function startWorkerTasks(opts: {
   dispatcherIntervalMs?: number;
   certificateIntervalMs?: number;
   shiftReviewIntervalMs?: number;
+  /** Таймерные события ленты CRM (13 §11): пустая смена, подготовка мероприятия, окончание гарантии; по умолчанию раз в час. */
+  staffFeedIntervalMs?: number;
   campaignIntervalMs?: number;
   /** UNSUBSCRIBE_SECRET: без него рекламные строки не уходят (K21 §7). */
   unsubscribeSecret?: string | null;
@@ -92,7 +96,7 @@ export async function startWorkerTasks(opts: {
   const logger = opts.logger ?? { error: (obj: Record<string, unknown>, msg: string) => log('error', msg, obj) };
   // подписки – до startOutboxWorker: он замораживает их и создаёт очереди по снимку
   registerNotificationHandlers({ bookings: bookingLookup, clock });
-  registerStaffFeedHandlers({ clock }); // 13 §11: лента событий CRM – смены (K18 §11) и ремонт (K19 §11), без push сотрудникам
+  registerStaffFeedHandlers({ clock }); // 13 §11: лента событий CRM – смены (K18 §11), ремонт (K19 §11), брони (K11), блокировки (K6), без push сотрудникам
   registerPenaltyHandlers({ bookings: paymentBookingProvider, clock });
   const payments = opts.payments ?? paymentLookup;
   registerReserveHandlers({ bookings: paymentBookingProvider, clock, payments });
@@ -108,6 +112,7 @@ export async function startWorkerTasks(opts: {
     ...(opts.outboxIntervalMs ? { intervalMs: opts.outboxIntervalMs } : {}),
     ...(opts.pollingIntervalSeconds ? { pollingIntervalSeconds: opts.pollingIntervalSeconds } : {}),
   });
+  const heartbeat = startHeartbeat({ pool: opts.pool, clock, service: 'worker', details: () => workerDetails(opts.boss), onError: (err) => logger.error({ err: errText(err) }, 'heartbeat: пульс worker не записан') }); // 17 §13.1, /health/deep
   const holds = startHoldExpiry({
     pool: opts.pool,
     clock,
@@ -141,6 +146,13 @@ export async function startWorkerTasks(opts: {
     clock,
     intervalMs: opts.shiftReviewIntervalMs ?? 15 * 60_000,
     onError: (err) => logger.error({ err: errText(err) }, 'shifts.review: проход упал'),
+  });
+  // 13 §11: события ленты без источника в outbox – пустая смена, подготовка мероприятия, окончание гарантии (пороги K7 notifications.feed_*)
+  const staffFeedTimers = startStaffFeedTimers({
+    pool: opts.pool,
+    clock,
+    intervalMs: opts.staffFeedIntervalMs ?? 60 * 60_000,
+    onError: (err) => logger.error({ err: errText(err) }, 'notifications:staff-feed-timers: проход упал'),
   });
   // K15 §2: истечение партий баллов (при loyalty.batch_ttl_days = null проход ничего не делает)
   const loyaltyExpiry = startLoyaltyExpiry({
@@ -202,6 +214,7 @@ export async function startWorkerTasks(opts: {
     outbox,
     reconcile,
     stop: async () => {
+      heartbeat.stop();
       exportGc?.stop();
       await exportRunner?.stop();
       mediaGc?.stop();
@@ -211,6 +224,7 @@ export async function startWorkerTasks(opts: {
       requestHolds.stop();
       gifts.stop();
       shiftReview.stop();
+      staffFeedTimers.stop();
       loyaltyExpiry.stop();
       stopDispatcher();
       stopCampaigns();

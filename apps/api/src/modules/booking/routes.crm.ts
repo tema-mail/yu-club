@@ -1,4 +1,4 @@
-// S1-13. K11 №2–12: CRM-маршруты брони на /api/crm/v1 – календарь филиала (брони + удержания + блокировки по
+// S1-13. K11 №2–12, №252: CRM-маршруты брони на /api/crm/v1 – календарь филиала (брони + удержания + блокировки по
 // ресурсам), список с «требует решения» (R-08), бронь администратором (с клиентом или без профиля), карточка с
 // хронологией, отмена, перенос, приход, завершение, неявка, исправление, служебный комментарий.
 // Тонкий слой: разбор схемами packages/contracts/src/crm/booking.ts → команда (change.ts, visit.ts) в транзакции
@@ -9,8 +9,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type pg from 'pg';
 import type { z } from 'zod';
 import {
-  BookingListQuery, CalendarQuery, CrmCancelBody, CrmCreateBooking, CrmNoShowBody, CrmPatchBooking, CrmRescheduleBody, CrmRevertVisitBody, CrmRowVersionBody,
-  type CalendarDto, type CalendarItem, type CrmBooking, type CrmBookingRow,
+  BookingListQuery, CalendarQuery, ClientBookingsQuery, CrmCancelBody, CrmCreateBooking, CrmNoShowBody, CrmPatchBooking, CrmRescheduleBody, CrmRevertVisitBody, CrmRowVersionBody,
+  type CalendarDto, type CalendarItem, type ClientBookingRow, type CrmBooking, type CrmBookingRow,
 } from '../../../../../packages/contracts/src/crm/booking.ts';
 import { objectTimeline, writeAudit, writeDenied, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
@@ -227,6 +227,25 @@ async function listBookings(db: Db, ctx: AccessContext, branchId: string, raw: u
   };
 }
 
+/** K11 №252 (S4-81): брони клиента для выбора записи в ручном сообщении. Зона – schedule.view по филиалу брони в SQL;
+ *  у не-Владельца клиент без броней в зоне – NOT_FOUND (как несуществующий, K1). upcoming – живые (confirmed/arrived) с концом
+ *  позже сейчас, по возрастанию начала; recent – остальные, по убыванию. Телефон – маской (03 §14). */
+async function clientBookings(db: Db, ctx: AccessContext, clientId: string, raw: unknown, now: Date): Promise<{ items: ClientBookingRow[] }> {
+  const q = parse(ClientBookingsQuery, raw);
+  if (!UUID_RE.test(clientId)) throw notFound();
+  const params: unknown[] = [clientId];
+  const zone = branchScopeSql('b.branch_id', scopeFilter(ctx, 'schedule.view'), params);
+  const seen = zone === 'TRUE' ? 'TRUE' : `EXISTS (SELECT 1 FROM app.bookings b WHERE b.client_id = c.id AND ${zone})`;
+  const known = await db.query(`SELECT 1 FROM app.clients c WHERE c.id = $1 AND ${seen}`, params);
+  if (!known.rowCount) throw notFound();
+  params.push(now);
+  const live = `b.status IN ('confirmed','arrived') AND upper(b.period) > $${params.length}`;
+  const where = q.scope === 'upcoming' ? live : `NOT (${live})`;
+  const order = q.scope === 'upcoming' ? 'lower(b.period), b.number' : 'lower(b.period) DESC, b.number DESC';
+  const r = await db.query<BookingRow>(`${ROW_SQL} WHERE b.client_id = $1 AND ${zone} AND ${where} ORDER BY ${order} LIMIT ${q.limit}`, params);
+  return { items: (await toRows(db, r.rows, now)).map((x) => ({ ...stripRaw(x), branchId: x.raw.branch_id, timezone: x.raw.timezone })) };
+}
+
 /** K11 №12: служебный комментарий (booking.create), rowVersion. */
 async function patchBooking(tx: Tx, ctx: AccessContext, bookingId: string, raw: unknown, meta: AuditRequestMeta, clock: Clock): Promise<void> {
   const input = parse(CrmPatchBooking, raw);
@@ -276,6 +295,7 @@ export async function bookingCrmRoutes(app: FastifyInstance, deps: BookingCrmDep
 
   app.get('/branches/:branchId/calendar', async (request, reply) => calendar(deps.pool, await viewer(request, reply), p(request).branchId!, request.query, clock.now()));
   app.get('/branches/:branchId/bookings', async (request, reply) => listBookings(deps.pool, await viewer(request, reply), p(request).branchId!, request.query, clock.now()));
+  app.get('/clients/:clientId/bookings', async (request, reply) => clientBookings(deps.pool, await viewer(request, reply), p(request).clientId!.toLowerCase(), request.query, clock.now()));
   app.get('/bookings/:bookingId', async (request, reply) => {
     const ctx = await viewer(request, reply);
     const b = await crmBooking(deps.pool, ctx, p(request).bookingId!, clock.now());
