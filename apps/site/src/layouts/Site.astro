@@ -1,7 +1,7 @@
 ---
-// Оболочка сайта: шапка (знак, навигация, выбор клуба), подвал (юридические ссылки), canonical и robots по режиму.
+// Оболочка сайта: шапка (знак, меню разделов, выбор клуба), подвал (разделы, клубы, юридические ссылки), canonical и robots по режиму.
 // Данные сети и выбор посетителя кладёт middleware (src/middleware.ts) – здесь только показ.
-// В меню – только разделы, у которых уже есть страница; запись добавит свой шаг (S1-19…S1-21). «Войти / Кабинет» – по куке сессии.
+// В меню – только разделы, у которых уже есть страница. «Войти / Кабинет» – по куке сессии.
 import '../styles/site.css';
 import BranchPicker, { type PickerCity } from '../islands/BranchPicker.tsx';
 import UnreadBadge from '../islands/UnreadBadge.tsx';
@@ -37,11 +37,32 @@ const pickerCities: PickerCity[] = (network ?? []).map((c) => ({
   branches: c.branches.map((b) => ({ slug: b.slug, name: b.name, address: b.address, status: b.status })),
 }));
 
-const NAV = [{ href: '/', label: 'Клубы', active: (p: string) => p === '/' }];
+// Шапка и подвал (S4-133, D4-47): ТЗ 19 §4.1 называет «О клубе», «Расписание», «День рождения», «Контакты»; порядка в ТЗ и карте сайта нет.
+// «О клубе» не в меню: страница из CMS и без текста отдаёт 404 (info/[key].astro). Раздел активен и на своих вложенных адресах.
+const section = (href: string) => (p: string) => (href === '/' ? p === '/' : p.startsWith(href));
+const NAV = [
+  { href: '/', label: 'Клубы' },
+  { href: '/schedule/', label: 'Расписание' },
+  { href: '/games/', label: 'Игры' },
+  { href: '/promotions/', label: 'Акции' },
+  { href: '/tournaments/', label: 'Турниры' },
+  { href: '/birthday/', label: 'День рождения' },
+  { href: '/contacts/', label: 'Контакты' },
+].map((n) => ({ ...n, active: section(n.href) }));
+// Подвал повторяет шапку и добавляет разделы, которым в шапке нет места (19 §4.1 «footer с повторной навигацией»).
+const FOOTER_NAV = [
+  ...NAV.slice(0, 4),
+  { href: '/news/', label: 'Новости' },
+  { href: '/giveaways/', label: 'Розыгрыши' },
+  ...NAV.slice(4),
+  { href: '/sitemap/', label: 'Карта сайта' },
+];
 const LEGAL = [
   { href: '/rules/', label: 'Правила клуба' },
   { href: '/privacy-policy/', label: 'Политика обработки персональных данных' },
   { href: '/personal-data-consent/', label: 'Согласие на обработку персональных данных' },
+  { href: '/cookie-policy/', label: 'Политика использования cookie' },
+  { href: '/advertising-consent/', label: 'Согласие на получение рекламных сообщений' },
 ];
 const year = new Date().getFullYear();
 ---
@@ -62,6 +83,9 @@ const year = new Date().getFullYear();
     {ogImageUrl && <meta property="og:image" content={ogImageUrl} />}
     {jsonLd.filter((d) => d !== null).map((d) => <script is:inline type="application/ld+json" set:html={serializeJsonLd(d)} />)}
     <meta name="theme-color" content="#0b0d12" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   </head>
   <body>
     <a class="yu-skip" href="#main">К содержимому</a>
@@ -69,10 +93,14 @@ const year = new Date().getFullYear();
       <div class="yu-page yu-header__row">
         <a class="yu-brand" href="/" aria-label="Ю-Клуб, на главную">
           <span class="yu-brand__mark" aria-hidden="true">Ю</span>
-          <span>Ю-Клуб</span>
+          <span class="yu-brand__name">Ю-Клуб</span>
         </a>
-        <nav class="yu-nav" aria-label="Разделы">
-          <ul class="yu-nav__list">
+        <nav class="yu-nav" aria-label="Разделы" data-testid="site-nav">
+          <button class="yu-nav__toggle" type="button" aria-expanded="false" aria-controls="yu-nav-list" data-testid="nav-toggle">
+            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+            <span class="yu-nav__toggle-text">Меню</span>
+          </button>
+          <ul class="yu-nav__list" id="yu-nav-list">
             {NAV.map((n) => (
               <li><a class="yu-nav__link" href={n.href} aria-current={n.active(path) ? 'page' : undefined}>{n.label}</a></li>
             ))}
@@ -90,6 +118,16 @@ const year = new Date().getFullYear();
         >{hasSession ? 'Кабинет' : 'Войти'}</a>
       </div>
     </header>
+    <script>
+      // Меню на телефоне и планшете: кнопка раскрывает список под шапкой; Esc и переход по ссылке закрывают.
+      const toggle = document.querySelector<HTMLButtonElement>('[data-testid="nav-toggle"]');
+      const setOpen = (open: boolean) => {
+        toggle?.setAttribute('aria-expanded', String(open));
+        toggle?.closest('.yu-nav')?.classList.toggle('yu-nav--open', open);
+      };
+      toggle?.addEventListener('click', () => setOpen(toggle.getAttribute('aria-expanded') !== 'true'));
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
+    </script>
     {!hasSession && (
       <script>
         // Вход без перезагрузки (в оформлении записи): после события входа – ссылка в кабинет.
@@ -122,6 +160,12 @@ const year = new Date().getFullYear();
             {(network ?? []).map((c) => (
               <li><a class="yu-footer__link" href={c.branches.length === 1 ? `/${c.slug}/${c.branches[0]!.slug}/` : `/${c.slug}/`}>{c.name}</a></li>
             ))}
+          </ul>
+        </nav>
+        <nav aria-label="Разделы сайта">
+          <p class="yu-footer__title">Разделы</p>
+          <ul class="yu-footer__list" data-testid="footer-nav">
+            {FOOTER_NAV.map((n) => <li><a class="yu-footer__link" href={n.href}>{n.label}</a></li>)}
           </ul>
         </nav>
         <nav aria-label="Документы">
