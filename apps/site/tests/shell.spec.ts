@@ -1,0 +1,72 @@
+// Оболочка сайта (S4-133, D4-47): меню шапки и подвала ведут на живые страницы, на 390 px меню – кнопкой без горизонтальной прокрутки.
+import { expect, test, type Page } from '../../../tests/support/e2e.ts';
+
+const HEADER = ['Клубы', 'Расписание', 'Игры', 'Акции', 'Турниры', 'День рождения', 'Контакты'];
+const FOOTER_PATHS = ['/', '/schedule/', '/games/', '/promotions/', '/news/', '/giveaways/', '/tournaments/', '/birthday/', '/contacts/', '/sitemap/'];
+
+async function noHorizontalScroll(page: Page, label: string) {
+  const { scroll, client } = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
+  expect(scroll, `${label}: горизонтальная прокрутка`).toBeLessThanOrEqual(client);
+}
+
+test('1440 px: меню строкой в шапке, порядок по D4-47, каждая ссылка – 200', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  const nav = page.getByTestId('site-nav');
+  await expect(page.getByTestId('nav-toggle')).toBeHidden();
+  const links = nav.getByRole('link');
+  await expect(links).toHaveText(HEADER);
+  for (const href of await links.evaluateAll((as) => as.map((a) => a.getAttribute('href')!))) {
+    expect((await request.get(href, { maxRedirects: 0 })).status(), href).toBe(200);
+  }
+  await expect(nav.getByRole('link', { name: 'Клубы' })).toHaveAttribute('aria-current', 'page');
+  await noHorizontalScroll(page, '1440');
+
+  // Активный раздел подсвечен и на вложенной странице.
+  await page.goto('/games/pc/');
+  await expect(nav.getByRole('link', { name: 'Игры' })).toHaveAttribute('aria-current', 'page');
+  await expect(nav.getByRole('link', { name: 'Клубы' })).not.toHaveAttribute('aria-current', 'page');
+});
+
+test('1200 px: меню строкой помещается в шапку', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto('/tomsk/lenina/');
+  await expect(page.getByTestId('site-nav').getByRole('link', { name: 'Контакты' })).toBeVisible();
+  await noHorizontalScroll(page, '1200');
+  const row = await page.locator('.yu-header__row').evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+  expect(row.scroll, 'шапка не вылезает за свою ширину').toBeLessThanOrEqual(row.client);
+});
+
+test('390 px: меню за кнопкой, открывается и закрывается, без горизонтальной прокрутки', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  const toggle = page.getByTestId('nav-toggle');
+  const nav = page.getByTestId('site-nav');
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(nav.getByRole('link', { name: 'Расписание' })).toBeHidden();
+  await noHorizontalScroll(page, 'меню закрыто');
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(nav.getByRole('link')).toHaveText(HEADER);
+  await noHorizontalScroll(page, 'меню открыто');
+  await page.screenshot({ path: 'test-results/screens/390-menu-open.png' });
+
+  await page.keyboard.press('Escape');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.click();
+  await nav.getByRole('link', { name: 'Контакты' }).click();
+  await expect(page).toHaveURL(/\/contacts\/$/);
+});
+
+test('подвал: все разделы, карта сайта и юридические страницы – 200', async ({ page, request }) => {
+  await page.goto('/');
+  const footerNav = page.getByTestId('footer-nav').getByRole('link');
+  expect(await footerNav.evaluateAll((as) => as.map((a) => a.getAttribute('href')))).toEqual(FOOTER_PATHS);
+  const all = await page.locator('footer a').evaluateAll((as) => as.map((a) => a.getAttribute('href')!));
+  for (const href of ['/rules/', '/privacy-policy/', '/personal-data-consent/', '/cookie-policy/', '/advertising-consent/']) expect(all).toContain(href);
+  for (const href of all) {
+    expect((await request.get(href, { maxRedirects: 0 })).status(), href).toBe(200);
+  }
+});
