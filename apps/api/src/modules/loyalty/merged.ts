@@ -7,6 +7,7 @@
 //   • расход со второй (сторно начисления) → сначала мост: основная −сумма, вторая +сумма (bridgeToMerged), затем
 //     сторно на второй; предел −50 проверяет вызывающий по балансу основной.
 // Замки: счёт основной раньше счёта второй (openWithOwner) – тот же порядок у всех коррекций, слияние второй не трогает.
+import { AppError } from '../../core/errors.ts';
 import { effectiveClientId } from '../clients/merge.ts';
 import type { Tx } from '../../core/ledger.ts';
 import { accountRef, createBatch, creditBatches, debitBatches, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints, returnSpend, type Author } from './account.ts';
@@ -193,9 +194,18 @@ export async function openWithOwner(tx: Tx, clientId: string, now: Date): Promis
   return owner;
 }
 
+/** Карточка mergedId действительно объединена (цепочкой) в ownerId – иначе это чужая действующая карточка, её баланс не трогаем. */
+export async function assertMergedInto(tx: Tx, mergedId: string, ownerId: string): Promise<void> {
+  const actual = await ownerOf(tx, mergedId);
+  if (actual !== ownerId.toLowerCase()) {
+    throw new AppError('INTERNAL', 500, 'Запись баллов на карточке, не объединённой в действующую', { clientId: mergedId, ownerId, actualOwnerId: actual });
+  }
+}
+
 /** После прихода на объединённую карточку – её остаток к владельцу (ключи от ключа коррекции: повтор ничего не задваивает). */
 export async function sweepMerged(tx: Tx, mergedId: string, ownerId: string, opKey: string, author: Author, now: Date): Promise<number> {
   if (mergedId.toLowerCase() === ownerId) return 0;
+  await assertMergedInto(tx, mergedId, ownerId);
   const r = await transferBalance(tx, mergedId, ownerId, {
     key: (s) => `merged-sweep:${opKey}:${s}`, refs: { reason: 'correction_after_merge' }, author, now, ref: { type: 'merged_correction', id: mergedId },
   });

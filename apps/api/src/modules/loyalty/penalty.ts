@@ -13,7 +13,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { debitBatches, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
 import type { LoyaltyBookings } from './accrual.ts';
-import { entryClientId, sweepMerged } from './merged.ts';
+import { assertMergedInto, entryClientId, sweepMerged } from './merged.ts';
 
 /** Номинал штрафа −5 баллов (07 §8.1) – константа подтверждённого правила. */
 export const PENALTY_CENTI = 500;
@@ -150,7 +150,10 @@ export async function revertPenalty(tx: Tx, input: { bookingId: string }, deps: 
       // Карточка – владелец счёта записи K3, а не строки штрафа: штраф группы мог перейти на неявку другой карточки (heir).
       const entryOwner = (await entryClientId(tx, Number(row.ledger_entry_id))) ?? row.client_id;
       const merged = entryOwner !== acc.clientId;
-      if (merged) await openAccount(tx, entryOwner, now);
+      if (merged) {
+        await assertMergedInto(tx, entryOwner, acc.clientId); // запись на чужой действующей карточке – ошибка, не перенос её баланса
+        await openAccount(tx, entryOwner, now);
+      }
       const r = await reverseWithBatches(tx, {
         clientId: entryOwner, entryId: Number(row.ledger_entry_id), reason: 'неявка исправлена', idempotencyKey: key, author: SYSTEM_AUTHOR, occurredAt: now,
       });

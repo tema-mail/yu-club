@@ -21,6 +21,7 @@ import { createBatch, debitBatches, getBalance, openAccount, postPoints, SYSTEM_
 import { reverseAccrual } from '../../apps/api/src/modules/loyalty/accrual.ts';
 import { issueGoods, returnGoods } from '../../apps/api/src/modules/loyalty/goods.ts';
 import { loyaltyClientMerger } from '../../apps/api/src/modules/loyalty/merge.ts';
+import { sweepMerged } from '../../apps/api/src/modules/loyalty/merged.ts';
 import { refundPoints } from '../../apps/api/src/modules/loyalty/payment-method.ts';
 import { revertPenalty, type PenaltyDeps } from '../../apps/api/src/modules/loyalty/penalty.ts';
 import { notificationsClientMerger } from '../../apps/api/src/modules/notifications/merge.ts';
@@ -289,5 +290,19 @@ describe('коррекции операций до слияния (D5-09)', () =
     expect(await bal(p)).toBe(1000);
     expect(await bal(m)).toBe(0);
     for (const id of [p, m]) await consistent(id);
+  });
+
+  it('перенос остатка с карточки, не объединённой в действующую, – ошибка, баланс чужой карточки не тронут', async () => {
+    const p = await addClient();
+    const x = await addClient();
+    await accrueVisit(x, 700);
+    const err = await withTx(pool, async (tx) => {
+      await openAccount(tx, p, NOW);
+      await openAccount(tx, x, NOW);
+      return sweepMerged(tx as unknown as Tx, x, p, randomUUID(), SYSTEM_AUTHOR, NOW);
+    }).then(() => null, (e: { code?: string }) => e.code);
+    expect(err).toBe('INTERNAL');
+    expect(await bal(x)).toBe(700);
+    expect(await bal(p)).toBe(0);
   });
 });
