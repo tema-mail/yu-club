@@ -13,7 +13,7 @@
 // Завершённые и оплаченные брони остаются в истории (так задумано); отменяемое отменяется в afterAll.
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import {
-  CRM_URL, DEMO_DIRECTOR, SITE_URL, SiteClient, branchBySlug, branchSetting, crmApi, crmLogin, hydrated, minutesUntil,
+  CRM_URL, DEMO_DIRECTOR, SITE_URL, SiteClient, branchBySlug, branchSetting, crmApi, crmLogin, gotoStand, hydrated, minutesUntil,
   nearestFree, networkSetting, newClient, resourcesOf, siteContext, type BookingDto, type StandBranch, type StandResource,
 } from './stand.ts';
 import { randomUUID } from 'node:crypto';
@@ -80,7 +80,7 @@ async function siteDay(date: string) {
 const minutesOf = (b: BookingDto) => (Date.parse(b.end) - Date.parse(b.start)) / 60_000;
 
 async function card(id: string) {
-  await crm.goto(`${CRM_URL}/bookings/${id}`);
+  await gotoStand(crm, `${CRM_URL}/bookings/${id}`);
   await hydrated(crm);
   return crm.getByTestId('payment');
 }
@@ -177,7 +177,7 @@ test('1. наличные: приход «Игровой сеанс» в жур�
   expect(op).toHaveLength(1);
   expect(op[0]).toMatchObject({ kind: 'income', source: 'session', direction: 'in', amountKop: due });
   done.cashOperationId = op[0]!.id;
-  await crm.goto(`${CRM_URL}/finance/${branch.id}`);
+  await gotoStand(crm, `${CRM_URL}/finance/${branch.id}`);
   await hydrated(crm);
   await expect(crm.getByTestId('fin-journal').locator('tbody tr').filter({ hasText: 'Игровой сеанс' }).filter({ hasText: kop(due) }).first()).toBeVisible();
 
@@ -194,7 +194,7 @@ test('2. резерв баллов на сайте → оплата баллам
   expect(adj.status()).toBe(201);
   await balanceBecomes(start + need);
 
-  await site.goto(`/schedule/?branch=${branch.citySlug}/${branch.slug}`);
+  await gotoStand(site, `/schedule/?branch=${branch.citySlug}/${branch.slug}`);
   await hydrated(site);
   await siteDay(date);
   const label = `${r.name}, ${timeIn(slot.start, branch.timezone)}–${timeIn(slot.end, branch.timezone)}`;
@@ -227,7 +227,7 @@ test('2. резерв баллов на сайте → оплата баллам
 
 test('3. сертификат: продажа в CRM (код один раз) → оплата сеанса номером и кодом → остаток уменьшился', async () => {
   const start = (await loyalty()).balanceCenti;
-  await crm.goto(`${CRM_URL}/certificates`);
+  await gotoStand(crm, `${CRM_URL}/certificates`);
   await hydrated(crm);
   await crm.getByRole('button', { name: 'Продать сертификат' }).click();
   const dlg = crm.getByRole('dialog');
@@ -264,7 +264,7 @@ test('3. сертификат: продажа в CRM (код один раз) �
   await expect(pay.getByTestId('pay-status')).toHaveText('Оплачено');
   await expect(pay.getByTestId('pay-line')).toHaveText(`Сертификат – ${kop(due)}`);
 
-  await crm.goto(certUrl);
+  await gotoStand(crm, certUrl);
   await hydrated(crm);
   await expect(crm.getByTestId('cert-balance')).toHaveText(kop(50000 - due));
   await expect(crm.getByTestId('cert-redemptions')).toContainText(kop(due));
@@ -288,7 +288,7 @@ test('4. полный возврат денег по брони 1: начисл�
   const refund = (await operations()).filter((o) => o.kind === 'refund' && o.ref?.type === 'operation' && o.ref.id === done.cashOperationId);
   expect(refund).toHaveLength(1);
   expect(refund[0]).toMatchObject({ direction: 'out', amountKop: due });
-  await crm.goto(`${CRM_URL}/finance/${branch.id}`);
+  await gotoStand(crm, `${CRM_URL}/finance/${branch.id}`);
   await hydrated(crm);
   await expect(crm.getByTestId('fin-journal').locator('tbody tr').filter({ hasText: 'Возврат' }).filter({ hasText: kop(due) }).first()).toBeVisible();
   await balanceBecomes(start - accrualCenti(minutesOf(done.cash!)));
@@ -317,7 +317,7 @@ test('5. штрафы включены: неявка → −5, баланс −5
   await balanceBecomes(-5000);
 
   // сайт: удержание слота – отказ с текстом 07 §9.2, выбор не создан
-  await site.goto(`/schedule/?branch=${branch.citySlug}/${branch.slug}`);
+  await gotoStand(site, `/schedule/?branch=${branch.citySlug}/${branch.slug}`);
   await hydrated(site);
   // слот для проверки запрета – любой свободный после броней клиента (приход здесь не нужен)
   const { r, slot, date } = await nextPc(15, false);
