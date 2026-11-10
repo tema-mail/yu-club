@@ -7,7 +7,7 @@ import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { expandCampaign } from '../../apps/api/src/modules/notifications/campaign-runner.ts';
 import { confirmCampaign, createCampaign, type CampaignDeps, type CampaignDto } from '../../apps/api/src/modules/notifications/campaigns.ts';
-import { clientNotificationSummary, getCampaignDetail, listCampaigns, listNotifications, retryNotification, type NotificationView } from '../../apps/api/src/modules/notifications/journal.ts';
+import { clientNotificationSummary, failuresSummary, getCampaignDetail, listCampaigns, listNotifications, retryNotification, type NotificationView } from '../../apps/api/src/modules/notifications/journal.ts';
 import { createTestBranch } from '../helpers/network.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
@@ -38,15 +38,43 @@ async function client(branch = b1): Promise<string> {
   return id;
 }
 
-async function row(clientId: string, over: { branchId?: string | null; category?: string; kind?: string; status?: string; source?: string; bookingId?: string | null } = {}): Promise<string> {
+async function row(clientId: string, over: { branchId?: string | null; category?: string; kind?: string; status?: string; source?: string; bookingId?: string | null; initiatorId?: string | null; plannedAt?: Date } = {}): Promise<string> {
   const status = over.status ?? 'error';
   const r = await db.client.query<{ id: string }>(
-    `INSERT INTO app.notifications (client_id, branch_id, category, kind, booking_id, booking_version, source, title, body, planned_at, status, sent_at, dedupe_key)
-     VALUES ($1, $2, $3, $4, $5, 1, $6, 'Ваша запись', 'Текст', $7, $8, CASE WHEN $8 = 'sent_to_provider' THEN $7::timestamptz END, $9) RETURNING id`,
-    [clientId, over.branchId === undefined ? b1 : over.branchId, over.category ?? 'service', over.kind ?? 'booking_cancelled', over.bookingId ?? null, over.source ?? 'system', clock.now(), status, `t:${randomUUID()}`],
+    `INSERT INTO app.notifications (client_id, branch_id, category, kind, booking_id, booking_version, source, initiator_id, title, body, planned_at, status, sent_at, dedupe_key)
+     VALUES ($1, $2, $3, $4, $5, 1, $6, $10, 'Ваша запись', 'Текст', $7, $8, CASE WHEN $8 = 'sent_to_provider' THEN $7::timestamptz END, $9) RETURNING id`,
+    [clientId, over.branchId === undefined ? b1 : over.branchId, over.category ?? 'service', over.kind ?? 'booking_cancelled', over.bookingId ?? null, over.source ?? 'system', over.plannedAt ?? clock.now(), status, `t:${randomUUID()}`, over.initiatorId ?? null],
   );
   return r.rows[0]!.id;
 }
+
+describe('сбои критичных уведомлений для рабочего стола Владельца (K21 §9, K24 §4)', () => {
+  it('считает сервисные error за период по зоне; реклама, no_channel, старые и уже повторённые – нет; неудачный повтор – сам', async () => {
+    const c = await client();
+    const now = clock.now();
+    const dayAgo = new Date(now.getTime() - 86_400_000);
+    const own = await row(c, { plannedAt: dayAgo }); // b1, service, error – считается
+    await row(c, { branchId: b2, plannedAt: dayAgo }); // чужой филиал – только Владельцу
+    await row(c, { branchId: null, plannedAt: dayAgo }); // сетевая – только зона сети
+    await row(c, { category: 'marketing', kind: 'campaign', plannedAt: dayAgo }); // реклама – не критичное
+    await row(c, { status: 'no_channel', plannedAt: dayAgo }); // нет канала – не ошибка
+    await row(c, { plannedAt: new Date(now.getTime() - 10 * 86_400_000) }); // старше 7 дней
+    const retried = await row(c, { plannedAt: dayAgo });
+    await retryNotification(pool, clock, owner, meta(), retried, { reason: 'повтор' }, randomUUID()); // по ней повтор уже сделан – не считается, повтор planned – тоже
+    const failedRetry = await row(c, { plannedAt: dayAgo });
+    const r = (await retryNotification(pool, clock, owner, meta(), failedRetry, { reason: 'повтор' }, randomUUID())).body as NotificationView;
+    await db.client.query(`UPDATE app.notifications SET status = 'error' WHERE id = $1`, [r.id]); // повтор тоже упал – считается он сам, не исходная
+    const at = new Date(now.getTime() + 60_000); // «сейчас» рабочего стола – минутой позже повторов: период [from, to), строки в момент to не входят
+    const before = await failuresSummary(pool, director, { days: 7, now: at });
+    expect(before).toEqual({ critical: 2, period: { from: new Date(at.getTime() - 7 * 86_400_000).toISOString(), to: at.toISOString(), days: 7 } });
+    expect((await failuresSummary(pool, admin, { days: 7, now: at })).critical).toBe(2);
+    expect((await failuresSummary(pool, owner, { days: 7, now: at })).critical).toBe(4);
+    expect((await failuresSummary(pool, owner, { days: 30, now: at })).critical).toBe(5);
+    expect((await failuresSummary(pool, director, { days: 7, now: dayAgo })).critical).toBe(0);
+    await retryNotification(pool, clock, owner, meta(), own, { reason: 'повтор' }, randomUUID());
+    expect((await failuresSummary(pool, director, { days: 7, now: at })).critical).toBe(1);
+  });
+});
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
@@ -74,7 +102,7 @@ describe('ручной повтор K21 §9', () => {
     const key = randomUUID();
     const r = await retryNotification(pool, clock, director, meta(), id, { reason: 'клиент подключил браузер' }, key);
     const n = r.body as NotificationView;
-    expect([r.status, n.retryOf, n.status, n.title]).toEqual([201, id, 'planned', 'Ваша запись']);
+    expect([r.status, n.retryOf, n.status, n.title, n.authorName]).toEqual([201, id, 'planned', 'Ваша запись', 'О В']);
     expect((await db.client.query(`SELECT * FROM app.notifications WHERE id = $1`, [id])).rows[0]).toEqual(before);
     const again = await retryNotification(pool, clock, director, meta(), id, { reason: 'клиент подключил браузер' }, key);
     expect([again.replayed, (again.body as NotificationView).id]).toEqual([true, n.id]);
@@ -112,12 +140,16 @@ describe('списки и зона', () => {
     const net = await row(c, { branchId: null, status: 'no_channel' });
     const d = (await listNotifications(pool, director, { clientId: c })).items.map((x) => x.id);
     expect(d).toEqual([own]);
-    expect((await listNotifications(pool, owner, { clientId: c })).items.map((x) => x.id).sort()).toEqual([own, foreign, net].sort());
+    // имя автора – всем с notifications.view (решение S4-80): у Администратора нет staff.view, имя сотрудника он всё равно видит; у системы – null
+    const manual = await row(c, { status: 'sent_to_provider', kind: 'personal', source: 'staff', initiatorId: staffId });
+    const byAdmin = (await listNotifications(pool, admin, { clientId: c })).items;
+    expect(byAdmin.map((x) => [x.id, x.authorName]).sort()).toEqual([[manual, 'О В'], [own, null]].sort());
+    expect((await listNotifications(pool, owner, { clientId: c })).items.map((x) => x.id).sort()).toEqual([own, foreign, net, manual].sort());
     expect((await listNotifications(pool, owner, { clientId: c, branchId: b2 })).items.map((x) => x.id)).toEqual([foreign]);
     expect((await listNotifications(pool, owner, { clientId: c, kind: 'booking_confirmed' })).items.map((x) => x.id)).toEqual([own]);
     expect((await listNotifications(pool, owner, { clientId: c, category: 'marketing' })).items).toEqual([]);
-    const p1 = await listNotifications(pool, owner, { clientId: c, limit: 2 });
-    const p2 = await listNotifications(pool, owner, { clientId: c, limit: 2, cursor: p1.nextCursor! });
+    const p1 = await listNotifications(pool, owner, { clientId: c, source: 'system', limit: 2 });
+    const p2 = await listNotifications(pool, owner, { clientId: c, source: 'system', limit: 2, cursor: p1.nextCursor! });
     expect([...p1.items, ...p2.items].map((x) => x.id).sort()).toEqual([own, foreign, net].sort());
     expect(p2.nextCursor).toBeNull();
     await expect(listNotifications(pool, owner, { cursor: 'мусор' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
@@ -140,8 +172,18 @@ describe('списки и зона', () => {
     const detail = await getCampaignDetail(pool, director, created.id);
     expect(detail.counters).toEqual({ sent: 1, inboxOnly: 1, error: 1, excluded: total - 3 });
     expect(detail.timeline.map((e) => e.action).sort()).toEqual(['notification.campaign_confirmed', 'notification.campaign_created']);
-    const byClient = await listCampaigns(pool, director, { clientId: a });
+    // имена автора, подтвердившего и действующих лиц истории – из модуля staff (ADR 0002), без staff.view у читающего
+    expect([detail.authorName, detail.confirmedByName]).toEqual(['О В', 'О В']);
+    expect(detail.timeline.map((e) => e.actorName)).toEqual(['О В', 'О В']);
+    const byClient = await listCampaigns(pool, admin, { clientId: a });
     expect(byClient.items.map((x) => x.id)).toContain(created.id);
+    expect(byClient.items.find((x) => x.id === created.id)).toMatchObject({ authorName: 'О В', confirmedByName: 'О В' });
+    // №208 campaignId: строки одной рассылки, в своей зоне; вместе с другими фильтрами; чужой или несуществующий id – пусто
+    const byCampaign = await listNotifications(pool, director, { campaignId: created.id });
+    expect(byCampaign.items).toHaveLength(total);
+    expect(byCampaign.items.every((x) => x.campaignId === created.id)).toBe(true);
+    expect((await listNotifications(pool, director, { campaignId: created.id, status: 'error' })).items.map((x) => x.clientId)).toEqual([c]);
+    expect((await listNotifications(pool, owner, { campaignId: randomUUID() })).items).toEqual([]);
     expect((await listCampaigns(pool, director, { status: 'done' })).items.map((x) => x.id)).not.toContain(created.id);
     expect((await listCampaigns(pool, director, { source: 'system' })).items).toEqual([]);
 
@@ -166,7 +208,7 @@ describe('сводка клиента 09 §12.3', () => {
     expect(s.recent).toHaveLength(20);
     expect(s.recent.every((x) => x.branchId === b1)).toBe(true);
     const text = JSON.stringify(s);
-    for (const secret of [endpoint, 'fcm.googleapis', 'B'.repeat(87), 'p256dh', 'auth']) expect(text).not.toContain(secret);
+    for (const secret of [endpoint, 'fcm.googleapis', 'B'.repeat(87), '"p256dh"', '"auth"']) expect(text).not.toContain(secret); // ключи подписки; "authorName" – не ключ
     const other = await client(b2);
     await expect(clientNotificationSummary(pool, director, other)).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect((await clientNotificationSummary(pool, owner, other)).push.activeDevices).toBe(0);

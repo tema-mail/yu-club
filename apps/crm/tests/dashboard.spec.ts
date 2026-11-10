@@ -32,6 +32,10 @@ test('Владелец: карточки по группам, деньги ра�
   const warn = desk(page).getByTestId('desk-warnings');
   await expect(warn.getByRole('link', { name: 'Ночная сверка 11.11.2026 нашла расхождения: 3' })).toHaveAttribute('href', '/reports/reconcile');
   await expect(warn.getByRole('link', { name: /Брони ждут решения: \d+/ })).toBeVisible();
+  // K21 §9, K24 §4: ошибки критичных уведомлений – №251 GET /notifications/failures/summary {critical, period: {from, to, days}}
+  // (мок – mock-notifications.ts, тот же расчёт, что journal.ts); ведёт в журнал сервисных отправок с ошибкой за период по дням зоны
+  const failures = warn.getByRole('link', { name: /^Критичные уведомления не дошли: [1-9]\d* \(\d\d\.\d\d\.\d{4} – \d\d\.\d\d\.\d{4}\)$/ });
+  await expect(failures).toHaveAttribute('href', /^\/notifications\?tab=rows&category=service&status=error&from=\d{4}-\d\d-\d\d&to=\d{4}-\d\d-\d\d$/);
 
   const created = desk(page).getByTestId('desk-card-created');
   await expect(created).toHaveAttribute('href', '/reports/bookings?from=2026-11-09&to=2026-11-15&metric=created');
@@ -58,4 +62,44 @@ test('Директор: стол своего города без предупр
   await expect(desk(page).getByTestId('desk-card-visited')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   if (process.env.CRM_SHOTS) await page.screenshot({ path: `${process.env.CRM_SHOTS}/dashboard-390.png`, fullPage: true });
+});
+
+// S4-94 (13 §6.1, K24 §4): рабочий стол Администратора – «/» в контексте филиала. Сегодня в филиале: брони и приходы, требуют решения,
+// кассовая смена (остатка Администратору нет – 06 §14), открытые ремонты, блокировки, мероприятия дня, лента событий, быстрые действия.
+// Данные – из существующих API (брони дня, смена, предпросмотр остатка, ремонты, календарь, мероприятия, лента).
+test('Администратор: рабочий стол филиала на главной – брони, смена без остатка, ремонты, мероприятия дня, лента', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Ю Клуб на Красном: сегодня');
+  const d = page.getByTestId('branch-desk');
+  await expect(d.getByTestId('bd-bookings').getByRole('link', { name: /^№\d+ · / })).toHaveCount(2);
+  await expect(d.getByTestId('bd-bookings')).toContainText('Требует решения');
+  await expect(d.getByTestId('bd-cash')).toContainText('Кассовая смена в филиале не ведётся');
+  await expect(d.getByTestId('bd-cash')).not.toContainText('₽');
+  const repairs = d.getByTestId('bd-repairs');
+  await expect(repairs.getByRole('link', { name: /^R-\d{6}/ })).toHaveCount(4);
+  await expect(repairs).not.toContainText('R-000003'); // томский ремонт – чужой филиал
+  await expect(repairs).not.toContainText('R-000004'); // закрытый
+  await expect(d.getByTestId('bd-events').getByRole('link', { name: /День рождения Анны/ })).toHaveAttribute('href', /^\/events\//);
+  const feed = d.getByTestId('bd-feed');
+  await expect(feed.getByRole('link', { name: 'Новый ремонт № Р-12' })).toHaveAttribute('href', '/repairs/e7000000-0000-4000-8000-000000000001');
+  await expect(feed).not.toContainText('Т-3');
+  await expect(d.getByRole('link', { name: 'Создать бронь' })).toHaveAttribute('href', '/schedule');
+  await expect(d.getByRole('link', { name: 'Зарегистрировать неисправность' })).toHaveAttribute('href', '/repairs/new');
+  await expect(page.getByTestId('dashboard')).toHaveCount(0); // денег сети и отчётных карточек Администратору нет
+  await page.setViewportSize({ width: 390, height: 900 });
+  await open(page, '/');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  if (process.env.CRM_SHOTS) await page.screenshot({ path: `${process.env.CRM_SHOTS}/branch-desk-390.png`, fullPage: true });
+});
+
+test('Владелец в контексте филиала: тот же стол с остатками кассы; карточка филиала – по ссылке', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await page.getByLabel('Контекст').selectOption({ label: 'Ю Клуб на Красном' });
+  await expect(page).toHaveURL(/\/branches\/b-nsk-krasny$/);
+  await open(page, '/');
+  const cash = page.getByTestId('branch-desk').getByTestId('bd-cash');
+  await expect(cash).toContainText(/Наличные сейчас: [\d\s]+,\d{2} ₽/);
+  await expect(cash).toContainText(/Безнал сейчас: [\d\s]+,\d{2} ₽/);
+  await expect(page.getByTestId('branch-desk').getByRole('link', { name: 'Карточка филиала' })).toHaveAttribute('href', '/branches/b-nsk-krasny');
 });

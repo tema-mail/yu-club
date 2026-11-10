@@ -189,4 +189,40 @@ describe('касса в CRM', () => {
     const useArchived = await req('owner', 'POST', `/branches/${ids.lenina}/finance/expense`, { ...expense, categoryId: created.json().id });
     expect(useArchived.json().error.code).toBe('CATEGORY_ARCHIVED');
   });
+
+  // S4-95: карточка операции в CRM – GET /finance/operations/:id (K11: право finance.view на филиал операции, K17 §14 связь).
+  it('карточка операции: Владелец и Директор – с остатком и живой связью; Администратор – 403 и отказ в аудит; чужой филиал и не-UUID – 404 одним телом; сторно видно с обеих сторон', async () => {
+    const inc = await req('owner', 'POST', `/branches/${ids.lenina}/finance/income`, { method: 'cash', amountKop: 7_000, source: 'event', occurredAt: AT, comment: 'предоплата праздника' });
+    expect(inc.statusCode).toBe(201);
+    const id = inc.json().id as string;
+    const eventId = randomUUID();
+    await db.client.query(
+      `INSERT INTO app.finance_operation_links (operation_id, branch_id, ref_type, ref_id, role, linked_by, linked_at) VALUES ($1, $2, 'event', $3, 'income', $4, now())`,
+      [id, ids.lenina, eventId, ids.owner],
+    );
+    const card = await req('owner', 'GET', `/finance/operations/${id}`);
+    expect(card.statusCode).toBe(200);
+    expect(card.json()).toMatchObject({ id, kind: 'income', source: 'event', amountKop: 7_000, comment: 'предоплата праздника', balanceAfterKop: expect.any(Number), reversedBy: null, reversalOf: null, link: { type: 'event', id: eventId, role: 'income' } });
+    const dir = await req('director', 'GET', `/finance/operations/${id}`);
+    expect(dir.statusCode).toBe(200);
+    expect(dir.json()).toMatchObject({ id, balanceAfterKop: expect.any(Number), link: { type: 'event', id: eventId, role: 'income' } });
+
+    const adm = await req('admin', 'GET', `/finance/operations/${id}`);
+    expect(adm.statusCode).toBe(403);
+    expect(adm.json().error).toMatchObject({ code: 'FORBIDDEN', details: { action: 'finance.view' } });
+    const denied = await db.client.query(`SELECT result, object_type, actor_id FROM journal.audit_events WHERE object_id = $1 AND result = 'denied'`, [id]);
+    expect(denied.rows).toEqual([{ result: 'denied', object_type: 'finance_operation', actor_id: ids.admin }]);
+
+    const other = await req('owner', 'POST', `/branches/${ids.marksa}/finance/income`, { method: 'cash', amountKop: 100, source: 'other', occurredAt: AT });
+    const foreign = await req('director', 'GET', `/finance/operations/${other.json().id}`);
+    expect(foreign.statusCode).toBe(404);
+    const bad = await req('director', 'GET', '/finance/operations/not-a-uuid');
+    expect(bad.statusCode).toBe(404);
+    expect(bodyWithoutRequestId(bad.json())).toEqual(bodyWithoutRequestId(foreign.json()));
+
+    const rev = await req('owner', 'POST', `/finance/operations/${id}/reverse`, { reason: 'ошиблись суммой' });
+    expect(rev.statusCode).toBe(201);
+    expect((await req('owner', 'GET', `/finance/operations/${id}`)).json()).toMatchObject({ reversedBy: rev.json().id });
+    expect((await req('owner', 'GET', `/finance/operations/${rev.json().id}`)).json()).toMatchObject({ kind: 'reversal', reversalOf: id, ref: { type: 'operation', id }, link: null });
+  });
 });

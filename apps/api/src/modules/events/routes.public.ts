@@ -13,6 +13,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { instantToLocal, parseLocalDate, systemClock, type Clock } from '../../core/time.ts';
 import { authenticateClient, type ClientPublicDeps } from '../clients/routes.public.ts';
 import { normalizePhone, withTx } from '../clients/index.ts';
+import { legalVersions } from '../content/index.ts';
 import { getBranch, getBranches, isAcceptingBookings } from '../network/index.ts';
 import { listBookableResources } from '../resources/index.ts';
 import { getEventRow, insertEvent, notFound, parseBody, UUID_RE } from './events.ts';
@@ -74,7 +75,9 @@ async function createRequest(tx: Tx, raw: z.infer<typeof requestBody>, meta: Aud
     at: now,
   });
   const row = (await getEventRow(tx, id))!;
-  await writeAudit(tx, meta, { action: 'event.request_received', object: { type: 'event', id }, branchId: branch.id, cityId: branch.cityId, after: { number: row.number, guestName: raw.name, guestPhone: phone, preferredDate: date, format: raw.format, guests: raw.guests, consent: true } }, clock);
+  // Согласие заказчика без профиля (техдолг 4.7, Q-117): в аудите факт галочки и живая версия personal-data-consent (K22 §7); не опубликована – null
+  const consentVersion = (await legalVersions(tx)).personalDataConsent;
+  await writeAudit(tx, meta, { action: 'event.request_received', object: { type: 'event', id }, branchId: branch.id, cityId: branch.cityId, after: { number: row.number, guestName: raw.name, guestPhone: phone, preferredDate: date, format: raw.format, guests: raw.guests, consent: true, consentVersion } }, clock);
   return { requestNumber: row.number };
 }
 

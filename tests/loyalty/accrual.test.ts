@@ -161,6 +161,28 @@ afterAll(async () => {
 beforeEach(() => payments.clear());
 
 describe('TC-09: одно начисление на бронь при любом порядке и повторной доставке', () => {
+  it('TC-09: баллы – после подтверждённого посещения и оплаты, ровно одно начисление; повторная отметка прихода и повтор событий ничего не добавляют', async () => {
+    const c = await newClient();
+    const b = await book(c, 20);
+    await pay(b, c, ['cash']);
+    const payEvent = (await events('payment.recorded', b))[0]!;
+    await deliver(ACCRUAL_HANDLERS.paymentRecorded, payEvent);
+    expect(await accruals(b)).toEqual([]); // посещение не подтверждено – начисления нет
+    await arrive(b);
+    const visitEvent = (await events('visit.confirmed', b))[0]!;
+    await deliver(ACCRUAL_HANDLERS.visitConfirmed, visitEvent);
+    expect(await accruals(b)).toMatchObject([{ status: 'active', amount_centi: '300' }]);
+    expect(await balance(c)).toBe(300);
+    // повторное сохранение статуса: ещё раз «приход» – отказ перехода, нового события нет
+    expect(await arrive(b).then(() => 'ok', (e: { code?: string }) => e.code)).toBe('INVALID_STATUS_TRANSITION');
+    expect(await events('visit.confirmed', b)).toHaveLength(1);
+    // повторная доставка обоих событий – дубля нет
+    await redeliver(ACCRUAL_HANDLERS.visitConfirmed, visitEvent);
+    await redeliver(ACCRUAL_HANDLERS.paymentRecorded, payEvent);
+    expect(await accruals(b)).toMatchObject([{ status: 'active', amount_centi: '300' }]);
+    expect(await balance(c)).toBe(300);
+  });
+
   for (const order of ['visit-first', 'payment-first'] as const) {
     it(`${order}: оба события дважды → одно начисление 20 мин = 3,0 балла`, async () => {
       const c = await newClient();

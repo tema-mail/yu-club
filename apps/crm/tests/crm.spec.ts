@@ -23,8 +23,8 @@ test('вход и выход', async ({ page }) => {
   await page.goto('/branches/b-nsk-krasny');
   await expect(page).toHaveURL(/\/login\?next=%2Fbranches%2Fb-nsk-krasny$/);
 
-  await login(page, 'Admin@YU.test');
-  await expect(page).toHaveURL(/\/branches\/b-nsk-krasny$/);
+  await login(page, 'Admin@YU.test'); // login() открывает /login без next – вход ведёт на главную, у Администратора это стол филиала
+  await expect(page).toHaveURL(/\/$/);
   await expect(page.getByTestId('staff-who')).toContainText('Анна Админова');
   await expect(page.getByTestId('staff-who')).toContainText('Администратор');
 
@@ -60,7 +60,7 @@ test('неверный пароль и несуществующая почта �
 
 test('Администратор видит только свои филиалы, Владелец – всю сеть', async ({ page, browser }) => {
   await login(page, 'admin@yu.test');
-  await expect(page).toHaveURL(/\/branches\/b-nsk-krasny$/);
+  await expect(page).toHaveURL(/\/$/); // S4-94: контекст филиала – рабочий стол Администратора на главной
   expect(await contextOptions(page)).toEqual(['Ю Клуб на Красном']);
   await expect(page.getByRole('navigation', { name: 'Разделы' }).getByRole('link')).toHaveText(['Расписание', 'Филиалы', 'Клиенты', 'Уведомления', 'Мероприятия', 'Финансы', 'Сертификаты', 'Товары за баллы', 'Моё расписание', 'Расписание сотрудников', 'Ресурсы', 'Оборудование', 'Ремонт', 'Контент', 'Отчёты']);
 
@@ -77,7 +77,7 @@ test('Администратор видит только свои филиалы
 
 test('прямая ссылка на чужой филиал – отказ, как у несуществующего', async ({ page }) => {
   await login(page, 'admin@yu.test');
-  await expect(page).toHaveURL(/\/branches\/b-nsk-krasny$/);
+  await expect(page).toHaveURL(/\/$/);
 
   const api = await page.request.get('/api/crm/v1/branches/b-tsk-lenina');
   expect(api.status()).toBe(404);

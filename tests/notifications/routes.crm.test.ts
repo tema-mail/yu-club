@@ -249,6 +249,30 @@ describe('сквозной путь кампании', () => {
   });
 });
 
+describe('пробелы API S4-80…83 (K11 №208 campaignId, №251 сбои)', () => {
+  it('сбои критичных: Владелец видит оба филиала, Директор и Администратор – свой; days вне 1..90 и не-UUID campaignId – 400; no-store', async () => {
+    const mine = await client(b1);
+    const foreign = await client(b2);
+    const err = (clientId: string, branch: string) =>
+      db.client.query(
+        `INSERT INTO app.notifications (client_id, branch_id, category, kind, source, title, body, planned_at, status, dedupe_key) VALUES ($1, $2, 'service', 'booking_cancelled', 'system', 'т', 'б', $3, 'error', $4)`,
+        [clientId, branch, new Date(clock.now().getTime() - 3600_000), `t:${randomUUID()}`],
+      );
+    await err(mine.id, b1);
+    await err(foreign.id, b2);
+    const owner = await req('owner', 'GET', '/notifications/failures/summary');
+    expect(owner.statusCode).toBe(200);
+    expect(owner.headers['cache-control']).toBe('no-store');
+    expect(owner.json()).toEqual({ critical: 2, period: { from: new Date(clock.now().getTime() - 7 * 86_400_000).toISOString(), to: clock.now().toISOString(), days: 7 } });
+    expect((await req('director', 'GET', '/notifications/failures/summary?days=30')).json()).toMatchObject({ critical: 1, period: { days: 30 } });
+    expect((await req('admin', 'GET', '/notifications/failures/summary')).json().critical).toBe(1);
+    expect(code(await req('admin', 'GET', '/notifications/failures/summary?days=0'))).toEqual([400, 'VALIDATION_FAILED']);
+    expect(code(await req('admin', 'GET', '/notifications/failures/summary?days=91'))).toEqual([400, 'VALIDATION_FAILED']);
+    expect(code(await req('admin', 'GET', '/notifications?campaignId=123'))).toEqual([400, 'VALIDATION_FAILED']);
+    expect((await req('admin', 'GET', `/notifications?campaignId=${randomUUID()}`)).json().items).toEqual([]);
+  });
+});
+
 describe('подключение секрета', () => {
   it('depsFromConfig передаёт UNSUBSCRIBE_SECRET, короткий секрет не проходит конфиг', async () => {
     const { deps, close } = depsFromConfig(loadConfig({ DATABASE_URL: db.url, UNSUBSCRIBE_SECRET: 'k'.repeat(32) }));

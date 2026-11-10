@@ -4,6 +4,8 @@
 // С живой сессией middleware сразу уводит на ?next= (или в кабинет). Закрыта от поиска.
 // S4-126: согласие на рекламу – отдельная пустая галочка со ссылкой на /advertising-consent/, только если документ опубликован (K5 №215);
 // версию в журнал согласий пишет API – живую версию страницы, а не присланную сайтом (K9, K22 §7). Документа нет – галочки нет.
+// Возраст (Q-34, умолчание до ответа юриста заказчика): кабинет – от 14 лет, за младшего – родитель на свой номер; подтверждение
+// возраста – в тексте той же галочки (ГК ст. 26, 28: до 14 лет согласие даёт законный представитель).
 import Site from '../layouts/Site.astro';
 import { content } from '../lib/content.ts';
 
@@ -18,6 +20,7 @@ try {
   <section class="yu-auth" aria-labelledby="auth-title">
     <h1 id="auth-title">Вход в кабинет</h1>
     <p class="yu-body">По номеру телефона и коду из SMS. Если вы у нас впервые, кабинет создастся сам.</p>
+    <p class="yu-body" data-testid="age-note">Кабинет заводит человек от 14 лет. Ребёнку младше кабинет на свой номер заводит родитель.</p>
 
     <form class="yu-form" id="phone-form" novalidate>
       <label class="yu-field">
@@ -35,7 +38,7 @@ try {
       </label>
       <label class="yu-check">
         <input type="checkbox" id="consent" name="consent" />
-        <span>Даю <a href="/personal-data-consent/" target="_blank" rel="noopener">согласие на обработку персональных данных</a></span>
+        <span>Мне есть 14 лет, и я даю <a href="/personal-data-consent/" target="_blank" rel="noopener">согласие на обработку персональных данных</a></span>
       </label>
       {advertising && (
         <label class="yu-check">

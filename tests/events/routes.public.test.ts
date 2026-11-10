@@ -84,7 +84,19 @@ describe('S3-61: П4 заявка с сайта', () => {
     const log = await one(`SELECT after, ip FROM journal.audit_events WHERE action = 'event.request_received' AND object_id = $1`, [e.id]);
     expect(JSON.stringify(log.after)).not.toContain(phone.slice(-7));
     expect(log.after.consent).toBe(true);
+    expect(log.after.consentVersion).toBeNull(); // страница согласия не опубликована
     expect(log.ip).toBeTruthy();
+    // K22 §7: опубликованное согласие – его живая версия в аудите заявки
+    await db.client.query(
+      `INSERT INTO app.content_pages (key, document_version, status, draft, draft_updated_at, draft_updated_by, created_by, created_at)
+       VALUES ('personal-data-consent', 'personal-data-consent-2026-11-01', 'published', '{}', now(), gen_random_uuid(), gen_random_uuid(), now())`,
+    );
+    const r2 = await post(body());
+    expect(r2.statusCode).toBe(201);
+    const e2 = await one(`SELECT id FROM app.events WHERE number = $1`, [r2.json().requestNumber]);
+    const log2 = await one(`SELECT after FROM journal.audit_events WHERE action = 'event.request_received' AND object_id = $1`, [e2.id]);
+    expect(log2.after.consentVersion).toBe('personal-data-consent-2026-11-01');
+    await db.client.query(`DELETE FROM app.content_pages WHERE key = 'personal-data-consent'`);
   });
   it('повтор с ключом – та же заявка; тот же ключ с другими данными – отказ', async () => {
     const key = randomUUID();

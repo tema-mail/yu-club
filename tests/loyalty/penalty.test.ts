@@ -13,7 +13,9 @@ import { createHold } from '../../apps/api/src/modules/booking/hold.ts';
 import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
 import { paymentBookingProvider } from '../../apps/api/src/modules/booking/providers.ts';
 import { markNoShow, revertVisit } from '../../apps/api/src/modules/booking/visit.ts';
+import { clearBookingGates, registerBookingGate } from '../../apps/api/src/modules/clients/index.ts';
 import { debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
+import { loyaltyGate } from '../../apps/api/src/modules/loyalty/gate.ts';
 import { applyPenalty, clipPenalty, PENALTY_HANDLERS, registerPenaltyHandlers } from '../../apps/api/src/modules/loyalty/penalty.ts';
 import { lockAccounts } from '../../apps/api/src/core/ledger.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -146,7 +148,7 @@ describe('штрафы включены с даты запуска', () => {
     expect(await balance(c)).toBe(0);
   });
 
-  it('TC-10: −48 → штраф −2 → −50; следующая неявка – событие без изменения баланса', async () => {
+  it('TC-10: −48 → штраф −2 → −50; следующая неявка – событие без изменения баланса; новая запись блокируется (LOYALTY_LIMIT_REACHED)', async () => {
     const c = await newClient();
     await setBalance(c, -4800);
     const [b1] = await book(c);
@@ -161,6 +163,17 @@ describe('штрафы включены с даты запуска', () => {
     await marked(b2!);
     expect(await penalties(b2!)).toEqual([{ status: 'active', applied_centi: '0' }]);
     expect(await balance(c)).toBe(-5000);
+    // новая запись блокируется: ворота −50 (их подключает buildServer, S2-34) – удержание известного клиента отказывает
+    registerBookingGate(loyaltyGate);
+    try {
+      const start = new Date(now.getTime() + 86_400_000);
+      const items = [{ resourceId: ids.pc!, start, end: new Date(start.getTime() + 3_600_000) }];
+      const code = await runOccupancyCommand(pool, (tx) => createHold(tx, { clientId: c, visitorId: null }, { branchId: ids.b1!, items }, clock)).then(() => 'ok', (e: { code?: string }) => e.code);
+      expect(code).toBe('LOYALTY_LIMIT_REACHED');
+      expect((await one<{ n: number }>(`SELECT count(*)::int n FROM app.holds WHERE client_id = $1 AND status = 'active'`, [c])).n).toBe(0);
+    } finally {
+      clearBookingGates();
+    }
   });
 
   it('при −52 (ниже предела по праву Владельца) штраф 0, баланс −52, а не −50', async () => {

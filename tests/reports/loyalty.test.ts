@@ -138,6 +138,25 @@ describe('лояльность (S4-67)', () => {
     expect(adj.total).toMatchObject({ value: 50 - 4_600 });
   });
 
+  it('филиал операции в строках (0443): начисление и списание – филиал посещения и брони, ручная корректировка – без филиала; Σ филиалов + без филиала = сеть', async () => {
+    const acc = await fx.run(fx.owner(), (env) => loyaltyDetail(env, { period: OCT }, 'accrued'));
+    expect(acc.rows.length).toBeGreaterThan(0);
+    expect(acc.rows.every((x) => x.branchId === b1)).toBe(true);
+    expect((await fx.run(fx.owner(), (env) => loyaltyDetail(env, { period: OCT }, 'spentTime'))).rows.map((x) => x.branchId)).toEqual([b1]);
+    const adj = await fx.run(fx.owner(), (env) => loyaltyDetail(env, { period: OCT }, 'adjusted'));
+    expect(adj.rows.map((x) => x.branchId)).toEqual([null, null]); // и корректировка, проведённая «в филиале», – запись сети
+    const net = (await fx.run(fx.owner(), (env) => loyaltyReport(env, { period: OCT }))).metrics;
+    const parts = await Promise.all([b1, b2].map(async (id) => (await fx.run(fx.owner(), (env) => loyaltyReport(env, { period: OCT, branchIds: [id] }))).metrics));
+    for (const key of Object.keys(loyaltyDefs()) as LoyaltyMetric[]) {
+      const rows = (await fx.run(fx.owner(), (env) => loyaltyDetail(env, { period: OCT }, key, { limit: 500 }))).rows;
+      const noBranch = rows.filter((x) => x.branchId === null).reduce((s, x) => s + x.value, 0);
+      const sum = parts.reduce((s, m) => s + (m[key].state === 'ok' ? m[key].value : 0), 0) + noBranch;
+      expect([key, sum]).toEqual([key, net[key].state === 'ok' ? net[key].value : 0]);
+    }
+    // у b2 в октябре нет ни одной операции: корректировки, проведённые «в филиале», ушли в сеть – отчёт без данных, не 0
+    expect(val((await fx.run(fx.owner(), (env) => loyaltyReport(env, { period: OCT, branchIds: [b2] }))).metrics.adjusted)).toBe('no_data');
+  });
+
   it('Директор зоны: только движения своих филиалов и балансы клиентов зоны; запись без филиала не видна; Администратору закрыто', async () => {
     const dir = fx.director([b1]);
     const r = await fx.run(dir, (env) => loyaltyReport(env, { period: OCT }));

@@ -43,7 +43,8 @@ export type Constraints =
   | { kind: 'list'; nullable: boolean }
   | { kind: 'time'; nullable: boolean }
   | { kind: 'datetime'; nullable: boolean }
-  | { kind: 'hours'; nullable: boolean };
+  | { kind: 'hours'; nullable: boolean }
+  | { kind: 'text'; maxLength: number; nullable: boolean };
 
 type Json = Record<string, unknown>;
 function constraintsOf(key: SettingKey): Constraints {
@@ -65,6 +66,8 @@ function constraintsOf(key: SettingKey): Constraints {
   }
   if (Array.isArray(s.enum)) return { kind: 'enum', options: s.enum as string[], nullable };
   if (s.format === 'date-time') return { kind: 'datetime', nullable };
+  // Текст с пределом длины (префикс рекламы, реквизиты): у `HH:mm` предела нет – только шаблон.
+  if (typeof s.maxLength === 'number') return { kind: 'text', maxLength: s.maxLength, nullable };
   return { kind: 'time', nullable };
 }
 const CONSTRAINTS = new Map(KEYS.map((k) => [k, constraintsOf(k)]));

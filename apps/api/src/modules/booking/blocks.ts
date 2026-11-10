@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { writeAudit, writeDenied, type AuditRequestMeta, type Db, type Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import { idempotencyScope, requireIdempotencyKey, runIdempotent } from '../../core/idempotency.ts';
+import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { can, type AccessContext } from '../../core/permissions.ts';
 import { interval, systemClock, toPgRange, type Clock, type Interval } from '../../core/time.ts';
 import { unitsOfTarget } from '../resources/index.ts';
@@ -28,6 +29,26 @@ export interface BlockInfo {
   status: 'active' | 'lifted';
   unitIds: string[];
   rowVersion: number;
+}
+
+// K4: факт блокировки – событие outbox (лента событий CRM 13 §11, staff-feed.ts). Снятие события не публикует.
+declare module '../../core/outbox.ts' {
+  interface EventRegistry {
+    'resource_block.created': {
+      blockId: string;
+      branchId: string;
+      targetType: BlockTarget['type'];
+      targetIds: string[];
+      start: string;
+      end: string;
+      reasonId: string;
+      reasonName: string;
+      comment: string | null;
+      createdBy: string;
+      affectedBookingIds: string[];
+      affectedEventIds: string[];
+    };
+  }
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -126,8 +147,8 @@ export async function createBlock(
 ): Promise<{ blockId: string; affectedBookingIds: string[]; affectedHoldIds: string[]; affectedEventIds: string[] }> {
   if (!UUID_RE.test(input.branchId)) throw notFound();
   guard(ctx, input.branchId, 'block.created', null);
-  const reason = await tx.query<{ requires_comment: boolean }>(
-    `SELECT requires_comment FROM app.dict_reasons WHERE id = $1 AND domain = 'resource_block' AND archived_at IS NULL`,
+  const reason = await tx.query<{ requires_comment: boolean; name: string }>(
+    `SELECT requires_comment, name FROM app.dict_reasons WHERE id = $1 AND domain = 'resource_block' AND archived_at IS NULL`,
     [input.reasonId],
   );
   if (!reason.rows[0]) throw new AppError('VALIDATION_FAILED', 400, 'Неизвестная причина блокировки', { field: 'reasonId' });
@@ -155,6 +176,18 @@ export async function createBlock(
     },
     clock,
   );
+  await publish(tx as OutboxTx, {
+    type: 'resource_block.created',
+    aggregateType: 'resource_block',
+    aggregateId: blockId,
+    aggregateVersion: 1,
+    branchId: input.branchId,
+    occurredAt: clock.now(),
+    payload: {
+      blockId, branchId: input.branchId, targetType: input.target.type, targetIds: input.target.ids, start: input.period.start.toISOString(), end: input.period.end.toISOString(),
+      reasonId: input.reasonId, reasonName: reason.rows[0].name, comment: input.comment ?? null, createdBy: ctx.actor.staffId, affectedBookingIds: hit.bookingIds, affectedEventIds: hit.eventIds,
+    },
+  });
   return { blockId, affectedBookingIds: hit.bookingIds, affectedHoldIds: hit.holdIds, affectedEventIds: hit.eventIds };
 }
 

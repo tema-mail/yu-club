@@ -1,0 +1,158 @@
+---
+// Карточка операции кассы (S4-95; 13 §6.4, 06 §10, K17 §14): операция, категория, автор, место и способ, остаток после,
+// откуда пришла (оплата брони, сертификат, мероприятие, ремонт, сотрудник, смена, другая операция), сторно с обеих сторон,
+// живая связь с объектом (finance_operation_links). Данные – GET /finance/operations/{id}: право finance.view на филиал
+// решает сервер – Администратору 403 (нет доступа), чужой филиал и не-UUID – 404, как у несуществующего (K1).
+// Вложения у операции API не ведёт: документы хранятся у объекта (мероприятие, ремонт) – ссылка на него есть в карточке.
+import Crm from '../../../layouts/Crm.astro';
+import { KIND_LABEL, METHOD_LABEL, PLACE_LABEL, SOURCE_LABEL, rub, type FinanceOperation } from '../../../islands/CashJournal.tsx';
+import { ApiError, serverCall } from '../../../lib/api.ts';
+import { fmtAt } from '../../../lib/reports.ts';
+
+type Card = FinanceOperation & { balanceAfterKop: number; shiftId: string | null; link: { type: 'event' | 'repair' | 'payroll_statement'; id: string; role: string } | null };
+interface CategoryNode { id: string; name: string; children: Array<{ id: string; name: string }> }
+
+const { me, cookie, branches } = Astro.locals;
+const can = (a: string) => me.actions.includes(a);
+const id = Astro.params.id ?? '';
+let op: Card | null = null;
+let status = 200;
+try {
+  op = await serverCall<Card>(cookie, `/finance/operations/${encodeURIComponent(id)}`);
+} catch (e) {
+  if (!(e instanceof ApiError) || (e.status !== 403 && e.status !== 404)) throw e;
+  status = e.status;
+}
+if (status !== 200) Astro.response.status = status;
+
+const branch = op ? (branches.find((b) => b.id === op!.branchId) ?? null) : null;
+const tz = branch?.timezone ?? 'Asia/Novosibirsk';
+/** Связанная операция (сторно, исходная, поступление возврата) – только номер для ссылки; нет доступа – номер не показываем. */
+const related = async (opId: string | null): Promise<{ id: string; number: number } | null> => {
+  if (!opId) return null;
+  try {
+    const r = await serverCall<Card>(cookie, `/finance/operations/${encodeURIComponent(opId)}`);
+    return { id: r.id, number: r.number };
+  } catch (e) {
+    if (!(e instanceof ApiError) || (e.status !== 403 && e.status !== 404)) throw e;
+    return null;
+  }
+};
+const categoryNames: Record<string, string> = {};
+let author = '';
+let reversedBy: { id: string; number: number } | null = null;
+let reversalOf: { id: string; number: number } | null = null;
+let refOp: { id: string; number: number } | null = null;
+if (op) {
+  try {
+    const tree = await serverCall<{ items: CategoryNode[] }>(cookie, '/finance/categories?includeArchived=true');
+    for (const c of tree.items) {
+      categoryNames[c.id] = c.name;
+      for (const sub of c.children) categoryNames[sub.id] = sub.name;
+    }
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 403) throw e;
+  }
+  if (op.authorId === null) author = 'Система';
+  else if (op.authorId === me.staff.id) author = 'Вы';
+  else if (can('staff.view')) {
+    try {
+      const s = await serverCall<{ firstName: string; lastName: string }>(cookie, `/staff/${encodeURIComponent(op.authorId)}`);
+      author = `${s.firstName} ${s.lastName}`;
+    } catch (e) {
+      if (!(e instanceof ApiError) || (e.status !== 403 && e.status !== 404)) throw e;
+      author = 'Сотрудник';
+    }
+  } else author = 'Сотрудник';
+  [reversedBy, reversalOf, refOp] = await Promise.all([related(op.reversedBy), related(op.reversalOf), related(op.ref?.type === 'operation' ? op.ref.id : null)]);
+}
+
+const category = op?.categoryId
+  ? [categoryNames[op.categoryId] ?? 'Категория', op.subcategoryId ? (categoryNames[op.subcategoryId] ?? '') : ''].filter(Boolean).join(' / ')
+  : '';
+const way = op ? (op.place === 'cash' ? PLACE_LABEL.cash : `${PLACE_LABEL.noncash}${op.method && op.method !== 'cash' ? ` · ${METHOD_LABEL[op.method]}` : ''}`) : '';
+/** Откуда пришла операция (ref): страница объекта, если она есть в CRM. */
+const origin = (): { text: string; href?: string } => {
+  const r = op!.ref;
+  if (!r) return { text: op!.kind === 'opening_balance' ? 'Начальный остаток' : 'Внесена вручную в кассе' };
+  switch (r.type) {
+    case 'payment': return { text: op!.kind === 'refund' ? 'Оплата брони – возврат платежа' : 'Оплата брони' };
+    case 'booking': return { text: 'Бронь', href: `/bookings/${encodeURIComponent(r.id)}` };
+    case 'certificate': return { text: op!.kind === 'refund' ? 'Сертификат – отмена продажи' : 'Продажа сертификата', href: `/certificates/${encodeURIComponent(r.id)}` };
+    case 'event': return { text: 'Мероприятие', href: `/events/${encodeURIComponent(r.id)}` };
+    case 'repair': return { text: 'Ремонт', href: `/repairs/${encodeURIComponent(r.id)}` };
+    case 'staff': return { text: 'Выплата сотруднику', href: `/staff/${encodeURIComponent(r.id)}` };
+    case 'shift': return { text: 'Кассовая смена', href: `/finance/${encodeURIComponent(op!.branchId)}` };
+    case 'operation': return refOp ? { text: `Операция № ${refOp.number}`, href: `/finance/operations/${encodeURIComponent(refOp.id)}` } : { text: 'Другая операция кассы' };
+    default: return { text: r.type };
+  }
+};
+const ROLE_LABEL: Record<string, string> = { income: 'поступление', refund: 'возврат', expense: 'расход', payout_expense: 'выплата зарплаты' };
+const link = (): { text: string; href?: string } | null => {
+  const l = op!.link;
+  if (!l) return null;
+  const role = ROLE_LABEL[l.role] ?? l.role;
+  if (l.type === 'event') return { text: `Мероприятие – ${role}`, href: `/events/${encodeURIComponent(l.id)}` };
+  if (l.type === 'repair') return { text: `Ремонт – ${role}`, href: `/repairs/${encodeURIComponent(l.id)}` };
+  return { text: `Ведомость зарплаты – ${role}`, href: '/payroll' };
+};
+const title = status === 403 ? 'Нет доступа' : !op ? 'Не найдено' : `Операция № ${op.number}`;
+---
+<Crm title={title}>
+  {status === 403 ? (
+    <div class="yc-panel" role="alert" data-testid="no-access">
+      <h1>Раздел недоступен</h1>
+      <p>Карточку операции видят Владелец и Директор. Журнал за сегодня – в разделе «Финансы».</p>
+      <p><a href="/finance">К финансам</a></p>
+    </div>
+  ) : !op ? (
+    <div class="yc-panel" role="alert" data-testid="not-found">
+      <h1>Не найдено</h1>
+      <p>Такой операции нет или она вне вашей зоны доступа.</p>
+      <p><a href="/finance">К финансам</a></p>
+    </div>
+  ) : (
+    <>
+      <div class="yc-head">
+        <p class="yc-crumbs"><a href="/finance">Финансы</a> · <a href={`/finance/${encodeURIComponent(op.branchId)}`}>{branch?.name ?? 'Филиал'}</a></p>
+        <h1>Операция № {op.number}</h1>
+        <p><span class="yc-badge yc-badge--system" data-testid="fin-op-kind">{KIND_LABEL[op.kind]}</span></p>
+      </div>
+      <section class="yc-panel" aria-labelledby="fin-op-h" data-testid="fin-op">
+        <h2 id="fin-op-h">Операция</h2>
+        <dl class="yc-props">
+          <dt>Филиал</dt><dd><a href={`/finance/${encodeURIComponent(op.branchId)}`}>{branch?.name ?? op.branchId}</a>{branch && <span class="yc-fin__sub">{branch.cityName}</span>}</dd>
+          <dt>Сумма</dt><dd class="yc-fin__amount">{op.direction === 'in' ? '+' : '−'} {rub(op.amountKop)}</dd>
+          <dt>Место и способ</dt><dd>{way}</dd>
+          <dt>Дата операции</dt><dd>{fmtAt(op.occurredAt, tz)}</dd>
+          <dt>Внесена</dt><dd>{fmtAt(op.recordedAt, tz)}</dd>
+          <dt>Автор</dt><dd>{author}</dd>
+          {op.source && <><dt>Источник</dt><dd>{SOURCE_LABEL[op.source]}</dd></>}
+          {category && <><dt>Категория</dt><dd>{category}</dd></>}
+          <dt>Комментарий</dt><dd>{op.comment ?? '–'}</dd>
+          {op.receiptIssued !== null && <><dt>Чек</dt><dd>{op.receiptIssued ? 'Выдан' : 'Не выдан'}</dd></>}
+          <dt>Остаток после</dt><dd>{rub(op.balanceAfterKop)}<span class="yc-fin__sub">{op.place === 'cash' ? 'наличные филиала' : 'безналичные филиала'} после этой операции</span></dd>
+          {op.shiftId && <><dt>Кассовая смена</dt><dd><a href={`/finance/${encodeURIComponent(op.branchId)}`}>В смене</a></dd></>}
+          <dt>Состояние</dt>
+          <dd>
+            {op.reversedBy
+              ? <>Сторнирована – {reversedBy ? <a href={`/finance/operations/${encodeURIComponent(reversedBy.id)}`}>сторно № {reversedBy.number}</a> : 'сторно'}</>
+              : op.kind === 'reversal'
+                ? <>Сторно{reversalOf && !refOp ? <> к операции <a href={`/finance/operations/${encodeURIComponent(reversalOf.id)}`}>№ {reversalOf.number}</a></> : ''}</>
+                : 'Проведена'}
+          </dd>
+          <dt>Откуда пришла</dt>
+          <dd>{(() => { const o = origin(); return o.href ? <a href={o.href}>{o.text}</a> : o.text; })()}</dd>
+          <dt>Связь с объектом</dt>
+          <dd>{(() => { const l = link(); return l ? <a href={l.href}>{l.text}</a> : 'Нет'; })()}</dd>
+        </dl>
+        <p class="yc-field__hint">Документы к операции хранятся в карточке объекта – мероприятия или ремонта. Сторно и исправление – из журнала кассы филиала.</p>
+      </section>
+    </>
+  )}
+</Crm>
+
+<style is:global>
+  .yc-fin__sub{ display:block; font-size:var(--yc-fs-xs); color:var(--yc-muted); }
+  .yc-fin__amount{ font-size:var(--yc-fs-l); font-weight:650; font-variant-numeric:tabular-nums; }
+</style>

@@ -93,6 +93,10 @@ describe('GET /settings', () => {
     const hold = (body.items as Item[]).find((i) => i.key === 'booking.hold_minutes')!;
     expect(hold).toMatchObject({ levelAllowed: false, editable: false });
     expect((body.items as Item[]).find((i) => i.key === 'certificate.sale_methods')!.constraints).toMatchObject({ kind: 'multi', minItems: 1 });
+    // Текст с пределом длины – 'text' (префикс рекламы, реквизиты оператора); HH:mm без предела – по-прежнему 'time'.
+    expect((body.items as Item[]).find((i) => i.key === 'notifications.marketing_title_prefix')!.constraints).toEqual({ kind: 'text', maxLength: 20, nullable: false });
+    expect((body.items as Item[]).find((i) => i.key === 'legal.inn')!.constraints).toEqual({ kind: 'text', maxLength: 12, nullable: false });
+    expect((body.items as Item[]).find((i) => i.key === 'notifications.reminder_day_before_time')!.constraints).toEqual({ kind: 'time', nullable: false });
   });
 
   it('уровень и id обязательны; чужой и несуществующий филиал – одинаковый 404; Администратор – 403', async () => {

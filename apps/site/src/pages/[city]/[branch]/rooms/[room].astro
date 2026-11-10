@@ -2,8 +2,10 @@
 // Карточка комнаты /{city}/{branch}/rooms/{room}/ (карта сайта 3.2, 12 §7): из GET /branches/{id}/resources (K5 №4) –
 // название, филиал, направления, места и форматы аренды понятным языком (12 §7.2). Фото, описания и вместимости в API
 // пока нет: вместимость из числа устройств не выводим (12 §7.1), пустых блоков-заглушек не рисуем.
-// «Записаться» – /schedule/ с предвыбором зоны и комнаты (в сетке – места этой комнаты по отдельности).
+// «Выбрать время» (19 §4.1, D4-66) – /schedule/ с предвыбором зоны и комнаты (в сетке – места этой комнаты по отдельности):
+// кнопка в первом экране и на телефоне липкая панель внизу (components/TimeCta.astro); у закрытого клуба – ни того, ни другого.
 // Нет такой комнаты (в т.ч. в архиве или снятой с публикации – API её не отдаёт) – 404 с кодом 404.
+import TimeCta from '../../../../components/TimeCta.astro';
 import Site from '../../../../layouts/Site.astro';
 import {
   ApiError, RESOURCE_KIND, ZONE_LABEL, branchPath, branchRooms, findBranch, roomPath, scheduleHref, site, type ResourceDto,
@@ -50,6 +52,7 @@ const branch = found?.branch;
 const closed = branch?.status === 'temporarily_closed';
 const hasCityHub = (city?.branches.length ?? 0) >= 2;
 const others = rooms.filter((r) => r.id !== room?.id);
+const bookHref = room && branch && city && !closed ? scheduleHref(city.slug, branch.slug, { zone: room.zones[0]!, room: room.slug }) : null;
 // Описание и фото – из страницы CMS; вместимости в данных нет: нет данных – нет полей (K23 §6).
 const jsonLd = room && branch && city
   ? [
@@ -87,7 +90,7 @@ const meta = room && branch && city ? metaFor({ page: 'room', room: room.name, b
           {closed ? (
             <p class="yu-notice" role="status" data-testid="room-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>
           ) : (
-            <a class="yu-btn" data-testid="room-book" href={scheduleHref(city.slug, branch.slug, { zone: room.zones[0]!, room: room.slug })}>Записаться</a>
+            <a class="yu-btn" data-testid="room-book" href={bookHref!}>Выбрать время</a>
           )}
         </div>
         <dl class="yu-facts">
@@ -136,6 +139,7 @@ const meta = room && branch && city ? metaFor({ page: 'room', room: room.name, b
           </ul>
         </section>
       )}
+      {bookHref && <TimeCta href={bookHref} />}
     </>
   )}
 </Site>

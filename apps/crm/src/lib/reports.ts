@@ -31,7 +31,9 @@ export interface UnitRow {
   unitId: string; unitName: string; resourceId: string; resourceType: string; roomId: string | null; branchId: string; branchName: string;
   availableMin: number; availableElapsedMin: number; blockedMin: number; technicalMin: number; bookedMin: number; usedMin: number; freeMin: number;
 }
-export interface SeriesPoint { bucket: string; availableMin: number; usedMin: number; bookedMin: number }
+/** Точка графика (K11 №240): bucket – дата филиала или час «00»…«23», остальные поля – числа показателей
+ *  (utilization.ts: availableMin, usedMin, bookedMin; у остальных отчётов – ключи их показателей). */
+export interface SeriesPoint { bucket: string; [metric: string]: number | string }
 
 /** K11 №241. */
 export interface DetailResult { columns: string[]; rows: Array<Record<string, unknown>>; total: Metric; nextCursor: string | null }
@@ -83,12 +85,12 @@ export const REPORTS: ReportInfo[] = [
   { key: 'bookings', title: 'Бронирования и посещаемость', purpose: 'Сколько броней создано, состоялось, отменено и перенесено', action: 'reports.ops.view', filters: ['resourceType', 'status'], segments: ['branch', 'day', 'resourceType', 'status'] },
   { key: 'utilization', title: 'Загрузка ресурсов', purpose: 'Сколько времени мест было доступно, занято и свободно', action: 'reports.ops.view', filters: ['resourceType'], heavy: true, segments: ['branch', 'day', 'hour', 'resourceType'] },
   { key: 'finance', title: 'Финансы и касса', purpose: 'Поступления, возвраты, расходы и остатки по местам денег', action: 'reports.finance.view', filters: ['method'], segments: ['branch', 'day', 'method', 'source', 'category', 'place'] },
-  { key: 'events', title: 'Мероприятия', purpose: 'Проведённые мероприятия, деньги и себестоимость', action: 'reports.events.view', filters: [], segments: [] },
+  { key: 'events', title: 'Мероприятия', purpose: 'Проведённые мероприятия, деньги и себестоимость', action: 'reports.events.view', filters: [], segments: ['branch', 'day'] },
   { key: 'clients', title: 'Клиенты и повторные посещения', purpose: 'Кто пришёл впервые, кто вернулся', action: 'reports.clients.view', filters: [], heavy: true, segments: ['branch', 'day'] },
   { key: 'loyalty', title: 'Лояльность и баллы', purpose: 'Начисления, списания и балансы баллов', action: 'reports.loyalty.view', filters: [], segments: ['branch', 'day'] },
   { key: 'certificates', title: 'Сертификаты', purpose: 'Продажи, погашения и остатки сертификатов', action: 'reports.finance.view', filters: [], segments: ['branch', 'day'] },
-  { key: 'staff', title: 'Сотрудники и смены', purpose: 'Смены, явки, пустые интервалы и начисления', action: 'reports.staff.view', filters: [], segments: [] },
-  { key: 'equipment', title: 'Оборудование и ремонты', purpose: 'Неисправности, простой и расходы на ремонт', action: 'reports.equipment.view', filters: [], segments: [] },
+  { key: 'staff', title: 'Сотрудники и смены', purpose: 'Смены, явки, пустые интервалы и начисления', action: 'reports.staff.view', filters: [], segments: ['branch', 'day'] },
+  { key: 'equipment', title: 'Оборудование и ремонты', purpose: 'Неисправности, простой и расходы на ремонт', action: 'reports.equipment.view', filters: [], segments: ['branch', 'day'] },
   { key: 'comms', title: 'Уведомления и публикации', purpose: 'Отправки, отказы от рекламы и публикации', action: 'reports.comms.view', filters: [], segments: ['branch', 'day'] },
 ];
 export const reportInfo = (key: string): ReportInfo | undefined => REPORTS.find((r) => r.key === key);
