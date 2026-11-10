@@ -104,6 +104,10 @@ export async function loyaltyCrmRoutes(app: FastifyInstance, deps: LoyaltyCrmDep
   const clientInZone = async (access: AccessContext, clientId: string, action: string): Promise<string> => {
     const card = await getClientCard(deps.pool, access, clientId, deps.links); // вне зоны – NOT_FOUND
     if (!roleAllows(access.role, action)) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action });
+    // Объединённая карточка (K9 «Слияние», D5-09): баллы живут у основной – менять счёт второй нельзя, только смотреть историю.
+    if (card.status === 'merged' && action !== 'loyalty.view') {
+      throw new AppError('CLIENT_MERGED', 409, 'Карточка объединена – баллы у основной карточки', { clientId: card.id, mergedIntoId: card.mergedIntoId });
+    }
     return card.id;
   };
   const keyed = async <T>(request: FastifyRequest, reply: FastifyReply, access: AccessContext, operation: string, run: (tx: pg.PoolClient) => Promise<T>) => {
