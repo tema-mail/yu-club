@@ -40,6 +40,7 @@ const MATRIX = {
   'client.update': OD,
   'client.merge': O,
   'client.export': O,
+  'client.anonymize': O, // K9 «Обезличивание» (152-ФЗ): как экспорт ПДн – только Владелец (решение D4-60, Q-91)
   'export.pd': O,
   'tariff.manage': O,
   'settings.network.manage': O,

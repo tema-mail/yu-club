@@ -70,6 +70,7 @@ const EXPECTED: [string, string, 'network' | 'city' | 'branch' | 'client'][] = [
   ['client.update', 'ОД', 'client'],
   ['client.merge', 'О', 'network'],
   ['client.export', 'О', 'network'],
+  ['client.anonymize', 'О', 'network'], // K9 «Обезличивание», решение D4-60
   ['export.pd', 'О', 'network'],
   ['tariff.manage', 'О', 'branch'],
   ['settings.network.manage', 'О', 'network'],
