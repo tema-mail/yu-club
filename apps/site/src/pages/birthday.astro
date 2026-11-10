@@ -3,6 +3,7 @@
 // форматы и минимум времени – из П5 GET /party-info (настройки сети, не вёрстка); цены нет, пока priceConfirmed = false – «цена уточняется».
 // Клубы – только те, где есть комната (hasRoom). Блок «Подарок имениннику» – разделом страницы, условия из снимка П5 (11 §9.1, §12).
 // Форма заявки – остров PartyRequest (П4). Один адрес на сеть: выбранный клуб посетителя – только предвыбор в форме. API молчит – 503.
+// Заказчик праздника – взрослый (11 §2: для детского праздника заказчик – родитель; Q-75: данные гостей не храним), возраст 18 – в тексте галочки.
 import PartyRequest, { FORMAT_LABEL, giftTermLines, type GiftTermsView, type PartyFormat } from '../islands/PartyRequest.tsx';
 import Site from '../layouts/Site.astro';
 import { API_PREFIX, apiBase } from '../lib/api.ts';
@@ -97,6 +98,7 @@ const crumbs = [breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { n
           <section class="yu-section" aria-labelledby="request-title" style="max-width: 560px">
             <h2 id="request-title">Заявка на праздник</h2>
             <p class="yu-body">Оставьте заявку – администратор перезвонит, согласует дату, формат и цену. Онлайн-оплаты нет.</p>
+            <p class="yu-body" data-testid="party-adult-note">Заявку оставляет взрослый – родитель или другой законный представитель именинника. Имена и телефоны гостей нам не нужны: храним только контакт заказчика.</p>
             <PartyRequest
               client:load
               branches={rooms.map((b) => ({ id: b.id, name: b.name }))}
