@@ -10,6 +10,7 @@ import {
   computeMetrics, DAY_RULE, detailPage, loadMaskedClients, localAt, metricDef, noData, okMetric, pageLimit, prevPeriod, resolveBranches, unavailable, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
+import { noBranchWindow } from './series.ts';
 
 export const COMMS_ACTION = 'reports.comms.view';
 
@@ -58,27 +59,28 @@ export function commsDefs(): Record<string, MetricDef> {
   return defs;
 }
 
-/** Окна уведомлений: строка без филиала – только в сетевой области без фильтра. */
+/** Окна уведомлений: строка без филиала – только в сетевой области без фильтра, сутки UTC периода (series.ts noBranchWindow). */
 function noticeWindows(env: ReportEnv, p: ReportParams, branches: readonly BranchInfo[], period: Period): BranchWindow[] {
   const w = windowsOf(branches, period);
-  if (networkWide(env, p) && w.length > 0) w.push({ branchId: null, ...span(w) });
+  if (networkWide(env, p) && w.length > 0) w.push(noBranchWindow(period));
   return w;
 }
 
 const networkWide = (env: ReportEnv, p: ReportParams): boolean => env.ctx.network && !p.cityId && !p.branchIds?.length;
 
-/** Без филиала (согласия, материалы) период – от самых ранних суток области до самых поздних. */
+/** Окно отказов и материалов: сетевая область – сутки UTC периода (noBranchWindow, одно правило для всех записей без филиала: иначе
+ *  запись у края периода попадает и в соседний); зона филиалов – null, отказы по суткам филиалов брони, материалы – span зоны. */
+const wideWindow = (env: ReportEnv, p: ReportParams, period: Period): BranchWindow | null => (networkWide(env, p) ? noBranchWindow(period) : null);
+
+/** Материалы зоны филиалов: от самых ранних суток области до самых поздних. */
 function span(w: readonly BranchWindow[]): { start: Date; end: Date } {
   return { start: new Date(Math.min(...w.map((x) => x.start.getTime()))), end: new Date(Math.max(...w.map((x) => x.end.getTime()))) };
 }
 
 // ---- отказы от рекламы
 
-function optOutFrom(wide: boolean, windows: readonly BranchWindow[]): { sql: string; params: unknown[] } {
-  if (wide) {
-    const s = span(windows);
-    return { sql: `app.rpt_consent_changes t WHERE NOT t.granted AND t.at >= $1 AND t.at < $2`, params: [s.start, s.end] };
-  }
+function optOutFrom(wide: BranchWindow | null, windows: readonly BranchWindow[]): { sql: string; params: unknown[] } {
+  if (wide) return { sql: `app.rpt_consent_changes t WHERE NOT t.granted AND t.at >= $1 AND t.at < $2`, params: [wide.start, wide.end] };
   return {
     sql: `app.rpt_consent_changes t WHERE NOT t.granted AND EXISTS (
             SELECT 1 FROM app.rpt_bookings b JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON w.branch_id = b.branch_id
@@ -87,7 +89,7 @@ function optOutFrom(wide: boolean, windows: readonly BranchWindow[]): { sql: str
   };
 }
 
-async function countOptOuts(tx: Tx, wide: boolean, windows: readonly BranchWindow[]): Promise<number> {
+async function countOptOuts(tx: Tx, wide: BranchWindow | null, windows: readonly BranchWindow[]): Promise<number> {
   if (windows.length === 0) return 0;
   const f = optOutFrom(wide, windows);
   return Number((await tx.query<{ n: string }>(`SELECT count(*) AS n FROM ${f.sql}`, f.params)).rows[0]!.n);
@@ -95,8 +97,8 @@ async function countOptOuts(tx: Tx, wide: boolean, windows: readonly BranchWindo
 
 // ---- опубликованные материалы
 
-function publishedFrom(wide: boolean, windows: readonly BranchWindow[], extra = ''): { sql: string; params: unknown[] } {
-  const s = span(windows);
+function publishedFrom(wide: BranchWindow | null, windows: readonly BranchWindow[], extra = ''): { sql: string; params: unknown[] } {
+  const s = wide ?? span(windows);
   const area = wide ? '' : ` AND (t.branch_ids IS NULL OR t.branch_ids && $3::uuid[])`;
   return {
     sql: `app.rpt_content_versions t WHERE t.version_no = 1 AND t.published_at >= $1 AND t.published_at < $2${area}${extra}`,
@@ -104,7 +106,7 @@ function publishedFrom(wide: boolean, windows: readonly BranchWindow[], extra = 
   };
 }
 
-async function countPublished(tx: Tx, wide: boolean, windows: readonly BranchWindow[]): Promise<Record<string, number>> {
+async function countPublished(tx: Tx, wide: BranchWindow | null, windows: readonly BranchWindow[]): Promise<Record<string, number>> {
   if (windows.length === 0) return {};
   const f = publishedFrom(wide, windows);
   const r = await tx.query<{ type: string; n: string }>(`SELECT t.type, count(*) AS n FROM ${f.sql} GROUP BY t.type`, f.params);
@@ -128,11 +130,11 @@ export async function commsReport(env: ReportEnv, p: ReportParams): Promise<Comm
   const prevP = prevPeriod(p.period);
   const defs = commsDefs();
   const notices = await computeMetrics(env.tx, defs, noticeWindows(env, p, branches, p.period), noticeWindows(env, p, branches, prevP));
-  const wide = networkWide(env, p);
+  const [wide, widePrev] = [wideWindow(env, p, p.period), wideWindow(env, p, prevP)];
   const cur = windowsOf(branches, p.period);
   const prev = windowsOf(branches, prevP);
-  const [optCur, optPrev] = [await countOptOuts(env.tx, wide, cur), await countOptOuts(env.tx, wide, prev)];
-  const [pubCur, pubPrev] = [await countPublished(env.tx, wide, cur), await countPublished(env.tx, wide, prev)];
+  const [optCur, optPrev] = [await countOptOuts(env.tx, wide, cur), await countOptOuts(env.tx, widePrev, prev)];
+  const [pubCur, pubPrev] = [await countPublished(env.tx, wide, cur), await countPublished(env.tx, widePrev, prev)];
   const anyPub = Object.keys(pubCur).length > 0;
   const anyPubPrev = Object.keys(pubPrev).length > 0;
   const live = anyPub || optCur > 0 || Object.values(notices).some((m) => m.state === 'ok');
@@ -209,7 +211,7 @@ export async function commsDetail(
 ): Promise<{ rows: Array<CommsNoticeRow | CommsOptOutRow | CommsPublishedRow>; total: Metric; nextCursor: string | null }> {
   const branches = await resolveBranches(env.tx, env.ctx, COMMS_ACTION, p);
   const fallback = branches[0];
-  const wide = networkWide(env, p);
+  const wide = wideWindow(env, p, p.period);
   const windows = windowsOf(branches, p.period);
   const limit = pageLimit(opts);
   const zone = (id: string | null) => branches.find((b) => b.id === id)?.timezone ?? fallback?.timezone;

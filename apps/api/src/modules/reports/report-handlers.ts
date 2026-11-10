@@ -1,18 +1,20 @@
 // Разбор фильтров и таблица отчётов – общие для экрана (routes.crm.ts) и экспорта (export.ts): файл считается теми же функциями,
 // с теми же фильтрами и сегментом, что и экран (K24 §7). Сегмент сужает фильтры (segment.ts), дальше тот же where(spec), что у итога.
+// График (K11 №240 series) – только по запросу series=day, в том же снимке (series.ts); по часам – только загрузка (3.3).
 import { z } from 'zod';
 import { AppError } from '../../core/errors.ts';
-import { bookingsDetail, bookingsReport, type BookingsParams } from './bookings.ts';
-import { certificatesDetail, certificatesReport } from './certificates.ts';
-import { clientsDetail, clientsReport } from './clients.ts';
-import { commsDetail, commsReport } from './comms.ts';
-import { equipmentDetail, equipmentReport } from './equipment.ts';
-import { eventsDetail, eventsReport } from './events.ts';
-import { financeDetail, financeReport, type FinanceParams } from './finance.ts';
-import type { ReportEnv, ReportParams } from './framework.ts';
-import { loyaltyDetail, loyaltyReport } from './loyalty.ts';
+import { BOOKINGS_ACTION, bookingsDefs, bookingsDetail, bookingsReport, type BookingsParams } from './bookings.ts';
+import { CERTIFICATES_ACTION, certificateDefs, certificatesDetail, certificatesReport, giftDefs } from './certificates.ts';
+import { CLIENTS_ACTION, clientsDetail, clientsReport } from './clients.ts';
+import { COMMS_ACTION, commsDefs, commsDetail, commsReport } from './comms.ts';
+import { EQUIPMENT_ACTION, equipmentDefs, equipmentDetail, equipmentReport } from './equipment.ts';
+import { EVENTS_ACTION, eventsDefs, eventsDetail, eventsReport } from './events.ts';
+import { FINANCE_ACTION, financeDefs, financeDetail, financeReport, type FinanceParams } from './finance.ts';
+import type { MetricDef, ReportEnv, ReportParams } from './framework.ts';
+import { LOYALTY_ACTION, loyaltyDefs, loyaltyDetail, loyaltyReport } from './loyalty.ts';
 import { applySegment } from './segment.ts';
-import { staffDetail, staffReport } from './staff.ts';
+import { clientsSeriesDefs, daySeries, type DaySeries, type DaySeriesOpts } from './series.ts';
+import { STAFF_ACTION, staffDetail, staffReport, staffSeriesDefs } from './staff.ts';
 import { utilizationDetail, utilizationReport, utilizationSeries, type UtilizationParams } from './utilization.ts';
 
 const UUID = z.string().uuid();
@@ -73,9 +75,17 @@ export function segmented(report: string, q: Query, p: ReportParams): { q: Query
   };
 }
 
+/** Точки по дням к ответу отчёта – только по series=day; series=hour есть у одной загрузки (чужой фильтр – REPORT_FILTER_INVALID, K24 §10). */
+async function withSeries(env: ReportEnv, q: Query, result: object, action: string, p: ReportParams, defs: Record<string, MetricDef>, opts?: DaySeriesOpts): Promise<Record<string, unknown>> {
+  if (q.series === undefined) return result as Record<string, unknown>;
+  if (q.series !== 'day') throw new AppError('REPORT_FILTER_INVALID', 422, 'График по часам есть только у загрузки ресурсов', { field: 'series' });
+  const series: DaySeries = await daySeries(env, action, p, defs, opts);
+  return { ...result, series };
+}
+
 export const HANDLERS: Record<string, ReportHandler> = {
   bookings: {
-    metrics: (env, q, p) => bookingsReport(env, bookingsP(q, p)) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => withSeries(env, q, await bookingsReport(env, bookingsP(q, p)), BOOKINGS_ACTION, bookingsP(q, p), bookingsDefs(bookingsP(q, p))),
     detail: (env, q, p) => bookingsDetail(env, bookingsP(q, p), q.metric, page(q)),
   },
   utilization: {
@@ -86,35 +96,40 @@ export const HANDLERS: Record<string, ReportHandler> = {
     detail: (env, q, p) => utilizationDetail(env, defined({ ...utilizationP(q, p), hour: q.segmentHour }), q.metric, page(q)),
   },
   finance: {
-    metrics: (env, q, p) => financeReport(env, financeP(q, p)) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => withSeries(env, q, await financeReport(env, financeP(q, p)), FINANCE_ACTION, financeP(q, p), financeDefs(financeP(q, p))),
     detail: (env, q, p) => financeDetail(env, defined({ ...financeP(q, p), source: q.segmentSource, place: q.segmentPlace }), q.metric, page(q)),
   },
   clients: {
-    metrics: (env, _q, p) => clientsReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => withSeries(env, q, await clientsReport(env, p), CLIENTS_ACTION, p, clientsSeriesDefs()),
     detail: (env, q, p) => clientsDetail(env, p, q.metric, page(q)),
   },
   loyalty: {
-    metrics: (env, _q, p) => loyaltyReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => withSeries(env, q, await loyaltyReport(env, p), LOYALTY_ACTION, p, loyaltyDefs(), { networkRows: true }),
     detail: (env, q, p) => loyaltyDetail(env, p, q.metric, page(q)),
   },
   certificates: {
-    metrics: (env, _q, p) => certificatesReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => withSeries(env, q, await certificatesReport(env, p), CERTIFICATES_ACTION, p, { ...certificateDefs(), ...giftDefs() }),
     detail: (env, q, p) => certificatesDetail(env, p, q.metric, page(q)),
   },
   comms: {
-    metrics: (env, _q, p) => commsReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => withSeries(env, q, await commsReport(env, p), COMMS_ACTION, p, commsDefs(), { networkRows: true }),
     detail: (env, q, p) => commsDetail(env, p, q.metric, page(q)),
   },
   events: {
-    metrics: (env, _q, p) => eventsReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => withSeries(env, q, await eventsReport(env, p), EVENTS_ACTION, p, eventsDefs()),
     detail: (env, q, p) => eventsDetail(env, p, q.metric, page(q)),
   },
   equipment: {
-    metrics: (env, _q, p) => equipmentReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => withSeries(env, q, await equipmentReport(env, p), EQUIPMENT_ACTION, p, equipmentDefs()),
     detail: (env, q, p) => equipmentDetail(env, p, q.metric, page(q)),
   },
   staff: {
-    metrics: (env, _q, p) => staffReport(env, p) as unknown as Promise<Record<string, unknown>>,
+    metrics: async (env, q, p) => {
+      const r = await staffReport(env, p);
+      if (q.series === undefined) return r as unknown as Record<string, unknown>;
+      const s = await staffSeriesDefs(env, p);
+      return withSeries(env, q, r, STAFF_ACTION, p, s.defs, { networkRows: s.networkRows });
+    },
     detail: (env, q, p) => staffDetail(env, p, q.metric, page(q)),
   },
 };

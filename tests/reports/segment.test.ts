@@ -10,7 +10,7 @@ import { recordExpense, recordIncome } from '../../apps/api/src/modules/finance/
 import { applySegment } from '../../apps/api/src/modules/reports/segment.ts';
 import { hashPassword, staffAuthConfig } from '../../apps/api/src/modules/staff/auth.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
-import { d, reportFixtures, type Fx } from '../helpers/reports.ts';
+import { d, reportFixtures, SYS, type Fx } from '../helpers/reports.ts';
 
 const PASSWORD = 'correct horse battery';
 const BASE = '/api/crm/v1';
@@ -73,6 +73,20 @@ beforeAll(async () => {
   await money(recordIncome, { branchId: nsk, method: 'card', amountKop: 2000, source: 'other', occurredAt: at });
   await money(recordIncome, { branchId: msk, method: 'cash', amountKop: 4000, source: 'other', occurredAt: '2026-11-03T06:00:00Z' });
   await money(recordExpense, { branchId: nsk, method: 'cash', amountKop: 500, categoryId: category, occurredAt: at, comment: 'т' });
+  // Э3: поломки – две в НСК (02.11 и 03.11 по зоне филиала) и одна в Москве 03.11
+  const cat = (await db.client.query<{ id: string }>(`INSERT INTO app.equipment_categories (name) VALUES ('VR') RETURNING id`)).rows[0]!.id;
+  const item = async (branchId: string, inv: string) =>
+    (await db.client.query<{ id: string }>(`INSERT INTO app.equipment_items (inventory_number, name, category_id, status, branch_id, created_by) VALUES ($1, 'Шлем', $2, 'in_service', $3, $4) RETURNING id`, [inv, cat, branchId, SYS])).rows[0]!.id;
+  const repair = (n: string, equipmentId: string, branchId: string, detected: string) =>
+    db.client.query(
+      `INSERT INTO app.repairs (number, equipment_id, branch_id, broken_at_unknown, detected_at, registered_at, symptoms, priority, impact, created_by, status)
+       VALUES ($1, $2, $3, true, $4, $4, 'не включается', 'high', 'partial', $5, 'new')`,
+      [n, equipmentId, branchId, detected, SYS],
+    );
+  const nskItem = await item(nsk, 'INV-000001');
+  await repair('R-000001', nskItem, nsk, '2026-11-02T04:00:00Z');
+  await repair('R-000002', nskItem, nsk, '2026-11-03T05:00:00Z');
+  await repair('R-000003', await item(msk, 'INV-000002'), msk, '2026-11-03T09:00:00Z');
 }, 90_000);
 afterAll(async () => {
   await app.close();
@@ -119,6 +133,27 @@ describe('сегмент детализации по HTTP', () => {
     expect((await detail('clients', 'profileVisits')).body.total).toMatchObject({ value: 4 });
     expect((await detail('clients', 'profileVisits', 'day:2026-11-02')).body.total).toMatchObject({ value: 2 });
     expect((await detail('clients', 'profileVisits', `branch:${msk}`)).body.total).toMatchObject({ value: 1 });
+  });
+
+  it('Э3 (S4-76…S4-78): филиал и день у мероприятий, смен и оборудования – как у остальных отчётов, итог = карточка', async () => {
+    expect((await detail('equipment', 'incidents')).body.total).toMatchObject({ value: 3 });
+    for (const [segment, n] of [[`branch:${msk}`, 1], [`branch:${nsk}`, 2], ['day:2026-11-02', 1], ['day:2026-11-03', 2]] as const) {
+      const r = await detail('equipment', 'incidents', segment);
+      expect(r.status, segment).toBe(200);
+      expect(r.body.rows, segment).toHaveLength(n);
+      expect(r.body.total, segment).toMatchObject({ value: n });
+    }
+    // показатель «на момент запроса» день не сужает: итог детализации с сегментом дня = карточка
+    expect((await detail('equipment', 'totalEquipment', 'day:2026-11-02')).body.total).toMatchObject({ value: 2 });
+    for (const [report, metric] of [['events', 'count'], ['staff', 'plannedShifts'], ['staff', 'accrued']] as const) {
+      for (const segment of [`branch:${nsk}`, 'day:2026-11-02']) {
+        const r = await detail(report, metric, segment);
+        expect([report, segment, r.status]).toEqual([report, segment, 200]);
+        expect(r.body.total.state).toBe('no_data');
+      }
+    }
+    expect((await detail('equipment', 'incidents', 'hour:11')).status).toBe(422);
+    expect((await detail('events', 'count', 'resourceType:pc')).status).toBe(422);
   });
 
   it('несовместимый или неизвестный сегмент – 422', async () => {

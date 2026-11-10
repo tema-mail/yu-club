@@ -12,7 +12,8 @@ import { fixedClock, localToInstant, type LocalDate, type LocalTime, type TimeZo
 import { withTx } from '../../apps/api/src/modules/clients/index.ts';
 import { financeReport } from '../../apps/api/src/modules/reports/finance.ts';
 import type { Metric, ReportEnv } from '../../apps/api/src/modules/reports/framework.ts';
-import { staffDetail, staffReport, type StaffMetric } from '../../apps/api/src/modules/reports/staff.ts';
+import { daySeries } from '../../apps/api/src/modules/reports/series.ts';
+import { STAFF_ACTION, staffDetail, staffReport, staffSeriesDefs, type StaffMetric } from '../../apps/api/src/modules/reports/staff.ts';
 import { HANDLER_ATTENDANCE, HANDLER_RATE, registerPayrollHandlers } from '../../apps/api/src/modules/shifts/accrual.ts';
 import { setAttendance } from '../../apps/api/src/modules/shifts/attendance.ts';
 import { calculateStatements, closePeriod, createPeriod, markPaid, setStatementStatus } from '../../apps/api/src/modules/shifts/payroll.ts';
@@ -117,7 +118,42 @@ describe('смены', () => {
     const unclosed = await fx.run(fx.owner(), (env) => staffDetail(env, { period: OCT, branchIds: [a] }, 'unclosedShifts'));
     expect(unclosed.rows.map((x) => [x.kind, x.status])).toEqual([['shift', 'planned']]);
     const empty = await fx.run(fx.owner(), (env) => staffDetail(env, { period: OCT, branchIds: [a] }, 'emptyIntervals', { limit: 3 }));
-    expect(empty.rows.every((x) => x.kind === 'gap' && x.staffId === null)).toBe(true);
+    expect(empty.rows.every((x) => x.kind === 'gap' && x.staffId === null && x.staffName === null)).toBe(true);
+  });
+
+  it('имя сотрудника в строках – через провайдер staff, роли с staff.view (Владелец, Директор зоны); пустой интервал – без имени', async () => {
+    const worked = await fx.run(fx.owner(), (env) => staffDetail(env, { period: OCT }, 'workedShifts'));
+    expect(worked.rows.length).toBeGreaterThan(0);
+    expect(worked.rows.every((x) => x.staffId === s1 && x.staffName === 'И Ф')).toBe(true);
+    const dir = await fx.run(fx.director([a]), (env) => staffDetail(env, { period: OCT }, 'accrued'));
+    expect(dir.rows.length).toBeGreaterThan(0);
+    expect(dir.rows.every((x) => x.kind === 'entry' && x.staffName === 'И Ф')).toBe(true);
+  });
+
+  it('точки графика по дням: смены по дню начала, Σ точек = карточка; деньги – только с правом, выплата без филиала – сети', async () => {
+    const series = (ctx: AccessContext, p: { period: typeof OCT; branchIds?: string[] }) =>
+      fx.run(ctx, async (env) => {
+        const s = await staffSeriesDefs(env, p);
+        return daySeries(env, STAFF_ACTION, p, s.defs, { networkRows: s.networkRows });
+      });
+    const own = await series(fx.owner(), { period: OCT, branchIds: [a] });
+    const r = await fx.run(fx.owner(), (env) => staffReport(env, { period: OCT, branchIds: [a] }));
+    expect(own.points).toHaveLength(31);
+    const col = (key: string) => own.points.map((x) => Number(x[key]));
+    expect(col('workedShifts').filter((v) => v > 0)).toEqual([1, 1]);
+    expect(own.points.find((x) => x.bucket === '2026-10-05')!.paidMinutes).toBe(90);
+    for (const key of ['plannedShifts', 'workedShifts', 'paidMinutes', 'emptyMinutes', 'accrued', 'toPay'] as const) {
+      expect([key, col(key).reduce((s, v) => s + v, 0)]).toEqual([key, val(r.metrics[key])]);
+    }
+    expect(own.points[0]!.paid).toBeUndefined(); // по филиалу выплаты нет
+    expect(own.points[0]!.forecast).toBeUndefined();
+    const net = await series(fx.owner(), { period: NOV });
+    expect(net.points.map((x) => Number(x.paid)).reduce((s, v) => s + v, 0)).toBe(toPay2);
+    const file = await withReportTx(fx.reports, async (t) => {
+      const env: ReportEnv = { tx: t, main: fx.app, ctx: fx.director([a]), clock: fixedClock('2026-11-20T05:00:00Z'), fileDates: true };
+      return staffSeriesDefs(env, { period: OCT });
+    });
+    expect(Object.keys(file.defs)).not.toContain('accrued'); // без reports.export.payroll в файле денег нет
   });
 
   it('прогноз – по плановым сменам и ставке на дату, не в учёте', async () => {

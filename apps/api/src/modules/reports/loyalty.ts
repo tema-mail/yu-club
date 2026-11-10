@@ -1,7 +1,9 @@
 // S4-67. Отчёт «Лояльность и баллы» (K24 §3.7, 14 §10). Движения – по записям K3 бонусного счёта (rpt_loyalty_moves, сотые балла,
 // знак журнала: начисление +, списание и штраф −); сторно – в строке исходного типа с обратным знаком. Правила 07 отчёт не пересчитывает:
 // штраф с обрезкой у −50 виден как факт, −2 (TC-10). Баланс на конец периода: период дошёл до сегодня – rpt_loyalty_balances,
-// на прошлую дату – Σ записей до даты. Запись без филиала (ручная корректировка) видна только в сетевой области. Баллы не деньги (приёмка 9).
+// на прошлую дату – Σ записей до даты. Филиал строки – филиал операции (0443: посещения, брони, заказа товара); отчёт по филиалу берёт
+// строки своего филиала, сеть без фильтра – все, включая записи без филиала (ручная корректировка – всегда «сеть»): поэтому
+// Σ филиалов + строки без филиала = сеть (TC-20.11). Баллы не деньги (приёмка 9).
 import type { Tx } from '../../core/audit.ts';
 import { resolveSettings } from '../../core/settings.ts';
 import type { BranchInfo } from '../network/index.ts';
@@ -9,6 +11,7 @@ import {
   computeMetrics, DAY_RULE, detailPage, loadMaskedClients, localAt, metricDef, noData, okMetric, pageLimit, prevPeriod, resolveBranches, uuidCursor, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
+import { noBranchWindow } from './series.ts';
 
 export const LOYALTY_ACTION = 'reports.loyalty.view';
 const BLOCK_CENTI = -5000;
@@ -30,12 +33,10 @@ export function loyaltyDefs(): Record<LoyaltyMoveMetric, MetricDef> {
   };
 }
 
-/** Окна области: сетевая область без фильтра включает записи без филиала – границы всех филиалов сети. */
+/** Окна области: сетевая область без фильтра включает записи без филиала – сутки UTC периода (series.ts noBranchWindow). */
 function moveWindows(env: ReportEnv, p: ReportParams, branches: readonly BranchInfo[], period: Period): BranchWindow[] {
   const w = windowsOf(branches, period);
-  if (env.ctx.network && !p.cityId && !p.branchIds?.length && w.length > 0) {
-    w.push({ branchId: null, start: new Date(Math.min(...w.map((x) => x.start.getTime()))), end: new Date(Math.max(...w.map((x) => x.end.getTime()))) });
-  }
+  if (env.ctx.network && !p.cityId && !p.branchIds?.length && w.length > 0) w.push(noBranchWindow(period));
   return w;
 }
 
@@ -135,6 +136,8 @@ export interface LoyaltyDetailRow {
   entryId: string | null;
   clientId: string;
   client: MaskedClient | null;
+  /** Филиал операции; null – запись сети (ручная корректировка) или строка баланса. */
+  branchId: string | null;
   atLocal: string | null;
   type: string | null;
   isReversal: boolean;
@@ -186,7 +189,7 @@ export async function loyaltyDetail(
     const rows = found.slice(0, limit);
     const clients = await masked(rows.map((r) => ({ clientId: r.client_id, branchId: null })));
     const out: LoyaltyDetailRow[] = rows.map((r) => ({
-      entryId: null, clientId: r.client_id, client: clients.get(`${r.client_id}:${fallback?.id ?? ''}`) ?? null, atLocal: null, type: null, isReversal: false, spendKind: null,
+      entryId: null, clientId: r.client_id, client: clients.get(`${r.client_id}:${fallback?.id ?? ''}`) ?? null, branchId: null, atLocal: null, type: null, isReversal: false, spendKind: null,
       value: metric === 'totalBalance' ? Number(r.balance) : 1, ref: null, authorType: null,
     }));
     // итог – из агрегата того же условия, а не из строк страницы (TC-20)
@@ -201,7 +204,7 @@ export async function loyaltyDetail(
     const branchId = r.branch_id ?? fallback?.id ?? '';
     const tz = zoneById.get(branchId) ?? fallback?.timezone;
     return {
-      entryId: String(r.entry_id), clientId: r.client_id, client: clients.get(`${r.client_id}:${branchId}`) ?? null,
+      entryId: String(r.entry_id), clientId: r.client_id, client: clients.get(`${r.client_id}:${branchId}`) ?? null, branchId: r.branch_id,
       atLocal: tz ? localAt(env, r.at, tz) : r.at.toISOString(),
       type: r.original_type, isReversal: r.entry_type === 'reversal', spendKind: r.spend_kind, value: Number(r.amount_centi),
       ref: r.ref_type && r.ref_id ? { type: r.ref_type, id: r.ref_id } : null, authorType: r.author_type,

@@ -4,9 +4,13 @@
 // ремонт без начала – unavailable/missing_input, без предположений. Расходы – по живым связям rpt_repair_money (привязанный вручную входит,
 // сторнированный – нет), по дате и филиалу операции; это те же операции, что расходы в 3.4, отдельно не складываются. Повторные поломки –
 // ≥ 2 инцидентов одной единицы за reports.repeat_breakdown_days до конца периода (порог в подписи).
+// Исполнитель в строке и группе расходов – имя из справочника через equipment/index.ts с основного пула (ADR 0002); справочник видит
+// equipment.view, исполнитель-сотрудник – имя коллеги, staff.view на филиале строки (K1); без права остаётся только ID.
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
+import { can, roleAllows } from '../../core/permissions.ts';
 import { resolveSettings } from '../../core/settings.ts';
+import { getExecutorRefs } from '../equipment/index.ts';
 import {
   computeMetrics, DAY_RULE, detailPage, localAt, metricDef, noData, okMetric, pageByKey, pageLimit, prevPeriod, resolveBranches, unavailable, uuidCursor, windowsOf,
   type BranchWindow, type Metric, type MetricDef, type PageOpts, type Period, type ReportEnv, type ReportParams,
@@ -119,20 +123,38 @@ async function repeatRows(tx: Tx, windows: readonly BranchWindow[], days: number
 const repeatDaysOf = async (env: ReportEnv): Promise<number> =>
   (await resolveSettings(env.main, ['reports.repeat_breakdown_days'], { network: true }, env.clock.now()))['reports.repeat_breakdown_days'].value;
 
-/** Расходы по исполнителям ремонта: те же строки, что repairExpenses (Σ групп = показатель). */
-async function byContractor(tx: Tx, windows: readonly BranchWindow[]): Promise<Array<{ contractorId: string | null; amountKop: number }>> {
+/** Имена исполнителей к строкам с contractorId: справочник – equipment.view, сотрудник – ещё staff.view на филиале строки (сети – по роли). */
+async function withContractorNames<R extends { contractorId: string | null; contractorName: string | null; branchId?: string | null }>(env: ReportEnv, rows: R[]): Promise<R[]> {
+  if (!roleAllows(env.ctx.role, 'equipment.view')) return rows;
+  const refs = await getExecutorRefs(env.main, rows.flatMap((r) => (r.contractorId ? [r.contractorId] : [])));
+  return rows.map((r) => {
+    const ref = r.contractorId ? refs.get(r.contractorId) : undefined;
+    if (!ref) return r;
+    const colleague = ref.kind === 'staff' && !(r.branchId ? can(env.ctx, 'staff.view', { branchId: r.branchId }) : roleAllows(env.ctx.role, 'staff.view'));
+    return colleague ? r : { ...r, contractorName: ref.name };
+  });
+}
+
+export interface ContractorGroup {
+  contractorId: string | null;
+  contractorName: string | null;
+  amountKop: number;
+}
+
+/** Расходы по исполнителям ремонта: те же строки, что repairExpenses (Σ групп = показатель). Имя – по правам области отчёта. */
+async function byContractor(env: ReportEnv, windows: readonly BranchWindow[]): Promise<ContractorGroup[]> {
   if (windows.length === 0) return [];
-  const r = await tx.query<{ contractor_id: string | null; kop: string }>(
+  const r = await env.tx.query<{ contractor_id: string | null; kop: string }>(
     `SELECT r.contractor_id, sum(t.amount_kop) AS kop FROM app.rpt_repair_money t JOIN ${W_SQL} ON w.branch_id = t.payer_branch_id AND t.occurred_at >= w.s AND t.occurred_at < w.e
      JOIN app.rpt_repairs r ON r.repair_id = t.repair_id WHERE NOT t.reversed GROUP BY r.contractor_id ORDER BY r.contractor_id NULLS LAST`,
     unnestW(windows),
   );
-  return r.rows.map((x) => ({ contractorId: x.contractor_id, amountKop: Number(x.kop) }));
+  return withContractorNames(env, r.rows.map((x) => ({ contractorId: x.contractor_id, contractorName: null, amountKop: Number(x.kop) })));
 }
 
 export interface EquipmentResult {
   metrics: Record<EquipmentMetric, Metric>;
-  groups: { expensesByContractor: Array<{ contractorId: string | null; amountKop: number }> };
+  groups: { expensesByContractor: ContractorGroup[] };
   labels: Record<string, string>;
   dateBasis: Record<EquipmentMetric, string>;
   period: Period;
@@ -160,7 +182,7 @@ export async function equipmentReport(env: ReportEnv, p: ReportParams): Promise<
       downtimeMinutes: okMetric(sum(down), 'minutes', sum(downPrev)),
       repeatBreakdowns: okMetric((await repeatRows(env.tx, cur, days, now)).length, 'count'),
     },
-    groups: { expensesByContractor: await byContractor(env.tx, cur) },
+    groups: { expensesByContractor: await byContractor(env, cur) },
     labels: {
       downtimeMinutes: 'Простой – по блокировкам ремонта, пересечения одной единицы считаются один раз',
       avgRepairMinutes: 'От начала ремонта до завершения; ремонт без даты начала – показатель недоступен',
@@ -187,6 +209,7 @@ export interface EquipmentDetailRow {
   startedLocal: string | null;
   finishedLocal: string | null;
   contractorId: string | null;
+  contractorName: string | null;
   warranty: boolean | null;
   value: number | null;
 }
@@ -209,10 +232,11 @@ export async function equipmentDetail(
   const windows = windowsOf(branches, p.period);
   const zones = new Map(branches.map((b) => [b.id, b.timezone]));
   const at = (d: Date | null, branchId: string) => (d ? localAt(env, d, zones.get(branchId)!) : null);
-  const blank = { equipmentId: null, inventoryNo: null, serialNo: null, unitId: null, status: null, incidentLocal: null, startedLocal: null, finishedLocal: null, contractorId: null, warranty: null };
+  const blank = { equipmentId: null, inventoryNo: null, serialNo: null, unitId: null, status: null, incidentLocal: null, startedLocal: null, finishedLocal: null, contractorId: null, contractorName: null, warranty: null };
   const withItems = async (rows: EquipmentDetailRow[]) => {
     const items = await itemsOf(env.tx, [...new Set(rows.flatMap((r) => (r.equipmentId ? [r.equipmentId] : [])))]);
-    return rows.map((r) => {
+    const named = await withContractorNames(env, rows);
+    return named.map((r) => {
       const i = r.equipmentId ? items.get(r.equipmentId) : undefined;
       return i ? { ...r, inventoryNo: i.inventory_no, serialNo: i.serial_no, unitId: r.unitId ?? i.unit_id } : r;
     });
