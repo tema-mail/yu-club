@@ -48,6 +48,9 @@ test('карусель: листается сама, «Пауза» остана
   await button.click();
   await expect(track).toHaveAttribute('data-state', 'paused');
   await expect(page.getByRole('button', { name: 'Листать' })).toHaveAttribute('aria-pressed', 'true');
+  // плавная прокрутка слайда, начатая до паузы, может ещё докручиваться – замер только после остановки (11.11.2026: падал 1 раз из 13)
+  let prev = -1;
+  await expect.poll(async () => { const v = await track.evaluate((el) => el.scrollLeft); const still = v === prev; prev = v; return still; }, { intervals: [300], timeout: 5000 }).toBe(true);
   const at = await track.evaluate((el) => el.scrollLeft);
   await page.waitForTimeout(5600);
   expect(await track.evaluate((el) => el.scrollLeft)).toBe(at);
