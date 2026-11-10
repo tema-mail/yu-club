@@ -98,6 +98,7 @@ interface ConfirmResultDto { checkoutId: string; bookings: BookingDto[] }
 | 207–215 | контент: главная, публикации (список и страница), игры (каталог и карточка), страницы по ключу, страницы комнат и филиалов, живые версии юридических документов; только живые версии, `Cache-Control: public, max-age=60`, `ETag` | без сессии | K22 §12 | `content`, `routes.public.ts` (S4-37) |
 | 216 | `GET /redirects/resolve?path=` – 301 по истории адресов | без сессии | K23 §5, §8 | `content`, `routes.public.ts` (S4-53) |
 | 217 | `GET /seo/sitemap-entries` – индексируемые сущности контента с `lastmod` | без сессии | K23 §7, §8 | `content`, `routes.public.ts` (S4-53, S4-56) |
+| 218 | `GET /content/requisites` – реквизиты оператора из настроек сети `legal.*`: `{ operatorName, inn, ogrn, address, phone, email }`, пустые – `null`; кэш 60 с, `ETag` по значениям | без сессии | K7 «Реквизиты оператора», K22 §12 | `content`, `routes.public.ts` (11.11.2026) |
 
 Ошибки Э4 – в контрактах-владельцах (K21 §12, K22 §14, K23 §3). Новые коды для сайта: `UNSUBSCRIBE_TOKEN_INVALID` (400), `UNSUBSCRIBE_TOKEN_EXPIRED` (410), `MARKETING_DOCUMENT_MISSING` (409, K9). Черновики контента публичными маршрутами не отдаются по построению (K22 §3); предпросмотр – внутренний маршрут `GET /api/internal/v1/content/preview/{token}` (K22 §11), в нумерацию K5 не входит и на публичном домене отвечает `404` (S4-07).
 
