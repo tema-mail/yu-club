@@ -56,7 +56,7 @@ beforeAll(async () => {
   await db.client.query(`INSERT INTO app.resource_units (resource_id, unit_id, valid_from) VALUES ($1, $2, '2026-01-01')`, [ids.pc1, u.id]);
   ids.client = (await one(`INSERT INTO app.clients (phone_e164, first_name, status, created_by_type, registered_at) VALUES ('+79130000018', 'Анна', 'active', 'system', now()) RETURNING id`)).id;
   ids.owner = (await one(`INSERT INTO app.staff (first_name, last_name, email, role, password_hash) VALUES ('В', 'В', 'o@yu.test', 'owner', 'x') RETURNING id`)).id;
-  owner = { actor: { kind: 'staff', staffId: ids.owner, sessionId: randomUUID() }, role: 'owner', network: true, cityIds: new Set(), branchIds: new Set(), at: now };
+  owner = { actor: { kind: 'staff', staffId: ids.owner!, sessionId: randomUUID() }, role: 'owner', network: true, cityIds: new Set(), branchIds: new Set(), at: now };
   deps = { pool, clock, vapid: null, bookings: bookingLookup };
   clearSubscriptions();
   registerNotificationHandlers({ bookings: bookingLookup, clock });
