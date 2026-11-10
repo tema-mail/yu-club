@@ -78,3 +78,23 @@ test('заявка на праздник: оставляет взрослый, �
   await expect(form.getByRole('button', { name: 'Отправить заявку' })).toBeDisabled();
   await noPrechecked(page);
 });
+
+test('юридические: оператор ПДн назван реквизитами из настроек legal.*; пустые реквизиты – блока нет, О клубе – без блока', async ({ page, request }) => {
+  for (const path of ['/privacy-policy/', '/personal-data-consent/']) {
+    await page.goto(path);
+    const op = page.getByTestId('operator');
+    await expect(op, path).toContainText('ООО «Ю-Клуб»');
+    await expect(op, path).toContainText('ИНН 5405123456');
+    await expect(op, path).not.toContainText('ОГРН'); // пустое поле не рисуется
+  }
+  await page.goto('/about/');
+  await expect(page.getByTestId('operator')).toHaveCount(0);
+  await request.post(`${MOCK}/__mock/content`, { data: { requisites: 'empty' } });
+  try {
+    await page.goto('/privacy-policy/');
+    await expect(page.getByTestId('info-page')).toBeVisible();
+    await expect(page.getByTestId('operator')).toHaveCount(0);
+  } finally {
+    await request.post(`${MOCK}/__mock/content`, { data: { requisites: 'full' } });
+  }
+});
