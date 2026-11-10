@@ -63,6 +63,12 @@ export const COLUMN_TITLES: Record<string, string> = {
   notificationId: 'ID уведомления', category: 'Категория', campaignId: 'ID кампании', createdLocal: 'Создано', sentLocal: 'Передано', readLocal: 'Прочитано', consentId: 'ID записи согласия',
   versionId: 'ID версии', entityType: 'Сущность', entityId: 'ID сущности', scopeType: 'Охват',
   blockedMin: 'Заблокировано, мин', technicalMin: 'Техническое, мин', bookedMin: 'Забронировано, мин', usedMin: 'Использовано, мин', freeMin: 'Свободно, мин',
+  // 3.5, 3.9, 3.10
+  eventId: 'ID мероприятия', heldLocal: 'Проведено', hasBooking: 'С бронью', agreedKop: 'Согласовано, ₽', receivedKop: 'Поступило, ₽', refundedKop: 'Возвращено, ₽', dueKop: 'Осталось получить, ₽',
+  plannedCostKop: 'Себестоимость план, ₽', factCostKop: 'Себестоимость факт, ₽', resultKop: 'Результат, ₽',
+  staffId: 'ID сотрудника', staffName: 'Сотрудник', plannedMinutes: 'План, мин', paidMinutes: 'Оплачиваемые, мин', basis: 'Основание',
+  equipmentId: 'ID оборудования', inventoryNo: 'Инвентарный номер', serialNo: 'Серийный номер', incidentLocal: 'Поломка', startedLocal: 'Начало ремонта', finishedLocal: 'Завершение',
+  contractorId: 'ID исполнителя', contractorName: 'Исполнитель', warranty: 'Гарантия',
 };
 
 export const UNIT_TITLES: Record<string, string> = { count: 'шт.', kop: '₽', centi: 'баллы', minutes: 'мин', pct: '%', days: 'дн.' };

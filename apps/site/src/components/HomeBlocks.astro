@@ -3,6 +3,8 @@
 // затем акции, новости и карусель игр. Пустой блок не рисуется, технических названий типов на странице нет (12 §5); демо-данных макета нет –
 // только то, что отдал API. Нет баннера – запасной первый экран с тем же H1 (один на странице). Слот clubs – выбор клуба сразу после баннера.
 // Карусель (19 §4.3): листается сама раз в 5 с, кнопка «Пауза», стоп при наведении и фокусе; prefers-reduced-motion – не листается сама.
+// В баннере всегда «Выбрать время» (19 §4.2, D4-66) – bookHref ведёт в расписание выбранного клуба; CTA баннера из CMS – второй
+// кнопкой, только если ведёт не в расписание (иначе две кнопки в одно место).
 import { gamePath, gamesPath } from '../../../../packages/contracts/src/paths.ts';
 import type { HomeContent } from '../lib/content.ts';
 import { renderRichText, safeHref, type RichMedia } from '../lib/rich-text.ts';
@@ -13,9 +15,11 @@ interface Props {
   h1: string;
   lead: string;
   timeZone: string;
+  /** Куда ведёт «Выбрать время»: /schedule/ с выбранным клубом или список клубов. */
+  bookHref: string;
 }
 
-const { home, h1, lead, timeZone } = Astro.props;
+const { home, h1, lead, timeZone, bookHref } = Astro.props;
 type P = Record<string, unknown>;
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const link = (v: unknown) => {
@@ -31,12 +35,17 @@ const img = (m: RichMedia | undefined | null) => (m && !m.removed && m.url ? m :
 const srcset = (m: RichMedia) => m.variants.filter((v) => v.format === 'webp').map((v) => `${v.url} ${v.w}w`).join(', ') || undefined;
 const DIR_HREF = { pc: gamesPath('pc'), vr: gamesPath('vr'), playstation: gamesPath('playstation') } as Record<string, string>;
 const games = (home?.games ?? []).filter((g) => g.title);
+const cmsCtaUrl = hero ? link(hero.payload.ctaUrl) : null;
+const cmsCta = hero && cmsCtaUrl && str(hero.payload.ctaLabel) && !cmsCtaUrl.startsWith('/schedule/') ? { url: cmsCtaUrl, label: str(hero.payload.ctaLabel)! } : null;
 ---
 <section class="yu-hero home-hero" data-testid="home-hero">
   <div>
     <h1>{h1}</h1>
     <p class="yu-lead">{(hero && str(hero.payload.subtitle)) ?? lead}</p>
-    {hero && str(hero.payload.ctaLabel) && link(hero.payload.ctaUrl) && <a class="yu-btn" href={link(hero.payload.ctaUrl)!}>{str(hero.payload.ctaLabel)}</a>}
+    <p class="home-hero__actions">
+      <a class="yu-btn" href={bookHref} data-testid="home-book">Выбрать время</a>
+      {cmsCta && <a class="yu-btn yu-btn--ghost" href={cmsCta.url}>{cmsCta.label}</a>}
+    </p>
   </div>
   {img(heroMedia) && <img class="home-hero__img" src={heroMedia!.url} srcset={srcset(heroMedia!)} sizes="(min-width: 900px) 520px, 100vw" alt={heroMedia!.alt} width={heroMedia!.width ?? undefined} height={heroMedia!.height ?? undefined} fetchpriority="high" />}
 </section>
@@ -153,6 +162,7 @@ const games = (home?.games ?? []).filter((g) => g.title);
 
 <style>
   .home-hero__img { width: 100%; height: auto; border-radius: var(--yu-r-m); background: var(--yu-surface-2); }
+  .home-hero__actions { display: flex; flex-wrap: wrap; gap: var(--yu-sp-2xs); margin: 0; }
   .home-text { max-width: var(--yu-measure); }
   .home-tiles { display: grid; gap: var(--yu-sp-s); grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); margin: 0; padding: 0; list-style: none; }
   .home-tile { position: relative; display: grid; gap: var(--yu-sp-3xs); padding: var(--yu-sp-s); border: 1px solid var(--yu-line-soft); border-radius: var(--yu-r-m); background: var(--yu-surface); min-width: 0; }

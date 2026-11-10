@@ -67,7 +67,7 @@ jobs:
       - name: гонки ×N под наблюдателем пересечений
         run: |
           set -u
-          : "${FILES:=tests/booking/hold-races.test.ts tests/booking/confirm.test.ts tests/booking/blocks.test.ts tests/resources/composite.test.ts tests/equipment/repair-blocks.test.ts tests/events/resources.test.ts tests/events/gift-booking.test.ts tests/clients/anonymize-race.test.ts}"
+          : "${FILES:=tests/booking/tc-races.test.ts tests/booking/hold-races.test.ts tests/booking/confirm.test.ts tests/booking/blocks.test.ts tests/resources/composite.test.ts tests/equipment/repair-blocks.test.ts tests/events/resources.test.ts tests/events/gift-booking.test.ts tests/clients/anonymize-race.test.ts}"
           echo "повторов: $REPEATS; файлы: $FILES"
           OVERLAP_ADMIN_URL="$TEST_DATABASE_URL" node tests/support/overlap-check.ts --watch > overlap.log 2>&1 &
           watcher=$!

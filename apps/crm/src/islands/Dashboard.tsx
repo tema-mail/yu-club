@@ -8,6 +8,7 @@ import {
   type DashboardCard, type DashboardResult, type Metric, type Period, type ReconcileRun, type ReportResult,
 } from '../lib/reports.ts';
 import { getJson } from './ReportView.tsx';
+import type { FailuresSummary } from '../lib/notifications.ts';
 
 export interface DashboardProps {
   /** Область контекста шапки: город или вся зона. */
@@ -48,7 +49,7 @@ export default function Dashboard({ cityId, timezone, warnings }: DashboardProps
     getJson<DashboardResult>(`/reports/dashboard?${q}`, c.signal).then(setData).catch((e: unknown) => {
       if ((e as Error).name !== 'AbortError') setError(reportError(e));
     });
-    if (warnings) void loadWarnings(q, c.signal).then((w) => { if (!c.signal.aborted) setWarns(w); });
+    if (warnings) void loadWarnings(q, timezone, c.signal).then((w) => { if (!c.signal.aborted) setWarns(w); });
     return () => c.abort();
   }, [periodKey]);
 
@@ -107,7 +108,7 @@ export default function Dashboard({ cityId, timezone, warnings }: DashboardProps
 }
 
 /** Предупреждения Владельца (K24 §4): расхождения последней сверки, брони, ожидающие решения. Ошибка – без предупреждения, стол работает. */
-async function loadWarnings(q: URLSearchParams, signal: AbortSignal): Promise<Warning[]> {
+async function loadWarnings(q: URLSearchParams, timezone: string, signal: AbortSignal): Promise<Warning[]> {
   const out: Warning[] = [];
   try {
     const runs = await getJson<{ items: ReconcileRun[] }>('/reports/reconcile/runs', signal);
@@ -123,10 +124,13 @@ async function loadWarnings(q: URLSearchParams, signal: AbortSignal): Promise<Wa
   } catch { /* то же */ }
   try {
     // K21 §9: критичные сервисные уведомления, которые не дошли клиенту, за период сервера – ведёт в журнал отправок с ошибкой
-    const f = await getJson<{ critical: number; periodFrom: string; periodTo: string }>('/notifications/failures/summary', signal);
+    // форма – №251 (K11, notifications/journal.ts FailuresSummary): период [to − days, to) в ISO; журнал принимает дни – по зоне сети
+    const f = await getJson<FailuresSummary>('/notifications/failures/summary', signal);
     if (f.critical > 0) {
-      const p = new URLSearchParams({ tab: 'rows', status: 'error', from: f.periodFrom, to: f.periodTo });
-      out.push({ key: 'failures', text: `Критичные уведомления не дошли: ${f.critical} (${fmtPeriod({ from: f.periodFrom, to: f.periodTo })})`, href: `/notifications?${p}` });
+      const from = todayIn(timezone, new Date(f.period.from));
+      const to = todayIn(timezone, new Date(f.period.to));
+      const p = new URLSearchParams({ tab: 'rows', category: 'service', status: 'error', from, to });
+      out.push({ key: 'failures', text: `Критичные уведомления не дошли: ${f.critical} (${fmtPeriod({ from, to })})`, href: `/notifications?${p}` });
     }
   } catch { /* то же */ }
   return out;

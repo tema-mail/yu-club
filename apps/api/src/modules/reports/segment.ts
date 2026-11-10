@@ -17,6 +17,11 @@ export const REPORT_SEGMENTS: Readonly<Record<string, readonly SegmentDimension[
   loyalty: ['branch', 'day'],
   certificates: ['branch', 'day'],
   comms: ['branch', 'day'],
+  // Э3 (S4-76…S4-78): те же branch и day – сегмент сужает период и филиалы, дальше тот же where(spec), что у карточки.
+  // Показатель «на момент запроса» (оборудование по статусам) день не сужает ни на карточке, ни в детализации – итоги равны.
+  events: ['branch', 'day'],
+  staff: ['branch', 'day'],
+  equipment: ['branch', 'day'],
 };
 
 /** Фильтры, которые сегмент может сузить. */
