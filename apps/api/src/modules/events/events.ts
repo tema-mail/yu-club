@@ -1,7 +1,8 @@
 // S3-50. Мероприятие (K20 §2): создаётся без брони и без профиля, статусы по таблице переходов с историей в аудите,
 // номер EV-000123 из последовательности сети, подтверждение – с проверкой готовности. Мероприятие – не сеанс оплаты K10:
 // деньги – отдельные операции кассы (money.ts). Телефон заказчика – контакт: профиль клиента по нему не создаётся.
-// Команды идут в транзакции вызывающего; порядок замков: мероприятие FOR UPDATE → единицы (через провайдер booking).
+// Команды идут в транзакции вызывающего; порядок замков: мероприятие FOR UPDATE → клиент FOR NO KEY UPDATE → единицы (через провайдер booking).
+// Строка клиента – та же точка, что у брони (lockClients): обезличивание (FOR UPDATE) и создание или правка мероприятия идут по очереди (D4-63).
 // Занятие и освобождение ресурсов – только провайдерами booking (K6), не импортом occupancy.ts.
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -11,7 +12,7 @@ import { publish, type Tx as OutboxTx } from '../../core/outbox.ts';
 import { can, type AccessContext, type Action } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { releaseEvent } from '../booking/providers.ts';
-import { maskPhone, normalizePhone } from '../clients/index.ts';
+import { lockClients, maskPhone, normalizePhone } from '../clients/index.ts';
 import { getBranch, type BranchInfo } from '../network/index.ts';
 import { assertPartyGuests, assertRoomsFitParty } from './party.ts';
 
@@ -293,6 +294,16 @@ function auditView(r: EventRow): Record<string, unknown> {
   };
 }
 
+/** Заказчик и именинник – под замком брони (lockClients, FOR NO KEY UPDATE): обезличивание (FOR UPDATE) ждёт или ждут его.
+ *  Обезличенного указать нельзя – CLIENT_RESTRICTED, как у брони (clients.assertCanBook). */
+async function lockEventClients(tx: Tx, ids: Array<string | null>): Promise<void> {
+  const list = ids.filter((x): x is string => x !== null);
+  if (list.length === 0) return;
+  await lockClients(tx, list);
+  const r = await tx.query(`SELECT 1 FROM app.clients WHERE id = ANY($1::uuid[]) AND status = 'anonymized'`, [list]);
+  if (r.rowCount) throw new AppError('CLIENT_RESTRICTED', 403, 'Клиент обезличен – указать его в мероприятии нельзя', { status: 'anonymized' });
+}
+
 /** K20 §2: без брони и без профиля; профиль клиента по телефону не создаётся. */
 export async function createEvent(tx: Tx, ctx: AccessContext, raw: unknown, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<EventDto> {
   const input = parseBody(createSchema, raw);
@@ -306,6 +317,7 @@ export async function createEvent(tx: Tx, ctx: AccessContext, raw: unknown, meta
   if (input.party && !isParty) throw new AppError('VALIDATION_FAILED', 400, 'Формат праздника – только у платного праздника', { field: 'party' });
   if (input.party) await assertPartyGuests(tx, branch.id, input.party.guests, now);
   if (isParty && input.participantsCount != null) await assertPartyGuests(tx, branch.id, input.participantsCount, now);
+  await lockEventClients(tx, [input.customer.clientId ?? null, input.birthdayPerson?.clientId ?? null]);
   const id = await insertEvent(tx, {
     typeId: type.id,
     branch,
@@ -355,6 +367,10 @@ export async function updateEvent(tx: Tx, ctx: AccessContext, id: string, raw: u
   const e = await lockEvent(tx, ctx, id, 'event.manage');
   assertRowVersion(e, input.rowVersion);
   if (isClosed(e.status)) throw new AppError('EVENT_CLOSED', 409, 'Мероприятие завершено – правка недоступна', { status: e.status });
+  const customerId = input.customer ? (input.customer.clientId ?? null) : e.customer_client_id;
+  const birthdayId = input.birthdayPerson ? (input.birthdayPerson.clientId ?? null) : e.birthday_client_id;
+  // замок и проверка – только у новых людей: правка мероприятия без смены заказчика и именинника не зависит от их статуса
+  await lockEventClients(tx, [customerId !== e.customer_client_id ? customerId : null, birthdayId !== e.birthday_client_id ? birthdayId : null]);
   const now = clock.now();
   const start = input.plannedStart !== undefined ? input.plannedStart : e.planned_start;
   const end = input.plannedEnd !== undefined ? input.plannedEnd : e.planned_end;
@@ -384,9 +400,9 @@ export async function updateEvent(tx: Tx, ctx: AccessContext, id: string, raw: u
        party_catering = $16, row_version = row_version + 1 WHERE id = $1`,
     [
       e.id, input.title ?? e.title, branchId, start, end,
-      input.customer ? (input.customer.clientId ?? null) : e.customer_client_id,
+      customerId,
       input.customer?.name ?? e.customer_name, phone,
-      input.birthdayPerson ? (input.birthdayPerson.clientId ?? null) : e.birthday_client_id,
+      birthdayId,
       input.birthdayPerson ? (input.birthdayPerson.name ?? null) : e.birthday_person_name,
       participants, input.responsibleStaffId !== undefined ? input.responsibleStaffId : e.responsible_staff_id,
       input.wishes !== undefined ? input.wishes : e.wishes, party?.format ?? null, party?.guests ?? null, party?.catering ?? null,

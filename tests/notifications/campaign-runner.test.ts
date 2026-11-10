@@ -170,4 +170,31 @@ describe('обезличивание K21 §15', () => {
     expect(audit.rows[0]!.t).not.toContain(name);
     expect(audit.rows[0]!.t).toContain('{client.firstName}'); // аудит хранит шаблон
   });
+
+  it('гонка: разворот ждёт незавершённое обезличивание и строку обезличенному не создаёт, имени нет', async () => {
+    const name = 'Феоктист';
+    const { branchId, clients } = await branchWithClients(2, { name });
+    const c = await confirmed(branchId, 2);
+    const [a, b] = clients as [string, string];
+    // первая сторона – обезличивание (clients/anonymize.ts): строка клиента FOR UPDATE, ПДн затёрты, обработчик рассылок отработал, commit ещё нет
+    const anon = await pool.connect();
+    await anon.query('BEGIN');
+    await anon.query('SELECT id FROM app.clients WHERE id = $1 FOR UPDATE', [a]);
+    await anon.query(`UPDATE app.clients SET first_name = NULL, phone_e164 = NULL, status = 'anonymized' WHERE id = $1`, [a]);
+    await anonymizeClientNotifications(anon, a, clock.now());
+    const expand = expandCampaign(pool, clock, c.id);
+    let waiting = false;
+    for (let i = 0; i < 60 && !waiting; i++) {
+      const r = await db.client.query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`);
+      waiting = r.rows[0]!.n > 0;
+      if (!waiting) await new Promise((res) => setTimeout(res, 50));
+    }
+    await anon.query('COMMIT');
+    anon.release();
+    await expand;
+    expect(waiting).toBe(true);
+    const list = await rows(c.id);
+    expect(list.map((r) => r.client_id)).toEqual([b]);
+    expect(list.every((r) => r.client_id !== a)).toBe(true);
+  });
 });
