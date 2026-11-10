@@ -9,8 +9,8 @@
 // • Вторая карточка после слияния – баланс 0, партий с остатком нет. Счета блокируются вместе в порядке id (K3).
 // • Живые резервы (удержание, бронь) едут вместе с бронями (booking переносит брони первым); открытые «требует решения» –
 //   к основной (закрывает корректировка основной). История (начисления, штрафы, партии, товары) остаётся по id второй.
-import type { Db, Tx } from '../../core/audit.ts';
-import { ensureAccount, lockAccounts } from '../../core/ledger.ts';
+import type { Db, Tx as AuditTx } from '../../core/audit.ts';
+import { ensureAccount, lockAccounts, type Tx } from '../../core/ledger.ts';
 import type { ClientMerger, MergeContext } from '../clients/merge.ts';
 import { accountRef, createBatch, debitBatches, expireDue, getBalance, POINTS_MIN_BALANCE, postPoints } from './account.ts';
 
@@ -31,7 +31,9 @@ async function balanceOf(tx: Tx, accountId: string): Promise<number> {
   return num((await tx.query<{ balance: string }>('SELECT balance FROM app.ledger_accounts WHERE id = $1', [accountId])).rows[0]?.balance);
 }
 
-export async function reassignLoyalty(tx: Tx, from: string, to: string, ctx: MergeContext): Promise<Record<string, number>> {
+/** tx – клиент pg транзакции слияния: тип audit.ts уже типа ledger.ts, приводим один раз (как events/gift-booking). */
+export async function reassignLoyalty(atx: AuditTx, from: string, to: string, ctx: MergeContext): Promise<Record<string, number>> {
+  const tx = atx as unknown as Tx;
   const opts = { unit: 'POINT_CENTI' as const, branchId: null, minBalance: POINTS_MIN_BALANCE };
   const accFrom = await ensureAccount(tx, accountRef(from), opts);
   const accTo = await ensureAccount(tx, accountRef(to), opts);
@@ -92,14 +94,15 @@ export async function reassignLoyalty(tx: Tx, from: string, to: string, ctx: Mer
 export const loyaltyClientMerger: ClientMerger = {
   name: 'loyalty',
   /** Счета обеих карточек – до броней и клиентов (K17: счёт раньше строки брони). */
-  async prelock(tx: Tx, from: string, to: string): Promise<void> {
+  async prelock(atx: AuditTx, from: string, to: string): Promise<void> {
+    const tx = atx as unknown as Tx;
     const opts = { unit: 'POINT_CENTI' as const, branchId: null, minBalance: POINTS_MIN_BALANCE };
     const a = await ensureAccount(tx, accountRef(from), opts);
     const b = await ensureAccount(tx, accountRef(to), opts);
     await lockAccounts(tx, [a.id, b.id]);
   },
   async preview(db: Db, clientId: string, now: Date) {
-    const b = await getBalance(db, clientId, now);
+    const b = await getBalance(db as unknown as Tx, clientId, now);
     return { balanceCenti: b.balanceCenti, availableCenti: b.availableCenti, reservedCenti: b.reservedCenti, preBookingBlocked: b.preBookingBlocked };
   },
   reassign: reassignLoyalty,
