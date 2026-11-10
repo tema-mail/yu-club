@@ -1,0 +1,60 @@
+name: load
+
+# Нагрузка по кнопке (план §8: «CI гонит всё, кроме нагрузки – нагрузка по тегу и перед каждой КТ»); на ежедневный CI
+# не вешаем. Скрипты tests/load/* сами поднимают embedded-postgres во временной папке и API на 127.0.0.1, внешняя база
+# не нужна (бинарь @embedded-postgres/linux-x64 есть в package-lock). Три скрипта идут независимо: падение одного не
+# отменяет остальных, вывод каждого – файлом в артефакте load-output. Код выхода 1 у скрипта = порог плана не держится.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scripts:
+        description: Что гнать
+        type: choice
+        default: all
+        options:
+          - all
+          - reports
+          - campaign
+          - money
+
+permissions:
+  contents: read
+
+concurrency:
+  group: load
+  cancel-in-progress: false
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: mkdir -p load-output
+      - name: load:reports – отчёты на синтетике (S4-131)
+        if: inputs.scripts == 'all' || inputs.scripts == 'reports'
+        run: |
+          set -o pipefail
+          npm run load:reports 2>&1 | tee load-output/reports.log
+      - name: load:campaign – рассылка 10 000 получателей (S4-135)
+        if: ${{ !cancelled() && (inputs.scripts == 'all' || inputs.scripts == 'campaign') }}
+        run: |
+          set -o pipefail
+          npm run load:campaign 2>&1 | tee load-output/campaign.log
+      - name: load:money – гонки денег (S2-83, tests/load/money-race.ts)
+        if: ${{ !cancelled() && (inputs.scripts == 'all' || inputs.scripts == 'money') }}
+        run: |
+          set -o pipefail
+          npm run load:money 2>&1 | tee load-output/money-race.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-output
+          path: load-output/
+          retention-days: 30
