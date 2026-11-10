@@ -1,6 +1,7 @@
 // S4-81: форма сообщения. Без категории кнопок проверки и отправки нет; у Администратора нет рекламы и группы клиентов;
 // предпросмотр – пять чисел 09 §7.4; отправка – через второе подтверждение с числом адресатов; AUDIENCE_CHANGED показывает
 // новое число; двойной клик – одна кампания; неизвестная подстановка – ошибка у поля; чужой черновик – 404.
+// Запись клиента – выбором из списка его броней (K11 №252), а не вводом ID; в карточке рассылки – имена из API и строки этой рассылки.
 import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
 import { CAMPAIGN_IDS } from './mock-notifications.ts';
@@ -41,7 +42,18 @@ test('Администратор: без категории кнопок нет,
   await expect(page.getByLabel('Категория').locator('option')).toHaveText(['Выберите категорию', 'Сервисное']);
   await page.getByLabel('Категория').selectOption('service');
   await expect(page.getByRole('button', { name: 'Группа клиентов' })).toHaveCount(0);
-  await page.getByLabel('Запись клиента (ID)').fill(BK1);
+  await expect(page.getByLabel('Запись клиента (ID)')).toHaveCount(0); // ID руками больше не вводят
+  await expect(page.getByTestId('cf-bookings')).toContainText('Найдите клиента');
+  await page.getByLabel('Телефон или ФИО клиента').fill('Смирнова');
+  await page.getByRole('button', { name: 'Найти клиента' }).click();
+  await page.getByRole('button', { name: /Смирнова Ольга/ }).click();
+  const list = page.getByTestId('cf-bookings');
+  await expect(list.getByRole('radio')).toHaveCount(2); // ближайшие в зоне: идущий сеанс и завтрашний
+  await expect(list.getByRole('radio').first()).toHaveAccessibleName(/^№\d+ · .* · Ю Клуб на Красном · подтверждена$/);
+  await list.getByRole('button', { name: 'Прошедшие' }).click();
+  await expect(list).toContainText('Прошедших записей в вашей зоне нет.');
+  await list.getByRole('button', { name: 'Ближайшие' }).click();
+  await list.getByRole('radio').first().check(); // идущий сеанс – BK1
   await page.getByLabel('Назначение').fill('Перенос комнаты');
   await page.getByLabel('Заголовок').fill('Комната изменилась');
   await page.locator('textarea[name=body]').fill('{client.firstName}, ваш сеанс – в соседней комнате.');
@@ -102,7 +114,7 @@ test('неизвестная подстановка – ошибка у поля
   await login(page, 'director@yu.test');
   await open(page, `/notifications/new?clientId=${C1}&bookingId=${BK1}`);
   await page.getByLabel('Категория').selectOption('service');
-  await expect(page.getByLabel('Запись клиента (ID)')).toHaveValue(BK1);
+  await expect(page.getByTestId('cf-bookings').getByRole('radio', { checked: true })).toHaveValue(BK1); // предзаполнено ссылкой и отмечено в списке
   await page.getByLabel('Назначение').fill('Уточнение');
   await page.getByLabel('Заголовок').fill('Вопрос по записи');
   await page.locator('textarea[name=body]').fill('{client.name}, перезвоните нам.');
@@ -127,6 +139,10 @@ test('карточка рассылки: история и отмена толь
   await expect(page.getByTestId('campaign-status')).toHaveText('Завершена');
   await expect(page.getByTestId('cc-counters')).toHaveText('1 / 0 / 2 / 0');
   await expect(page.getByTestId('campaign-card')).toContainText('Отправка подтверждена');
+  await expect(page.getByTestId('campaign-card')).toContainText('Денис Директоров'); // автор – из API
+  await page.getByRole('link', { name: 'Строки отправки в журнале' }).click();
+  await expect(page).toHaveURL(new RegExp(`campaignId=${CAMPAIGN_IDS.krasnyAd}`));
+  await expect(page.getByTestId('rows').locator('tbody tr')).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Отменить рассылку' })).toHaveCount(0);
   await open(page, `/notifications/campaigns/${CAMPAIGN_IDS.tomskDraft}`);
   await expect(page.getByTestId('campaign-form')).toBeVisible();
