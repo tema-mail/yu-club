@@ -32,7 +32,11 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     actionTimeout: 15_000,
-    navigationTimeout: 30_000,
+    // прогон 10.11 (9a0e0ca): переходы стенда при загруженной машине падали (commerce.spec.ts:197, e4.spec.ts:210), отдельно – секунды.
+    // Медленный ответ – запас до 90 с, но меньше времени теста (180 с): медленная страница не роняет сценарий, зависшая – роняет.
+    // Сетевой сбой Chromium (net::ERR_TIMED_OUT) таймаут не лечит – его повторяет gotoStand() из stand.ts.
+    // Готовность после перехода – hydrated() (острова без ssr), а не sleep.
+    navigationTimeout: 90_000,
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 });
