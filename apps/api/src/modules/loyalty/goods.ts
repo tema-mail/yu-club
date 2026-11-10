@@ -10,7 +10,8 @@ import { AppError } from '../../core/errors.ts';
 import type { Tx } from '../../core/ledger.ts';
 import { assertCan, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { debitBatches, openAccount, postPoints, reservedCenti, returnSpend } from './account.ts';
+import { debitBatches, openAccount, postPoints, reservedCenti } from './account.ts';
+import { openWithOwner, returnSpendToOwner } from './merged.ts';
 
 export interface GoodsDto {
   id: string;
@@ -190,13 +191,13 @@ export async function returnGoods(
   const pre = (await tx.query<OrderRow>(orderSql, [input.orderId])).rows[0];
   if (!pre) throw notFound();
   assertCan(ctx, 'loyalty.goods.issue', { branchId: pre.branch_id }); // филиал заказа не меняется
-  await openAccount(tx, pre.client_id, clock.now());
+  await openWithOwner(tx, pre.client_id, clock.now()); // заказ до слияния карточек: счёт основной раньше (D5-09)
   const o = (await tx.query<OrderRow>(`${orderSql} FOR UPDATE`, [input.orderId])).rows[0];
   if (!o) throw notFound();
   if (reason === '') throw new AppError('COMMENT_REQUIRED', 422, 'Укажите причину возврата', { field: 'reason' });
   if (o.status !== 'issued') throw new AppError('ALREADY_REVERSED', 409, 'Товар уже возвращён');
   const now = clock.now();
-  const r = await returnSpend(tx, { originalEntryId: Number(o.spend_entry_id), reason, idempotencyKey: `loyalty-goods-return:${o.id}`, author: { type: 'staff', id: ctx.actor.staffId }, occurredAt: now });
+  const r = await returnSpendToOwner(tx, { originalEntryId: Number(o.spend_entry_id), reason, idempotencyKey: `loyalty-goods-return:${o.id}`, author: { type: 'staff', id: ctx.actor.staffId }, occurredAt: now });
   await tx.query(`UPDATE app.loyalty_goods_branches SET stock = stock + 1 WHERE goods_id = $1 AND branch_id = $2 AND stock IS NOT NULL`, [o.goods_id, o.branch_id]);
   await tx.query(`UPDATE app.loyalty_goods_orders SET status = 'returned', return_entry_id = $2, return_reason = $3 WHERE id = $1`, [o.id, r.entryId, reason]);
   await writeAudit(tx, meta, { action: 'loyalty.goods.returned', object: { type: 'client', id: o.client_id }, branchId: o.branch_id, after: { orderId: o.id, ...r }, reason }, clock);

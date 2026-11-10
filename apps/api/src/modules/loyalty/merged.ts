@@ -9,7 +9,7 @@
 // Замки: счёт основной раньше счёта второй (openWithOwner) – тот же порядок у всех коррекций, слияние второй не трогает.
 import { effectiveClientId } from '../clients/merge.ts';
 import type { Tx } from '../../core/ledger.ts';
-import { accountRef, createBatch, debitBatches, openAccount, POINTS_MIN_BALANCE, postPoints, type Author } from './account.ts';
+import { accountRef, createBatch, debitBatches, openAccount, POINTS_MIN_BALANCE, postPoints, returnSpend, type Author } from './account.ts';
 
 export const MERGE_BASIS = 'Слияние карточек клиента';
 const num = (v: string | number | null | undefined): number => (v === null || v === undefined ? 0 : Number(v));
@@ -118,4 +118,20 @@ export async function bridgeToMerged(tx: Tx, ownerId: string, mergedId: string, 
   await debitBatches(tx, { clientId: ownerId, entryId: out.entryId, amount, balanceBefore: out.balanceBefore, kind: 'merge', ref: { type: 'merged_correction', id: mergedId } });
   const inn = await postPoints(tx, mergedId, { amount, type: 'loyalty.manual', basis: MERGE_BASIS, branchId: null, occurredAt: now, refs: { ...refs, toClientId: mergedId } }, `merged-bridge:${opKey}:in`, author);
   await createBatch(tx, { clientId: mergedId, entryId: inn.entryId, amount, balanceBefore: inn.balanceBefore, source: 'manual', branchId: null, expiresAt: null, accruedAt: now });
+}
+
+/** Возврат списания (оплата баллами, товар) с учётом слияния: счёт владельца раньше счёта карточки списания, возврат – в её
+ *  исходные партии (returnSpend), затем остаток объединённой карточки – к владельцу. Без слияния – обычный returnSpend. */
+export async function returnSpendToOwner(tx: Tx, input: Parameters<typeof returnSpend>[1]): ReturnType<typeof returnSpend> {
+  const row = (
+    await tx.query<{ owner_id: string }>(
+      `SELECT a.owner_id FROM journal.ledger_entries e JOIN app.ledger_accounts a ON a.id = e.account_id WHERE e.id = $1 AND a.kind = 'loyalty_client'`,
+      [input.originalEntryId],
+    )
+  ).rows[0];
+  if (!row) return returnSpend(tx, input); // NOT_FOUND отдаст returnSpend
+  const ownerId = await openWithOwner(tx, row.owner_id, input.occurredAt);
+  const r = await returnSpend(tx, input);
+  await sweepMerged(tx, row.owner_id, ownerId, input.idempotencyKey, input.author, input.occurredAt);
+  return r;
 }
