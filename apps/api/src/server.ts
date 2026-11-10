@@ -11,6 +11,13 @@ import { registerBookingGate } from './modules/clients/index.ts';
 import { registerClientAnonymizer } from './modules/clients/anonymize.ts';
 import { bookingClientAnonymizer } from './modules/booking/anonymize.ts';
 import { eventsClientAnonymizer } from './modules/events/anonymize.ts';
+import { registerClientMerger } from './modules/clients/merge.ts';
+import { bookingClientMerger } from './modules/booking/merge.ts';
+import { financeClientMerger } from './modules/finance/merge.ts';
+import { loyaltyClientMerger } from './modules/loyalty/merge.ts';
+import { certificatesClientMerger } from './modules/certificates/merge.ts';
+import { eventsClientMerger } from './modules/events/merge.ts';
+import { notificationsClientMerger } from './modules/notifications/merge.ts';
 import { anonymizeClientNotifications } from './modules/notifications/campaign-runner.ts';
 import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
@@ -106,6 +113,10 @@ function registerModuleHooks(): void {
   registerClientAnonymizer(bookingClientAnonymizer);
   registerClientAnonymizer(eventsClientAnonymizer);
   registerClientAnonymizer({ name: 'notifications', run: anonymizeClientNotifications });
+  // K9 «Слияние»: перенос записей второй карточки модулями-владельцами таблиц; без любого процедура не запускается
+  for (const m of [bookingClientMerger, financeClientMerger, loyaltyClientMerger, certificatesClientMerger, eventsClientMerger, notificationsClientMerger]) {
+    registerClientMerger(m);
+  }
   hooksRegistered = true;
 }
 
