@@ -12,7 +12,7 @@ import type { Tx } from '../../core/ledger.ts';
 import { roleAllows, type AccessContext } from '../../core/permissions.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { systemClock, type Clock, type TimeZone } from '../../core/time.ts';
-import { createBatch, debitBatches, openAccount, POINTS_MIN_BALANCE, postPoints } from './account.ts';
+import { createBatch, debitBatches, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints } from './account.ts';
 import { batchExpiry } from './accrual.ts';
 
 export interface AdjustInput {
@@ -39,7 +39,7 @@ export async function adjust(tx: Tx, ctx: AccessContext, input: AdjustInput, met
   }
   if (!roleAllows(ctx.role, 'loyalty.adjust')) throw forbidden('loyalty.adjust');
   const now = clock.now();
-  const acc = await openAccount(tx, input.clientId, now);
+  const acc = await openClientAccount(tx, input.clientId, now); // объединённая карточка – CLIENT_MERGED под замком счёта (D5-09)
   const author = { type: 'staff' as const, id: ctx.actor.staffId };
   const key = `loyalty-adjust:${input.idempotencyKey ?? randomUUID()}`;
   // повтор по ключу – до проверки предела и issue: прежний ответ, без аудита; тот же ключ с другой суммой – отказ

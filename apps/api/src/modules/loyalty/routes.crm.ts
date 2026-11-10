@@ -104,6 +104,8 @@ export async function loyaltyCrmRoutes(app: FastifyInstance, deps: LoyaltyCrmDep
   const clientInZone = async (access: AccessContext, clientId: string, action: string): Promise<string> => {
     const card = await getClientCard(deps.pool, access, clientId, deps.links); // вне зоны – NOT_FOUND
     if (!roleAllows(access.role, action)) throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action });
+    // Объединённая карточка (K9 «Слияние», D5-09): корректировка и выдача товара отвечают CLIENT_MERGED внутри транзакции,
+    // под замком счёта (openClientAccount) – проверка здесь, до транзакции, пропустила бы слияние, закоммиченное позже.
     return card.id;
   };
   const keyed = async <T>(request: FastifyRequest, reply: FastifyReply, access: AccessContext, operation: string, run: (tx: pg.PoolClient) => Promise<T>) => {

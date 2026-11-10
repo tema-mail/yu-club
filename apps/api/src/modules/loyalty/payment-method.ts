@@ -13,7 +13,8 @@ import { AppError } from '../../core/errors.ts';
 import type { Tx } from '../../core/ledger.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import type { ChargeInput, ChargeResult, PaymentMethodHandler, RefundInput, RefundResult } from '../finance/methods.ts';
-import { debitBatches, getBalance, openAccount, postPoints, reservedCenti, returnSpend } from './account.ts';
+import { debitBatches, getBalance, openClientAccount, postPoints, reservedCenti } from './account.ts';
+import { returnSpendToOwner } from './merged.ts';
 import type { PaymentLookup } from './accrual.ts';
 import { settleStaleReserves, type ReserveBookings } from './reserve.ts';
 
@@ -64,7 +65,7 @@ export async function pointsAvailableForBooking(db: Tx, clientId: string, at: Da
 
 export async function chargePoints(tx: Tx, input: ChargeInput, deps: PointsDeps | undefined = registeredDeps): Promise<ChargeResult> {
   const { session } = input;
-  const acc = await openAccount(tx, session.clientId, input.occurredAt);
+  const acc = await openClientAccount(tx, session.clientId, input.occurredAt); // сеанс прочитан до замка: слияние за это время – CLIENT_MERGED (D5-09)
   const allowed = (await resolveSetting(tx, 'loyalty.points_resource_types', { branchId: session.branchId }, input.occurredAt)).value;
   if (!allowed.includes(input.resourceType)) {
     throw new AppError('POINTS_NOT_ALLOWED', 422, 'Этот вид посещения баллами не оплачивается', { resourceType: input.resourceType });
@@ -94,7 +95,8 @@ export async function chargePoints(tx: Tx, input: ChargeInput, deps: PointsDeps 
 export async function refundPoints(tx: Tx, input: RefundInput): Promise<RefundResult> {
   const orig = (await tx.query<{ id: string }>(`SELECT id FROM journal.ledger_entries WHERE posting_id = $1 AND entry_type = 'loyalty.spend_time'`, [input.line.ledgerPostingId])).rows[0];
   if (!orig) throw new AppError('NOT_FOUND', 404, 'Списание баллов по строке платежа не найдено', { postingId: input.line.ledgerPostingId });
-  const r = await returnSpend(tx, { originalEntryId: Number(orig.id), reason: input.reason, idempotencyKey: input.idempotencyKey, author: input.author, occurredAt: input.occurredAt });
+  // списание до слияния карточек – возврат к действующему владельцу (D5-09)
+  const r = await returnSpendToOwner(tx, { originalEntryId: Number(orig.id), reason: input.reason, idempotencyKey: input.idempotencyKey, author: input.author, occurredAt: input.occurredAt });
   if (r.entryId === null) return { postingId: null, outcome: 'not_restored' };
   return { postingId: await postingOf(tx, r.entryId), outcome: 'returned' };
 }

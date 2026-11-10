@@ -205,4 +205,16 @@ describe('anonymizeClient', () => {
     await db.client.query(`INSERT INTO app.clients (phone_e164, status, created_by_type) VALUES ($1, 'guest', 'system')`, [phone]);
     expect((await db.client.query('SELECT count(*)::int AS n FROM app.clients WHERE phone_e164 = $1', [phone])).rows[0].n).toBe(1);
   });
+
+  it('объединённая карточка (merged) – 409 CLIENT_MERGED, а не нарушение CHECK; ничего не изменено', async () => {
+    const primary = await addClient();
+    const c = await addClient();
+    await db.client.query(
+      `UPDATE app.clients SET phone_e164 = NULL, first_name = NULL, last_name = NULL, email = NULL, status = 'merged', merged_into_id = $2 WHERE id = $1`,
+      [c.id, primary.id],
+    );
+    await expect(run(c.id)).rejects.toMatchObject({ code: 'CLIENT_MERGED', httpStatus: 409, details: { clientId: c.id, mergedIntoId: primary.id } });
+    expect((await db.client.query('SELECT status, merged_into_id FROM app.clients WHERE id = $1', [c.id])).rows[0]).toEqual({ status: 'merged', merged_into_id: primary.id });
+    expect(calls).toEqual([]);
+  });
 });

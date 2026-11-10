@@ -11,7 +11,9 @@ import { listSubscriptions, subscribe, type EventEnvelope } from '../../core/out
 import { resolveSettings } from '../../core/settings.ts';
 import { addDays, branchDay, instantToLocal, systemClock, type Clock, type TimeZone } from '../../core/time.ts';
 import type { PaymentMethod } from '../finance/methods.ts';
-import { createBatch, openAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
+import { clientIdsMergedInto } from '../clients/merge.ts';
+import { batchCarriedTo, bridgeToMerged } from './merged.ts';
+import { createBatch, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
 
 /** Чтение брони и посещения (реализация – booking/providers.ts paymentBookingProvider, S2-05). */
 export interface LoyaltyBookings {
@@ -50,7 +52,7 @@ export async function tryAccrue(tx: Tx, bookingId: string, deps: AccrualDeps): P
   const now = deps.clock.now();
   const clientId = await deps.bookings.bookingClient(tx, bookingId);
   if (!clientId) return null;
-  await openAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь под FOR SHARE → проверить
+  await openClientAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь под FOR SHARE → проверить; merged – повтор (D5-09)
   const b = await deps.bookings.payableBooking(tx, bookingId);
   if (!b || b.clientId !== clientId.toLowerCase()) return null;
   const visit = await deps.bookings.activeVisit(tx, bookingId);
@@ -108,10 +110,11 @@ export async function reverseAccrual(
 ): Promise<'reversed' | 'issue' | 'none'> {
   const now = clock.now();
   const [col, val] = 'visitId' in where ? ['visit_id', where.visitId] : ['payment_id', where.paymentId];
-  const acc = await openAccount(tx, clientId, now);
+  const acc = await openClientAccount(tx, clientId, now); // клиент брони прочитан без замка: слияние за это время – CLIENT_MERGED, повтор
+  // Начисление до слияния карточек лежит на объединённой (merged) – ищем по основной и всем, что в неё объединены (D5-09).
   const a = (await tx.query<AccrualRow>(
-    `SELECT id, client_id, ledger_entry_id, amount_centi FROM app.loyalty_accruals WHERE ${col} = $1 AND client_id = $2 AND status = 'active' FOR UPDATE`,
-    [val, acc.clientId],
+    `SELECT id, client_id, ledger_entry_id, amount_centi FROM app.loyalty_accruals WHERE ${col} = $1 AND client_id = ANY($2::uuid[]) AND status = 'active' FOR UPDATE`,
+    [val, await clientIdsMergedInto(tx, acc.clientId)],
   )).rows[0];
   if (!a) return 'none';
   const amount = Number(a.amount_centi);
@@ -119,16 +122,25 @@ export async function reverseAccrual(
     const ins = await tx.query(
       `INSERT INTO app.loyalty_issues (client_id, kind, ref_type, ref_id, amount_centi) VALUES ($1, 'accrual_reversal_below_limit', $2, $3, $4)
        ON CONFLICT (kind, ref_type, ref_id) DO NOTHING RETURNING id`,
-      [a.client_id, issueRef.type, issueRef.id, amount],
+      [acc.clientId, issueRef.type, issueRef.id, amount],
     );
     if (ins.rowCount) {
-      await writeAudit(tx, SYSTEM_META, { action: 'loyalty.issue.created', object: { type: 'client', id: a.client_id }, after: { kind: 'accrual_reversal_below_limit', ref: issueRef, amountCenti: amount, balanceCenti: acc.balance } }, clock);
+      await writeAudit(tx, SYSTEM_META, { action: 'loyalty.issue.created', object: { type: 'client', id: acc.clientId }, after: { kind: 'accrual_reversal_below_limit', ref: issueRef, amountCenti: amount, balanceCenti: acc.balance } }, clock);
     }
     return 'issue';
   }
+  const key = `loyalty-accrual-reversal:${a.id}`;
+  if (a.client_id !== acc.clientId) {
+    // объединённая карточка: счёт её после основной, мост основная → вторая на сумму, затем обычное сторно на второй
+    await openAccount(tx, a.client_id, now);
+    // с основной списывается партия, в которую переехала партия этого начисления (её срок), а не ближайшая по сроку
+    const own = (await tx.query<{ id: string }>('SELECT id FROM app.loyalty_batches WHERE accrual_entry_id = $1', [a.ledger_entry_id])).rows[0]?.id;
+    const carried = own ? await batchCarriedTo(tx, own, acc.clientId) : null;
+    await bridgeToMerged(tx, acc.clientId, a.client_id, amount, key, SYSTEM_AUTHOR, now, carried);
+  }
   const r = await reverseWithBatches(tx, {
     clientId: a.client_id, entryId: Number(a.ledger_entry_id), reason: reason === 'visit_reverted' ? 'исправление посещения' : 'полный возврат платежа',
-    idempotencyKey: `loyalty-accrual-reversal:${a.id}`, author: SYSTEM_AUTHOR, occurredAt: now,
+    idempotencyKey: key, author: SYSTEM_AUTHOR, occurredAt: now,
   });
   await tx.query(`UPDATE app.loyalty_accruals SET status = 'reversed', reversal_entry_id = $2, reversal_reason = $3 WHERE id = $1`, [a.id, r.entryId, reason]);
   return 'reversed';

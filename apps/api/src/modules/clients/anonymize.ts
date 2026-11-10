@@ -19,6 +19,8 @@ export type AnonymizeReason = (typeof ANONYMIZE_REASONS)[number];
  *  мероприятие в работе); run – затирает ПДн и возвращает число затронутых строк. Оба – в транзакции процедуры. */
 export interface ClientAnonymizer {
   name: string;
+  /** Замки модуля ДО строки клиента (D5-08: мероприятие → клиент, как events.ts и слияние) – иначе взаимоблокировка. */
+  prelock?(tx: Tx, clientId: string): Promise<void>;
   blockers?(tx: Tx, clientId: string, now: Date): Promise<number>;
   run(tx: Tx, clientId: string, now: Date): Promise<number>;
 }
@@ -62,16 +64,21 @@ export async function anonymizeClient(
   }
   if (!UUID_RE.test(clientId)) throw new AppError('NOT_FOUND', 404, 'Не найдено');
 
-  const cur = await tx.query<{ status: ClientStatus; phone_e164: string | null }>(
-    'SELECT status, phone_e164 FROM app.clients WHERE id = $1 FOR UPDATE',
+  const list = [...anonymizers.values()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const a of list) if (a.prelock) await a.prelock(tx, clientId);
+  const cur = await tx.query<{ status: ClientStatus; phone_e164: string | null; merged_into_id: string | null }>(
+    'SELECT status, phone_e164, merged_into_id FROM app.clients WHERE id = $1 FOR UPDATE',
     [clientId],
   );
   const row = cur.rows[0];
   if (!row) throw new AppError('NOT_FOUND', 404, 'Не найдено');
   if (row.status === 'anonymized') return { clientId, status: 'anonymized', alreadyAnonymized: true, affected: {} };
+  // Объединённая карточка (0450) уже без ПДн; её данные живут в основной – обезличивать нужно основную.
+  if (row.status === 'merged') {
+    throw new AppError('CLIENT_MERGED', 409, 'Карточка объединена – обезличьте основную', { clientId, mergedIntoId: row.merged_into_id });
+  }
 
   const now = clock.now();
-  const list = [...anonymizers.values()].sort((a, b) => a.name.localeCompare(b.name));
   const blockers: Record<string, number> = {};
   for (const a of list) {
     const n = a.blockers ? await a.blockers(tx, clientId, now) : 0;

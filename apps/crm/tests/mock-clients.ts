@@ -4,9 +4,11 @@
 // Пока бронирования нет, настоящий бэкенд связей не даёт (noBranchLinks) – находит только по точному телефону.
 // №249 обезличивание (K9, D4-60…D4-65) – по clients/anonymize.ts: право client.anonymize (только Владелец), основание – код,
 // живые записи (бронь confirmed впереди или arrived, мероприятие не завершено) – 409 CLIENT_HAS_ACTIVE_RECORDS, повтор – 200 alreadyAnonymized.
+// №253–254 слияние дублей – mock-client-merge.ts; здесь – статус merged: в общем поиске нет, по id – есть, карточка без full.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { bookingFacts } from './mock-booking.ts';
+import { registerClientMerge, resetClientMerge } from './mock-client-merge.ts';
 import { eventsOfClient } from './mock-events.ts';
 import { opsState } from './mock-ops.ts';
 
@@ -28,13 +30,13 @@ export interface ClientsMockDeps {
 /** D4-61: основание обезличивания – только код. */
 const ANONYMIZE_REASONS = ['client_request', 'retention_expired'];
 
-export const CLIENT_STATUSES = ['guest', 'active', 'restricted', 'blocked', 'deletion_requested', 'anonymized'] as const;
-type ClientStatus = (typeof CLIENT_STATUSES)[number];
+export const CLIENT_STATUSES = ['guest', 'active', 'restricted', 'blocked', 'deletion_requested', 'anonymized', 'merged'] as const;
+export type ClientStatus = (typeof CLIENT_STATUSES)[number];
 export interface MockClient {
   id: string; status: ClientStatus; firstName: string | null; lastName: string | null; phoneE164: string | null;
   email: string | null; birthDate: string | null; statusReason: string | null; statusUntil: string | null;
   registrationSource: string | null; phoneVerifiedAt: string | null; registeredAt: string | null; createdAt: string;
-  lastLoginAt: string | null; rowVersion: number; links: string[];
+  lastLoginAt: string | null; rowVersion: number; links: string[]; mergedIntoId?: string | null;
 }
 
 const clientId = (n: number) => `c0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -59,6 +61,7 @@ let clients = seedClients();
 export const clientsState = (): MockClient[] => clients;
 export function resetClients(): void {
   clients = seedClients();
+  resetClientMerge();
 }
 
 // Аудит клиента пишется уже маскированным (K2 redact: PD_KEYS) – так его отдаёт и хронология.
@@ -123,7 +126,7 @@ export function registerClients(app: FastifyInstance, P: string, d: ClientsMockD
     const key = (c: MockClient) => `${(c.lastName ?? '').toLowerCase()}\u0000${(c.firstName ?? '').toLowerCase()}\u0000${c.id}`;
     const all = clients
       .filter((c) => match(c) && (byPhone || clientInZone(zone, c)) && (!q.branchId || c.links.includes(q.branchId)))
-      .filter((c) => (status.length ? status.includes(c.status) : c.status !== 'anonymized'))
+      .filter((c) => (status.length ? status.includes(c.status) : c.status !== 'anonymized' && (c.status !== 'merged' || UUID.test(t))))
       .sort((a, b) => (key(a) < key(b) ? -1 : 1))
       .map((c) => ({ ...clientRef(c), lastVisitAt: null, lastBranchId: null }));
     return d.page(all, { ...q, limit: String(limit) });
@@ -134,15 +137,19 @@ export function registerClients(app: FastifyInstance, P: string, d: ClientsMockD
     if (!d.can(s, 'client.view.basic')) return d.fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав', { action: 'client.view.basic' });
     const c = clients.find((x) => x.id === (req.params as { clientId: string }).clientId);
     if (!c || !clientInZone(d.zone(s), c)) return notFound(reply);
-    return {
-      ...clientRef(c), isGuest: c.status === 'guest', phoneVerified: c.phoneVerifiedAt !== null, registeredAt: c.registeredAt,
-      full: d.can(s, 'client.view.full')
-        ? { phoneE164: c.phoneE164, email: c.email, birthDate: c.birthDate, statusReason: c.statusReason, statusUntil: c.statusUntil,
-            registrationSource: c.registrationSource, createdAt: c.createdAt, lastLoginAt: c.lastLoginAt }
-        : null,
-      rowVersion: c.rowVersion,
-    };
+    return cardOf(s, c);
   });
+  const cardOf = (s: Staffish, c: MockClient) => ({
+    ...clientRef(c), isGuest: c.status === 'guest', phoneVerified: c.phoneVerifiedAt !== null, registeredAt: c.registeredAt,
+    mergedIntoId: c.mergedIntoId ?? null,
+    // объединённая (merged) – минимум полей без ПДн, как routes.crm.ts
+    full: d.can(s, 'client.view.full') && c.status !== 'merged'
+      ? { phoneE164: c.phoneE164, email: c.email, birthDate: c.birthDate, statusReason: c.statusReason, statusUntil: c.statusUntil,
+          registrationSource: c.registrationSource, createdAt: c.createdAt, lastLoginAt: c.lastLoginAt }
+      : null,
+    rowVersion: c.rowVersion,
+  });
+  registerClientMerge(app, P, { ...d, clients: () => clients, card: cardOf });
 
   // №249: порядок проверок как у маршрута – параметры, право (403), тело (400), затем процедура K9.
   d.grant('owner', ['client.anonymize']);

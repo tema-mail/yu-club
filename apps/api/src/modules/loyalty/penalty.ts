@@ -11,8 +11,9 @@ import type { Tx } from '../../core/ledger.ts';
 import { listSubscriptions, subscribe, type EventEnvelope } from '../../core/outbox.ts';
 import { resolveSettings } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { debitBatches, openAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
+import { debitBatches, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
 import type { LoyaltyBookings } from './accrual.ts';
+import { assertMergedInto, entryClientId, sweepMerged } from './merged.ts';
 
 /** Номинал штрафа −5 баллов (07 §8.1) – константа подтверждённого правила. */
 export const PENALTY_CENTI = 500;
@@ -39,7 +40,7 @@ export async function applyPenalty(tx: Tx, input: { noShowId: string; bookingId:
   const now = deps.clock.now();
   const clientId = await deps.bookings.bookingClient(tx, input.bookingId);
   if (!clientId) return 'none';
-  const acc = await openAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь → проверить
+  const acc = await openClientAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь → проверить; merged – повтор (D5-09)
   const b = await deps.bookings.payableBooking(tx, input.bookingId);
   if (!b || b.clientId !== acc.clientId) return 'none';
   if (b.status !== 'no_show') return 'none'; // неявку уже исправили – её событие устарело
@@ -103,7 +104,7 @@ export async function revertPenalty(tx: Tx, input: { bookingId: string }, deps: 
   const now = deps.clock.now();
   const clientId = await deps.bookings.bookingClient(tx, input.bookingId);
   if (!clientId) return 'none';
-  const acc = await openAccount(tx, clientId, now);
+  const acc = await openClientAccount(tx, clientId, now); // клиент брони прочитан без замка: слияние за это время – CLIENT_MERGED, повтор
   const b = await deps.bookings.payableBooking(tx, input.bookingId);
   if (!b || b.clientId !== acc.clientId) return 'none';
   if (b.status === 'no_show') return 'none'; // неявку отметили заново – штраф стоит
@@ -144,9 +145,19 @@ export async function revertPenalty(tx: Tx, input: { bookingId: string }, deps: 
     }
     let reversalEntryId: number | null = null;
     if (row.ledger_entry_id !== null) {
+      const key = `loyalty-penalty-reversal:${row.id}`;
+      // штраф до слияния карточек – на объединённой (merged): её счёт после основной, сторно там, остаток – к основной (D5-09).
+      // Карточка – владелец счёта записи K3, а не строки штрафа: штраф группы мог перейти на неявку другой карточки (heir).
+      const entryOwner = (await entryClientId(tx, Number(row.ledger_entry_id))) ?? row.client_id;
+      const merged = entryOwner !== acc.clientId;
+      if (merged) {
+        await assertMergedInto(tx, entryOwner, acc.clientId); // запись на чужой действующей карточке – ошибка, не перенос её баланса
+        await openAccount(tx, entryOwner, now);
+      }
       const r = await reverseWithBatches(tx, {
-        clientId: row.client_id, entryId: Number(row.ledger_entry_id), reason: 'неявка исправлена', idempotencyKey: `loyalty-penalty-reversal:${row.id}`, author: SYSTEM_AUTHOR, occurredAt: now,
+        clientId: entryOwner, entryId: Number(row.ledger_entry_id), reason: 'неявка исправлена', idempotencyKey: key, author: SYSTEM_AUTHOR, occurredAt: now,
       });
+      if (merged) await sweepMerged(tx, entryOwner, acc.clientId, key, SYSTEM_AUTHOR, now);
       reversalEntryId = r.entryId;
     }
     await tx.query(`UPDATE app.loyalty_penalties SET status = 'reversed', reversal_entry_id = $2 WHERE id = $1`, [row.id, reversalEntryId]);

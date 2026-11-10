@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { writeAudit, type AuditRequestMeta } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
-import type { Tx } from '../../core/ledger.ts';
+import { lockAccounts, type Tx } from '../../core/ledger.ts';
 import { publish } from '../../core/outbox.ts';
 import type { AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
@@ -67,13 +67,20 @@ export async function refundPayment(
   const reason = requireComment(input.reason, 'reason');
   if (input.lines.length === 0 && found.lines.length > 0) throw new AppError('VALIDATION_FAILED', 400, 'Укажите строки возврата', { field: 'lines' });
 
-  // 1) все счета журнала строк возврата одним lockAccounts
+  // 1) все счета журнала строк возврата одним lockAccounts; счёт карточки списания баллов, если её объединили, – следом
+  //    (D5-08, D5-09: счёт основной раньше счёта второй, все счета – до сеанса; иначе возврат держал бы сеанс и ждал счёт)
   const extra: string[] = [];
+  const mergedSpend: string[] = [];
+  let points = false;
   for (const l of found.lines) {
     if (!input.lines.some((x) => x.lineNo === l.lineNo)) continue;
     if (l.method === 'points') {
+      points = true;
       const a = await tx.query<{ id: string }>(`SELECT id FROM app.ledger_accounts WHERE kind = 'loyalty_client' AND owner_type = 'client' AND owner_id = $1`, [s0.clientId]);
       if (a.rows[0]) extra.push(a.rows[0].id);
+      // списание до слияния карточек лежит на счёте объединённой карточки (сеанс уже у основной)
+      const e = await tx.query<{ account_id: string }>(`SELECT account_id FROM journal.ledger_entries WHERE posting_id = $1 AND entry_type = 'loyalty.spend_time'`, [l.ledgerPostingId]);
+      if (e.rows[0] && e.rows[0].account_id !== a.rows[0]?.id) mergedSpend.push(e.rows[0].account_id);
     }
     if (l.method === 'certificate' && l.certificateId) {
       const a = await tx.query<{ id: string }>(`SELECT id FROM app.ledger_accounts WHERE kind = 'certificate' AND owner_type = 'certificate' AND owner_id = $1`, [l.certificateId]);
@@ -81,10 +88,15 @@ export async function refundPayment(
     }
   }
   await lockPlaces(tx, branch.id, extra);
+  await lockAccounts(tx, mergedSpend);
 
   // 2) сеанс и платёж под блокировкой, перечитать
   const session = (await lockSession(tx, s0.id))!;
   if (session.rowVersion !== input.rowVersion) throw new AppError('VERSION_CONFLICT', 409, 'Оплату уже изменили', { rowVersion: session.rowVersion });
+  if (points && session.clientId !== s0.clientId) {
+    // карточку сеанса объединили, пока ждали счёт: счёт новой основной не взят до сеанса – повторить (D5-09)
+    throw new AppError('CLIENT_MERGED', 409, 'Карточка объединена – повторите возврат', { clientId: s0.clientId, mergedIntoId: session.clientId });
+  }
   const payment = (await getPayment(tx, found.id, true))!;
   if (payment.status === 'refunded') throw new AppError('REFUND_EXCEEDS_PAID', 422, 'Платёж уже возвращён полностью', { paymentId: payment.id });
   const done = await refundedByLine(tx, payment.id);

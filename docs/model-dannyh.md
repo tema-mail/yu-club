@@ -1612,7 +1612,7 @@ ALTER TABLE journal.reconcile_discrepancies DROP CONSTRAINT reconcile_discrepanc
 
 ### 0448 – client_first_visits (booking; D5-11, S4-131)
 
-История посещений для отчёта клиентов (K24 §3.6) без перебора всех посещений сети. Номер 0448, а не зарезервированный 0442: стенд обновляется поверх, на нём применены 0441–0446, 0447 – слияние клиентов, раннер отвергает миграцию младше применённых.
+История посещений для отчёта клиентов (K24 §3.6) без перебора всех посещений сети. Номер 0448, а не зарезервированный 0442: стенд обновляется поверх, на нём применены 0441–0446; 0447 не используется (ветка слияния клиентов позже ушла в 0450), раннер отвергает миграцию младше применённых.
 
 ```sql
 CREATE TABLE app.client_first_visits (                   -- строка на пару клиент × филиал с живым посещением
@@ -1655,6 +1655,27 @@ CREATE TABLE app.staff_feed_events (                     -- лента собы�
   created_at timestamptz NOT NULL DEFAULT now(), read_at timestamptz
 );
 CREATE INDEX staff_feed_events_branch_idx ON app.staff_feed_events (branch_id, created_at DESC);
+```
+
+### 0450 – client_merge (clients; слияние дублей, K9 «Слияние», D5-01…D5-09)
+
+```sql
+ALTER TABLE app.clients ADD COLUMN merged_into_id uuid REFERENCES app.clients(id);
+-- статус merged; телефон NULL – у anonymized и merged; merged_into_id – ровно у merged
+ALTER TABLE app.clients ADD CONSTRAINT clients_status_check
+  CHECK (status IN ('guest','active','restricted','blocked','deletion_requested','anonymized','merged'));
+ALTER TABLE app.clients ADD CONSTRAINT clients_phone_or_closed_check CHECK (phone_e164 IS NOT NULL OR status IN ('anonymized','merged'));
+ALTER TABLE app.clients ADD CONSTRAINT clients_merged_into_check CHECK ((status = 'merged') = (merged_into_id IS NOT NULL));
+-- journal.loyalty_batch_moves.kind += 'merge' (перенос остатка баллов партиями)
+CREATE INDEX ledger_entries_from_batch_idx ON journal.ledger_entries ((refs ->> 'fromBatchId')) WHERE refs ? 'fromBatchId';  -- поиск перенесённой партии (D5-09)
+CREATE TABLE journal.client_merges (                      -- только вставка (make_append_only)
+  id uuid PRIMARY KEY, primary_client_id uuid NOT NULL REFERENCES app.clients(id),
+  secondary_client_id uuid NOT NULL REFERENCES app.clients(id),          -- UNIQUE: вторая объединяется один раз
+  reason text NOT NULL CHECK (reason IN ('same_person_confirmed','duplicate_registration','phone_changed')),
+  staff_id uuid NOT NULL, merged_at timestamptz NOT NULL,
+  results jsonb NOT NULL,                                                -- итоги модулей числами, без ПДн
+  CHECK (primary_client_id <> secondary_client_id)
+);
 ```
 
 ### Ключевые правила Э4 → где гарантия

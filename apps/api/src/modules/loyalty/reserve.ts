@@ -12,7 +12,8 @@ import type { Tx } from '../../core/ledger.ts';
 import { listSubscriptions, subscribe } from '../../core/outbox.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { holdReserveMatchSql, openAccount, POINTS_MIN_BALANCE, reservedCenti } from './account.ts';
+import { effectiveClientId } from '../clients/merge.ts';
+import { holdReserveMatchSql, openClientAccount, POINTS_MIN_BALANCE, reservedCenti } from './account.ts';
 import type { LoyaltyBookings, PaymentLookup } from './accrual.ts';
 import { LIMIT_MESSAGE } from './gate.ts';
 
@@ -66,7 +67,7 @@ export async function reserveForHold(
   clock: Clock = systemClock,
 ): Promise<{ reserveId: string; amountCenti: number; availableCenti: number }> {
   const now = clock.now();
-  const acc = await openAccount(tx, input.clientId, now);
+  const acc = await openClientAccount(tx, input.clientId, now);
   const h = (
     // без блокировки строки удержания (ADR 0002 – только представление booking): изменение удержания после проверки
     // меняет подпись, и резерв снимается лениво; подтверждение сохраняет подпись (позиции 'converted') – резерв переходит
@@ -103,7 +104,7 @@ export async function reserveForHold(
 /** DELETE /holds/{holdId}/points-reserve: клиент передумал – резерв released('hold_changed'). Нет резерва – без ошибки. */
 export async function releaseHoldReserve(tx: Tx, input: { clientId: string; holdId: string }, meta: AuditRequestMeta, clock: Clock = systemClock): Promise<boolean> {
   const now = clock.now();
-  const acc = await openAccount(tx, input.clientId, now);
+  const acc = await openClientAccount(tx, input.clientId, now);
   const r = await tx.query<{ id: string }>(`SELECT id FROM app.loyalty_reserves WHERE hold_id = $1 AND client_id = $2 AND status = 'hold' FOR UPDATE`, [input.holdId, acc.clientId]);
   const row = r.rows[0];
   if (!row) return false;
@@ -119,7 +120,7 @@ export async function releaseHoldReserve(tx: Tx, input: { clientId: string; hold
  *  при смене позиций до подтверждения – released('hold_changed'). Резервы брони никогда не превышают доступный баланс. */
 export async function convertReserves(tx: Tx, clientId: string, deps: { bookings: ReserveBookings; payments?: PaymentLookup; clock: Clock }): Promise<number> {
   const now = deps.clock.now();
-  const acc = await openAccount(tx, clientId, now);
+  const acc = await openClientAccount(tx, clientId, now);
   const holds = await tx.query<{ id: string; hold_id: string }>(
     `SELECT r.id, r.hold_id FROM app.loyalty_reserves r JOIN app.booking_hold_points h ON h.hold_id = r.hold_id
      WHERE r.client_id = $1 AND r.status = 'hold' AND h.status = 'converted' AND ${holdReserveMatchSql('r', 'h', '$2')}
@@ -166,7 +167,7 @@ export async function reconcileBookingReserve(
   const now = deps.clock.now();
   const clientId = await deps.bookings.bookingClient(tx, bookingId);
   if (!clientId) return 'none';
-  const acc = await openAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь → проверить
+  const acc = await openClientAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь → проверить
   const b = await deps.bookings.payableBooking(tx, bookingId);
   if (!b || b.clientId !== acc.clientId) return 'none';
   const r = (await tx.query<{ id: string; amount_centi: string }>(`SELECT id, amount_centi FROM app.loyalty_reserves WHERE booking_id = $1 AND status = 'booking' FOR UPDATE`, [bookingId])).rows[0];
@@ -210,11 +211,13 @@ export const RESERVE_HANDLERS = {
 export function registerReserveHandlers(input: { bookings: ReserveBookings; payments?: PaymentLookup; clock?: Clock }): void {
   if (listSubscriptions().some((x) => x.name === RESERVE_HANDLERS.bookingConfirmed)) return;
   const deps = { bookings: input.bookings, clock: input.clock ?? systemClock, ...(input.payments ? { payments: input.payments } : {}) };
-  subscribe('booking.confirmed', RESERVE_HANDLERS.bookingConfirmed, async (tx, e) => void (await convertReserves(tx, e.payload.clientId, deps)));
+  // клиент из события мог быть объединён позже (K9 «Слияние»): резервы и удержания уже у действующей карточки (D5-09)
+  subscribe('booking.confirmed', RESERVE_HANDLERS.bookingConfirmed, async (tx, e) => void (await convertReserves(tx, await effectiveClientId(tx, e.payload.clientId), deps)));
   subscribe('hold.expired', RESERVE_HANDLERS.holdExpired, async (tx, e) => {
     if (e.payload.clientId) {
-      await openAccount(tx, e.payload.clientId, deps.clock.now());
-      await settleStaleReserves(tx, e.payload.clientId, deps.clock.now());
+      const clientId = await effectiveClientId(tx, e.payload.clientId);
+      await openClientAccount(tx, clientId, deps.clock.now());
+      await settleStaleReserves(tx, clientId, deps.clock.now());
     }
   });
   subscribe('booking.cancelled', RESERVE_HANDLERS.bookingCancelled, async (tx, e) => void (await reconcileBookingReserve(tx, e.payload.bookingId, deps)));

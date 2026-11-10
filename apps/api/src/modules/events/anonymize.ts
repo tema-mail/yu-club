@@ -11,6 +11,10 @@ export const ANONYMIZED_PHONE = '+70000000000';
 
 export const eventsClientAnonymizer: ClientAnonymizer = {
   name: 'events',
+  /** Мероприятия клиента – до строки клиента: правка мероприятия и слияние берут мероприятие, затем клиента (D5-08). */
+  async prelock(tx: Tx, clientId: string): Promise<void> {
+    await tx.query('SELECT id FROM app.events WHERE customer_client_id = $1 OR birthday_client_id = $1 ORDER BY id FOR UPDATE', [clientId]);
+  },
   async blockers(tx: Tx, clientId: string): Promise<number> {
     const r = await tx.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM app.events

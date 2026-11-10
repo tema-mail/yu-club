@@ -6,6 +6,7 @@ export const auditActions = [
   'client.created',
   'client.updated',
   'client.status_changed',
+  'client.merged',
   'client.consent_changed',
   'client.notification_prefs_changed',
 ] as const;

@@ -103,6 +103,18 @@ describe('№25 корректировка', () => {
   });
 });
 
+describe('объединённая карточка (K9 «Слияние», D5-09)', () => {
+  it('корректировка и выдача товара на merged – 409 CLIENT_MERGED (баллы живут у основной); счёт читается', async () => {
+    const m = (await one(`INSERT INTO app.clients (status, merged_into_id, created_by_type) VALUES ('merged', $1, 'system') RETURNING id`, [ids.a])).id;
+    const adj = await req('owner', 'POST', `/clients/${m}/loyalty/adjust`, { deltaCenti: 100, reason: 'тест' }, randomUUID());
+    expect(adj.statusCode).toBe(409);
+    expect(adj.json().error).toMatchObject({ code: 'CLIENT_MERGED', details: { clientId: m, mergedIntoId: ids.a } });
+    const iss = await req('owner', 'POST', `/clients/${m}/goods-orders`, { goodsId: randomUUID(), branchId: ids.b1 }, randomUUID());
+    expect(iss.statusCode).toBe(409);
+    expect((await req('owner', 'GET', `/clients/${m}/loyalty`)).statusCode).toBe(200);
+  });
+});
+
 describe('№26–28 товары', () => {
   it('каталог: Директор создаёт, Администратор – 403, чужой филиал – 404; выдача и возврат с IDOR', async () => {
     const goods = { name: 'Кружка клуба', priceRubKop: 50000, pricePointsCenti: 1000, branches: [{ branchId: ids.b1, stock: 3 }] };

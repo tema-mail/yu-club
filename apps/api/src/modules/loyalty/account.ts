@@ -4,6 +4,7 @@
 // Порядок в каждой команде (K15 §1): openAccount (ensure + lockAccounts + ленивое истечение) → перечитать → проверить → писать.
 // Транзакцию модуль не открывает: tx передаёт вызывающий (как K3).
 import { AppError } from '../../core/errors.ts';
+import { effectiveClientId } from '../clients/merge.ts';
 import {
   ensureAccount,
   lockAccounts,
@@ -20,7 +21,7 @@ import {
 export const POINTS_MIN_BALANCE = -5000;
 export const SYSTEM_AUTHOR = { type: 'system', id: null } as const;
 
-export type MoveKind = 'spend_time' | 'spend_goods' | 'penalty' | 'expire' | 'return' | 'debt_cover' | 'manual' | 'accrual_reversal';
+export type MoveKind = 'spend_time' | 'spend_goods' | 'penalty' | 'expire' | 'return' | 'debt_cover' | 'manual' | 'accrual_reversal' | 'merge'; // merge – перенос остатка при слиянии карточек (0450)
 export type Author = PostingInput['author'];
 
 export const accountRef = (clientId: string): AccountRef => ({ kind: 'loyalty_client', ownerType: 'client', ownerId: clientId.toLowerCase() });
@@ -41,6 +42,21 @@ export async function openAccount(tx: Tx, clientId: string, now: Date): Promise<
   await lockAccounts(tx, [acc.id]);
   await expireDue(tx, clientId, now);
   return { accountId: acc.id, clientId: acc.ownerId, balance: await currentBalance(tx, acc.id) };
+}
+
+/**
+ * Счёт действующей карточки (K9 «Слияние», D5-09): тот же openAccount, затем – уже под замком счёта – проверка, что карточку
+ * не объединили. Слияние держит счета обеих карточек до коммита; команда, которая прочла клиента без замка (обработчик по
+ * брони, оплата по сеансу), после коммита слияния видит merged и получает CLIENT_MERGED: outbox повторит, повтор возьмёт
+ * основную; в CRM – повторить на основной карточке. Внутренние коррекции объединённой карточки идут через openAccount.
+ */
+export async function openClientAccount(tx: Tx, clientId: string, now: Date): Promise<OpenedAccount> {
+  const acc = await openAccount(tx, clientId, now);
+  const owner = await effectiveClientId(tx, acc.clientId);
+  if (owner !== acc.clientId) {
+    throw new AppError('CLIENT_MERGED', 409, 'Карточка объединена – баллы у основной карточки', { clientId: acc.clientId, mergedIntoId: owner });
+  }
+  return acc;
 }
 
 async function currentBalance(tx: Tx, accountId: string): Promise<number> {

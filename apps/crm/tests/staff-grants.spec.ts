@@ -1,5 +1,5 @@
 // Делегирование прав (S3-87) на моке mock-staff.ts (по staff/grants.ts, №380–382): Владелец выдаёт право со сроком из закрытого списка,
-// видит действующие, истёкшие и отозванные, отзывает; client.merge – с пометкой; неделегируемое не предлагается и сервером отклоняется (422);
+// видит действующие, истёкшие и отозванные, отзывает; client.merge – с подсказкой о зоне (слияние работает, K11 №253–254); неделегируемое не предлагается и сервером отклоняется (422);
 // зона вне назначений – 422, повтор на те же даты – 409, себе – 403; Директору блока нет, сервер – 403.
 import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
@@ -51,7 +51,7 @@ test('Владелец: выдать со сроком, повтор откло�
   await form.getByRole('button', { name: 'Выдать' }).click();
   await expect(form.getByRole('alert')).toContainText('Выберите право');
   await form.getByLabel('Право').selectOption('client.merge');
-  await expect(page.getByTestId('grant-action-hint')).toContainText('Заработает, когда появится слияние клиентов');
+  await expect(page.getByTestId('grant-action-hint')).toContainText('Объединение дублей – только клиентов с бронями в зоне права');
   // Директор назначен на Новосибирск: город и два его филиала, Томска нет.
   const zones = await form.locator('#grant-zone option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value).filter(Boolean));
   expect(zones).toEqual(['c-nsk', 'b-nsk-krasny', 'b-nsk-akadem']);
@@ -64,7 +64,7 @@ test('Владелец: выдать со сроком, повтор откло�
   const current = page.getByTestId('grants-current');
   await expect(current.getByTestId('grant-row')).toHaveCount(1);
   await expect(current).toContainText('Объединение карточек клиентов');
-  await expect(current.getByTestId('grant-merge-note')).toContainText('слияние клиентов');
+  await expect(current.getByTestId('grant-merge-note')).toHaveCount(0); // слияние работает (K11 №253–254) – пометки «заработает» нет
   await expect(current).toContainText('по 31.12.2099');
   await expect(current).toContainText('Действует');
 

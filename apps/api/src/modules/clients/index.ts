@@ -9,7 +9,8 @@ import { AppError } from '../../core/errors.ts';
 import { roleAllows, scopeFilter, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 
-export const CLIENT_STATUSES = ['guest', 'active', 'restricted', 'blocked', 'deletion_requested', 'anonymized'] as const;
+/** merged – вторая карточка после слияния (03 §11.2, миграция 0450): ПДн пусты, ссылка merged_into_id на основную. */
+export const CLIENT_STATUSES = ['guest', 'active', 'restricted', 'blocked', 'deletion_requested', 'anonymized', 'merged'] as const;
 export type ClientStatus = (typeof CLIENT_STATUSES)[number];
 
 export interface ClientRef {
@@ -365,7 +366,9 @@ export async function searchClients(
     params.push(q.status);
     where.push(`c.status = ANY($${params.length}::text[])`);
   } else {
-    where.push("c.status <> 'anonymized'");
+    // Объединённая карточка (merged) по старым контактам не находится – они пусты; по id – находится с фактом объединения
+    // (03 §11.2 «показывают факт объединения»), в общем списке её нет, как и обезличенной.
+    where.push(match.kind === 'id' ? "c.status <> 'anonymized'" : "c.status NOT IN ('anonymized', 'merged')");
   }
   if (page.cursor) {
     const [ln, fn, id] = decodeCursor(page.cursor);
@@ -396,6 +399,8 @@ export interface ClientCard extends ClientRef {
   isGuest: boolean;
   phoneVerified: boolean;
   registeredAt: Date | null;
+  /** Основная карточка, если эта объединена (status = 'merged'; 03 §11.2 «ссылки ведут к основной»). */
+  mergedIntoId: string | null;
   /** Только с правом client.view.full (Владелец, Директор в зоне). Администратору – null (04 §8.3). */
   full: {
     phoneE164: string | null;
@@ -455,10 +460,11 @@ export async function getClientCard(
       created_at: Date;
       last_login_at: Date | null;
       row_version: number;
+      merged_into_id: string | null;
     }
   >(
     `SELECT ${REF_COLS}, c.phone_verified_at, c.registered_at, c.email, to_char(c.birth_date, 'YYYY-MM-DD') AS birth_date,
-            c.status_reason, c.status_until, c.registration_source, c.created_at, c.last_login_at, c.row_version
+            c.status_reason, c.status_until, c.registration_source, c.created_at, c.last_login_at, c.row_version, c.merged_into_id
      FROM app.clients c WHERE c.id = $1::uuid AND ${visible}`,
     params,
   );
@@ -481,6 +487,7 @@ export async function getClientCard(
     isGuest: row.status === 'guest',
     phoneVerified: row.phone_verified_at !== null,
     registeredAt: row.registered_at,
+    mergedIntoId: row.merged_into_id,
     full,
     rowVersion: row.row_version,
   };

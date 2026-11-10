@@ -2,7 +2,7 @@
 // себе – нельзя (блока на своей карточке нет). Действия предлагаются только из `delegable` ответа списка – закрытый список DELEGABLE сервера;
 // зона – только из назначений получателя (город целиком или филиал), `network.branch.create` – только на город. Задним числом не выдаётся:
 // дата начала – с сегодняшнего дня. Решает всё равно сервер: GRANT_ACTION_NOT_DELEGABLE, GRANT_SCOPE_INVALID, GRANT_ALREADY_ACTIVE.
-// `client.merge` выдаётся, но API слияния клиентов пока нет – у права пометка (TEHDOLG 5.15).
+// `client.merge` – слияние дублей (K9 «Слияние», K11 №253–254): делегированное право действует на клиентов с бронями в зоне права.
 import { useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { fmtDate } from '../lib/shifts.ts';
@@ -35,9 +35,8 @@ export const GRANT_LABEL: Record<string, string> = {
   'payroll.view': 'Просмотр зарплаты',
   'network.branch.create': 'Создание филиалов',
 };
-const MERGE_NOTE = 'Заработает, когда появится слияние клиентов.';
 const GRANT_HINT: Record<string, string> = {
-  'client.merge': MERGE_NOTE,
+  'client.merge': 'Объединение дублей – только клиентов с бронями в зоне права.',
   'payroll.view': 'Открывает суммы всех сотрудников зоны права, включая коллег.',
   'network.branch.create': 'Выдаётся только на город.',
 };
@@ -156,7 +155,6 @@ export default function StaffGrants({ staffId, initialItems, delegable, zones, z
           <tr key={g.id} data-testid="grant-row">
             <td class="yc-table__main">
               {GRANT_LABEL[g.action] ?? g.action}
-              {g.action === 'client.merge' && <span class="yc-field__hint" data-testid="grant-merge-note"> {MERGE_NOTE}</span>}
             </td>
             <td data-label="Зона">{zoneOf(g)}</td>
             <td data-label="Срок">{period(g)}</td>

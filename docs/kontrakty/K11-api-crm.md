@@ -112,6 +112,8 @@ interface CrmBooking extends CrmBookingRow {
 | 250 | глобальный поиск (`search.global`; тип без права в ответе отсутствует) | K24 §5 | `reports`, `routes.crm.ts` (S4-75) |
 | 251 | сбои критичных уведомлений для рабочего стола Владельца: `GET /notifications/failures/summary?days=` → `{ critical, period: { from, to, days } }` | K21 §9, §11 | `notifications`, `routes.crm.ts` (S4-80, 11.11.2026) |
 | 252 | брони клиента для выбора записи в сообщении: `GET /clients/{clientId}/bookings?scope=upcoming\|recent&limit=` (`schedule.view` по филиалу брони – «booking.view» в K1 нет; зона – `scopeFilter`; клиент без броней в зоне у не-Владельца – `404`) → `200 { items: ClientBookingRow[] }`, `ClientBookingRow = CrmBookingRow & { branchId, timezone }`; `upcoming` – `confirmed`/`arrived` с концом позже сейчас по возрастанию начала, `recent` – остальные по убыванию, `limit` 1..50 (20) | K11 №3, K21 §6 | `booking`, `routes.crm.ts` (S4-81, 11.11.2026) |
+| 253 | предпросмотр слияния `GET /clients/{clientId}/merge-preview?with={secondaryId}` (`client.merge`; обе карточки, данные модулей, конфликты, заполнение, `canMerge`) | K9 «Слияние», D5-01 | `clients`, `routes.crm.ts` |
+| 254 | слияние `POST /clients/{clientId}/merge { secondaryId, reason }` (`client.merge`, `Idempotency-Key`; повтор – тот же ответ; `merged`/обезличенная – `409`) | K9 «Слияние», D5-01…D5-09 | `clients`, `routes.crm.ts` |
 
 Загрузка тел больше 2 МБ (№224 и вложения Э3 №350) – отдельные маршруты Caddy с 11 МБ и потоковая передача тела прокси CRM (S4-09); остальные маршруты – прежние 2 МБ. Ошибки Э4 – K21 §12, K22 §14, K23 §3, K24 §10 (`COMMENT_REQUIRED` из таблицы ниже переиспользуется очисткой медиа S4-45).
 
