@@ -5,6 +5,7 @@ import { ApiError, browserCall } from '../lib/api.ts';
 import { aria, clean, ConflictNotice, DraftActions, Field, fieldErrors, STATUS_BADGE, STATUS_LABEL, type AllowedAction, type ContentStatus, type DraftDto } from '../lib/content.tsx';
 import { RATIO_HINT } from './MediaLibrary.tsx';
 import MediaPicker from './MediaPicker.tsx';
+import SeoPanel, { seoLengthErrors, type SeoValue } from './SeoPanel.tsx';
 
 export type Direction = 'pc' | 'vr' | 'playstation';
 export const DIRECTION_LABEL: Record<Direction, string> = { pc: 'ПК', vr: 'VR', playstation: 'PlayStation' };
@@ -32,12 +33,15 @@ const TEXT = [
 const list = (v: unknown) => (Array.isArray(v) ? v.join(', ') : '');
 const formOf = (d: Record<string, unknown>) => ({
   title: String(d.title ?? ''), short: String(d.short ?? ''), full: String(d.full ?? ''), genres: list(d.genres), platforms: list(d.platforms),
-  sortOrder: d.sortOrder === undefined ? '' : String(d.sortOrder), ageRating: String(d.ageRating ?? ''), coverMediaId: String(d.coverMediaId ?? ''), slug: String(d.slug ?? ''),
+  sortOrder: d.sortOrder === undefined ? '' : String(d.sortOrder), ageRating: String(d.ageRating ?? ''), coverMediaId: String(d.coverMediaId ?? ''),
 });
+/** Адрес и мета игры (K23 §3–§4) – в черновике, как у публикаций; сайт меняется только публикацией. */
+const seoOf = (d: Record<string, unknown>): SeoValue => ({ slug: String(d.slug ?? ''), seoTitle: String(d.seoTitle ?? ''), seoDescription: String(d.seoDescription ?? ''), h1: String(d.h1 ?? '') });
 
 export default function GameEditor(props: { initial: GameDto | null; direction: Direction; canManage: boolean }) {
   const [dto, setDto] = useState<GameDto | null>(props.initial);
   const [form, setForm] = useState(formOf(dto?.draft ?? {}));
+  const [seo, setSeo] = useState<SeoValue>(seoOf(dto?.draft ?? {}));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -56,13 +60,14 @@ export default function GameEditor(props: { initial: GameDto | null; direction: 
     const split = (v: string) => v.split(',').map((x) => x.trim()).filter(Boolean);
     const keep = { ...(dto?.draft ?? {}) };
     const n = form.sortOrder.trim() === '' ? undefined : Number(form.sortOrder);
-    return clean({ ...keep, title: form.title, short: form.short, full: form.full, slug: form.slug, coverMediaId: form.coverMediaId, ageRating: form.ageRating, genres: split(form.genres), platforms: split(form.platforms), sortOrder: n !== undefined && Number.isInteger(n) ? n : undefined });
+    return clean({ ...keep, title: form.title, short: form.short, full: form.full, ...seo, coverMediaId: form.coverMediaId, ageRating: form.ageRating, genres: split(form.genres), platforms: split(form.platforms), sortOrder: n !== undefined && Number.isInteger(n) ? n : undefined });
   };
   const reload = async () => {
     if (!dto) return;
     const fresh = await browserCall<GameDto>(`/content/games/${dto.id}/draft`);
     setDto(fresh);
     setForm(formOf(fresh.draft));
+    setSeo(seoOf(fresh.draft));
     setConflict(false);
     setErrors({});
     setDirty(false);
@@ -77,6 +82,8 @@ export default function GameEditor(props: { initial: GameDto | null; direction: 
     setErrors({});
     setMsg(null);
     if (form.sortOrder.trim() && !/^\d{1,6}$/.test(form.sortOrder.trim())) return setErrors({ sortOrder: 'Целое число от 0', _: '' });
+    const long = seoLengthErrors(seo);
+    if (Object.keys(long).length) return setErrors({ ...long, _: 'Проверьте отмеченные поля.' });
     setBusy(true);
     try {
       if (!dto) {
@@ -112,11 +119,10 @@ export default function GameEditor(props: { initial: GameDto | null; direction: 
           <Field id="game-ageRating" label="Возраст" error={errors.ageRating}>
             <select {...aria('game-ageRating', errors.ageRating)} class="yc-input" value={form.ageRating} onChange={set('ageRating')}><option value="">Не указан</option>{AGES.map((a) => <option value={a}>{a}</option>)}</select>
           </Field>
-          <Field id="game-slug" label="Адрес страницы" error={errors.slug} hint="Латинское название издателя: латиница, цифры и дефис. Нужен, если заполнено «Подробно».">
-            <input {...aria('game-slug', errors.slug, true)} class="yc-input" maxLength={200} value={form.slug} onInput={set('slug')} />
-          </Field>
           <MediaPicker id="game-cover" label="Обложка" value={form.coverMediaId} onChange={(id) => { setForm({ ...form, coverMediaId: id }); setDirty(true); }} hint={RATIO_HINT.cover} error={errors.coverMediaId} disabled={readOnly || busy} />
         </fieldset>
+        <SeoPanel entityType="game" parent={direction} entityId={dto?.id ?? null} liveSlug={dto?.slug ?? null} published={dto?.status === 'published'} title={form.title} lead={form.short}
+          titleSuffix=" – где поиграть в Ю-Клуб" descriptionFrom="коротко" value={seo} onChange={(v) => { setSeo(v); setDirty(true); }} errors={errors} disabled={readOnly || busy} />
         <p class={`yc-alert ${msg ? (msg.ok ? 'yc-alert--ok' : 'yc-alert--error') : ''}`} role="status" aria-live="polite">{msg?.text ?? ''}</p>
       </form>
       <DraftActions

@@ -586,6 +586,11 @@ export function registerContent(app: FastifyInstance, P: string, d: ContentMockD
     });
     return { status: 200, body: { ids } };
   }));
+  app.get(`${P}/content/home-blocks/:id/draft`, read((s, req) => {
+    const row = find('home_block', (req.params as { id: string }).id);
+    viewCity(s, row.col.cityId);
+    return { ...dto(row), blockType: row.col.blockType, cityId: row.col.cityId ?? null, sortOrder: row.col.sortOrder };
+  }));
   app.get(`${P}/content/home-blocks/:id/versions`, read((s, req) => {
     const row = find('home_block', (req.params as { id: string }).id);
     viewCity(s, row.col.cityId);

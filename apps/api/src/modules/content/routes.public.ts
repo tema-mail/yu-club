@@ -60,7 +60,7 @@ export async function contentPublicRoutes(app: FastifyInstance, deps: ContentPub
   const clock = deps.clock ?? systemClock;
   const db = deps.pool;
 
-  // №207 главная
+  // №207 главная: seo – ручные поля баннера hero для мета главной (K23 §4), нет баннера – null
   app.get('/content/home', async (request, reply) => {
     const { city } = parse(homeQuery, request.query);
     const now = clock.now();
@@ -72,7 +72,7 @@ export async function contentPublicRoutes(app: FastifyInstance, deps: ContentPub
       listGames(db, { limit: 20 }),
     ]);
     const versions = [...home.versionIds, ...promos.versionIds, ...news.versionIds, ...games.versionIds];
-    return cached(request, reply, versions, { blocks: home.blocks.map(withoutVersion), promos: promos.items, news: news.items, games: games.items });
+    return cached(request, reply, versions, { blocks: home.blocks.map(withoutVersion), seo: home.seo, promos: promos.items, news: news.items, games: games.items });
   });
 
   // №208 список публикаций

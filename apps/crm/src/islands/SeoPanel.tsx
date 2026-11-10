@@ -22,6 +22,12 @@ export interface SeoPanelProps {
   onChange: (v: SeoValue) => void;
   errors: Record<string, string>;
   disabled: boolean;
+  /** Шаблон title сайта (lib/seo.ts K23 §4): у игры « – где поиграть в Ю-Клуб», по умолчанию « – Ю-Клуб». */
+  titleSuffix?: string;
+  /** Откуда берётся описание, если поле пусто: «анонс» у публикаций, «коротко» у игры. */
+  descriptionFrom?: string;
+  /** Адрес задан картой сайта (страницы /about/, /rules/…, баннер главной «/»): поля адреса нет, только мета. */
+  fixedPath?: string;
 }
 export const SEO_LIMITS = { seoTitle: { warn: 70, max: 120 }, seoDescription: { warn: 160, max: 300 }, h1: { warn: 90, max: 90 } } as const;
 /** Ошибки длины до отправки: сервер отрежет то же (common.ts seoShape). */
@@ -44,10 +50,10 @@ export default function SeoPanel(props: SeoPanelProps) {
   const [check, setCheck] = useState<Check>(null);
   const [history, setHistory] = useState<Array<{ oldSlug: string; createdAt: string }>>([]);
   const set = (k: keyof SeoValue, val: string | boolean) => props.onChange({ ...v, [k]: val });
-  const path = v.slug ? (props.entityType === 'publication' ? publicationPath(props.parent as PublicationType, v.slug) : gamePath(props.parent as 'pc', v.slug)) : '';
+  const path = props.fixedPath ?? (v.slug ? (props.entityType === 'publication' ? publicationPath(props.parent as PublicationType, v.slug) : gamePath(props.parent as 'pc', v.slug)) : '');
 
   useEffect(() => {
-    if (!props.entityId) return;
+    if (!props.entityId || props.fixedPath) return;
     browserCall<{ items: Array<{ oldSlug: string; createdAt: string }> }>(`/seo/history?entityType=${props.entityType}&entityId=${props.entityId}`).then((r) => setHistory(r.items)).catch(() => setHistory([]));
   }, [props.entityId]);
 
@@ -70,12 +76,15 @@ export default function SeoPanel(props: SeoPanelProps) {
 
   const slugMsg = props.errors.slug ?? (check && !check.ok ? (check.code === 'SLUG_TAKEN' ? `Адрес занят. Свободный: ${check.suggestion ?? ''}` : 'Только латиница в нижнем регистре, цифры и дефис, до 90 знаков') : undefined);
   const movedFrom = props.published && props.liveSlug && v.slug && v.slug !== props.liveSlug ? props.liveSlug : null;
-  const snippetTitle = v.seoTitle.trim() || (props.title.trim() ? `${props.title.trim()} – Ю-Клуб` : 'Заголовок страницы');
-  const snippetDesc = v.seoDescription.trim() || props.lead.trim() || 'Описание появится из анонса.';
+  const suffix = props.titleSuffix ?? ' – Ю-Клуб';
+  const from = props.descriptionFrom ?? 'анонс';
+  const snippetTitle = v.seoTitle.trim() || (props.title.trim() ? `${props.title.trim()}${suffix}` : 'Заголовок страницы');
+  const snippetDesc = v.seoDescription.trim() || props.lead.trim() || `Описание появится из поля «${from}».`;
 
   return (
     <section class="yc-ct__box" aria-labelledby="seo-title-h" data-testid="seo-panel">
-      <h2 id="seo-title-h">Поиск и адрес</h2>
+      <h2 id="seo-title-h">{props.fixedPath ? 'Поиск' : 'Поиск и адрес'}</h2>
+      {!props.fixedPath && (<>
       <Field id="seo-slug" label="Адрес страницы" error={slugMsg} hint="Английские слова по смыслу: латиница, цифры, дефис.">
         <input {...aria('seo-slug', slugMsg, true)} class="yc-input" maxLength={200} value={v.slug} disabled={props.disabled} onInput={(e) => { set('slug', e.currentTarget.value.trim().toLowerCase()); setCheck(null); }} onBlur={() => void verify()} />
       </Field>
@@ -86,11 +95,12 @@ export default function SeoPanel(props: SeoPanelProps) {
       {check?.ok && check.code === 'SLUG_IN_HISTORY' && <p class="yc-ct__warn" role="status">Этот адрес раньше был у другого материала: ссылки, которые вели туда, начнут вести сюда.</p>}
       {movedFrom && <p class="yc-ct__warn" role="status" data-testid="seo-moved">Адрес опубликованного материала меняется: старый адрес /{movedFrom}/ будет вести на новый (301) после публикации.</p>}
       {history.length > 0 && <p class="yc-ct__muted">Прежние адреса (ведут сюда): {history.map((h) => h.oldSlug).join(', ')}</p>}
-      <Field id="seo-seoTitle" label="Title" error={props.errors.seoTitle} hint="Пусто – «Заголовок – Ю-Клуб».">
+      </>)}
+      <Field id="seo-seoTitle" label="Title" error={props.errors.seoTitle} hint={`Пусто – «Заголовок${suffix}».`}>
         <input {...aria('seo-seoTitle', props.errors.seoTitle, true)} class="yc-input" value={v.seoTitle} disabled={props.disabled} onInput={(e) => set('seoTitle', e.currentTarget.value)} />
       </Field>
       <Counter id="seo-seoTitle" n={v.seoTitle.length} {...SEO_LIMITS.seoTitle} />
-      <Field id="seo-seoDescription" label="Description" error={props.errors.seoDescription} hint="Пусто – анонс.">
+      <Field id="seo-seoDescription" label="Description" error={props.errors.seoDescription} hint={`Пусто – ${from}.`}>
         <textarea {...aria('seo-seoDescription', props.errors.seoDescription, true)} class="yc-input" rows={3} value={v.seoDescription} disabled={props.disabled} onInput={(e) => set('seoDescription', e.currentTarget.value)} />
       </Field>
       <Counter id="seo-seoDescription" n={v.seoDescription.length} {...SEO_LIMITS.seoDescription} />

@@ -36,7 +36,8 @@ export interface GamePage extends GameCard { full: string; media: MediaMap; avai
 
 export type BlockType = 'hero' | 'about' | 'directions' | 'advantages' | 'promo_strip' | 'cta';
 export interface HomeBlock { id: string; blockType: BlockType; cityOverride: boolean; payload: Record<string, unknown>; media: MediaMap }
-export interface HomeContent { blocks: HomeBlock[]; promos: PublicationCard[]; news: PublicationCard[]; games: GameCard[] }
+/** seo – ручные поля баннера hero для мета главной (K22 §12 №207, K23 §4); нет живого баннера – null. */
+export interface HomeContent { blocks: HomeBlock[]; seo: SeoDto | null; promos: PublicationCard[]; news: PublicationCard[]; games: GameCard[] }
 
 export type PageKey = 'about' | 'rules' | 'contacts_intro' | 'privacy-policy' | 'personal-data-consent' | 'cookie-policy' | 'advertising-consent';
 export interface PublicPage { key: PageKey; title: string; body: string; documentVersion: string | null; updatedAt: string; media: MediaMap; seo: SeoDto }

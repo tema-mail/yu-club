@@ -228,6 +228,14 @@ export async function catalogCrmRoutes(app: FastifyInstance, deps: ContentCrmDep
     });
   });
 
+  // Один блок – для истории версий и отката в CRM (как /content/games/:id/draft); чужой город – 404.
+  app.get('/content/home-blocks/:id/draft', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    const row = await loadEntity(db, blockDef.table, (request.params as { id: string }).id);
+    assertViewCity(access, row.city_id);
+    return { ...draftDto(row), blockType: row.block_type, cityId: row.city_id, sortOrder: row.sort_order };
+  });
+
   app.get('/content/home-blocks/:id/versions', async (request, reply) => {
     const { access } = await deps.authenticate(request, reply);
     const row = await loadEntity(db, blockDef.table, (request.params as { id: string }).id);

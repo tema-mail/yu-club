@@ -113,6 +113,7 @@ describe('S4-37: черновик не виден посетителю', () => {
     expect((await get(`/branches/${branch.id}`)).json().description).toBe('Филиал живой');
     expect((await get('/legal-versions')).json()).toEqual({ privacyPolicy: null, personalDataConsent: null, cookiePolicy: null, advertisingConsent: 'advertising-consent-2026-11-01' });
     const home = (await get('/home')).json();
+    expect(home.seo).toEqual({ title: null, description: null, h1: null, ogImage: null }); // №207: seo баннера для мета главной
     expect(home.blocks[0]).toMatchObject({ blockType: 'hero', payload: { title: 'Герой' } });
     expect(home.news.map((n: { slug: string }) => n.slug)).toEqual(['first-news']);
     expect(home.promos.map((n: { slug: string }) => n.slug)).toEqual(['promo-here']);
