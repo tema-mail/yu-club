@@ -189,4 +189,80 @@ describe('коррекции операций до слияния (D5-09)', () =
     expect(await bal(m)).toBe(0);
     expect((await db.client.query(`SELECT client_id FROM app.loyalty_issues WHERE ref_id = $1`, [acc.visitId])).rows).toEqual([{ client_id: p }]);
   });
+
+  /** Ручной приход с партией (срок – по параметру). */
+  async function grant(clientId: string, amount: number, expiresAt: Date | null): Promise<void> {
+    await withTx(pool, async (tx) => {
+      await openAccount(tx, clientId, NOW);
+      const e = await postPoints(tx, clientId, { amount, type: 'loyalty.manual', basis: 'тест', branchId, occurredAt: NOW }, randomUUID(), SYSTEM_AUTHOR);
+      await createBatch(tx, { clientId, entryId: e.entryId, amount, balanceBefore: e.balanceBefore, source: 'manual', branchId, expiresAt, accruedAt: NOW });
+    });
+  }
+  /** Долг без партий (штраф на нуле). */
+  async function debt(clientId: string, amount: number): Promise<void> {
+    await withTx(pool, async (tx) => {
+      await openAccount(tx, clientId, NOW);
+      const e = await postPoints(tx, clientId, { amount: -amount, type: 'loyalty.penalty', branchId, occurredAt: NOW }, randomUUID(), SYSTEM_AUTHOR);
+      await debitBatches(tx, { clientId, entryId: e.entryId, amount, balanceBefore: e.balanceBefore, kind: 'penalty' });
+    });
+  }
+  const live = async (id: string) =>
+    (await db.client.query(`SELECT remaining_centi::int AS r, expires_at FROM app.loyalty_batches WHERE client_id = $1 AND status = 'active' AND remaining_centi > 0 ORDER BY expires_at NULLS LAST`, [id])).rows;
+  const unpenalize = async (bookingId: string) => {
+    await db.client.query(`UPDATE app.bookings SET status = 'completed' WHERE id = $1`, [bookingId]);
+    expect(await withTx(pool, (tx) => revertPenalty(tx as unknown as Tx, { bookingId }, penaltyDeps))).toBe('reversed');
+  };
+
+  it('R4 долг второй списан при слиянии (основная на −50) – снятие её штрафа не даёт основной баллов', async () => {
+    const p = await addClient();
+    const m = await addClient();
+    await debt(p, 5000);
+    const nb = await penalize(m);
+    const r = await merge(p, m);
+    expect(r.results.loyalty).toMatchObject({ movedCenti: 0, debtWrittenOffCenti: 500 });
+    await unpenalize(nb);
+    expect(await bal(p)).toBe(-5000);
+    expect(await bal(m)).toBe(0);
+    for (const id of [p, m]) await consistent(id);
+  });
+
+  it('R4 частично: перенесено 2 балла, списано 3 – снятие штрафа возвращает основной ровно 2', async () => {
+    const p = await addClient();
+    const m = await addClient();
+    await debt(p, 4800);
+    const nb = await penalize(m);
+    const r = await merge(p, m);
+    expect(r.results.loyalty).toMatchObject({ movedCenti: -200, debtWrittenOffCenti: 300 });
+    expect(await bal(p)).toBe(-5000);
+    await unpenalize(nb);
+    expect(await bal(p)).toBe(-4800);
+    expect(await bal(m)).toBe(0);
+    for (const id of [p, m]) await consistent(id);
+  });
+
+  it('R5 сторно начисления второй списывает именно перенесённую партию начисления, а не ближайшую по сроку у основной', async () => {
+    const p = await addClient();
+    const m = await addClient();
+    const exp = new Date('2026-11-25T00:00:00Z');
+    await grant(p, 1000, exp);
+    const acc = await accrueVisit(m, 1000); // бессрочно
+    await merge(p, m);
+    await withTx(pool, (tx) => reverseAccrual(tx as unknown as Tx, p, { visitId: acc.visitId }, 'visit_reverted', { type: 'visit', id: acc.visitId }, clock));
+    expect(await live(p)).toEqual([{ r: 1000, expires_at: exp }]);
+    await consistent(p);
+  });
+
+  it('R5 снятие штрафа второй, долг которого покрыла основная партией со сроком, – возврат в ту же партию с тем же сроком', async () => {
+    const p = await addClient();
+    const m = await addClient();
+    const exp = new Date('2026-11-25T00:00:00Z');
+    await grant(p, 1000, exp);
+    const nb = await penalize(m);
+    await merge(p, m);
+    expect(await live(p)).toEqual([{ r: 500, expires_at: exp }]);
+    await unpenalize(nb);
+    expect(await live(p)).toEqual([{ r: 1000, expires_at: exp }]);
+    expect(await bal(m)).toBe(0);
+    for (const id of [p, m]) await consistent(id);
+  });
 });

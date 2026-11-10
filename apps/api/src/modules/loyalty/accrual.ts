@@ -12,7 +12,7 @@ import { resolveSettings } from '../../core/settings.ts';
 import { addDays, branchDay, instantToLocal, systemClock, type Clock, type TimeZone } from '../../core/time.ts';
 import type { PaymentMethod } from '../finance/methods.ts';
 import { clientIdsMergedInto } from '../clients/merge.ts';
-import { bridgeToMerged } from './merged.ts';
+import { batchCarriedTo, bridgeToMerged } from './merged.ts';
 import { createBatch, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
 
 /** Чтение брони и посещения (реализация – booking/providers.ts paymentBookingProvider, S2-05). */
@@ -133,7 +133,10 @@ export async function reverseAccrual(
   if (a.client_id !== acc.clientId) {
     // объединённая карточка: счёт её после основной, мост основная → вторая на сумму, затем обычное сторно на второй
     await openAccount(tx, a.client_id, now);
-    await bridgeToMerged(tx, acc.clientId, a.client_id, amount, key, SYSTEM_AUTHOR, now);
+    // с основной списывается партия, в которую переехала партия этого начисления (её срок), а не ближайшая по сроку
+    const own = (await tx.query<{ id: string }>('SELECT id FROM app.loyalty_batches WHERE accrual_entry_id = $1', [a.ledger_entry_id])).rows[0]?.id;
+    const carried = own ? await batchCarriedTo(tx, own, acc.clientId) : null;
+    await bridgeToMerged(tx, acc.clientId, a.client_id, amount, key, SYSTEM_AUTHOR, now, carried);
   }
   const r = await reverseWithBatches(tx, {
     clientId: a.client_id, entryId: Number(a.ledger_entry_id), reason: reason === 'visit_reverted' ? 'исправление посещения' : 'полный возврат платежа',
