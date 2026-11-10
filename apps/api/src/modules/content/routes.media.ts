@@ -207,15 +207,27 @@ export async function mediaRoutes(app: FastifyInstance, deps: MediaRoutesDeps): 
     const id = (request.params as { id: string }).id;
     const body = parse(purgeBody, request.body);
     let files: string[] = [];
+    let storageKey: string | null = null;
     const result = await inTx((tx) =>
       runIdempotent(tx, { scope: idempotencyScope('staff', access.actor.staffId, 'media.purge'), key, request: { route: 'POST /content/media/:id/purge', params: { id }, body }, clock }, async () => {
         const r = await purgeMedia(tx, access, id, { reasonCode: body.reasonCode, basis: body.basis }, meta, clock);
         files = r.files;
+        storageKey = r.storageKey;
         return { status: 200, body: { purged: true, affected: r.affected } };
       }),
     );
-    for (const f of files) await deps.store.remove(f);
+    // Запись уже очищена и зафиксирована: сбой диска – не ошибка запроса. Честный ответ filesPending, файлы уберёт ночная content:media-gc
+    // (очищенная строка в «известные» не входит). Основной файл стирается последним: лежит он – значит, на диске что-то осталось.
+    let removeFailed = false;
+    try {
+      for (const f of files) await deps.store.remove(f);
+    } catch (err) {
+      removeFailed = true;
+      request.log.warn({ err, mediaId: id }, 'content: файлы очищенного фото не удалены – их уберёт content:media-gc');
+    }
+    const mainFile = storageKey ?? (await getMediaRow(deps.pool, id))?.storage_key ?? null;
+    const filesPending = removeFailed || (mainFile !== null && (await deps.store.exists(mainFile)));
     if (result.replayed) reply.header('idempotent-replay', 'true');
-    return reply.code(result.status).send(result.body);
+    return reply.code(result.status).send({ ...(result.body as object), filesPending });
   });
 }

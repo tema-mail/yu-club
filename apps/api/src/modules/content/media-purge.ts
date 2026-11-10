@@ -48,7 +48,10 @@ export interface PurgeAffected {
 }
 
 export interface PurgeResult {
+  /** Что стереть после фиксации: варианты, основной файл – последним (есть основной – значит, удалено не всё). */
   files: string[];
+  /** Основной файл: по нему повтор и ответ узнают, остались ли файлы на диске (варианты после очистки в строке не хранятся). */
+  storageKey: string;
   affected: PurgeAffected[];
 }
 
@@ -102,7 +105,7 @@ export async function purgeMedia(tx: Db, ctx: AccessContext, id: string, input: 
   if (!UUID_RE.test(id)) throw new AppError('NOT_FOUND', 404, 'Не найдено');
   const row = (await tx.query<MediaRow>(`SELECT ${MEDIA_COLUMNS} FROM app.content_media WHERE id = $1 FOR UPDATE`, [id])).rows[0];
   if (!row) throw new AppError('NOT_FOUND', 404, 'Не найдено');
-  if (row.status === 'purged') return { files: [], affected: [] };
+  if (row.status === 'purged') return { files: [], storageKey: row.storage_key, affected: [] };
 
   const now = clock.now();
   const byEntity = new Map<string, PurgeAffected>();
@@ -116,7 +119,7 @@ export async function purgeMedia(tx: Db, ctx: AccessContext, id: string, input: 
   // Подписи тоже могут называть человека – очищаются вместе с файлом; sha256 держит запрет повторной загрузки.
   await tx.query(`UPDATE app.content_media SET status = 'purged', alt = NULL, title = NULL, original_name = NULL, variants = '[]', archived_at = COALESCE(archived_at, $2), row_version = row_version + 1 WHERE id = $1`, [id, now]);
   const affected = [...byEntity.values()];
-  const files = [...new Set([row.storage_key, ...row.variants.map((v) => v.key)])];
+  const files = [...new Set([...row.variants.map((v) => v.key).filter((k) => k !== row.storage_key), row.storage_key])];
   // Журнал очисток (0444) – вход регламента восстановления бэкапа: код, хеш, число файлов, затронутые; свободного текста нет.
   await tx.query(
     `INSERT INTO journal.media_purged (media_id, sha256, reason_code, purged_by, purged_at, files, affected) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -124,5 +127,5 @@ export async function purgeMedia(tx: Db, ctx: AccessContext, id: string, input: 
   );
   // Основание словами – только в аудите и без данных субъекта: номер и дата документа, ФИО сюда не вносить (подсказка в CRM).
   await writeAudit(tx, meta, { action: 'media.purged', object: { type: 'media', id }, reason, after: { reasonCode, basis, sha256: row.sha256, files: files.length, affected } }, clock);
-  return { files, affected };
+  return { files, storageKey: row.storage_key, affected };
 }

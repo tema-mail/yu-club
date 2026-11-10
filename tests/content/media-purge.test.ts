@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config.ts';
 import { blockDef, ensureBlock } from '../../apps/api/src/modules/content/blocks.ts';
-import { getMediaRow, uploadMedia } from '../../apps/api/src/modules/content/media.ts';
+import { gcMedia, getMediaRow, uploadMedia } from '../../apps/api/src/modules/content/media.ts';
 import { stripMedia } from '../../apps/api/src/modules/content/media-purge.ts';
 import { publicationDef, type PublicationDraft } from '../../apps/api/src/modules/content/publications.ts';
 import { createEntity, listVersions, publish, rollback, saveDraft, type EntityRow } from '../../apps/api/src/modules/content/versions.ts';
@@ -93,7 +93,7 @@ describe('S4-45: очистка', () => {
     expect((await pubGet(`/publications/news/${inText.slug}`)).json().cover.url).toMatch(/^\/media\//);
     const res = await purge('owner', id);
     expect(res.statusCode).toBe(200);
-    expect(res.json().purged).toBe(true);
+    expect(res.json()).toMatchObject({ purged: true, filesPending: false });
     expect(res.json().affected).toEqual([{ entityType: 'publication', entityId: inText.row.id, versionNo: 2 }]);
     for (const v of row0.variants) expect(await f.store.exists(v.key)).toBe(false);
     expect(await f.store.exists(row0.storage_key)).toBe(false);
@@ -232,6 +232,31 @@ describe('S4-45: очистка', () => {
     const list = await app.inject({ method: 'GET', url: `${BASE}/content/media`, headers: { cookie: cookies.owner! } });
     expect(list.json().items.map((x: { id: string }) => x.id)).not.toContain(media.id);
     expect((await app.inject({ method: 'GET', url: `${BASE}/content/media/${media.id}`, headers: { cookie: cookies.owner! } })).statusCode).toBe(404);
+  });
+
+  it('сбой удаления файла после фиксации: 200 с filesPending, запись очищена, повтор не врёт; файл уносит ночная content:media-gc', async () => {
+    const id = await f.image(101, 'Фото');
+    const row = (await getMediaRow(f.pool, id))!;
+    const broken = buildServer(loadConfig({ LOG_LEVEL: 'silent' }), {
+      network: { pool: f.pool },
+      staff: { pool: f.pool, auth: staffAuthConfig('t'.repeat(40)), clock },
+      content: { mediaStore: { ...f.store, remove: async () => { throw new Error('диск недоступен'); } } },
+    });
+    try {
+      const res = await broken.inject({ method: 'POST', url: `${BASE}/content/media/${id}/purge`, headers: { cookie: cookies.owner!, 'idempotency-key': randomUUID() }, payload: { reasonCode: 'subject_request' } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ purged: true, filesPending: true });
+    } finally {
+      await broken.close();
+    }
+    expect((await getMediaRow(f.pool, id))!.status).toBe('purged');
+    expect(await f.store.exists(row.storage_key)).toBe(true);
+    // повтор, пока файл лежит, не говорит «удалено»
+    expect((await purge('owner', id)).json()).toMatchObject({ purged: true, filesPending: true, affected: [] });
+    const gc = await gcMedia(f.pool, f.store, new Date(Date.now() + 2 * 86_400_000));
+    expect(gc.removed).toEqual(expect.arrayContaining([row.storage_key, ...row.variants.map((v) => v.key)]));
+    expect(await f.store.exists(row.storage_key)).toBe(false);
+    expect((await purge('owner', id)).json()).toMatchObject({ purged: true, filesPending: false });
   });
 
   it('сбой транзакции не стирает файлы: файлы удаляются только после фиксации', async () => {
