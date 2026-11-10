@@ -54,9 +54,22 @@ export interface ExportJob {
   expiresAt: string | null; downloadedAt: string | null;
 }
 
-/** K11 №250 (search.ts). */
-export type SearchType = 'client' | 'booking' | 'finance_operation' | 'staff' | 'event' | 'equipment';
-export interface SearchGroup { type: SearchType; items: Array<Record<string, unknown>>; more: boolean }
+/** K11 №250 (search.ts): строки групп – поля, как их собирает API. Клиент: name – полное с client.view.full, иначе «Иван П.»
+ *  (null – имени нет); phone – маска «+7 ••• ••• ••-NN» всем ролям (K24 §5), полный номер – только в карточке. */
+export interface SearchClientHit { id: string; name: string | null; phone: string; kind: 'profile' | 'guest' }
+export interface SearchBookingHit { id: string; number: number; branchId: string; branchName: string; startLocal: string; status: string; resourceName: string }
+export interface SearchFinanceHit { id: string; number: number; branchId: string; kind: string; amountKop: number; occurredAt: string; comment: string | null }
+export interface SearchStaffHit { id: string; name: string; role: string }
+export interface SearchEventHit { id: string; number: string; branchId: string; heldOn: string | null; status: string }
+export interface SearchEquipmentHit { id: string; inventoryNo: string; serialNo: string | null; branchId: string; status: string }
+type Group<T extends string, I> = { type: T; items: I[]; more: boolean };
+/** Группа ≤ 5 строк; more – есть ещё. Тип без права сервер не присылает. */
+export type SearchGroup =
+  | Group<'client', SearchClientHit> | Group<'booking', SearchBookingHit> | Group<'finance_operation', SearchFinanceHit>
+  | Group<'staff', SearchStaffHit> | Group<'event', SearchEventHit> | Group<'equipment', SearchEquipmentHit>;
+export type SearchType = SearchGroup['type'];
+/** Ответ GET /search?q= – его читают GlobalSearch.tsx и мок tests/mock-reports.ts. */
+export interface SearchResponse { groups: SearchGroup[] }
 
 /** K11 №248 (routes.crm.ts). Директору сервер не отдаёт discrepancyCount и error (undefined – поля нет в JSON). */
 export interface ReconcileDiscrepancy {

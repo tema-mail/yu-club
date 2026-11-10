@@ -7,7 +7,7 @@
 // сегмент hour и source/category/place не сужают строки; задача экспорта сама проходит queued → running → ready за ~1 с.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import type { ExportJob, Metric, MetricUnit, Period, ReconcileRun, SearchGroup } from '../src/lib/reports.ts';
+import type { ExportJob, Metric, MetricUnit, Period, ReconcileRun, SearchGroup, SearchResponse } from '../src/lib/reports.ts';
 import { maskPhone } from './mock-clients.ts';
 
 type Rec = Record<string, unknown>;
@@ -569,7 +569,7 @@ function reconcileRuns(): ReconcileRun[] {
   ];
 }
 
-function search(env: Env, raw: unknown): { groups: SearchGroup[] } {
+function search(env: Env, raw: unknown): SearchResponse {
   if (!env.deps.can(env.s, 'search.global')) throw forbidden('search.global');
   const q = typeof raw === 'string' ? raw.trim() : '';
   const digits = q.replace(/\D/g, '');
@@ -581,24 +581,24 @@ function search(env: Env, raw: unknown): { groups: SearchGroup[] } {
   const can = (a: string) => env.deps.can(env.s, a);
   const inZone = (id: string | null) => id !== null && (env.zone.network || env.zone.branchIds.includes(id));
   const lower = q.toLowerCase();
-  const group = (type: SearchGroup['type'], all: Rec[]): SearchGroup => ({ type, items: all.slice(0, 5), more: all.length > 5 });
+  const cut = <I>(all: I[]) => ({ items: all.slice(0, 5), more: all.length > 5 });
   const out: SearchGroup[] = [];
   const clients = can('client.view.basic') && !isDate && (!phoneLike || digits.length >= 4)
     ? env.deps.clients().filter((c) => (env.zone.network || c.links.some(inZone)) && c.firstName && (phoneLike ? (c.phoneE164 ?? '').endsWith(digits) : `${c.firstName} ${c.lastName}`.toLowerCase().split(' ').some((w) => w.startsWith(lower))))
     : [];
   const full = can('client.view.full'); // search.ts: имя – по client.view.full (maskClient), телефон – maskPhone всем ролям, и Владельцу (03 §14)
-  if (can('client.view.basic')) out.push(group('client', clients.map((c) => ({ id: c.id, name: full ? `${c.firstName} ${c.lastName ?? ''}`.trim() : `${c.firstName}${c.lastName ? ` ${c.lastName[0]}.` : ''}`,
-    phone: maskPhone(c.phoneE164), kind: c.status === 'guest' ? 'guest' : 'profile' }))));
-  if (can('schedule.view')) out.push(group('booking', seed.bookings.filter((b) => inZone(b.branchId) && (String(b.number) === q || localDate(String(b.startAt), 'Asia/Novosibirsk') === q))
-    .map((b) => ({ id: b.id, number: b.number, branchId: b.branchId, branchName: bName(env, b.branchId), startLocal: fmtLocal(String(b.startAt), bTz(env, b.branchId)), status: b.status, resourceName: b.resourceName }))));
-  if (can('finance.view')) out.push(group('finance_operation', seed.finance.filter((f) => inZone(f.branchId) && (String(f.number) === q || (!isNumber && String(f.comment ?? '').toLowerCase().includes(lower))))
-    .map((f) => ({ id: f.id, number: f.number, branchId: f.branchId, kind: f.kind, amountKop: f.amountKop, occurredAt: f.occurredAt, comment: f.comment }))));
-  if (can('staff.view')) out.push(group('staff', phoneLike || isDate ? [] : env.deps.staff().filter((s) => (env.zone.network || (s.branchIds ?? []).some(inZone) || (s.cityIds ?? []).some((c) => env.branches.some((b) => b.cityId === c && inZone(b.id)))) && `${s.firstName} ${s.lastName}`.toLowerCase().split(' ').some((w) => w.startsWith(lower)))
-    .map((s) => ({ id: s.id, name: `${s.firstName} ${s.lastName}`, role: s.role }))));
-  if (can('event.view')) out.push(group('event', seed.events.filter((e) => inZone(e.branchId) && String(e.number).toUpperCase() === (isNumber ? `EV-${q.padStart(4, '0')}` : q.toUpperCase()))
-    .map((e) => ({ id: e.id, number: e.number, branchId: e.branchId, heldOn: localDate(String(e.heldAt), bTz(env, e.branchId)), status: e.status }))));
-  if (can('equipment.view')) out.push(group('equipment', seed.equipment.filter((e) => inZone(e.branchId) && (String(e.inventoryNo) === (isNumber ? `INV-${q.padStart(4, '0')}` : q.toUpperCase()) || String(e.serialNo) === q.toUpperCase()))
-    .map((e) => ({ id: e.id, inventoryNo: e.inventoryNo, serialNo: e.serialNo, branchId: e.branchId, status: e.status }))));
+  if (can('client.view.basic')) out.push({ type: 'client', ...cut(clients.map((c) => ({ id: c.id, name: full ? `${c.firstName} ${c.lastName ?? ''}`.trim() : `${c.firstName}${c.lastName ? ` ${c.lastName[0]}.` : ''}`,
+    phone: maskPhone(c.phoneE164), kind: c.status === 'guest' ? 'guest' as const : 'profile' as const }))) });
+  if (can('schedule.view')) out.push({ type: 'booking', ...cut(seed.bookings.filter((b) => inZone(b.branchId) && (String(b.number) === q || localDate(String(b.startAt), 'Asia/Novosibirsk') === q))
+    .map((b) => ({ id: b.id, number: Number(b.number), branchId: String(b.branchId), branchName: bName(env, b.branchId), startLocal: fmtLocal(String(b.startAt), bTz(env, b.branchId)), status: String(b.status), resourceName: String(b.resourceName) }))) });
+  if (can('finance.view')) out.push({ type: 'finance_operation', ...cut(seed.finance.filter((f) => inZone(f.branchId) && (String(f.number) === q || (!isNumber && String(f.comment ?? '').toLowerCase().includes(lower))))
+    .map((f) => ({ id: f.id, number: Number(f.number), branchId: String(f.branchId), kind: String(f.kind), amountKop: Number(f.amountKop), occurredAt: String(f.occurredAt), comment: f.comment == null ? null : String(f.comment) }))) });
+  if (can('staff.view')) out.push({ type: 'staff', ...cut(phoneLike || isDate ? [] : env.deps.staff().filter((s) => (env.zone.network || (s.branchIds ?? []).some(inZone) || (s.cityIds ?? []).some((c) => env.branches.some((b) => b.cityId === c && inZone(b.id)))) && `${s.firstName} ${s.lastName}`.toLowerCase().split(' ').some((w) => w.startsWith(lower)))
+    .map((s) => ({ id: s.id, name: `${s.firstName} ${s.lastName}`, role: s.role }))) });
+  if (can('event.view')) out.push({ type: 'event', ...cut(seed.events.filter((e) => inZone(e.branchId) && String(e.number).toUpperCase() === (isNumber ? `EV-${q.padStart(4, '0')}` : q.toUpperCase()))
+    .map((e) => ({ id: e.id, number: String(e.number), branchId: String(e.branchId), heldOn: localDate(String(e.heldAt), bTz(env, e.branchId)), status: String(e.status) }))) });
+  if (can('equipment.view')) out.push({ type: 'equipment', ...cut(seed.equipment.filter((e) => inZone(e.branchId) && (String(e.inventoryNo) === (isNumber ? `INV-${q.padStart(4, '0')}` : q.toUpperCase()) || String(e.serialNo) === q.toUpperCase()))
+    .map((e) => ({ id: e.id, inventoryNo: String(e.inventoryNo), serialNo: e.serialNo == null ? null : String(e.serialNo), branchId: String(e.branchId), status: String(e.status) }))) });
   return { groups: out };
 }
 

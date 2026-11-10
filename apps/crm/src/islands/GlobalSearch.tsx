@@ -4,7 +4,7 @@
 // по найденному, Enter – открыть, Escape – закрыть. Запрос – после паузы в наборе, прежний отменяется.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError } from '../lib/api.ts';
-import { BOOKING_STATUS_LABEL, fmtValue, reportError, type SearchGroup, type SearchType } from '../lib/reports.ts';
+import { BOOKING_STATUS_LABEL, fmtValue, reportError, type SearchGroup, type SearchResponse, type SearchType } from '../lib/reports.ts';
 import { getJson } from './ReportView.tsx';
 
 const TITLES: Record<SearchType, string> = { client: 'Клиенты', booking: 'Брони', finance_operation: 'Операции кассы', staff: 'Сотрудники', event: 'Мероприятия', equipment: 'Оборудование' };
@@ -13,22 +13,22 @@ const DEBOUNCE_MS = 300;
 
 interface Hit { id: string; href: string; title: string; sub: string }
 
-function hitOf(type: SearchType, x: Record<string, unknown>): Hit {
-  const id = String(x.id);
-  const enc = encodeURIComponent(id);
-  switch (type) {
+/** Строки группы для показа: тип группы задаёт поля строки (SearchGroup – общий тип ответа API и мока). */
+function hitsOf(g: SearchGroup): Hit[] {
+  const at = (base: string, id: string) => `${base}/${encodeURIComponent(id)}`;
+  switch (g.type) {
     case 'client':
-      return { id, href: `/clients/${enc}`, title: String(x.name ?? 'Без имени'), sub: `${String(x.phone ?? '')}${x.kind === 'guest' ? ' · гость' : ''}` };
+      return g.items.map((x) => ({ id: x.id, href: at('/clients', x.id), title: x.name ?? 'Без имени', sub: `${x.phone}${x.kind === 'guest' ? ' · гость' : ''}` }));
     case 'booking':
-      return { id, href: `/bookings/${enc}`, title: `Бронь № ${String(x.number)}`, sub: `${String(x.startLocal ?? '')} · ${String(x.resourceName ?? '')} · ${BOOKING_STATUS_LABEL[String(x.status)] ?? String(x.status)}` };
+      return g.items.map((x) => ({ id: x.id, href: at('/bookings', x.id), title: `Бронь № ${x.number}`, sub: `${x.startLocal} · ${x.resourceName} · ${BOOKING_STATUS_LABEL[x.status] ?? x.status}` }));
     case 'finance_operation':
-      return { id, href: `/finance/operations/${enc}`, title: `Операция № ${String(x.number)}`, sub: `${fmtValue(Number(x.amountKop), 'kop')}${x.comment ? ` · ${String(x.comment)}` : ''}` };
+      return g.items.map((x) => ({ id: x.id, href: at('/finance/operations', x.id), title: `Операция № ${x.number}`, sub: `${fmtValue(x.amountKop, 'kop')}${x.comment ? ` · ${x.comment}` : ''}` }));
     case 'staff':
-      return { id, href: `/staff/${enc}`, title: String(x.name), sub: ROLE[String(x.role)] ?? '' };
+      return g.items.map((x) => ({ id: x.id, href: at('/staff', x.id), title: x.name, sub: ROLE[x.role] ?? '' }));
     case 'event':
-      return { id, href: `/events/${enc}`, title: `Мероприятие ${String(x.number)}`, sub: x.heldOn ? String(x.heldOn).split('-').reverse().join('.') : '' };
+      return g.items.map((x) => ({ id: x.id, href: at('/events', x.id), title: `Мероприятие ${x.number}`, sub: x.heldOn ? x.heldOn.split('-').reverse().join('.') : '' }));
     case 'equipment':
-      return { id, href: `/equipment/${enc}`, title: String(x.inventoryNo), sub: x.serialNo ? `серийный ${String(x.serialNo)}` : '' };
+      return g.items.map((x) => ({ id: x.id, href: at('/equipment', x.id), title: x.inventoryNo, sub: x.serialNo ? `серийный ${x.serialNo}` : '' }));
   }
 }
 const allHref = (type: SearchType, q: string): string => {
@@ -73,7 +73,7 @@ export default function GlobalSearch() {
     const c = new AbortController();
     ctrl.current = c;
     try {
-      const r = await getJson<{ groups: SearchGroup[] }>(`/search?${new URLSearchParams({ q: t })}`, c.signal);
+      const r = await getJson<SearchResponse>(`/search?${new URLSearchParams({ q: t })}`, c.signal);
       setGroups(r.groups);
       setHint('');
     } catch (e) {
@@ -91,7 +91,7 @@ export default function GlobalSearch() {
   };
 
   const visible = (groups ?? []).filter((g) => g.items.length > 0);
-  const hits = visible.flatMap((g) => g.items.map((x) => ({ type: g.type, ...hitOf(g.type, x) })));
+  const hits = visible.flatMap(hitsOf);
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') { setOpen(false); return; }
     if (!hits.length) return;
@@ -122,8 +122,7 @@ export default function GlobalSearch() {
             <div key={g.type} role="group" aria-label={TITLES[g.type]} data-testid={`search-group-${g.type}`}>
               <p style="margin:var(--yc-sp-2xs) var(--yc-sp-2xs) var(--yc-sp-3xs);font-size:var(--yc-fs-xs);font-weight:600;color:var(--yc-muted)">{TITLES[g.type]}</p>
               <ul role="listbox" style="list-style:none;margin:0;padding:0">
-                {g.items.map((x) => {
-                  const h = hitOf(g.type, x);
+                {hitsOf(g).map((h) => {
                   const i = ++n;
                   return (
                     <li key={h.id} id={`gs-${i}`} role="option" aria-selected={active === i}>
