@@ -15,9 +15,9 @@ import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupanc
 import { paymentBookingProvider } from '../../apps/api/src/modules/booking/providers.ts';
 import { markArrived, markNoShow } from '../../apps/api/src/modules/booking/visit.ts';
 import type { PaymentMethod } from '../../apps/api/src/modules/finance/methods.ts';
-import { availableForBookingCenti, createBatch, debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
+import { createBatch, debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import type { PaymentLookup } from '../../apps/api/src/modules/loyalty/accrual.ts';
-import { chargePoints } from '../../apps/api/src/modules/loyalty/payment-method.ts';
+import { chargePoints, pointsAvailableForBooking } from '../../apps/api/src/modules/loyalty/payment-method.ts';
 import { registerReserveHandlers, reserveForHold, RESERVE_HANDLERS, settleStaleReserves } from '../../apps/api/src/modules/loyalty/reserve.ts';
 import { lockAccounts } from '../../apps/api/src/core/ledger.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
@@ -207,7 +207,7 @@ describe('резерв брони', () => {
       await runOccupancyCommand(pool, (tx) => markArrived(tx, id, { ctx: owner, rowVersion: rv }, staffMeta(), clock));
       await deliver(RESERVE_HANDLERS.bookingConfirmed, await eventOf('booking.confirmed', 'bookingId', id));
       expect((await reserves(c)).map((x) => `${x.status}:${x.amount_centi}`).sort()).toEqual(['booking:3000', 'converted:3000']);
-      expect(await availableForBookingCenti(pool, c, now, id)).toBe(5000); // резерв самой брони не мешает её оплате
+      expect(await pointsAvailableForBooking(pool, c, now, id, null)).toBe(5000); // резерв самой брони не мешает её оплате
     } finally {
       now = saved;
     }
