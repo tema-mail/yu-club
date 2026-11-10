@@ -2,6 +2,7 @@
 // подсказкой (12 §10). У выбранной картинки без alt – предупреждение: публикация с ней вернёт MEDIA_ALT_REQUIRED.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { browserCall } from '../lib/api.ts';
+import { useLatest } from '../lib/latest.ts';
 import { errorText, type MediaDto } from '../lib/content.tsx';
 import { ALT_HINT, kb, Thumb, uploadMedia } from './MediaLibrary.tsx';
 
@@ -34,11 +35,13 @@ export default function MediaPicker(props: MediaPickerProps) {
     browserCall<MediaDto>(`/content/media/${props.value}`).then(setCurrent).catch(() => setCurrent(null));
   }, [props.value]);
 
+  const latest = useLatest(); // поиск сразу после открытия: список при открытии, пришедший позже, не подменяет найденное
   const load = (query = q) => {
+    const fresh = latest();
     const p = new URLSearchParams({ type: purpose, limit: '100' });
     if (query.trim()) p.set('q', query.trim());
     setLoadError('');
-    browserCall<{ items: MediaDto[] }>(`/content/media?${p}`).then((r) => setItems(r.items)).catch((e: unknown) => setLoadError(errorText(e)));
+    browserCall<{ items: MediaDto[] }>(`/content/media?${p}`).then((r) => fresh() && setItems(r.items)).catch((e: unknown) => fresh() && setLoadError(errorText(e)));
   };
   const open = () => {
     setUpMsg('');

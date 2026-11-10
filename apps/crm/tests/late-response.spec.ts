@@ -4,6 +4,7 @@
 import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { openEvent } from './event-helpers.ts';
 import { MOCK_PASSWORD } from './mock-api.ts';
+import { CONTENT_IDS } from './mock-content.ts';
 
 const MOCK = process.env.MOCK_URL ?? 'http://127.0.0.1:4012';
 
@@ -173,4 +174,30 @@ test('Карточка брони: перечитывание после дей�
   await page.getByRole('button', { name: 'Отметить приход' }).click();
   await expect(page.getByTestId('booking-status')).toHaveText('Пришёл');
   await expect(page.getByLabel('Служебный комментарий')).toHaveValue('Попросил второй геймпад');
+});
+
+test('Медиатека: список без фильтра, пришедший после поиска, не подменяет найденное', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  const late = slow(page, (u) => u.pathname.endsWith('/content/media') && !u.searchParams.has('q'));
+  await open(page, '/content/media');
+  const search = page.getByLabel('Поиск', { exact: true });
+  await search.fill('zal');
+  await search.press('Enter');
+  const tiles = page.getByTestId('media-grid').locator('li');
+  await expect(tiles.first()).toBeVisible();
+  await late;
+  await expect(tiles.filter({ hasNotText: /zal/i })).toHaveCount(0);
+});
+
+test('Выбор из медиатеки: список при открытии, пришедший после поиска, не подменяет найденное', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, `/content/publications/${CONTENT_IDS.pubCity}`);
+  const late = slow(page, (u) => u.pathname.endsWith('/content/media') && !u.searchParams.has('q'));
+  await page.getByRole('button', { name: 'Выбрать из медиатеки…' }).click();
+  const dlg = page.getByRole('dialog');
+  await dlg.getByLabel('Поиск по описанию и имени').fill('zal');
+  await dlg.getByRole('button', { name: 'Найти' }).click();
+  await expect(dlg.getByRole('button', { name: 'Выбрать: zal-krasny.jpg' })).toBeVisible();
+  await late;
+  await expect(dlg.getByRole('button', { name: /^Выбрать:/ })).toHaveCount(1);
 });

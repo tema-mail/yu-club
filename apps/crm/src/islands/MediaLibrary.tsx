@@ -3,6 +3,7 @@
 // (используемый живой версией – MEDIA_IN_USE со списком), удаление неиспользуемого – только Владелец. Загрузка идёт через прокси CRM потоком.
 import { useEffect, useState } from 'preact/hooks';
 import { API_PREFIX, ApiError, browserCall, type ErrorBody } from '../lib/api.ts';
+import { useLatest } from '../lib/latest.ts';
 import { aria, ENTITY_LABEL, errorText, Field, FIELD_LABEL, fmtAt, type MediaDto } from '../lib/content.tsx';
 
 export const MAX_BYTES = 10 * 1024 * 1024;
@@ -75,13 +76,15 @@ export default function MediaLibrary(props: MediaLibraryProps) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [usages, setUsages] = useState<{ usages: Usage[]; inVersions: boolean } | null>(null);
 
+  const latest = useLatest(); // новый поиск или фильтр: ответ прежнего не подменяет список
   useEffect(() => {
+    const fresh = latest();
     const p = new URLSearchParams({ limit: '100' });
     if (filter.q.trim()) p.set('q', filter.q.trim());
     if (filter.type) p.set('type', filter.type);
     if (filter.archived) p.set('archived', 'true');
     setLoadError('');
-    browserCall<{ items: MediaDto[] }>(`/content/media?${p}`).then((r) => setItems(r.items)).catch((e: unknown) => setLoadError(errorText(e)));
+    browserCall<{ items: MediaDto[] }>(`/content/media?${p}`).then((r) => fresh() && setItems(r.items)).catch((e: unknown) => fresh() && setLoadError(errorText(e)));
   }, [reload]);
 
   const choose = (m: MediaDto) => {
