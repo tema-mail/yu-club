@@ -7,7 +7,7 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import {
   CRM_URL, DEMO_ADMIN, SITE_URL, SiteClient, branchBySlug, branchSetting, crmLogin, ddmm, localPhone, logMark, minutesUntil, nearestFree, otpCode,
-  hydrated, randomPhone, resourcesOf, sql, type BookingDto, type StandBranch, type StandResource,
+  gotoStand, hydrated, randomPhone, resourcesOf, sql, type BookingDto, type StandBranch, type StandResource,
 } from './stand.ts';
 
 test.use({ baseURL: SITE_URL });
@@ -46,7 +46,7 @@ async function openCrm(browser: Browser): Promise<Page> {
 }
 
 async function myTab(name: 'Будущие' | 'Прошлые' | 'Отменённые' | 'Посещения') {
-  await site.goto('/account/');
+  await gotoStand(site, '/account/');
   await hydrated(site);
   await site.getByRole('tab', { name }).click();
   await expect(site.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true');
@@ -74,7 +74,7 @@ test.afterAll(async () => {
 });
 
 test('сайт: клуб → расписание → слот → удержание → вход по коду в потоке → подтверждение → ЛК', async () => {
-  await site.goto('/');
+  await gotoStand(site, '/');
   // остров выбора клуба оживает после загрузки скрипта – до этого клик ничего не открывает
   const toggle = site.getByTestId('branch-picker').locator('.yu-picker__toggle');
   await expect(async () => {
@@ -136,7 +136,7 @@ test('CRM: Администратор видит бронь в календар�
   test.skip(!main, 'нет брони из первого шага');
   crm = await openCrm(browser);
   const date = mainDate;
-  await crm.goto(`${CRM_URL}/schedule?branch=${branch.id}&date=${date}`);
+  await gotoStand(crm, `${CRM_URL}/schedule?branch=${branch.id}&date=${date}`);
   const lane = crm.getByTestId(`cal-lane-${main.resourceId}`);
   const cal = lane.locator(`[data-testid="cal-item"][aria-label^="Бронь №${main.number},"]`);
   await expect(cal.first()).toHaveAttribute('aria-label', new RegExp(`Бронь №${main.number}, .*Подтверждена`));
@@ -198,7 +198,7 @@ test('отмена клубом из CRM: комментарий обязате�
   const [b] = await client.book(branch.id, [{ resourceId: pick.r.id, start: pick.slot.start, end: pick.slot.end }]);
   leftovers.push(b!.id);
   crm ??= await openCrm(browser);
-  await crm.goto(`${CRM_URL}/bookings/${b!.id}`);
+  await gotoStand(crm, `${CRM_URL}/bookings/${b!.id}`);
   await hydrated(crm);
   await expect(crm.getByTestId('booking-status')).toHaveText('Подтверждена');
   await crm.getByRole('button', { name: 'Отменить запись…' }).click();

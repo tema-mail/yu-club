@@ -6,7 +6,7 @@
 //  3. открытый демо-ремонт: «Показать затронутых» отвечает без ошибок, ничего не блокирует (TC-12: предложение, не действие).
 import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext, type Page, type Response } from '@playwright/test';
-import { CRM_URL, DEMO_DIRECTOR, OWNER, crmApi, crmLogin, hydrated } from './stand.ts';
+import { CRM_URL, DEMO_DIRECTOR, OWNER, crmApi, crmLogin, gotoStand, hydrated } from './stand.ts';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -44,7 +44,7 @@ async function apiErrors(page: Page, fn: () => Promise<void>): Promise<string[]>
 }
 
 async function visit(page: Page, path: string): Promise<void> {
-  const res = await page.goto(`${CRM_URL}${path}`);
+  const res = await gotoStand(page, `${CRM_URL}${path}`);
   expect(res?.status(), path).toBeLessThan(400);
   await hydrated(page);
   await page.waitForLoadState('networkidle');

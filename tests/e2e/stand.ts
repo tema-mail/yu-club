@@ -7,7 +7,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { expect, request as pwRequest, type APIRequestContext, type APIResponse, type Page } from '@playwright/test';
+import { expect, request as pwRequest, type APIRequestContext, type APIResponse, type Page, type Response } from '@playwright/test';
 
 export const SITE_URL = process.env.SITE_URL ?? 'https://yu-club.168.113.179.49.nip.io';
 export const CRM_URL = process.env.CRM_URL ?? 'https://yu-crm.168.113.179.49.nip.io';
@@ -234,6 +234,23 @@ export async function nearestFree(client: SiteClient, branch: StandBranch, rs: S
 /** Минуты до начала слота – для проверки окна прихода (visit.arrive_early_min, Q-101). */
 export const minutesUntil = (iso: string) => (Date.parse(iso) - Date.now()) / 60_000;
 
+/** Сетевой сбой Chromium, а не ответ сервера: прогон 10.11 (commerce.spec.ts:197, e4.spec.ts:210) – net::ERR_TIMED_OUT
+ *  при загруженной машине, отдельно те же страницы открываются за секунды. Ответы 4xx/5xx и таймаут Playwright не повторяются. */
+const TRANSIENT_NET = /net::ERR_(TIMED_OUT|CONNECTION_(RESET|CLOSED|REFUSED|TIMED_OUT|ABORTED)|EMPTY_RESPONSE|NETWORK_CHANGED|HTTP2_PROTOCOL_ERROR|SOCKET_NOT_CONNECTED)\b/;
+const GOTO_ATTEMPTS = 3;
+
+/** page.goto стенда с повтором при сетевом сбое (до 3 попыток подряд, без пауз): повтор – новый запрос страницы, а не ожидание. */
+export async function gotoStand(page: Page, url: string, opts?: Parameters<Page['goto']>[1]): Promise<Response | null> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await page.goto(url, opts);
+    } catch (err) {
+      if (attempt >= GOTO_ATTEMPTS || !TRANSIENT_NET.test(String(err))) throw err;
+      console.log(`СЕТЬ: ${url} – ${String(err).split('\n')[0]}; попытка ${attempt + 1} из ${GOTO_ATTEMPTS}`);
+    }
+  }
+}
+
 /** Острова Astro ожили: пока у astro-island есть атрибут ssr, клики по кнопкам острова ничего не делают. */
 export async function hydrated(page: Page): Promise<void> {
   await page.waitForLoadState('load');
@@ -242,7 +259,7 @@ export async function hydrated(page: Page): Promise<void> {
 
 // ── CRM ─────────────────────────────────────────────────────
 export async function crmLogin(page: Page, email: string, password: string): Promise<void> {
-  await page.goto(`${CRM_URL}/login`);
+  await gotoStand(page, `${CRM_URL}/login`);
   await page.getByLabel('Почта').fill(email);
   await page.getByLabel('Пароль', { exact: true }).fill(password);
   await page.getByRole('button', { name: 'Войти' }).click();
