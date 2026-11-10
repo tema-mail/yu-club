@@ -13,7 +13,7 @@ import { addDays, branchDay, instantToLocal, systemClock, type Clock, type TimeZ
 import type { PaymentMethod } from '../finance/methods.ts';
 import { clientIdsMergedInto } from '../clients/merge.ts';
 import { bridgeToMerged } from './merged.ts';
-import { createBatch, openAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
+import { createBatch, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
 
 /** Чтение брони и посещения (реализация – booking/providers.ts paymentBookingProvider, S2-05). */
 export interface LoyaltyBookings {
@@ -52,7 +52,7 @@ export async function tryAccrue(tx: Tx, bookingId: string, deps: AccrualDeps): P
   const now = deps.clock.now();
   const clientId = await deps.bookings.bookingClient(tx, bookingId);
   if (!clientId) return null;
-  await openAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь под FOR SHARE → проверить
+  await openClientAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь под FOR SHARE → проверить; merged – повтор (D5-09)
   const b = await deps.bookings.payableBooking(tx, bookingId);
   if (!b || b.clientId !== clientId.toLowerCase()) return null;
   const visit = await deps.bookings.activeVisit(tx, bookingId);
@@ -110,7 +110,7 @@ export async function reverseAccrual(
 ): Promise<'reversed' | 'issue' | 'none'> {
   const now = clock.now();
   const [col, val] = 'visitId' in where ? ['visit_id', where.visitId] : ['payment_id', where.paymentId];
-  const acc = await openAccount(tx, clientId, now);
+  const acc = await openClientAccount(tx, clientId, now); // клиент брони прочитан без замка: слияние за это время – CLIENT_MERGED, повтор
   // Начисление до слияния карточек лежит на объединённой (merged) – ищем по основной и всем, что в неё объединены (D5-09).
   const a = (await tx.query<AccrualRow>(
     `SELECT id, client_id, ledger_entry_id, amount_centi FROM app.loyalty_accruals WHERE ${col} = $1 AND client_id = ANY($2::uuid[]) AND status = 'active' FOR UPDATE`,

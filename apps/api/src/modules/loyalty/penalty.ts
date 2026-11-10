@@ -11,7 +11,7 @@ import type { Tx } from '../../core/ledger.ts';
 import { listSubscriptions, subscribe, type EventEnvelope } from '../../core/outbox.ts';
 import { resolveSettings } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { debitBatches, openAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
+import { debitBatches, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints, reverseWithBatches, SYSTEM_AUTHOR } from './account.ts';
 import type { LoyaltyBookings } from './accrual.ts';
 import { sweepMerged } from './merged.ts';
 
@@ -40,7 +40,7 @@ export async function applyPenalty(tx: Tx, input: { noShowId: string; bookingId:
   const now = deps.clock.now();
   const clientId = await deps.bookings.bookingClient(tx, input.bookingId);
   if (!clientId) return 'none';
-  const acc = await openAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь → проверить
+  const acc = await openClientAccount(tx, clientId, now); // счёт до брони (K17 02.11) → перечитать бронь → проверить; merged – повтор (D5-09)
   const b = await deps.bookings.payableBooking(tx, input.bookingId);
   if (!b || b.clientId !== acc.clientId) return 'none';
   if (b.status !== 'no_show') return 'none'; // неявку уже исправили – её событие устарело
@@ -104,7 +104,7 @@ export async function revertPenalty(tx: Tx, input: { bookingId: string }, deps: 
   const now = deps.clock.now();
   const clientId = await deps.bookings.bookingClient(tx, input.bookingId);
   if (!clientId) return 'none';
-  const acc = await openAccount(tx, clientId, now);
+  const acc = await openClientAccount(tx, clientId, now); // клиент брони прочитан без замка: слияние за это время – CLIENT_MERGED, повтор
   const b = await deps.bookings.payableBooking(tx, input.bookingId);
   if (!b || b.clientId !== acc.clientId) return 'none';
   if (b.status === 'no_show') return 'none'; // неявку отметили заново – штраф стоит
