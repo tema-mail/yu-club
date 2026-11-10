@@ -91,6 +91,13 @@ export async function reassignLoyalty(tx: Tx, from: string, to: string, ctx: Mer
 
 export const loyaltyClientMerger: ClientMerger = {
   name: 'loyalty',
+  /** Счета обеих карточек – до броней и клиентов (K17: счёт раньше строки брони). */
+  async prelock(tx: Tx, from: string, to: string): Promise<void> {
+    const opts = { unit: 'POINT_CENTI' as const, branchId: null, minBalance: POINTS_MIN_BALANCE };
+    const a = await ensureAccount(tx, accountRef(from), opts);
+    const b = await ensureAccount(tx, accountRef(to), opts);
+    await lockAccounts(tx, [a.id, b.id]);
+  },
   async preview(db: Db, clientId: string, now: Date) {
     const b = await getBalance(db, clientId, now);
     return { balanceCenti: b.balanceCenti, availableCenti: b.availableCenti, reservedCenti: b.reservedCenti, preBookingBlocked: b.preBookingBlocked };
