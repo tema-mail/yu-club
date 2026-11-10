@@ -41,3 +41,13 @@ export async function getStaffRefs(db: Db | Tx, ids: string[]): Promise<Map<stri
 
 /** Имя для строки отчёта: «Имя Фамилия», пустое – null. */
 export const staffDisplayName = (ref: StaffRef): string | null => `${ref.firstName.trim()} ${ref.lastName.trim()}`.trim() || null;
+
+/** Имена сотрудников по id для подписей «автор» в журналах (S4-80, K21 §9): любые статусы – история не теряет имён
+ *  после архива. Неизвестные id пропускаются. Право на список сотрудников (staff.view) здесь не проверяется:
+ *  имя сотрудника рядом с его действием – не ПДн клиента, решает вызывающий модуль. */
+export async function getStaffNames(db: Db | Tx, ids: string[]): Promise<Map<string, string>> {
+  const uniq = [...new Set(ids)];
+  if (uniq.length === 0) return new Map();
+  const r = await db.query<{ id: string; name: string }>(`SELECT id, first_name || ' ' || last_name AS name FROM app.staff WHERE id = ANY($1::uuid[])`, [uniq]);
+  return new Map(r.rows.map((x) => [x.id, x.name]));
+}

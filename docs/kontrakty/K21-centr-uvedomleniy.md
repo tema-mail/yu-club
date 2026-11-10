@@ -158,7 +158,9 @@ draft → cancelled ; confirmed|expanding|sending → cancelled (остаток 
 ## 9. Журнал отправок CRM и ручной повтор (09 §10, §12.2, §16 п.15–16; 16 §15.3)
 
 - Список кампаний: дата создания, плановая и фактическая отправка, категория, заголовок, источник, автор, аудитория (описание сегмента словами), число адресатов, `отправлено / только центр / исключено / ошибка`, статус. Фильтры 09 §12.2: период, филиал, категория, источник, автор, статус, клиент.
-- Список строк (`notifications`) с теми же фильтрами плюс вид и бронь – в пределах `scopeFilter(ctx,'notifications.view')` по `branch_id`; строки без `branch_id` (сетевая кампания) видит только зона сети (Владелец) – решение.
+- Список строк (`notifications`) с теми же фильтрами плюс вид, бронь и рассылка (`campaignId`) – в пределах `scopeFilter(ctx,'notifications.view')` по `branch_id`; строки без `branch_id` (сетевая кампания) видит только зона сети (Владелец) – решение.
+- **Имена авторов (решение S4-80, 11.11.2026).** Кампания – `authorName`, `confirmedByName`, события истории – `actorName`; строка – `authorName` (инициатор, у системных `null`). Имена берутся из модуля `staff` (`getStaffNames`, ADR 0002) и видны всем, у кого есть `notifications.view`: это имя сотрудника рядом с его действием, не ПДн клиента, право `staff.view` для них не нужно (у Администратора его нет). Сотрудник не найден – «Сотрудник».
+- **Сбои критичных уведомлений для рабочего стола Владельца (K24 §4).** `failuresSummary(ctx, { days, now })` – число сервисных строк (`category = 'service'`) со статусом `error` за `[now − days, now)` по `planned_at`, в зоне `scopeFilter(ctx,'notifications.view')` (сетевые строки – только зона сети), **без тех, по которым уже сделан повтор** (есть строка с `retry_of`): неудачный повтор считается сам как своя строка. Индексы 0445: `notifications_service_error_idx (planned_at) WHERE category='service' AND status='error'`, `notifications_retry_of_idx (retry_of) WHERE retry_of IS NOT NULL`.
 - **Ручной повтор** критичного сервисного (`category = 'service'`, статус `error` или `no_channel`): `retryNotification(ctx, id, { reason })` – новая строка с `dedupe_key = '<старый>:retry:<n>'`, ссылкой `retry_of`, `planned_at = $now`; исходная не меняется (журнал). Повтор рекламы запрещён (`RETRY_NOT_ALLOWED`) – иначе ручной обход частоты.
 - Блок в карточке клиента (09 §12.3): «Реклама» вкл/выкл и дата последнего изменения (из `client_consents`), «Напоминания», push – «есть N браузеров» без endpoint и ключей, последние 20 уведомлений.
 
@@ -203,11 +205,14 @@ draft → cancelled ; confirmed|expanding|sending → cancelled (остаток 
 | K11 №205 | `POST /notifications/campaigns/{id}/preview` | как №202 | `200 AudiencePreview` |
 | K11 №206 | `POST /notifications/campaigns/{id}/confirm` | как №202 (+ `send.mass` для `segment`) | `200 Campaign` (`confirmed`) |
 | K11 №207 | `POST /notifications/campaigns/{id}/cancel` | как №202 | `200 Campaign` |
-| K11 №208 | `GET /notifications?clientId=&bookingId=&status=&category=&from=&to=&cursor=` | `notifications.view` | `200 { items: NotificationView[], nextCursor }` |
+| K11 №208 | `GET /notifications?clientId=&bookingId=&campaignId=&status=&category=&kind=&source=&branchId=&from=&to=&cursor=` | `notifications.view` | `200 { items: NotificationView[], nextCursor }`; `campaignId` – строки одной рассылки (S4-80, 11.11.2026) |
 | K11 №209 | `POST /notifications/{id}/retry` | `notifications.retry` | `201 NotificationView` |
 | K11 №210 | `GET /notifications/templates` | `notifications.view` | `200 { items }` |
 | K11 №211 | `POST /notifications/templates`, `PATCH /notifications/templates/{id}` | `notifications.templates.manage` | `201` / `200` |
 | K11 №212 | `GET /clients/{clientId}/notification-summary` | `notifications.view` + `client.view.basic` | `200 { marketing: { enabled, changedAt, source }, reminders: { enabled, changedAt }, push: { activeDevices }, recent: NotificationView[] }` |
+| K11 №251 | `GET /notifications/failures/summary?days=` (`days` 1..90, по умолчанию 7; `Cache-Control: no-store`) | `notifications.view` (без права – `critical: 0`, как пустой список) | `200 { critical: number, period: { from: ISO, to: ISO, days: number } }` – §9 «Сбои критичных уведомлений»; `to` = сейчас, `from = to − days`; для ссылки в журнал: `/notifications?tab=rows&category=service&status=error&from=&to=` |
+
+`CampaignRow = Campaign & { counters: { sent, inboxOnly, excluded, error }, authorName: string, confirmedByName: string | null }`; карточка №203 – ещё `timeline: Array<AuditEventView & { actorName: string | null }>`. `NotificationView` – поля `app.notifications` без `dedupe_key`, `retry_at`, `booking_version` плюс `authorName: string | null` (§9).
 
 ## 12. Ошибки (тело ADR 0002)
 

@@ -2,6 +2,8 @@
 // S4-116. /tournaments/ (карта сайта 3.3, по 19 – подтвердить Q-77): турниры – отдельный тип публикации. Хаб индексируется, только
 // когда в сети есть хотя бы один живой турнир (K23 §2 hubWithMaterial); до того – noindex и пустое состояние. Решение – по всей сети,
 // а не по выбору посетителя: робот приходит без куки, и карта сайта (lib/sitemap.ts) решает так же.
+// Живые турниры делятся по дате турнира: «Ближайшие» (дата впереди или не задана, ближайший первым) и «Прошедшие» (дата прошла,
+// последний первым) – итоги остаются на сайте, пока публикация живая; сайт своих результатов не придумывает, они в тексте турнира.
 import PublicationList from '../../components/PublicationList.astro';
 import Site from '../../layouts/Site.astro';
 import { content, type PublicationCard } from '../../lib/content.ts';
@@ -24,17 +26,43 @@ try {
   console.error('site: турниры из API не загрузились', e);
   Astro.response.status = 503;
 }
+const nowMs = Date.now();
+const when = (p: PublicationCard) => Date.parse(p.eventDate ?? p.publishFrom);
+const isPast = (p: PublicationCard) => p.eventDate !== null && when(p) < nowMs;
+const upcoming = (data?.items ?? []).filter((p) => !isPast(p)).sort((a, b) => when(a) - when(b));
+const past = (data?.items ?? []).filter(isPast).sort((a, b) => when(b) - when(a));
+const zone = displayZone(network, chosen);
 ---
 <Site title="Турниры Ю-Клуб" description="Турниры в компьютерных клубах Ю-Клуб: даты, клубы и результаты." index={{ kind: 'hubWithMaterial', hasMaterial }} jsonLd={[breadcrumbLd(origin, [{ name: 'Главная', path: '/' }, { name: 'Турниры', path: '/tournaments/' }])]}>
   <ol class="yu-crumbs" aria-label="Навигация"><li><a href="/">Главная</a></li><li aria-current="page">Турниры</li></ol>
   <h1>Турниры</h1>
   {chosen && <p class="yu-body" data-testid="pub-filter">Для клуба «{chosen.branch.name}» и всей сети.</p>}
   <div class="yu-section">
-    {data ? (
-      <PublicationList items={data.items} timeZone={displayZone(network, chosen)} empty={SECTION.tournament.empty} />
-    ) : (
+    {!data ? (
       <p class="yu-notice" role="alert">Турниры сейчас не загрузились. <a href="/tournaments/">Обновить страницу</a></p>
+    ) : data.items.length === 0 ? (
+      <PublicationList items={[]} timeZone={zone} empty={SECTION.tournament.empty} />
+    ) : (
+      <div class="tournaments">
+        {upcoming.length > 0 && (
+          <section aria-labelledby="tournaments-upcoming">
+            <h2 id="tournaments-upcoming">Ближайшие</h2>
+            <PublicationList items={upcoming} timeZone={zone} empty="" level={3} />
+          </section>
+        )}
+        {past.length > 0 && (
+          <section aria-labelledby="tournaments-past">
+            <h2 id="tournaments-past">Прошедшие</h2>
+            <PublicationList items={past} timeZone={zone} empty="" level={3} testid="publications-past" />
+          </section>
+        )}
+      </div>
     )}
     {data?.nextCursor && <p><a class="yu-btn yu-btn--ghost" href={`/tournaments/?cursor=${encodeURIComponent(data.nextCursor)}`}>Показать ещё</a></p>}
   </div>
 </Site>
+
+<style>
+  .tournaments { display: grid; gap: var(--yu-sp-l); }
+  .tournaments h2 { margin: 0 0 var(--yu-sp-s); }
+</style>

@@ -31,7 +31,9 @@ export interface UnitRow {
   unitId: string; unitName: string; resourceId: string; resourceType: string; roomId: string | null; branchId: string; branchName: string;
   availableMin: number; availableElapsedMin: number; blockedMin: number; technicalMin: number; bookedMin: number; usedMin: number; freeMin: number;
 }
-export interface SeriesPoint { bucket: string; availableMin: number; usedMin: number; bookedMin: number }
+/** Точка графика (K11 №240): bucket – дата филиала или час «00»…«23», остальные поля – числа показателей
+ *  (utilization.ts: availableMin, usedMin, bookedMin; у остальных отчётов – ключи их показателей). */
+export interface SeriesPoint { bucket: string; [metric: string]: number | string }
 
 /** K11 №241. */
 export interface DetailResult { columns: string[]; rows: Array<Record<string, unknown>>; total: Metric; nextCursor: string | null }

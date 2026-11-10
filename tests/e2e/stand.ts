@@ -1,9 +1,10 @@
 // Помощники e2e против живого стенда (S1-27): адреса из окружения, код входа клиента из лога API по ssh,
 // клиент сайта через публичный API (кука yu_client в своём контексте), вход в CRM, SQL на стенде (только чтение).
-// Пароли берутся из ~/.config/yu-club и никуда не печатаются. Нагрузки нет: всё последовательно, workers: 1.
+// Пароли берутся из ~/.config/yu-club, а если файла нет – из переменных окружения YU_STAND_* (секреты репозитория
+// в .github/workflows/stand-e2e.yml); никуда не печатаются. Нагрузки нет: всё последовательно, workers: 1.
 import { execFileSync } from 'node:child_process';
 import { randomInt, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { expect, request as pwRequest, type APIRequestContext, type APIResponse, type Page } from '@playwright/test';
@@ -17,7 +18,17 @@ const CFG = process.env.YU_CFG ?? join(homedir(), '.config/yu-club');
 const API_CT = process.env.YU_API_CT ?? 'yu-club-api';
 const PG_CT = process.env.YU_PG_CT ?? 'yu-club-postgres';
 
-const secret = (name: string) => readFileSync(join(CFG, name), 'utf8').trim();
+/** Имена переменных окружения для файлов ~/.config/yu-club – те же, что у секретов репозитория в CI. */
+const SECRET_ENV: Record<string, string> = { 'admin-login': 'YU_STAND_ADMIN_LOGIN', 'admin-pass': 'YU_STAND_ADMIN_PASS', 'demo-pass': 'YU_STAND_DEMO_PASS' };
+/** Файл ~/.config/yu-club/<name>; нет файла – переменная окружения; нет и её – понятная ошибка без значений. */
+function secret(name: string): string {
+  const file = join(CFG, name);
+  if (existsSync(file)) return readFileSync(file, 'utf8').trim();
+  const env = SECRET_ENV[name];
+  const value = env === undefined ? undefined : process.env[env]?.trim();
+  if (!value) throw new Error(`нет ни файла ${file}, ни переменной окружения ${env ?? '(для этого имени не задана)'}`);
+  return value;
+}
 /** Демо-Администратор филиала Арбат (db/seed/dev.ts), пароль – ~/.config/yu-club/demo-pass. */
 export const DEMO_ADMIN = { email: 'admin@demo.yu-club.test', password: () => secret('demo-pass') };
 /** Демо-Директор города Новосибирск (филиал «на Красном»), пароль тот же. */
