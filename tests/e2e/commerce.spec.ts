@@ -6,13 +6,15 @@
 //  4. полный возврат денег по брони 1 → начисление снято, в кассе «Возврат»;
 //  5. штрафы включены (loyalty.penalties_from через API настроек, после – наследование) → неявка → −5 → баланс −50 →
 //     предзапись на сайте закрыта текстом 07 §9.2.
-// Брони 1–3 – на завтра (окно прихода visit.arrive_early_min филиала на прогон 1440 мин, после – наследование);
-// бронь неявки – сегодня на ближайший слот VR (неявку можно отметить только после начала – тест ждёт его).
+// Брони 1–3 – ближайшие свободные слоты ПК от «сейчас» (днём – сегодня, ночью – первые утренние), друг за другом,
+// чтобы у клиента не было пересечения; окно прихода visit.arrive_early_min филиала на прогон 1440 мин (максимум K7),
+// после – наследование. Если клуб закрыт дольше суток вперёд, приход отметить нельзя – сценарий пропускается с причиной.
+// Бронь неявки – сегодня на ближайший слот VR (неявку можно отметить только после начала – тест ждёт его).
 // Завершённые и оплаченные брони остаются в истории (так задумано); отменяемое отменяется в afterAll.
 import { expect, test, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import {
-  CRM_URL, DEMO_DIRECTOR, SITE_URL, SiteClient, at, branchBySlug, branchSetting, crmApi, crmLogin, dayIn, hydrated,
-  networkSetting, newClient, resourcesOf, siteContext, type BookingDto, type StandBranch, type StandResource,
+  CRM_URL, DEMO_DIRECTOR, SITE_URL, SiteClient, branchBySlug, branchSetting, crmApi, crmLogin, hydrated, minutesUntil,
+  nearestFree, networkSetting, newClient, resourcesOf, siteContext, type BookingDto, type StandBranch, type StandResource,
 } from './stand.ts';
 import { randomUUID } from 'node:crypto';
 import type { APIRequestContext } from '@playwright/test';
@@ -35,6 +37,10 @@ let noShow: BookingDto | undefined;
 const settingsSet: Array<() => Promise<void>> = [];
 const leftovers: string[] = [];
 const done: { cash?: BookingDto; cashPaymentId?: string; cashOperationId?: string } = {};
+/** Окно прихода на прогон (мин): максимум настройки K7 – бронь на ближайший открытый слот всегда в нём, если клуб открыт в эти сутки. */
+const ARRIVE_EARLY = 1440;
+/** Конец последней брони клиента: следующая – не раньше (у клиента пересечение по сети запрещено). */
+let busyUntil = 0;
 
 const timeIn = (iso: string, tz: string) =>
   new Intl.DateTimeFormat('ru-RU', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(iso));
@@ -50,21 +56,26 @@ async function loyalty() {
 const balanceBecomes = (centi: number) =>
   expect.poll(async () => (await loyalty()).balanceCenti, { timeout: 45_000, intervals: [1000] }).toBe(centi);
 
-async function freeSlot(rs: StandResource[], day: number, from = '11:00') {
-  const date = dayIn(branch.timezone, day);
-  const a = await client.availability(branch.id, date);
-  const min = Math.max(Date.parse(at(date, from, branch.timezone)), Date.now() + 60_000);
-  for (const r of rs) {
-    const s = a.resources.find((x) => x.resourceId === r.id)?.slots.find((x) => x.state === 'free' && Date.parse(x.start) >= min);
-    if (s) return { r, slot: s };
-  }
-  throw new Error(`на ${date} нет свободных слотов`);
+/** Ближайший свободный слот ПК после прошлых броней клиента; lead – запас до начала (на UI-поток – больше).
+ *  Для сценария с приходом начало должно попасть в окно прихода, иначе – пропуск с причиной «клуб закрыт». */
+async function nextPc(lead: number, forArrival = true) {
+  const found = await nearestFree(client, branch, pcs, Math.max(Date.now() + lead * 60_000, busyUntil));
+  const closed = !found || (forArrival && minutesUntil(found.slot.start) > ARRIVE_EARLY - 30);
+  test.skip(closed, `клуб закрыт: ближайший свободный ПК ${found ? found.slot.start : 'не найден'} дальше окна прихода ${ARRIVE_EARLY} мин`);
+  busyUntil = Date.parse(found!.slot.end);
+  return found!;
 }
-async function bookTomorrow(): Promise<BookingDto> {
-  const { r, slot } = await freeSlot(pcs, 1);
+async function bookNext(): Promise<BookingDto> {
+  const { r, slot } = await nextPc(5);
   const [b] = await client.book(branch.id, [{ resourceId: r.id, start: slot.start, end: slot.end }]);
   leftovers.push(b!.id);
   return b!;
+}
+/** День сетки на сайте – по дате (кнопки «Сегодня», «Завтра», день недели). */
+async function siteDay(date: string) {
+  const day = site.locator(`button.yu-sched__day[data-date="${date}"]`);
+  await day.click();
+  await expect(day).toHaveAttribute('aria-pressed', 'true');
 }
 const minutesOf = (b: BookingDto) => (Date.parse(b.end) - Date.parse(b.start)) / 60_000;
 
@@ -74,6 +85,14 @@ async function card(id: string) {
   return crm.getByTestId('payment');
 }
 async function arrive(id: string) {
+  // окно прихода по данным API (Q-101): ждём его открытия, только если это минуты, а не часы
+  const r = await director.get(`/api/crm/v1/bookings/${id}`);
+  expect(r.ok()).toBe(true);
+  const from = ((await r.json()) as { arriveFrom: string | null }).arriveFrom;
+  expect(from, 'приход для брони доступен (arriveFrom)').toBeTruthy();
+  const wait = Date.parse(from!) - Date.now();
+  expect(wait, `окно прихода откроется в ${from} – слишком долго ждать`).toBeLessThan(5 * 60_000);
+  if (wait > 0) await crm.waitForTimeout(wait + 2000);
   const pay = await card(id);
   await expect(pay.getByTestId('pay-wait')).toContainText('Оплата – после прихода клиента');
   await crm.getByRole('button', { name: 'Отметить приход' }).click();
@@ -105,7 +124,7 @@ test.beforeAll(async ({ browser }) => {
   pcs = rs.filter((r) => r.type === 'pc');
   vr = rs.filter((r) => r.type === 'vr_seat');
 
-  await branchSetting('visit.arrive_early_min', branch.id, 1440);
+  await branchSetting('visit.arrive_early_min', branch.id, ARRIVE_EARLY);
   settingsSet.push(() => branchSetting('visit.arrive_early_min', branch.id, null));
   await networkSetting('loyalty.penalties_from', new Date(Date.now() - 3600_000).toISOString());
   settingsSet.push(() => networkSetting('loyalty.penalties_from', null));
@@ -115,10 +134,11 @@ test.beforeAll(async ({ browser }) => {
   director = await crmApi(DEMO_DIRECTOR.email, DEMO_DIRECTOR.password());
   // бронь для неявки – сразу, чтобы её начало прошло, пока идут сценарии 1–4
   // вечером после закрытия сегодня слотов нет: тогда сценарий 5 пропускается с причиной, а не роняет весь набор
-  const today = await freeSlot(vr, 0, '00:00').catch(() => null);
-  if (today) {
+  const today = await nearestFree(client, branch, vr, Date.now() + 60_000, 1);
+  if (today && minutesUntil(today.slot.start) <= 35) { // ждать начала сеанса – минуты, не часы до открытия
     [noShow] = await client.book(branch.id, [{ resourceId: today.r.id, start: today.slot.start, end: today.slot.end }]) as [BookingDto];
     leftovers.push(noShow.id);
+    busyUntil = Date.parse(noShow.end);
   }
 
   siteCtx = await browser.newContext({ baseURL: SITE_URL, ignoreHTTPSErrors: true, locale: 'ru-RU', timezoneId: branch.timezone, storageState: await client.api.storageState() });
@@ -137,7 +157,7 @@ test.afterAll(async () => {
 
 test('1. наличные: приход «Игровой сеанс» в журнале кассы, баллы = минуты ÷ 6', async () => {
   expect((await loyalty()).balanceCenti).toBe(0);
-  const b = await bookTomorrow();
+  const b = await bookNext();
   const pay = await arrive(b.id);
   const form = pay.getByTestId('pay-form');
   const due = (await paymentOf(b.id)).amountDueKop;
@@ -164,7 +184,7 @@ test('1. наличные: приход «Игровой сеанс» в жур�
 
 test('2. резерв баллов на сайте → оплата баллами в CRM → резерв списан, за баллы не начисляется', async () => {
   const start = (await loyalty()).balanceCenti;
-  const { r, slot } = await freeSlot(pcs, 1, '15:00');
+  const { r, slot, date } = await nextPc(15);
   const need = ((Date.parse(slot.end) - Date.parse(slot.start)) / 60_000) * 100; // 1 балл = 1 минута
   const adj = await director.post(`/api/crm/v1/clients/${clientId}/loyalty/adjust`, {
     headers: { 'idempotency-key': randomUUID() }, data: { deltaCenti: need, reason: 'e2e: баллы на оплату сеанса' },
@@ -174,8 +194,7 @@ test('2. резерв баллов на сайте → оплата баллам
 
   await site.goto(`/schedule/?branch=${branch.citySlug}/${branch.slug}`);
   await hydrated(site);
-  await site.getByRole('button', { name: /^Завтра/ }).click();
-  await expect(site.getByRole('button', { name: /^Завтра/ })).toHaveAttribute('aria-pressed', 'true');
+  await siteDay(date);
   const label = `${r.name}, ${timeIn(slot.start, branch.timezone)}–${timeIn(slot.end, branch.timezone)}`;
   await site.getByRole('button', { name: `${label}, свободно`, exact: true }).click();
   await expect(site.getByRole('button', { name: `${label}, выбрано вами`, exact: true })).toBeVisible();
@@ -226,7 +245,7 @@ test('3. сертификат: продажа в CRM (код один раз) �
   await hydrated(crm);
   expect(await crm.content()).not.toContain(`Код: ${pin}`);
 
-  const b = await bookTomorrow();
+  const b = await bookNext();
   const pay = await arrive(b.id);
   const due = (await paymentOf(b.id)).amountDueKop;
   expect(due).toBeLessThanOrEqual(50000);
@@ -271,7 +290,7 @@ test('4. полный возврат денег по брони 1: начисл�
 });
 
 test('5. штрафы включены: неявка → −5, баланс −50 → предзапись на сайте закрыта текстом 07 §9.2', async () => {
-  test.skip(!noShow, 'сегодня свободных слотов уже нет (прогон после закрытия клуба) – неявку проверить нельзя, прогонять днём');
+  test.skip(!noShow, 'клуб закрыт: ближайший слот VR не в ближайшие 35 мин – неявку (после начала сеанса) проверить нельзя, прогонять днём');
   if (!noShow) return;
   // к −45 – корректировкой Директора (ниже −50 он не может, до −50 – да)
   const start = (await loyalty()).balanceCenti;
@@ -295,9 +314,9 @@ test('5. штрафы включены: неявка → −5, баланс −5
   // сайт: удержание слота – отказ с текстом 07 §9.2, выбор не создан
   await site.goto(`/schedule/?branch=${branch.citySlug}/${branch.slug}`);
   await hydrated(site);
-  await site.getByRole('button', { name: /^Завтра/ }).click();
-  await expect(site.getByRole('button', { name: /^Завтра/ })).toHaveAttribute('aria-pressed', 'true');
-  const { r, slot } = await freeSlot(pcs, 1, '19:00');
+  // слот для проверки запрета – любой свободный после броней клиента (приход здесь не нужен)
+  const { r, slot, date } = await nextPc(15, false);
+  await siteDay(date);
   // S2-72a: при −50 расписание сразу показывает баннер 07 §9.2 и выключает свободные слоты – кликом не выбрать
   await expect(site.getByTestId('loyalty-limit-banner').first()).toHaveText(LIMIT_TEXT);
   await expect(site.getByRole('button', { name: `${r.name}, ${timeIn(slot.start, branch.timezone)}–${timeIn(slot.end, branch.timezone)}, свободно`, exact: true })).toBeDisabled();

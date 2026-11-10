@@ -1,7 +1,8 @@
 // S1-27: модель VR+PS4 на живом стенде – 6 сценариев tz/18 §5.3. VR-комната засева (db/seed/resources.ts):
 // места VR1, VR2, единица PS4 без своего ресурса и «VR-комната целиком» из трёх единиц.
-// Филиал «на Красном» (Новосибирск), каждый сценарий – свой день (+3…+9, мимо +7 – исключение графика засева,
-// +2 – дни гонки S1-26) и своё время; два разных клиента (у одного клиента пересечение запрещено по сети – иначе
+// Филиал «на Красном» (Новосибирск), каждый сценарий – свой день и своё время. День не фиксирован: берётся первый с +3
+// (+2 – дни гонки S1-26), где весь нужный интервал у VR1, VR2 и комнаты целиком открыт и свободен по доступности API –
+// исключения графика засева считаются от даты засева и с каждым днём сдвигаются относительно «сегодня»; два разных клиента (у одного клиента пересечение запрещено по сети – иначе
 // отказ CLIENT_OVERLAP скрыл бы проверку ресурсов). После каждого теста созданные брони отменяются.
 import { expect, test } from '@playwright/test';
 import {
@@ -45,6 +46,31 @@ test.afterAll(async () => {
 });
 
 const tz = () => branch.timezone;
+const usedDays = new Set<number>();
+/** Первый неиспользованный день с +3, где все интервалы [from, to) у VR1, VR2 и комнаты целиком открыты и свободны. */
+async function dayFor(...ranges: Array<[string, string]>): Promise<number> {
+  for (let n = 3; n <= 20; n++) {
+    if (usedDays.has(n)) continue;
+    const d = dayIn(tz(), n);
+    const a = await A.availability(branch.id, d).catch(() => null);
+    if (!a) continue;
+    const open = [vr1, vr2, whole].every((r) => {
+      const slots = a.resources.find((x) => x.resourceId === r.id)?.slots ?? [];
+      return ranges.every(([from, to]) => {
+        const s = Date.parse(at(d, from, tz()));
+        const e = Date.parse(at(d, to, tz()));
+        const inside = slots.filter((x) => Date.parse(x.start) < e && Date.parse(x.end) > s);
+        return inside.length > 0 && Date.parse(inside[0]!.start) <= s && Date.parse(inside.at(-1)!.end) >= e && inside.every((x) => x.state === 'free');
+      });
+    });
+    if (open) {
+      usedDays.add(n);
+      test.info().annotations.push({ type: 'день', description: `+${n} (${d})` });
+      return n;
+    }
+  }
+  throw new Error(`нет дня +3…+20, где ${ranges.map((r) => r.join('–')).join(', ')} открыто и свободно у VR-комнаты`);
+}
 const slot = (r: StandResource, day: number, from: string, to: string) => {
   const d = dayIn(tz(), day);
   return { resourceId: r.id, start: at(d, from, tz()), end: at(d, to, tz()) };
@@ -80,26 +106,28 @@ const unitsOf = (bookingId: string) =>
        WHERE o.source_type = 'booking' AND o.active AND o.source_id = '${bookingId}' ORDER BY u.code`);
 
 test('1. два независимых VR – разные клиенты в одно время', async () => {
-  const [a] = await book(A, [slot(vr1, 3, '12:00', '12:30')]);
-  const [b] = await book(B, [slot(vr2, 3, '12:00', '12:30')]);
+  const day = await dayFor(['12:00', '12:45']);
+  const [a] = await book(A, [slot(vr1, day, '12:00', '12:30')]);
+  const [b] = await book(B, [slot(vr2, day, '12:00', '12:30')]);
   expect(a!.resourceName).toBe('VR1');
   expect(b!.resourceName).toBe('VR2');
-  expect(await states(vr1, 3, '12:00', '12:30')).toEqual(['booked']);
-  expect(await states(vr2, 3, '12:00', '12:30')).toEqual(['booked']);
+  expect(await states(vr1, day, '12:00', '12:30')).toEqual(['booked']);
+  expect(await states(vr2, day, '12:00', '12:30')).toEqual(['booked']);
   // оба места заняты – комнату целиком на это время взять нельзя
-  expect(await states(whole, 3, '12:00', '12:30')).toEqual(['booked']);
-  await refused(A.hold(branch.id, slot(whole, 3, '12:15', '12:45')).then(async (h) => A.release(h.id)));
+  expect(await states(whole, day, '12:00', '12:30')).toEqual(['booked']);
+  await refused(A.hold(branch.id, slot(whole, day, '12:15', '12:45')).then(async (h) => A.release(h.id)));
 });
 
 test('2. аренда комнаты целиком блокирует оба VR', async () => {
-  const [w] = await book(A, [slot(whole, 4, '14:00', '15:00')]);
+  const day = await dayFor(['14:00', '15:15']);
+  const [w] = await book(A, [slot(whole, day, '14:00', '15:00')]);
   expect(unitsOf(w!.id)).toEqual(['PS4', 'VR1', 'VR2']);
-  expect(await states(vr1, 4, '14:00', '15:00')).toEqual(['booked']);
-  expect(await states(vr2, 4, '14:00', '15:00')).toEqual(['booked']);
-  await refused(B.hold(branch.id, slot(vr1, 4, '14:15', '14:30')).then(async (h) => B.release(h.id)));
-  await refused(B.hold(branch.id, slot(vr2, 4, '14:45', '15:00')).then(async (h) => B.release(h.id)));
+  expect(await states(vr1, day, '14:00', '15:00')).toEqual(['booked']);
+  expect(await states(vr2, day, '14:00', '15:00')).toEqual(['booked']);
+  await refused(B.hold(branch.id, slot(vr1, day, '14:15', '14:30')).then(async (h) => B.release(h.id)));
+  await refused(B.hold(branch.id, slot(vr2, day, '14:45', '15:00')).then(async (h) => B.release(h.id)));
   // за краем аренды места свободны
-  expect(await states(vr1, 4, '15:00', '15:15')).toEqual(['free']);
+  expect(await states(vr1, day, '15:00', '15:15')).toEqual(['free']);
 });
 
 test('3. PS4 отдельно не бронируется: своего ресурса нет, ни сайт, ни API его не дают', async () => {
@@ -109,7 +137,7 @@ test('3. PS4 отдельно не бронируется: своего ресу
   // единица PS4 есть только как часть «комнаты целиком»
   const [ps4] = sql(`SELECT id FROM app.occupancy_units WHERE branch_id = '${branch.id}' AND code = 'PS4'`);
   expect(ps4).toMatch(/^[0-9a-f-]{36}$/);
-  const e = (await A.hold(branch.id, { ...slot(vr1, 9, '16:00', '16:30'), resourceId: ps4! }).then(() => null, (x: unknown) => x)) as ApiErr | null;
+  const e = (await A.hold(branch.id, { ...slot(vr1, await dayFor(['16:00', '16:30']), '16:00', '16:30'), resourceId: ps4! }).then(() => null, (x: unknown) => x)) as ApiErr | null;
   expect(e, 'удержание по единице PS4 должно быть отклонено').not.toBeNull();
   expect([404, 409, 422]).toContain(e!.status);
   const resources = sql(`SELECT r.resource_type FROM app.resource_units ru JOIN app.resources r ON r.id = ru.resource_id
@@ -118,45 +146,48 @@ test('3. PS4 отдельно не бронируется: своего ресу
 });
 
 test('4. отдельный VR и комната целиком не пересекаются – в обе стороны', async () => {
-  await book(A, [slot(vr1, 5, '16:00', '16:30')]);
+  const day = await dayFor(['16:00', '18:00']);
+  await book(A, [slot(vr1, day, '16:00', '16:30')]);
   // B не может взять комнату на пересекающееся время, VR2 при этом свободен
-  await refused(B.hold(branch.id, slot(whole, 5, '16:15', '17:00')).then(async (h) => B.release(h.id)));
-  expect(await states(whole, 5, '16:00', '16:30')).toEqual(['booked']);
-  expect(await states(vr2, 5, '16:00', '16:30')).toEqual(['free']);
+  await refused(B.hold(branch.id, slot(whole, day, '16:15', '17:00')).then(async (h) => B.release(h.id)));
+  expect(await states(whole, day, '16:00', '16:30')).toEqual(['booked']);
+  expect(await states(vr2, day, '16:00', '16:30')).toEqual(['free']);
   // и наоборот: комната у B с 17:00 – VR1 в это время A не получит
-  await book(B, [slot(whole, 5, '17:00', '18:00')]);
-  await refused(A.hold(branch.id, slot(vr1, 5, '17:30', '17:45')).then(async (h) => A.release(h.id)));
+  await book(B, [slot(whole, day, '17:00', '18:00')]);
+  await refused(A.hold(branch.id, slot(vr1, day, '17:30', '17:45')).then(async (h) => A.release(h.id)));
 });
 
 test('5. отмена освобождает ресурсы', async () => {
-  const [w] = await book(A, [slot(whole, 6, '18:00', '19:00')]);
-  expect(await states(vr1, 6, '18:00', '19:00')).toEqual(['booked']);
+  const day = await dayFor(['18:00', '19:00']);
+  const [w] = await book(A, [slot(whole, day, '18:00', '19:00')]);
+  expect(await states(vr1, day, '18:00', '19:00')).toEqual(['booked']);
   const c = await A.cancel(w!.id);
   expect(c.status).toBe('cancelled_by_client');
   expect(unitsOf(w!.id)).toEqual([]);
-  expect(await states(vr1, 6, '18:00', '19:00')).toEqual(['free']);
-  expect(await states(vr2, 6, '18:00', '19:00')).toEqual(['free']);
-  expect(await states(whole, 6, '18:00', '19:00')).toEqual(['free']);
+  expect(await states(vr1, day, '18:00', '19:00')).toEqual(['free']);
+  expect(await states(vr2, day, '18:00', '19:00')).toEqual(['free']);
+  expect(await states(whole, day, '18:00', '19:00')).toEqual(['free']);
   // освободившееся место реально берётся
-  const [v] = await book(B, [slot(vr1, 6, '18:00', '18:30')]);
+  const [v] = await book(B, [slot(vr1, day, '18:00', '18:30')]);
   expect(v!.status).toBe('confirmed');
 });
 
 test('6. отмена одной записи не снимает независимую чужую бронь', async () => {
+  const day = await dayFor(['11:00', '14:15']);
   // VR1 у A и VR2 у B в одно время: A отменяет – бронь B на месте
-  const [a] = await book(A, [slot(vr1, 8, '11:00', '11:30')]);
-  const [b] = await book(B, [slot(vr2, 8, '11:00', '11:30')]);
+  const [a] = await book(A, [slot(vr1, day, '11:00', '11:30')]);
+  const [b] = await book(B, [slot(vr2, day, '11:00', '11:30')]);
   await A.cancel(a!.id);
   expect((await B.my('upcoming')).items.find((x) => x.id === b!.id)?.status).toBe('confirmed');
-  expect(await states(vr2, 8, '11:00', '11:30')).toEqual(['booked']);
-  expect(await states(vr1, 8, '11:00', '11:30')).toEqual(['free']);
+  expect(await states(vr2, day, '11:00', '11:30')).toEqual(['booked']);
+  expect(await states(vr1, day, '11:00', '11:30')).toEqual(['free']);
   expect(unitsOf(b!.id)).toEqual(['VR2']);
   // комната целиком у A встык перед VR1 у B: отмена комнаты не трогает бронь B
-  const [w] = await book(A, [slot(whole, 8, '13:00', '14:00')]);
-  const [v] = await book(B, [slot(vr1, 8, '14:00', '14:15')]);
+  const [w] = await book(A, [slot(whole, day, '13:00', '14:00')]);
+  const [v] = await book(B, [slot(vr1, day, '14:00', '14:15')]);
   await A.cancel(w!.id);
   expect((await B.my('upcoming')).items.find((x) => x.id === v!.id)?.status).toBe('confirmed');
   expect(unitsOf(v!.id)).toEqual(['VR1']);
-  expect(await states(vr1, 8, '14:00', '14:15')).toEqual(['booked']);
-  expect(await states(vr1, 8, '13:00', '14:00')).toEqual(['free']);
+  expect(await states(vr1, day, '14:00', '14:15')).toEqual(['booked']);
+  expect(await states(vr1, day, '13:00', '14:00')).toEqual(['free']);
 });
