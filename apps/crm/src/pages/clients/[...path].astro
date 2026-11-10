@@ -8,22 +8,25 @@
 // Подарок имениннику (S3-85, K20 №376) – отдельным блоком при event.view, не среди сертификатов.
 // Уведомления (S4-83, K11 №212) – блоком при notifications.view: настройки клиента, «N браузеров», последние отправки, повтор по праву.
 // Обезличивание (K9, K11 №249) – кнопкой при client.anonymize (только Владелец) на необезличенной карточке; после – ?anonymized=1.
+// Слияние дублей (K9 «Слияние», K11 №251–252) – кнопкой «Объединить с…» при client.merge на живой карточке; после – ?merged=<id второй>.
+// Объединённая карточка (merged) – только факт объединения со ссылкой на основную, без ПДн и без действий (03 §11.2).
 // Экспорта нет: маршрута выгрузки в API нет, Администратору он не положен вовсе (client.export – только Владелец).
 import '../../styles/events.css';
 import Crm from '../../layouts/Crm.astro';
 import EntityList from '../../islands/EntityList.tsx';
 import EntityCard, { type CardField } from '../../islands/EntityCard.tsx';
 import AnonymizeClient from '../../islands/AnonymizeClient.tsx';
+import MergeClient from '../../islands/MergeClient.tsx';
 import ClientNotifications from '../../islands/ClientNotifications.tsx';
 import GiftPanel from '../../islands/GiftPanel.tsx';
 import LoyaltyBlock from '../../islands/LoyaltyBlock.tsx';
 import type { LoyaltyCard } from '../../lib/loyalty.ts';
 import { ApiError, serverCall } from '../../lib/api.ts';
 
-type ClientStatus = 'guest' | 'active' | 'restricted' | 'blocked' | 'deletion_requested' | 'anonymized';
+type ClientStatus = 'guest' | 'active' | 'restricted' | 'blocked' | 'deletion_requested' | 'anonymized' | 'merged';
 interface ClientCard {
   id: string; status: ClientStatus; firstName: string | null; lastName: string | null; phoneMasked: string;
-  isGuest: boolean; phoneVerified: boolean; registeredAt: string | null; rowVersion: number;
+  isGuest: boolean; phoneVerified: boolean; registeredAt: string | null; rowVersion: number; mergedIntoId: string | null;
   full: {
     phoneE164: string | null; email: string | null; birthDate: string | null; statusReason: string | null; statusUntil: string | null;
     registrationSource: string | null; createdAt: string; lastLoginAt: string | null;
@@ -32,7 +35,7 @@ interface ClientCard {
 
 const STATUS_LABEL: Record<ClientStatus, string> = {
   guest: 'Гость', active: 'Активен', restricted: 'Ограничен', blocked: 'Заблокирован',
-  deletion_requested: 'Запрошено удаление', anonymized: 'Обезличен',
+  deletion_requested: 'Запрошено удаление', anonymized: 'Обезличен', merged: 'Объединён',
 };
 const SOURCE_LABEL: Record<string, string> = { site: 'Сайт', account: 'Личный кабинет', crm: 'CRM' };
 
@@ -82,6 +85,9 @@ const historyOmit = client?.full ? [] : ['phoneE164', 'email', 'birthDate'];
 const title = notFound ? 'Не найдено' : client ? nameOf(client) : 'Клиенты';
 const seesAll = me.access.network;
 const justAnonymized = client?.status === 'anonymized' && Astro.url.searchParams.get('anonymized') === '1';
+const mergedFrom = Astro.url.searchParams.get('merged');
+const isMerged = client?.status === 'merged';
+const canMerge = client !== null && can('client.merge') && !['merged', 'anonymized', 'deletion_requested'].includes(client.status);
 ---
 <Crm title={title}>
   {notFound ? (
@@ -97,6 +103,17 @@ const justAnonymized = client?.status === 'anonymized' && Astro.url.searchParams
         <h1>{title}</h1>
         <p><span class={`yc-badge yc-badge--${client.status}`} data-testid="client-status">{STATUS_LABEL[client.status]}</span></p>
       </div>
+      {isMerged && (
+        <p class="yc-alert" role="status" data-testid="client-merged">
+          Карточка объединена с другой и больше не используется.{' '}
+          {client.mergedIntoId && <a href={`/clients/${encodeURIComponent(client.mergedIntoId)}`}>Перейти к основной карточке</a>}
+        </p>
+      )}
+      {mergedFrom && !isMerged && (
+        <p class="yc-alert yc-alert--ok" role="status" data-testid="client-merge-done">
+          Карточки объединены: брони, деньги, баллы и сертификаты второй карточки перенесены сюда.
+        </p>
+      )}
       {justAnonymized && (
         <p class="yc-alert yc-alert--ok" role="status" data-testid="client-anonymized">
           Клиент обезличен: персональные данные стёрты, вход в личный кабинет и рассылки закрыты.
@@ -146,7 +163,8 @@ const justAnonymized = client?.status === 'anonymized' && Astro.url.searchParams
           {can('event.manage') && <p><a class="yc-btn yc-btn--ghost" href={`/events?new=1&clientId=${encodeURIComponent(client.id)}`}>Новое мероприятие для клиента</a></p>}
         </>
       )}
-      {can('client.anonymize') && client.status !== 'anonymized' && <AnonymizeClient client:load clientId={client.id} name={title} />}
+      {canMerge && <MergeClient client:load clientId={client.id} name={title} />}
+      {can('client.anonymize') && client.status !== 'anonymized' && !isMerged && <AnonymizeClient client:load clientId={client.id} name={title} />}
       <EntityCard client:load historyOnly fields={historyFields} values={{}}
         history={{ objectType: 'client', objectId: client.id, timezone, omit: historyOmit }} />
     </>
