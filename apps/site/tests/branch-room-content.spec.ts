@@ -9,7 +9,7 @@ const noScroll = async (page: Page) => {
   expect(scroll).toBeLessThanOrEqual(client);
 };
 
-test('хаб с контентом: описание, особенности, как добраться, галерея; часы и запись – из фактов', async ({ page }) => {
+test('TC-17: часы филиала на сайте – из графика network, запись той же кнопкой; хаб с контентом: описание, особенности, как добраться, галерея', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/tomsk/lenina/');
   const box = page.getByTestId('branch-content');

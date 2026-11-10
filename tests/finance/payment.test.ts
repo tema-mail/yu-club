@@ -188,13 +188,21 @@ describe('TC-07: один способ на сеанс и R-03', () => {
   const methods = ['cash', 'card', 'transfer', 'points', 'certificate'] as const;
   const line = (m: string, amountKop: number) => ({ method: m, amountKop, ...(m === 'certificate' ? { certificate: { number: 'X', pin: '0000' } } : {}) });
 
-  it('флаг false: любая пара способов – PAYMENT_METHODS_COMBINED, денег не тронуто', async () => {
+  it('TC-07: один сеанс нельзя закрыть сочетанием (наличные + баллы, сертификат + наличные, любая пара) – PAYMENT_METHODS_COMBINED, денег не тронуто, сеанс не оплачен; одним способом – оплачен, второй платёж – ALREADY_PAID', async () => {
     const b = await booking();
     const before = await cash();
     for (const a of methods) {
       for (const c of methods) await fails(pay(b, [line(a, 10_000), line(c, 20_000)], { verifiedCertificateId: randomUUID() }), 'PAYMENT_METHODS_COMBINED');
     }
     expect(await cash()).toBe(before);
+    expect((await getPaymentStatus(pool, [b])).get(b)).toBe('unpaid');
+    expect(await tx((t) => paymentLookup.livePayment(t, b))).toBeNull();
+    // одним способом сеанс закрывается, деньги – в кассу; второй платёж по той же брони – отказ
+    const r = await pay(b, [{ method: 'cash', amountKop: 30_000 }]);
+    expect(r.session.status).toBe('paid');
+    expect(await cash()).toBe(before + 30_000);
+    await fails(pay(b, [{ method: 'card', amountKop: 30_000 }]), 'ALREADY_PAID');
+    expect(await cash()).toBe(before + 30_000);
   });
 
   it('флаг true: только «сертификат, затем деньги»; баллы + деньги и деньги + сертификат – отказ; снимок флага в платеже', async () => {

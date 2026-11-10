@@ -1,5 +1,6 @@
 // S1-07: подтверждение брони (K5 №12, K6 convertHoldItem): 8 повторных проверок, идемпотентность, запрет
-// пересечений клиента по сети, версии брони со снимком, цена через quote. TC-01…TC-04; 50 параллельных подтверждений.
+// пересечений клиента по сети, версии брони со снимком, цена через quote. Последовательные углы TC-01…TC-04 (гонки N соединений
+// по плану §8 – tc-races.test.ts); 50 параллельных подтверждений одного удержания.
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import pg from 'pg';
@@ -129,8 +130,8 @@ describe('подтверждение по HTTP (K5 №12)', () => {
   });
 });
 
-describe('TC-01…TC-04 (tz/20 §10)', () => {
-  it('TC-01: один VR на один интервал – второй клиент получает конфликт и до, и после подтверждения', async () => {
+describe('углы TC-01…TC-04 последовательно (гонки – tc-races.test.ts)', () => {
+  it('один VR на один интервал – второй клиент получает конфликт и до, и после подтверждения (угол TC-01)', async () => {
     const b = await client('+79130000002');
     ids.b = b.id;
     const h = await hold(ids.a!, ids.b1!, [span(ids.vr1!, '2026-11-16T07:00:00Z', 30)]);
@@ -139,7 +140,7 @@ describe('TC-01…TC-04 (tz/20 §10)', () => {
     expect(await codeOf(hold(b.id, ids.b1!, [span(ids.vr1!, '2026-11-16T07:15:00Z', 15)]))).toBe('SLOT_TAKEN');
   });
 
-  it('TC-02: два разных VR одновременно – обе брони; TC-03: комната на это время – конфликт', async () => {
+  it('два разных VR – обе брони; комната на это время – конфликт (углы TC-02, TC-03)', async () => {
     const c = await client('+79130000003');
     const h1 = await hold(ids.b!, ids.b1!, [span(ids.vr1!, '2026-11-16T09:00:00Z', 30)]);
     const h2 = await hold(c.id, ids.b1!, [span(ids.vr2!, '2026-11-16T09:00:00Z', 30)]);
@@ -153,7 +154,7 @@ describe('TC-01…TC-04 (tz/20 §10)', () => {
     expect(await codeOf(hold(e.id, ids.b1!, [span(ids.vr2!, '2026-11-16T11:30:00Z', 15)]))).toBe('SLOT_TAKEN');
   });
 
-  it('TC-04: ПК 14:00–15:00 и VR 14:30–15:00 одного клиента (другой филиал) – CLIENT_OVERLAP; VR 15:00–15:30 – можно', async () => {
+  it('ПК 14:00–15:00 и VR 14:30–15:00 одного клиента (другой филиал) – CLIENT_OVERLAP; VR 15:00–15:30 – можно (угол TC-04)', async () => {
     const f = await client('+79130000006');
     const pc = await hold(f.id, ids.b2!, [span(ids.b2pc!, '2026-11-17T07:00:00Z', 60)]);
     await confirm(f.id, pc.id);
