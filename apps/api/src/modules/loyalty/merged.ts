@@ -9,7 +9,7 @@
 // Замки: счёт основной раньше счёта второй (openWithOwner) – тот же порядок у всех коррекций, слияние второй не трогает.
 import { effectiveClientId } from '../clients/merge.ts';
 import type { Tx } from '../../core/ledger.ts';
-import { accountRef, createBatch, debitBatches, openAccount, POINTS_MIN_BALANCE, postPoints, returnSpend, type Author } from './account.ts';
+import { accountRef, createBatch, debitBatches, openAccount, openClientAccount, POINTS_MIN_BALANCE, postPoints, returnSpend, type Author } from './account.ts';
 
 export const MERGE_BASIS = 'Слияние карточек клиента';
 const num = (v: string | number | null | undefined): number => (v === null || v === undefined ? 0 : Number(v));
@@ -95,9 +95,13 @@ export async function ownerOf(tx: Tx, clientId: string): Promise<string> {
 
 /** Счёт действующего владельца, затем счёт самой карточки (если она объединена). Возвращает id владельца. */
 export async function openWithOwner(tx: Tx, clientId: string, now: Date): Promise<string> {
-  const owner = await ownerOf(tx, clientId);
-  if (owner !== clientId.toLowerCase()) await openAccount(tx, owner, now);
-  await openAccount(tx, clientId, now);
+  const owner = await ownerOf(tx, clientId); // без замка: если владельца объединили, пока ждали, – CLIENT_MERGED, повтор
+  if (owner !== clientId.toLowerCase()) {
+    await openClientAccount(tx, owner, now);
+    await openAccount(tx, clientId, now);
+  } else {
+    await openClientAccount(tx, clientId, now);
+  }
   return owner;
 }
 

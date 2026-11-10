@@ -13,7 +13,7 @@ import { AppError } from '../../core/errors.ts';
 import type { Tx } from '../../core/ledger.ts';
 import { resolveSetting } from '../../core/settings.ts';
 import type { ChargeInput, ChargeResult, PaymentMethodHandler, RefundInput, RefundResult } from '../finance/methods.ts';
-import { debitBatches, getBalance, openAccount, postPoints, reservedCenti } from './account.ts';
+import { debitBatches, getBalance, openClientAccount, postPoints, reservedCenti } from './account.ts';
 import { returnSpendToOwner } from './merged.ts';
 import type { PaymentLookup } from './accrual.ts';
 import { settleStaleReserves, type ReserveBookings } from './reserve.ts';
@@ -65,7 +65,7 @@ export async function pointsAvailableForBooking(db: Tx, clientId: string, at: Da
 
 export async function chargePoints(tx: Tx, input: ChargeInput, deps: PointsDeps | undefined = registeredDeps): Promise<ChargeResult> {
   const { session } = input;
-  const acc = await openAccount(tx, session.clientId, input.occurredAt);
+  const acc = await openClientAccount(tx, session.clientId, input.occurredAt); // сеанс прочитан до замка: слияние за это время – CLIENT_MERGED (D5-09)
   const allowed = (await resolveSetting(tx, 'loyalty.points_resource_types', { branchId: session.branchId }, input.occurredAt)).value;
   if (!allowed.includes(input.resourceType)) {
     throw new AppError('POINTS_NOT_ALLOWED', 422, 'Этот вид посещения баллами не оплачивается', { resourceType: input.resourceType });
