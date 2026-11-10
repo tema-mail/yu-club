@@ -265,4 +265,29 @@ describe('коррекции операций до слияния (D5-09)', () =
     expect(await bal(m)).toBe(0);
     for (const id of [p, m]) await consistent(id);
   });
+
+  it('R7 штраф группы перешёл на неявку основной после слияния – снятие сторнирует на счёте второй (владелец записи K3), основная +5', async () => {
+    const p = await addClient();
+    const m = await addClient();
+    await accrueVisit(m, 1000);
+    const head = await penalize(m); // штраф второй до слияния: запись K3 на её счёте
+    await merge(p, m); // бронь head уехала к основной, строка штрафа и запись K3 – у второй
+    expect(await bal(p)).toBe(500);
+    // неявка основной подряд с head после слияния – в группе штрафа head (penalty_scope 'visit', как applyPenalty)
+    const next = await createTestBooking(db.client, { clientId: p, branchId, status: 'no_show' });
+    const noShowId = (await db.client.query<{ id: string }>(`INSERT INTO app.no_shows (booking_id, branch_id, client_id, marked_at, marked_by) VALUES ($1, $2, $3, now(), $4) RETURNING id`, [next, branchId, p, owner.actor.staffId])).rows[0]!.id;
+    await db.client.query(
+      `INSERT INTO app.loyalty_penalties (client_id, booking_id, no_show_id, branch_id, applied_centi, ledger_entry_id, group_booking_id, status) VALUES ($1, $2, $3, $4, 0, NULL, $5, 'merged')`,
+      [p, next, noShowId, branchId, head],
+    );
+    // head исправили – штраф группы переходит на next: строка next (client_id основной) несёт запись K3 второй
+    await db.client.query(`UPDATE app.bookings SET status = 'completed' WHERE id = $1`, [head]);
+    expect(await withTx(pool, (tx) => revertPenalty(tx as unknown as Tx, { bookingId: head }, penaltyDeps))).toBe('moved');
+    expect(await bal(p)).toBe(500);
+    // next исправили – сторно на счёте второй, её остаток к основной
+    await unpenalize(next);
+    expect(await bal(p)).toBe(1000);
+    expect(await bal(m)).toBe(0);
+    for (const id of [p, m]) await consistent(id);
+  });
 });

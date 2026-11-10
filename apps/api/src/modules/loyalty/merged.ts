@@ -213,18 +213,22 @@ export async function bridgeToMerged(tx: Tx, ownerId: string, mergedId: string, 
   await createBatch(tx, { clientId: mergedId, entryId: inn.entryId, amount, balanceBefore: inn.balanceBefore, source: 'manual', branchId: null, expiresAt: null, accruedAt: now });
 }
 
+/** Клиент, на чьём счёте баллов лежит запись K3 (карточка операции; после слияния – возможно, объединённая). */
+export async function entryClientId(tx: Tx, entryId: number): Promise<string | null> {
+  const r = await tx.query<{ owner_id: string }>(
+    `SELECT a.owner_id FROM journal.ledger_entries e JOIN app.ledger_accounts a ON a.id = e.account_id WHERE e.id = $1 AND a.kind = 'loyalty_client'`,
+    [entryId],
+  );
+  return r.rows[0]?.owner_id ?? null;
+}
+
 /** Возврат списания (оплата баллами, товар) с учётом слияния: счёт владельца раньше счёта карточки списания, возврат – в её
  *  исходные партии (returnSpend), затем остаток объединённой карточки – к владельцу. Без слияния – обычный returnSpend. */
 export async function returnSpendToOwner(tx: Tx, input: Parameters<typeof returnSpend>[1]): ReturnType<typeof returnSpend> {
-  const row = (
-    await tx.query<{ owner_id: string }>(
-      `SELECT a.owner_id FROM journal.ledger_entries e JOIN app.ledger_accounts a ON a.id = e.account_id WHERE e.id = $1 AND a.kind = 'loyalty_client'`,
-      [input.originalEntryId],
-    )
-  ).rows[0];
-  if (!row) return returnSpend(tx, input); // NOT_FOUND отдаст returnSpend
-  const ownerId = await openWithOwner(tx, row.owner_id, input.occurredAt);
+  const entryOwner = await entryClientId(tx, input.originalEntryId);
+  if (!entryOwner) return returnSpend(tx, input); // NOT_FOUND отдаст returnSpend
+  const ownerId = await openWithOwner(tx, entryOwner, input.occurredAt);
   const r = await returnSpend(tx, input);
-  await sweepMerged(tx, row.owner_id, ownerId, input.idempotencyKey, input.author, input.occurredAt);
+  await sweepMerged(tx, entryOwner, ownerId, input.idempotencyKey, input.author, input.occurredAt);
   return r;
 }
