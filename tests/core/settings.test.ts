@@ -67,7 +67,21 @@ describe('реестр K7', () => {
     expect(SETTINGS['booking.max_anonymous_holds_per_branch'].levels).toEqual(['network', 'branch']);
     expect(SETTINGS['visit.arrive_early_min'].systemDefault).toBe(30); // Q-101
     expect(SETTINGS['visit.arrive_early_min'].levels).toEqual(['network', 'city', 'branch']);
-    expect(Object.keys(SETTINGS)).toHaveLength(71); // 21 ключ Э0–Э1 + 12 Э2 + 26 Э3 + 12 Э4 (K7)
+    expect(Object.keys(SETTINGS)).toHaveLength(77); // 21 ключ Э0–Э1 + 12 Э2 + 26 Э3 + 12 Э4 + 6 реквизитов оператора (K7)
+  });
+
+  it('реквизиты оператора (legal.*): пусто по умолчанию, только сеть и Владелец; ИНН, ОГРН и почта – по форме, пустая строка проходит', () => {
+    const keys = ['legal.operator_name', 'legal.inn', 'legal.ogrn', 'legal.address', 'legal.phone', 'legal.email'] as const;
+    for (const key of keys) {
+      expect(SETTINGS[key].systemDefault, key).toBe('');
+      expect(SETTINGS[key].levels, key).toEqual(['network']);
+      expect(SETTINGS[key].editAction, key).toBe('settings.network.manage');
+      expect(SETTINGS[key].schema.safeParse('').success, key).toBe(true);
+    }
+    const ok: Array<[(typeof keys)[number], string]> = [['legal.inn', '5405123456'], ['legal.inn', '540512345678'], ['legal.ogrn', '1025400000001'], ['legal.ogrn', '304540000000011'], ['legal.email', 'info@yu-club.ru'], ['legal.operator_name', 'ООО «Ю-Клуб»']];
+    for (const [key, v] of ok) expect(settingDef(key).schema.safeParse(v).success, `${key}=${v}`).toBe(true);
+    const bad: Array<[(typeof keys)[number], string]> = [['legal.inn', '12345'], ['legal.inn', '54051234567'], ['legal.ogrn', '10254'], ['legal.email', 'нет-собаки'], ['legal.operator_name', 'x'.repeat(201)], ['legal.phone', 'x'.repeat(31)]];
+    for (const [key, v] of bad) expect(settingDef(key).schema.safeParse(v).success, `${key}=${v}`).toBe(false);
   });
 
   it('системное значение каждого ключа проходит его же схему', () => {
