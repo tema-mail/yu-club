@@ -223,9 +223,21 @@ export const daysIn = (p: Period): number => Math.round((Date.parse(`${p.to}T00:
 
 // ---- ошибки (reports/errors.ts) словами
 
+/** 503 REPORT_BUSY (D5-10: предел одновременных отчётов на процесс) – через сколько секунд повторить; другая ошибка – null. */
+export function busyRetrySec(e: unknown): number | null {
+  if (!(e instanceof ApiError) || e.code !== 'REPORT_BUSY') return null;
+  const s = Number(e.details?.retryAfterSec);
+  return Number.isFinite(s) ? Math.min(Math.max(Math.ceil(s), 1), 30) : 5;
+}
+
+/** Пока экран ждёт автоповтора по Retry-After. */
+export const busyNotice = (sec: number): string => `Сейчас считается много отчётов – повторим через ${sec} с.`;
+
 export function reportError(e: unknown): string {
   if (!(e instanceof ApiError)) return 'Не удалось загрузить отчёт. Повторите.';
   switch (e.code) {
+    case 'REPORT_BUSY':
+      return `Сейчас считается много отчётов – повторите через ${busyRetrySec(e)} с.`;
     case 'REPORT_PERIOD_INVALID':
       return 'Неверный период: начало позже конца или дата слишком далеко в будущем.';
     case 'REPORT_PERIOD_TOO_LONG':
