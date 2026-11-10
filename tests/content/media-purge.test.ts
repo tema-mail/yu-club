@@ -68,6 +68,22 @@ describe('S4-45: чистая замена', () => {
   });
 });
 
+describe('0444: журнал очисток journal.media_purged', () => {
+  it('только вставка: INSERT от yu_app проходит, UPDATE и DELETE → 42501; код причины – из списка; свободного текста в столбцах нет', async () => {
+    const insert = (code: string) =>
+      f.pool.query<{ id: string }>(`INSERT INTO journal.media_purged (media_id, sha256, reason_code, purged_by, purged_at, files, affected) VALUES ($1, $2, $3, $4, now(), 4, '[]') RETURNING id`, [randomUUID(), 'a'.repeat(64), code, f.staffId]);
+    const id = (await insert('subject_request')).rows[0]!.id;
+    await expect(f.pool.query(`UPDATE journal.media_purged SET reason_code = 'legal_order' WHERE id = $1`, [id])).rejects.toMatchObject({ code: '42501' });
+    await expect(f.pool.query(`DELETE FROM journal.media_purged WHERE id = $1`, [id])).rejects.toMatchObject({ code: '42501' });
+    await expect(insert('заявление Иванова')).rejects.toMatchObject({ code: '23514' });
+    const cols = await f.db.client.query<{ column_name: string; data_type: string }>(`SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'journal' AND table_name = 'media_purged' ORDER BY ordinal_position`);
+    expect(cols.rows.map((c) => c.column_name)).toEqual(['id', 'media_id', 'sha256', 'reason_code', 'purged_by', 'purged_at', 'files', 'affected']);
+    expect(cols.rows.filter((c) => c.data_type === 'text').map((c) => c.column_name)).toEqual(['sha256', 'reason_code']); // текстовые – только хеш и код
+    const v = await f.db.client.query(`SELECT * FROM journal.append_only_violations() WHERE table_name LIKE '%media_purged%'`);
+    expect(v.rows).toEqual([]);
+  });
+});
+
 describe('S4-45: очистка', () => {
   it('файлы всех вариантов удалены даже при использовании в версиях; живая – новая версия без фото; журнал не правлен; публичный API без адреса; аудит с основанием', async () => {
     const id = await f.image(91, 'Лицо Иванова');
