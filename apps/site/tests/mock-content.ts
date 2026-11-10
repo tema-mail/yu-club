@@ -4,7 +4,10 @@
 // Охват (K22 §4): без выбора – всё; город – сеть + город + его филиалы; филиал – сеть + его город + он сам.
 // Срок показа – от «сейчас» процесса (зафиксирован tests/support/e2e.ts). Черновик лежит с флагом draft и не отдаётся ни одним маршрутом –
 // как `p.status = 'published'` в publications.ts: e2e проверяет, что сайт его не показывает.
-// Только для e2e: POST /__mock/content { advertisingConsent?: boolean, home?: 'full' | 'empty', requisites?: 'full' | 'empty' } – переключатели состояния.
+// №208 как listPublications: порядок (publish_from, id) DESC, limit 1…50 (20 по умолчанию), курсор «publish_from|id» в base64url (битый – 400),
+// nextCursor – когда за страницей есть ещё; ETag – по версиям вошедших в страницу.
+// Только для e2e: POST /__mock/content { advertisingConsent?: boolean, home?: 'full' | 'empty' | 'seo', requisites?: 'full' | 'empty',
+// publications?: 'full' | 'empty' } – переключатели состояния; publications 'empty' – в сети нет ни одной опубликованной публикации.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash } from 'node:crypto';
 
@@ -12,7 +15,9 @@ type Fail = (reply: FastifyReply, status: number, code: string, message: string)
 export interface ContentDeps { branchCity: (branchId: string) => string | undefined; cityBranches: (cityId: string) => string[]; fail: Fail }
 
 const DAY = 86_400_000;
-const iso = (deltaDays: number) => new Date(Date.now() + deltaDays * DAY).toISOString();
+/** «Сейчас» засева: даты публикаций неподвижны между запросами, как строки базы (курсор №208 сравнивает publish_from). */
+const T0 = Date.now();
+const iso = (deltaDays: number) => new Date(T0 + deltaDays * DAY).toISOString();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NSK = '0b0c0000-0000-4000-8000-000000000001';
 const KRASNY = '0b0b0000-0000-4000-8000-000000000011';
@@ -89,7 +94,7 @@ const BRANCH_PAGES: Record<string, unknown> = {
   [LENINA]: { description: 'Клуб в центре Томска, **второй этаж**.', gallery: [M(41), M(42)], features: ['Парковка у входа', 'Кофе-автомат'], howToGet: 'Вход со двора, домофон 12.', postal: { street: 'проспект Ленина, 80', locality: 'Томск', region: 'Томская область', postalCode: '634050' }, geo: { lat: 56.4847, lng: 84.9482 } },
 };
 
-const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty' | 'seo', requisites: 'full' as 'full' | 'empty' };
+const state = { advertisingConsent: true, home: 'full' as 'full' | 'empty' | 'seo', requisites: 'full' as 'full' | 'empty', publications: 'full' as 'full' | 'empty' };
 // №218: реквизиты оператора из настроек сети legal.* (K7) – заданные Владельцем; ОГРН и почта не заданы → null. 'empty' – как на старте сети.
 const REQUISITES = { operatorName: 'ООО «Ю-Клуб»', inn: '5405123456', ogrn: null, address: '630099, Новосибирск, Красный проспект, 25', phone: '+7 383 000-00-00', email: null };
 const NO_REQUISITES = { operatorName: null, inn: null, ogrn: null, address: null, phone: null, email: null };
@@ -106,6 +111,17 @@ function inScope(s: Scope, deps: ContentDeps, q: { city?: string; branch?: strin
 
 /** Опубликовано и действует сейчас: дни – от «сейчас» процесса; черновик – никогда. */
 const live = (p: Pub) => !p.draft && p.from <= 0 && (p.to === null || p.to > 0);
+const pubs = () => (state.publications === 'empty' ? [] : PUBS);
+/** Номер живой версии – вход ETag (live_version_id в API): у каждой публикации свой. */
+const versionOf = (p: Pub) => `${p.id}:${p.version}`;
+const cursorOf = (p: Pub) => Buffer.from(`${iso(p.from)}|${p.id}`).toString('base64url');
+/** Курсор №208 (publications.ts): «publish_from|id»; не разобрался – null (400). Следующая страница – строго после (publish_from, id). */
+function afterCursor(raw: string): ((p: Pub) => boolean) | null {
+  const [at, id] = Buffer.from(raw, 'base64url').toString().split('|');
+  if (!at || !id || !UUID.test(id) || Number.isNaN(Date.parse(at))) return null;
+  const t = Date.parse(at);
+  return (p) => Date.parse(iso(p.from)) < t || (Date.parse(iso(p.from)) === t && p.id < id);
+}
 function card(p: Pub) {
   return {
     id: p.id, type: p.type, slug: p.slug, title: p.title, lead: p.lead, cover: p.purged ? REMOVED : media(M(Number(p.id.slice(-2))), `Обложка: ${p.title}`),
@@ -135,6 +151,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
     if (typeof b.advertisingConsent === 'boolean') state.advertisingConsent = b.advertisingConsent;
     if (b.home === 'full' || b.home === 'empty' || b.home === 'seo') state.home = b.home;
     if (b.requisites === 'full' || b.requisites === 'empty') state.requisites = b.requisites;
+    if (b.publications === 'full' || b.publications === 'empty') state.publications = b.publications;
     return state;
   });
 
@@ -145,7 +162,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
   });
 
   const list = (type: Pub['type'] | undefined, q: { city?: string; branch?: string }) => {
-    return PUBS.filter((p) => (!type || p.type === type) && live(p) && inScope(p.scope, deps, q)).sort((a, b) => b.from - a.from || b.id.localeCompare(a.id));
+    return pubs().filter((p) => (!type || p.type === type) && live(p) && inScope(p.scope, deps, q)).sort((a, b) => b.from - a.from || b.id.localeCompare(a.id));
   };
 
   // №207
@@ -165,13 +182,18 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
 
   // №208
   app.get(`${P}/content/publications`, async (req, reply) => {
-    const q = req.query as { type?: string; city?: string; branch?: string; limit?: string };
+    const q = req.query as { type?: string; city?: string; branch?: string; cursor?: unknown; limit?: string };
     if (q.type !== undefined && !['news', 'promotion', 'giveaway', 'tournament'].includes(q.type)) return bad(reply);
     if (badId(q.city) || badId(q.branch)) return bad(reply);
     const limit = q.limit === undefined ? 20 : Number(q.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) return bad(reply);
-    const items = list(q.type as Pub['type'] | undefined, q.branch ? { branch: q.branch } : q.city ? { city: q.city } : {});
-    return cached(req, reply, items.map((p) => p.version), { items: items.slice(0, limit).map(card), nextCursor: null });
+    if (q.cursor !== undefined && (typeof q.cursor !== 'string' || q.cursor.length > 200)) return bad(reply);
+    const after = typeof q.cursor === 'string' ? afterCursor(q.cursor) : null;
+    if (q.cursor !== undefined && !after) return bad(reply);
+    const all = list(q.type as Pub['type'] | undefined, q.branch ? { branch: q.branch } : q.city ? { city: q.city } : {}).filter((p) => !after || after(p));
+    const page = all.slice(0, limit);
+    const last = page.at(-1);
+    return cached(req, reply, page.map(versionOf), { items: page.map(card), nextCursor: all.length > limit && last ? cursorOf(last) : null });
   });
 
   // №209: завершённая – state 'ended' (настройка content.ended_promotion_mode по умолчанию – показывать с плашкой)
@@ -179,12 +201,12 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
     const { type, slug } = req.params as { type: string; slug: string };
     const { branch } = req.query as { branch?: string };
     if (!['news', 'promotion', 'giveaway', 'tournament'].includes(type) || slug.length > 200 || badId(branch)) return bad(reply);
-    const p = PUBS.find((x) => x.type === type && x.slug === slug && !x.draft && x.from <= 0);
+    const p = pubs().find((x) => x.type === type && x.slug === slug && !x.draft && x.from <= 0);
     if (!p) return notFound(reply);
     const ended = p.to !== null && p.to <= 0;
     const rules = p.rulesPdf ? media(M(90), 'Правила розыгрыша', 'pdf') : null;
     const appliesHere = branch ? p.scope.type === 'network' || (p.scope.type === 'branch' ? p.scope.ids.includes(branch) : p.scope.ids.includes(deps.branchCity(branch) ?? '')) : null;
-    return cached(req, reply, [p.version], {
+    return cached(req, reply, [versionOf(p)], {
       ...card(p), body: p.body, conditions: p.conditions ?? null, restrictions: p.restrictions ?? null, ctaLabel: p.ctaLabel ?? null, ctaUrl: p.ctaUrl ?? null,
       resultsDate: p.resultsDate === undefined ? null : iso(p.resultsDate), prize: p.prize ?? null, rulesBody: p.rulesBody ?? null, rules, rulesUrl: rules?.url ?? null,
       media: { [M(Number(p.id.slice(-2)))]: card(p).cover, ...(rules ? { [M(90)]: rules } : {}) }, state: ended ? 'ended' : 'active', indexable: (p.indexable ?? true) && !ended, seo, appliesHere,
