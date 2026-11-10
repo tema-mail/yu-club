@@ -215,7 +215,9 @@ a { color: inherit; }
 .yu-header__account:hover { filter: brightness(1.08); }
 
 /* ── Выбор клуба (остров BranchPicker) ──────────────────── */
-.yu-picker { position: relative; }
+/* До 600 px список – под шапкой во всю ширину (как меню): от правого края кнопки он уходил за левый край экрана на 390 px.
+   С 600 px – 340 px от правого края кнопки (.yu-picker становится опорой). */
+.yu-picker { position: static; }
 .yu-picker__toggle {
   display: inline-flex;
   align-items: center;
@@ -238,9 +240,9 @@ a { color: inherit; }
 .yu-picker__chevron { flex: none; width: 8px; height: 8px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-2px) rotate(45deg); }
 .yu-picker__panel {
   position: absolute;
-  right: 0;
-  top: calc(100% + var(--yu-sp-2xs));
-  width: min(340px, calc(100vw - 2 * var(--yu-gutter)));
+  left: var(--yu-gutter);
+  right: var(--yu-gutter);
+  top: calc(100% + var(--yu-sp-3xs));
   max-height: min(70dvh, 520px);
   overflow-y: auto;
   padding: var(--yu-sp-s);
@@ -531,6 +533,8 @@ a.yu-zone__room-name:hover { color: var(--yu-accent); }
 @media (min-width: 600px) {
   :root { --yu-gutter: 24px; }
   .yu-nav__toggle-text { display: inline; }
+  .yu-picker { position: relative; }
+  .yu-picker__panel { left: auto; right: 0; top: calc(100% + var(--yu-sp-2xs)); width: 340px; }
   .yu-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .yu-footer__row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
