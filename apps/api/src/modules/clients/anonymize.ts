@@ -62,13 +62,17 @@ export async function anonymizeClient(
   }
   if (!UUID_RE.test(clientId)) throw new AppError('NOT_FOUND', 404, 'Не найдено');
 
-  const cur = await tx.query<{ status: ClientStatus; phone_e164: string | null }>(
-    'SELECT status, phone_e164 FROM app.clients WHERE id = $1 FOR UPDATE',
+  const cur = await tx.query<{ status: ClientStatus; phone_e164: string | null; merged_into_id: string | null }>(
+    'SELECT status, phone_e164, merged_into_id FROM app.clients WHERE id = $1 FOR UPDATE',
     [clientId],
   );
   const row = cur.rows[0];
   if (!row) throw new AppError('NOT_FOUND', 404, 'Не найдено');
   if (row.status === 'anonymized') return { clientId, status: 'anonymized', alreadyAnonymized: true, affected: {} };
+  // Объединённая карточка (0447) уже без ПДн; её данные живут в основной – обезличивать нужно основную.
+  if (row.status === 'merged') {
+    throw new AppError('CLIENT_MERGED', 409, 'Карточка объединена – обезличьте основную', { clientId, mergedIntoId: row.merged_into_id });
+  }
 
   const now = clock.now();
   const list = [...anonymizers.values()].sort((a, b) => a.name.localeCompare(b.name));
