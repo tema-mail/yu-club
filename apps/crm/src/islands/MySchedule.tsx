@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { browserCall } from '../lib/api.ts';
 import { addDays, fmtDay, inZone, zonedIso } from '../lib/booking.ts';
+import { useLatest } from '../lib/latest.ts';
 import { fmtDate, REVIEW_REASON, SHIFT_STATUS, shiftError, type ShiftChange, type ShiftDto } from '../lib/shifts.ts';
 
 export interface MyScheduleProps {
@@ -37,19 +38,22 @@ export default function MySchedule({ meId, branches, today, staffNames }: MySche
   const newDlg = () => document.getElementById('my-new') as HTMLDialogElement | null;
   const offDlg = () => document.getElementById('my-off') as HTMLDialogElement | null;
 
+  const latest = useLatest(); // листание окна: ответ прежнего окна не подменяет свежее
   const load = async () => {
+    const fresh = latest();
     setLoading(true);
     try {
       const [list, ch] = await Promise.all([
         browserCall<{ items: ShiftDto[] }>(`/shifts?staffId=${enc(meId)}&from=${from}&to=${to}`),
         browserCall<{ items: ShiftChange[] }>('/me/shift-changes?unread=true'),
       ]);
+      if (!fresh()) return;
       setShifts(list.items);
       setChanges(ch.items);
     } catch (e) {
-      setError(shiftError(e));
+      if (fresh()) setError(shiftError(e));
     } finally {
-      setLoading(false);
+      if (fresh()) setLoading(false);
     }
   };
   useEffect(() => {

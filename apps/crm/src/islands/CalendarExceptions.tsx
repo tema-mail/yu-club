@@ -126,15 +126,27 @@ export default function CalendarExceptions(props: CalendarProps) {
   const currentFor = (wd: number) =>
     (hours ?? []).filter((r) => r.weekday === wd && r.validFrom <= today && (!r.validTo || r.validTo >= today)).sort((a, b) => b.validFrom.localeCompare(a.validFrom))[0];
   const [validFrom, setValidFrom] = useState(todayIn(timezone, 1));
-  const [days, setDays] = useState<Array<{ on: boolean; open: string; close: string }>>([]);
+  type Day = { on: boolean; open: string; close: string };
+  const [days, setDays] = useState<Day[]>([]);
+  // График перечитывается и после исключения: дни, которые человек уже поменял и не сохранил, ответ не трогает (§10 OTCHET).
+  const touched = useRef(new Set<number>());
   useEffect(() => {
-    if (hours) setDays(DAYS.map((_, i) => {
+    if (hours) setDays((prev) => DAYS.map((_, i) => {
+      if (touched.current.has(i) && prev[i]) return prev[i];
       const r = currentFor(i + 1);
       return { on: Boolean(r && !r.closed), open: r?.open ?? '10:00', close: r?.close ?? '22:00' };
     }));
   }, [hours]);
+  const editDay = (i: number, patch: Partial<Day>) => {
+    touched.current.add(i);
+    setDays(days.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+    weekly.reset();
+  };
   const [note, setNote] = useState('');
-  const weekly = useTwoStep(`${base}/hours`, () => setReload((n) => n + 1));
+  const weekly = useTwoStep(`${base}/hours`, () => {
+    touched.current.clear(); // сохранено – дальше показываем график с сервера
+    setReload((n) => n + 1);
+  });
   const planned = (hours ?? []).filter((r) => r.validFrom > today);
 
   // ---- новое исключение
@@ -207,14 +219,14 @@ export default function CalendarExceptions(props: CalendarProps) {
               {days.map((d, i) => (
                 <div class="yc-week__day" key={i}>
                   <label class="yc-check">
-                    <input type="checkbox" checked={d.on} onChange={(e) => { setDays(days.map((x, j) => (j === i ? { ...x, on: (e.currentTarget as HTMLInputElement).checked } : x))); weekly.reset(); }} />
+                    <input type="checkbox" checked={d.on} onChange={(e) => editDay(i, { on: (e.currentTarget as HTMLInputElement).checked })} />
                     {DAYS[i]}
                   </label>
                   <input class="yc-input" type="time" aria-label={`${DAYS[i]}, открытие`} value={d.open} disabled={!d.on}
-                    onInput={(e) => { setDays(days.map((x, j) => (j === i ? { ...x, open: (e.currentTarget as HTMLInputElement).value } : x))); weekly.reset(); }} />
+                    onInput={(e) => editDay(i, { open: (e.currentTarget as HTMLInputElement).value })} />
                   <span aria-hidden="true">–</span>
                   <input class="yc-input" type="time" aria-label={`${DAYS[i]}, закрытие`} value={d.close} disabled={!d.on}
-                    onInput={(e) => { setDays(days.map((x, j) => (j === i ? { ...x, close: (e.currentTarget as HTMLInputElement).value } : x))); weekly.reset(); }} />
+                    onInput={(e) => editDay(i, { close: (e.currentTarget as HTMLInputElement).value })} />
                 </div>
               ))}
             </fieldset>

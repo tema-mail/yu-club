@@ -8,6 +8,7 @@
 // Суммы с сервера – целые копейки; в интерфейсе – рубли без плавающей арифметики.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
+import { useLatest } from '../lib/latest.ts';
 
 export type Place = 'cash' | 'noncash';
 export interface FinanceOperation {
@@ -149,7 +150,9 @@ export default function CashJournal(p: CashJournalProps) {
   const period = useRef({ from, to });
   period.current = { from, to };
 
+  const latest = useLatest(); // перечитывание после операции: ответ, начатый до неё, не подменяет свежий журнал
   const load = async () => {
+    const fresh = latest();
     setLoading(true);
     const { from: f, to: t } = period.current;
     const next: Record<string, BranchData> = {};
@@ -167,6 +170,7 @@ export default function CashJournal(p: CashJournalProps) {
         }
       }),
     );
+    if (!fresh()) return;
     setData(next);
     setLoading(false);
   };

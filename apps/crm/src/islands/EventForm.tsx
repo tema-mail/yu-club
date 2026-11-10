@@ -91,13 +91,26 @@ export default function EventForm(p: EventFormProps) {
   useEffect(() => {
     if (p.autoOpen) dialog.current?.showModal();
   }, []);
-  // Выбранный клиент: подставляем телефон, если право позволяет его видеть; иначе вводит сотрудник
+  // Выбранный клиент: подставляем имя и телефон, если право позволяет его видеть; иначе вводит сотрудник. Сменили клиента – подставленное
+  // прежним меняется, введённое руками остаётся; ответ по прежнему клиенту, пришедший позже, не применяется (§10 OTCHET).
+  const auto = useRef({ name: p.preset ? p.preset.name.split(',')[0]! : '', phone: '' });
   useEffect(() => {
     if (!client) return;
-    setName((n) => n || client.name.split(',')[0]!);
+    let live = true;
+    const nm = client.name.split(',')[0]!;
+    const wasName = auto.current.name;
+    auto.current.name = nm;
+    setName((n) => (!n || n === wasName ? nm : n));
     browserCall<{ full: { phoneE164: string | null } | null }>(`/clients/${client.id}`).then((c) => {
-      if (c.full?.phoneE164) setPhone((v) => v || c.full!.phoneE164!);
+      if (!live) return;
+      const ph = c.full?.phoneE164 ?? '';
+      const wasPhone = auto.current.phone;
+      auto.current.phone = ph;
+      setPhone((v) => (!v || v === wasPhone ? ph : v));
     }, () => undefined);
+    return () => {
+      live = false;
+    };
   }, [client?.id]);
 
   const submit = async (e: Event) => {
