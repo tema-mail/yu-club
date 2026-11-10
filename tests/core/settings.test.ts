@@ -67,7 +67,10 @@ describe('реестр K7', () => {
     expect(SETTINGS['booking.max_anonymous_holds_per_branch'].levels).toEqual(['network', 'branch']);
     expect(SETTINGS['visit.arrive_early_min'].systemDefault).toBe(30); // Q-101
     expect(SETTINGS['visit.arrive_early_min'].levels).toEqual(['network', 'city', 'branch']);
-    expect(Object.keys(SETTINGS)).toHaveLength(71); // 21 ключ Э0–Э1 + 12 Э2 + 26 Э3 + 12 Э4 (K7)
+    expect(Object.keys(SETTINGS)).toHaveLength(74); // 21 ключ Э0–Э1 + 12 Э2 + 26 Э3 + 12 Э4 + 3 ленты событий CRM (K7)
+    expect(SETTINGS['notifications.feed_shift_unfilled_hours'].systemDefault).toBe(24); // 13 §11, таймеры ленты
+    expect(SETTINGS['notifications.feed_event_prepare_days'].systemDefault).toBe(3);
+    expect(SETTINGS['notifications.feed_warranty_days'].systemDefault).toBe(30);
   });
 
   it('системное значение каждого ключа проходит его же схему', () => {

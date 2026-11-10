@@ -142,6 +142,10 @@ export const SETTINGS = {
   'reports.export_ttl_hours': def(int(1, 168), 24, N, NET), // Q-145
   'reports.loyalty_threshold_warn_centi': def(int(-1_000_000, 0), -4500, N, NET), // Q-80; пределы – решение S4-00
   'reports.repeat_breakdown_days': def(int(7, 365), 90, N, NET),
+  // ---- лента событий CRM (13 §11; S4-28/S4-97, D4-46): пороги таймерных событий staff-feed-events.ts (K7 «Лента событий CRM»).
+  'notifications.feed_shift_unfilled_hours': def(int(1, 168), 24, N, NET), // пустая смена: за N часов до открытия филиала
+  'notifications.feed_event_prepare_days': def(int(0, 30), 3, N, NET), // подготовка мероприятия: за N дней до начала; 0 – выключено
+  'notifications.feed_warranty_days': def(int(1, 365), 30, N, NET), // окончание гарантии: за N дней до ends_on
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;
