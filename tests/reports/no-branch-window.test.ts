@@ -8,7 +8,7 @@ import { openAccount, postPoints } from '../../apps/api/src/modules/loyalty/acco
 import type { Metric, ReportParams } from '../../apps/api/src/modules/reports/framework.ts';
 import { HANDLERS, parseQuery, segmented } from '../../apps/api/src/modules/reports/report-handlers.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
-import { d, reportFixtures, type Fx } from '../helpers/reports.ts';
+import { d, reportFixtures, SYS, type Fx } from '../helpers/reports.ts';
 
 const PERIOD: ReportParams = { period: { from: d('2026-11-01'), to: d('2026-11-04') } };
 const PREV: ReportParams = { period: { from: d('2026-10-28'), to: d('2026-10-31') } };
@@ -52,6 +52,14 @@ beforeAll(async () => {
        VALUES ($1, NULL, 'service', 'booking_confirmed', 'system', 'т', 'т', $2, 'inbox_only', $3, $2, false)`,
       [client, at, `edge${seq}`],
     );
+    // отказ от рекламы и опубликованная новость сети – без филиала, те же моменты у края периода
+    await db.client.query(
+      `INSERT INTO journal.client_consents (client_id, kind, granted, document_version, source, at, actor_type, actor_id) VALUES ($1, 'marketing', false, NULL, 'account', $2, 'client', $1)`,
+      [client, at],
+    );
+    const pub = (await db.client.query<{ id: string }>(`INSERT INTO app.content_publications (type, draft, draft_updated_at, draft_updated_by, created_by, created_at) VALUES ('news', '{}', now(), $1, $1, now()) RETURNING id`, [SYS])).rows[0]!.id;
+    await db.client.query(`INSERT INTO app.content_publication_scopes (publication_id, scope_type, city_id, branch_id) VALUES ($1, 'network', NULL, NULL)`, [pub]);
+    await db.client.query(`INSERT INTO journal.content_versions (entity_type, entity_id, version_no, snapshot, action, published_by, published_at) VALUES ('publication', $1, 1, '{}', 'publish', $2, $3)`, [pub, SYS, at]);
   }
 }, 120_000);
 afterAll(async () => {
@@ -76,5 +84,17 @@ describe('записи без филиала у края периода – су
     expect(val(r.metrics.serviceCreated)).toBe(2);
     expect(r.metrics.serviceCreated).toMatchObject({ prev: 1 });
     expect(val(await dayDetail('comms', 'serviceCreated', '2026-11-04'))).toBe(2);
+  });
+
+  it('отказы от рекламы и опубликованные материалы сети – то же правило: карточка = детализация дня, прошлый период не пересекается', async () => {
+    const r = await card('comms', PERIOD);
+    for (const key of ['optOuts', 'publishedNews']) {
+      expect([key, val(r.metrics[key])]).toEqual([key, 2]);
+      expect([key, r.metrics[key]!.prev]).toEqual([key, 1]);
+      expect([key, val(await dayDetail('comms', key, '2026-11-04'))]).toEqual([key, 2]);
+      expect([key, val(await dayDetail('comms', key, '2026-11-01'))]).toEqual([key, 'no_data']);
+    }
+    const prev = (await card('comms', PREV)).metrics;
+    expect([val(prev.optOuts), val(prev.publishedNews)]).toEqual([1, 1]);
   });
 });
