@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config.ts';
 import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
 import { AppError } from '../../apps/api/src/core/errors.ts';
-import { createFileStore } from '../../apps/api/src/core/files.ts';
+import { createFileStore, registerAttachmentOwner } from '../../apps/api/src/core/files.ts';
 import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import { fixedClock } from '../../apps/api/src/core/time.ts';
 import { withTx } from '../../apps/api/src/modules/clients/index.ts';
@@ -166,6 +166,27 @@ describe('документ к расходу мероприятия (0435)', () 
     expect(await codeOf(setDoc(admin, eventId, incomeOp, own))).toBe('NOT_FOUND');
     expect(await codeOf(setDoc(ctxOf('stranger', 'director', ids.b2!), eventId, op, own))).toBe('NOT_FOUND');
     expect((await expenseDocumentsOf(pool, eventId)).size).toBe(0);
+  });
+
+  it('вложение другого типа владельца в своей зоне без права чтения – тот же 400, что и несуществующее (не 403)', async () => {
+    // владелец, у которого в зоне вызывающего нет права чтения: его canRead отвечает 403 (как guard любого модуля, K1)
+    registerAttachmentOwner('secret_doc', {
+      canRead: async () => { throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'secret.view' }); },
+      canWrite: async () => { throw new AppError('FORBIDDEN', 403, 'Недостаточно прав', { action: 'secret.write' }); },
+    });
+    const sha = 'a'.repeat(64);
+    const secret = (await one(
+      `INSERT INTO app.attachments (owner_type, owner_id, doc_type, storage_key, sha256, size_bytes, mime_type, created_by_type)
+       VALUES ('secret_doc', $1, 'check', $2, $3, 1, 'application/pdf', 'system') RETURNING id`,
+      [ids.b1, `aa/${sha}`, sha],
+    )).id as string;
+    const admin = ctxOf('admin', 'admin', ids.b1!);
+    const eventId = await newEvent();
+    const op = await expenseOf(eventId);
+    const missing = await setDoc(admin, eventId, op, randomUUID()).catch((e: AppError) => [e.httpStatus, e.code, e.details]);
+    const foreignType = await setDoc(admin, eventId, op, secret).catch((e: AppError) => [e.httpStatus, e.code, e.details]);
+    expect(foreignType).toEqual(missing);
+    expect(foreignType).toEqual([400, 'VALIDATION_FAILED', { field: 'attachmentId' }]);
   });
 
   it('yu_app: строки не удаляются, документ в строке не меняется – только поля замены', async () => {

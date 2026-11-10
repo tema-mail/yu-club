@@ -39,7 +39,8 @@ async function documentOfEvent(tx: Tx, ctx: AccessContext, eventId: string, atta
   try {
     a = (await getAttachment(tx, ctx, attachmentId)).attachment;
   } catch (err) {
-    if (err instanceof AppError && err.code === 'NOT_FOUND') throw badDocument();
+    // чужая зона (404) и вложение другого владельца без права чтения (403) неотличимы от несуществующего id (K1)
+    if (err instanceof AppError && (err.code === 'NOT_FOUND' || err.code === 'FORBIDDEN')) throw badDocument();
     throw err;
   }
   if (a.ownerType !== 'event' || a.ownerId !== eventId || a.status !== 'active') throw badDocument();
