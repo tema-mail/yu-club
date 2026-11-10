@@ -33,18 +33,17 @@ try {
 if (!network || !details) Astro.response.status = 503;
 
 /** Строки блока реквизитов – только заполненные; телефон и почта – ссылками. */
-const requisiteRows = requisites
-  ? (
-      [
-        ['Оператор', requisites.operatorName, null],
-        ['ИНН', requisites.inn, null],
-        ['ОГРН', requisites.ogrn, null],
-        ['Адрес', requisites.address, null],
-        ['Телефон', requisites.phone, requisites.phone ? `tel:${requisites.phone.replace(/[^\d+]/g, '')}` : null],
-        ['Почта', requisites.email, requisites.email ? `mailto:${requisites.email}` : null],
-      ] as const
-    ).filter((r): r is readonly [string, string, string | null] => r[1] !== null)
-  : [];
+type RequisiteRow = { label: string; value: string; href: string | null };
+const requisiteRows: RequisiteRow[] = [];
+if (requisites) {
+  const add = (label: string, value: string | null, href: string | null = null) => value && requisiteRows.push({ label, value, href });
+  add('Оператор', requisites.operatorName);
+  add('ИНН', requisites.inn);
+  add('ОГРН', requisites.ogrn);
+  add('Адрес', requisites.address);
+  add('Телефон', requisites.phone, requisites.phone ? `tel:${requisites.phone.replace(/[^\d+]/g, '')}` : null);
+  add('Почта', requisites.email, requisites.email ? `mailto:${requisites.email}` : null);
+}
 
 /** Недельный график строками: одинаковые дни подряд – диапазоном («Пн–Пт 10:00–22:00»), дней без записи – «выходной». */
 function weekText(hours: BranchDetailDto['weeklyHours']): string[] {
@@ -91,8 +90,8 @@ function weekText(hours: BranchDetailDto['weeklyHours']): string[] {
     <section class="yu-section" aria-labelledby="requisites">
       <h2 id="requisites">Реквизиты</h2>
       <dl class="yu-facts contacts-requisites" data-testid="contacts-requisites">
-        {requisiteRows.map(([label, value, href]) => (
-          <div><dt>{label}</dt><dd>{href ? <a href={href}>{value}</a> : value}</dd></div>
+        {requisiteRows.map((r) => (
+          <div><dt>{r.label}</dt><dd>{r.href ? <a href={r.href}>{r.value}</a> : r.value}</dd></div>
         ))}
       </dl>
     </section>
