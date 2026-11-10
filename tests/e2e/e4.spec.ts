@@ -1,12 +1,13 @@
 // Э4 на живом стенде (правило 10 отчёта): экраны CRM и сайта S4-80…S4-98, S4-110…S4-126 против настоящего API.
 // До этого они проверялись только на моках (apps/crm/tests/mock-*.ts, apps/site/tests/mock-*.ts). Сценарии:
 //  1. CMS: Владелец создаёт новость с охватом «Ю Клуб Арбат» формой → черновика нет на сайте → публикует → видна на /news/
-//     с выбранным Арбатом и не видна с выбранным Новосибирском → правка → версия 2 → откат к версии 1 → на сайте старый заголовок.
+//     с выбранным Арбатом и не видна с выбранным Новосибирском; хаб Арбата = первая страница №208 ?branch= → правка → версия 2 →
+//     откат к версии 1 → на сайте старый заголовок.
 //  2. Уведомления: личное сервисное сообщение клиенту с предпросмотром → строка в «Отправках» → ЛК «Уведомления» показывает;
 //     реклама клиенту: согласие в ЛК → предпросмотр берёт → отказ в ЛК → предпросмотр исключает; рассылка на группу с числом
 //     адресатов во втором подтверждении. Реклама на стенде не подтверждается (нет UNSUBSCRIBE_SECRET) – это фиксируется, не роняет.
 //  3. Отчёты: «Финансы и касса» за текущий месяц → детализация = карточка → CSV из «Моих файлов» = экран → рабочий стол те же числа.
-//  4. Поиск в шапке: клиент по телефону, бронь по номеру, мероприятие по номеру.
+//  4. Поиск в шапке: клиент по телефону (у Владельца тоже маска), бронь по номеру, мероприятие по номеру.
 //  5. Делегирование: «Создание филиалов» Директору на город (единственное делегируемое право, которого у Директора нет по роли)
 //     → создание филиала доходит до конфликта слага (409, филиал не создаётся) → отзыв → 403.
 //  6. Обезличивание: клиент сценария (брони отменены) → кнопка у Владельца → «Обезличен», поиск по старому телефону пуст.
@@ -193,8 +194,14 @@ test('1. CMS: новость филиала – черновик не на са�
   const applies = await ok<{ appliesHere: boolean | null; onlyIn: Array<{ id: string }> }>(asKrasny.get(`/api/public/v1/content/publications/news/${slug}/?branch=${krasny.id}`));
   expect(applies).toMatchObject({ appliesHere: false, onlyIn: [{ id: arbat.id }] });
   await asKrasny.dispose();
-  const hub = await (await asArbat.get(`/${arbat.citySlug}/${arbat.slug}/`)).text();
-  if (!hub.includes(title)) note('хаб филиала /moskva/arbat/ не выводит публикации с охватом «филиал» (карта сайта 3.1 требует): apps/site/src/pages/[city]/[branch]/index.astro');
+  // хаб филиала (карта сайта 3.1): первая страница №208 ?branch=Арбат&limit=6 – сеть + Москва + Арбат, новые сверху. Новость прогона
+  // показывается с позавчера, засев content.ts – со вчера, поэтому сверяем хаб с ответом API, а не с заголовком прогона
+  const hubApi = await ok<{ items: Array<{ title: string }> }>(asArbat.get(`/api/public/v1/content/publications/?branch=${arbat.id}&limit=6`));
+  expect(hubApi.items.length, 'у Арбата есть публикации: засев и новость прогона').toBeGreaterThan(0);
+  await expect.poll(async () => {
+    const hub = await (await asArbat.get(`/${arbat.citySlug}/${arbat.slug}/`)).text();
+    return hubApi.items.map((i) => i.title).filter((t) => !hub.includes(t));
+  }, SITE_POLL).toEqual([]);
   await asArbat.dispose();
   const visitor = await browser.newContext({ baseURL: SITE_URL, ignoreHTTPSErrors: true, locale: 'ru-RU' });
   await visitor.addCookies([{ name: 'yu_branch', value: 'moskva/arbat', url: SITE_URL }]);
@@ -438,11 +445,9 @@ test('4. Поиск в шапке: клиент по телефону, брон�
   await box.fill(client.phone);
   const clients = results.getByTestId('search-group-client');
   await expect(clients.locator(`a[href="/clients/${clientId}"]`)).toHaveCount(1);
-  // API поиска (reports/search.ts) отдаёт телефон маской даже Владельцу; мок CRM – целиком и в другом формате
-  await expect(clients.locator(`a[href="/clients/${clientId}"]`)).toContainText(`••-${client.phone.slice(-2)}`);
-  if (!(await clients.innerText()).includes(client.phone)) {
-    note('поиск в шапке: API маскирует телефон клиента и Владельцу («+7 ••• ••• ••-NN», reports/search.ts clientGroup без fullPhone), мок apps/crm/tests/mock-reports.ts отдаёт Владельцу полный номер и маску «+7 *** ***-NN-NN»; экран apps/crm/src/islands/GlobalSearch.tsx показывает как есть');
-  }
+  // телефон в выдаче – маска всем ролям, и Владельцу (K24 §5, 03 §14), полный – только в карточке; мок CRM – так же (search.spec.ts)
+  await expect(clients.locator(`a[href="/clients/${clientId}"]`)).toContainText(`+7 ••• ••• ••-${client.phone.slice(-2)}`);
+  await expect(clients).not.toContainText(client.phone);
 
   if (booking) {
     await box.fill(String(booking.number));
