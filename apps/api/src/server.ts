@@ -512,7 +512,9 @@ export function depsFromConfig(config: Config): { deps: ServerDeps; close: () =>
   }
   // Диспетчер уведомлений работает и без VAPID: строки получают статус «нет канала» и остаются в ЛК.
   // sender здесь – только для предупреждения о VAPID при старте; отправляет worker (startWorkerTasks, с bookingLookup)
-  const reportsPool = config.REPORTS_DATABASE_URL ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX) : null;
+  const reportsPool = config.REPORTS_DATABASE_URL
+    ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX, { screen: config.REPORTS_SCREEN_MAX, export: config.REPORTS_EXPORT_MAX, waitMs: config.REPORTS_BUSY_WAIT_MS })
+    : null;
   if (reportsPool) deps.reports = { pool: reportsPool, exportStore: createFileStore({ root: config.EXPORT_DIR }) };
   const close = async () => {
     await reportsPool?.end();
