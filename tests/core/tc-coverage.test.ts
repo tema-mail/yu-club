@@ -47,10 +47,12 @@ describe('покрытие TC-01…TC-20 (tz/20 §10)', () => {
     expect(onlyScreens).toEqual([]);
   });
 
-  it('гонки TC-01…TC-04 – в tests/booking/tc-races.test.ts (N параллельных соединений, план §8)', () => {
+  it('гонки TC-01…TC-04 – в tests/booking/tc-races.test.ts (N параллельных соединений, план §8) и в ночном ×100', () => {
     for (const tc of ['TC-01', 'TC-02', 'TC-03', 'TC-04']) expect(coveredBy(integration, tc)).toContain('tests/booking/tc-races.test.ts');
     const src = readFileSync(join(root, 'tests/booking/tc-races.test.ts'), 'utf8');
     expect(src).toContain('Promise.all');
     expect(src).toContain('overlapsInDb');
+    // план §8: каждый тест гонки – 100 повторов в CI ночью; файл, выпавший из списка, ночью не гоняется
+    expect(readFileSync(join(root, '.github/workflows/races-nightly.yml'), 'utf8')).toContain('tests/booking/tc-races.test.ts');
   });
 });

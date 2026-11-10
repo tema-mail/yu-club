@@ -63,7 +63,7 @@ const activeOn = async (unitId: string, range: string) => (await one<{ n: number
 
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
-  pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 64 });
+  pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 24 }); // самая широкая гонка – 20 соединений (TC-01); ночью файлы гонок идут параллельно при max_connections=300
   const city = await one(`INSERT INTO app.cities (code, slug, name, timezone) VALUES ('nsk', 'nsk', 'НСК', 'Asia/Novosibirsk') RETURNING id`);
   for (const code of ['b1', 'b2']) {
     ids[code] = (await one(`INSERT INTO app.branches (city_id, code, slug, name, address, timezone, status) VALUES ($1, $2, $2, $2, 'Красный, 1', 'Asia/Novosibirsk', 'active') RETURNING id`, [city.id, code])).id;
