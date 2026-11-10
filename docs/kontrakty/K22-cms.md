@@ -146,7 +146,7 @@
 
 | № | Метод и путь | Успех |
 |---|---|---|
-| K5 №207 | `GET /content/home?city=` | `200 { blocks: HomeBlock[], promos: PublicationCard[] (≤ 6), news: PublicationCard[] (≤ 3), games: GameCard[] (≤ 20, для карусели) }` |
+| K5 №207 | `GET /content/home?city=` | `200 { blocks: HomeBlock[], seo: SeoDto \| null, promos: PublicationCard[] (≤ 6), news: PublicationCard[] (≤ 3), games: GameCard[] (≤ 20, для карусели) }`; `seo` – ручные поля баннера `hero` (K23 §4) для мета главной, нет живого баннера – `null` (остаток S4-89, 10.11) |
 | K5 №208 | `GET /content/publications?type=&city=&branch=&cursor=&limit=` | `200 { items: PublicationCard[], nextCursor }`; порядок `(publish_from DESC, id)`; `limit` ≤ 50 |
 | K5 №209 | `GET /content/publications/{type}/{slug}?branch=` | `200 PublicationPage & { state: 'active' \| 'ended', seo }`; нет или не опубликовано – `404` |
 | K5 №210 | `GET /content/games?direction=&branch=` | `200 { items: GameCard[] }`; при `branch` – только доступные там (12 §14.1: не подменять играми другого филиала); без `branch` – сетевой каталог с пометкой «общий каталог сети» |
