@@ -23,9 +23,10 @@ const about = home?.blocks.find((b) => b.blockType === 'about');
 // Описание из текста «о клубе»: без разметки Markdown, по целому слову (metaFor режет до 160).
 const plain = (s: unknown) => (typeof s === 'string' ? s.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_#>`]/g, '').replace(/\s+/g, ' ').trim() : '') || undefined;
 const heroTitle = typeof hero?.payload.title === 'string' && hero.payload.title.trim() ? hero.payload.title.trim() : undefined;
-const meta = metaFor({ page: 'home', singleCity: network?.length === 1 ? network[0]!.name : undefined, about: plain(about?.payload.body), hero: heroTitle });
+// Ручные SEO-поля баннера hero (K23 §4, №207 seo) важнее шаблона; пустые – шаблон по полю отдельно.
+const meta = metaFor({ page: 'home', singleCity: network?.length === 1 ? network[0]!.name : undefined, about: plain(about?.payload.body), hero: heroTitle }, home?.seo ?? undefined);
 ---
-<Site title={meta.title} description={meta.description} jsonLd={[organizationLd(origin), websiteLd(origin)]}>
+<Site title={meta.title} description={meta.description} ogImage={meta.ogImage} jsonLd={[organizationLd(origin), websiteLd(origin)]}>
   <HomeBlocks home={home} h1={meta.h1} lead="Игровые ПК, VR и PlayStation 5 в одной сети. Выберите свой клуб: адрес, часы и зоны." timeZone={displayZone(network, mine)}>
     <section class="yu-section" id="clubs" aria-labelledby="clubs-title" slot="clubs">
       <h2 id="clubs-title">Клубы</h2>

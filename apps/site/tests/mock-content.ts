@@ -160,7 +160,7 @@ export function registerContent(app: FastifyInstance, P: string, deps: ContentDe
       { id: 'eeeeeeee-0000-4000-8000-000000000004', blockType: 'promo_strip', cityOverride: false, payload: { text: 'Счастливые часы по будням', url: '/promotions/happy-hours/' }, media: {} },
     ];
     const games = GAMES.map((g) => gameCard(g)).slice(0, 20);
-    return cached(req, reply, ['home'], { blocks, seo: state.home === 'seo' ? HOME_SEO : seo, promos: list('promotion', { city }).slice(0, 6).map(card), news: list('news', { city }).slice(0, 3).map(card), games });
+    return cached(req, reply, ['home', state.home], { blocks, seo: state.home === 'seo' ? HOME_SEO : seo, promos: list('promotion', { city }).slice(0, 6).map(card), news: list('news', { city }).slice(0, 3).map(card), games });
   });
 
   // №208
