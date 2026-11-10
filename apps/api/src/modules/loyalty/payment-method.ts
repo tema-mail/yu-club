@@ -1,7 +1,8 @@
 // K10 §5, K15 §6: обработчик способа оплаты points. finance вызывает его по реестру способов (finance/methods.ts),
 // регистрирует server.ts – модули друг друга не импортируют (ADR 0002).
 // charge: минуты брони × 100 (1 балл = 1 минута, 07 §6.1), доступно для этой брони = max(0, баланс) − резервы других
-// удержаний и броней; меньше – POINTS_INSUFFICIENT с двумя числами, доплата не предлагается (07 §6.2). Расход FEFO,
+// удержаний и броней (резерв самой брони и удержания, из которого она создана, – не вычитаются: worker мог ещё не
+// обработать booking.confirmed; позже convertReserves закроет резерв удержания, на оплаченную бронь не создаст); меньше – POINTS_INSUFFICIENT с двумя числами, доплата не предлагается (07 §6.2). Расход FEFO,
 // loyalty.spend_time, резерв брони → spent. Списание никогда не уводит баланс ниже 0 (минус бывает только от штрафа).
 // refund: только целиком (частичный режет finance – REFUND_PARTIAL_NOT_ALLOWED); возврат в исходные партии (§7):
 // истёкшая часть – «не возвращено»; всё истекло – outcome 'not_restored'.
@@ -30,7 +31,7 @@ export async function chargePoints(tx: Tx, input: ChargeInput): Promise<ChargeRe
   const prior = (await tx.query<{ id: string; posting_id: string }>('SELECT id, posting_id FROM journal.ledger_entries WHERE idempotency_key = $1', [`${input.idempotencyKey}#0`])).rows[0];
   if (prior) return { postingId: prior.posting_id, amountKop: input.amountKop, pointsCenti: required };
   await settleStaleReserves(tx, acc.clientId, input.occurredAt);
-  const available = Math.max(0, Math.max(0, acc.balance) - (await reservedCenti(tx, acc.clientId, input.occurredAt, { bookingId: session.bookingId })));
+  const available = Math.max(0, Math.max(0, acc.balance) - (await reservedCenti(tx, acc.clientId, input.occurredAt, { bookingId: session.bookingId, ...(input.holdId ? { holdId: input.holdId } : {}) })));
   if (available < required) {
     throw new AppError('POINTS_INSUFFICIENT', 409, 'Баллов недостаточно для оплаты сеанса', { availableCenti: available, requiredCenti: required });
   }

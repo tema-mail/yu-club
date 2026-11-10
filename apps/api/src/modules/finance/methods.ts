@@ -43,6 +43,9 @@ export interface StaffAuthor {
 
 export interface ChargeInput {
   session: PaymentSession;
+  /** Удержание, из которого создана бронь (payableBooking.holdId): points не вычитает его резерв – пока worker не
+   *  перенёс резерв на бронь, это резерв самой брони (K15 §3). Бронь без удержания – null. */
+  holdId?: string | null;
   lineNo: 1 | 2;
   amountKop: number;
   /** Минуты брони по расписанию (points: минуты × 100, 07 §6.1). */
