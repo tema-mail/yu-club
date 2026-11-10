@@ -5,9 +5,11 @@
 // Временно закрытый – страница остаётся, плашка, без слотов и записи (12 §4.3, карта п.2.12).
 // Зоны – разделы этой страницы (#rooms, отдельных страниц зон нет); комната – ссылка на свою карточку (S1-21),
 // у зоны – запись с предвыбором зоны. Нет опубликованных комнат – пустое состояние, а не пропавший раздел.
-// Запись – кнопкой в /schedule/?branch={город}/{филиал} (карта п.2.9: своего адреса расписания у филиала нет); у закрытого её нет.
+// Запись – «Выбрать время» (19 §4.1, D4-66) в /schedule/?branch={город}/{филиал} (карта п.2.9: своего адреса расписания у филиала нет):
+// кнопка в первом экране и на телефоне липкая панель внизу (components/TimeCta.astro); у закрытого ни того, ни другого.
 // S4-121: описание, особенности, как добраться, галерея, адрес и координаты для разметки – страница CMS (K5 №214). Нет страницы или API
 // контента молчит – страница работает на фактах network; кнопку записи и часы контент не меняет (приёмка 21).
+import TimeCta from '../../../components/TimeCta.astro';
 import Site from '../../../layouts/Site.astro';
 import {
   ApiError, ZONE_LABEL, ZONE_ORDER, branchPath, branchRooms, findBranch, roomPath, scheduleHref, site,
@@ -102,7 +104,7 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
           {closed ? (
             <p class="yu-notice" role="status" data-testid="branch-closed">Клуб временно закрыт. Онлайн-запись в нём сейчас недоступна.</p>
           ) : (
-            <a class="yu-btn" href={`/schedule/?branch=${city.slug}/${branch.slug}`} data-testid="branch-book">Записаться онлайн</a>
+            <a class="yu-btn" href={scheduleHref(city.slug, branch.slug)} data-testid="branch-book">Выбрать время</a>
           )}
         </div>
         <dl class="yu-facts">
@@ -163,6 +165,7 @@ const hasCityHub = (city?.branches.length ?? 0) >= 2;
           </div>
         )}
       </section>
+      {!closed && <TimeCta href={scheduleHref(city.slug, branch.slug)} />}
     </>
   )}
 </Site>

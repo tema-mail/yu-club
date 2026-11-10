@@ -203,7 +203,7 @@ export default function Checkout({ hold, timezone, onHold, onNotice, onBack, res
           </label>
           <label class="yu-check">
             <input type="checkbox" checked={consent} onChange={(e) => setConsent((e.target as HTMLInputElement).checked)} />
-            <span>Даю <a href="/personal-data-consent/" target="_blank" rel="noopener">согласие на обработку персональных данных</a></span>
+            <span>Мне есть 14 лет, и я даю <a href="/personal-data-consent/" target="_blank" rel="noopener">согласие на обработку персональных данных</a></span>
           </label>
           <button class="yu-btn" type="submit" disabled={busy || !consent}>Войти и продолжить</button>
           <button class="yu-link-btn" type="button" onClick={() => { setMode('phone'); setCode(''); }}>Изменить номер</button>

@@ -162,6 +162,19 @@ describe('проверка кода', () => {
     await expect(verify({ challengeId, code, consents: consent })).rejects.toMatchObject({ code: 'OTP_EXPIRED', httpStatus: 410 });
   });
 
+  it('опубликовано согласие на ПДн – в журнале его живая версия, а не присланная сайтом (K22 §7)', async () => {
+    await db.client.query(
+      `INSERT INTO app.content_pages (key, document_version, status, draft, draft_updated_at, draft_updated_by, created_by, created_at)
+       VALUES ('personal-data-consent', 'personal-data-consent-2026-11-01', 'published', '{}', now(), gen_random_uuid(), gen_random_uuid(), now())`,
+    );
+    const { challengeId, code } = await askOk('+79132000019');
+    const r = await verify({ challengeId, code, consents: consent, documentVersion: 'pd-v7' });
+    expect(r.isNew).toBe(true);
+    const c = await db.client.query('SELECT kind, document_version FROM journal.client_consents WHERE client_id = $1', [r.client.id]);
+    expect(c.rows).toEqual([{ kind: 'pd_processing', document_version: 'personal-data-consent-2026-11-01' }]);
+    await db.client.query(`DELETE FROM app.content_pages WHERE key = 'personal-data-consent'`);
+  });
+
   it('повторная регистрация = вход: та же карточка, согласие не спрашивается', async () => {
     const first = await askOk('+79132000002');
     const a = await verify({ ...first, consents: consent });

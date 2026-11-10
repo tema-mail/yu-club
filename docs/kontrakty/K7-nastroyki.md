@@ -157,7 +157,30 @@ export function settingHistory(db: Db, key: SettingKey, scope: SettingScope): Pr
 | `reports.repeat_breakdown_days` | int 7..365 | 90 | network | `settings.network.manage` | K24 §3.10 |
 
 - Сверка `marketing_window_from < marketing_window_to` – в модуле-потребителе при чтении (`notifications`, S4-16), как пара сертификатов Э2: схема ключа не видит второго ключа.
+
+## Лента событий CRM (13 §11; S4-28/S4-97, D4-46; внесено 10.11.2026)
+
+Пороги таймерных событий ленты (`notifications/staff-feed-events.ts`, проход раз в час; строка на сущность и порог – ключ `'<kind>:<id>:<N>'`). Уровень `network`, меняет Владелец.
+
+| Ключ | Тип, пределы (`schema`) | `systemDefault` | Уровни | Право (K1) | Основание |
+|---|---|---|---|---|---|
+| `notifications.feed_shift_unfilled_hours` | int 1..168 | 24 | network | `settings.network.manage` | 13 §11 «незаполненная смена», 05 §6.3 (пустая смена – ни одного сотрудника), Q-63 |
+| `notifications.feed_event_prepare_days` | int 0..30 (0 – выключено) | 3 | network | `settings.network.manage` | 13 §11 «мероприятие требует подготовки», 11 §6 (чек-лист с пунктами todo) |
+| `notifications.feed_warranty_days` | int 1..365 | 30 | network | `settings.network.manage` | 13 §11 «окончание гарантии», 10 §9 (`equipment_warranties.ends_on`) |
 - Окружение Э4 (не настройки): `UNSUBSCRIBE_SECRET`, `MEDIA_DIR`, `MEDIA_QUOTA_GB`, `MEDIA_PUBLIC_BASE`, `PREVIEW_SECRET`, `SITE_INTERNAL_URL`, `CONTENT_CACHE_TTL_SECONDS`, `EXPORT_DIR`, `REPORTS_POOL_MAX`, `REPORTS_DATABASE_URL` (K21 §13, K22 §15, K24 §11).
+
+## Реквизиты оператора (внесено 11.11.2026; карта сайта 3.3 и вопрос 12, 19 §4.10, N-01)
+
+Один набор на сеть, меняет Владелец. Пустая строка – «не задано»: сайт блок реквизитов на `/contacts/` не показывает и выдуманных реквизитов не рисует (19 §4.10). Те же ключи – оператор персональных данных и его адрес для юридических текстов (152-ФЗ ст. 18.1). Сайту отдаёт `GET /content/requisites` (K5 №218, K22 §12): пустые – `null`.
+
+| Ключ | Тип, пределы (`schema`) | `systemDefault` | Уровни | Право (K1) | Что это |
+|---|---|---|---|---|---|
+| `legal.operator_name` | текст 0..200 | `""` | network | `settings.network.manage` | юридическое лицо или ИП – оператор ПДн |
+| `legal.inn` | `""` \| 10 \| 12 цифр | `""` | network | `settings.network.manage` | ИНН |
+| `legal.ogrn` | `""` \| 13 \| 15 цифр | `""` | network | `settings.network.manage` | ОГРН или ОГРНИП |
+| `legal.address` | текст 0..300 | `""` | network | `settings.network.manage` | юридический адрес |
+| `legal.phone` | текст 0..30 | `""` | network | `settings.network.manage` | телефон оператора |
+| `legal.email` | `""` \| адрес почты, ≤ 120 | `""` | network | `settings.network.manage` | почта оператора |
 
 ## HTTP CRM (внесено 02.11.2026; `apps/api/src/modules/settings/routes.crm.ts`)
 
@@ -175,7 +198,7 @@ interface SettingItem {
   key: SettingKey; value: unknown; systemDefault: unknown;
   source: { level: SettingLevel; valueId: string | null; validFrom: Iso | null; own: boolean; cityName: string | null };
   levels: StoredLevel[]; levelAllowed: boolean; editAction: Action; editable: boolean;   // считает сервер
-  constraints: { kind: 'integer', min, max, nullable } | { kind: 'boolean' | 'time' | 'datetime' | 'hours' | 'list', nullable }
+  constraints: { kind: 'integer', min, max, nullable } | { kind: 'boolean' | 'time' | 'datetime' | 'hours' | 'list', nullable } | { kind: 'text', maxLength, nullable }
              | { kind: 'enum', options, nullable } | { kind: 'multi', options, minItems, nullable };  // из той же Zod-схемы
   upcoming: Array<{ valueId; level; value; validFrom: Iso }>;   // будущие строки цепочки на разрешённых уровнях
   rowVersion: string;   // `<id своей последней строки>:<её valid_to | open>` или 'none'; не совпало → 409 VERSION_CONFLICT, details.current

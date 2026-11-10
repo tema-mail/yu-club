@@ -47,6 +47,9 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     mem_limit: 128m
+    # процесс Node под USER node: capabilities не нужны, повышение привилегий запрещено (tests/deploy/compose-hardening.test.ts)
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     networks: [internal]
     logging: *log
 
@@ -92,6 +95,9 @@ services:
       postgres: { condition: service_healthy }
     # 160 → 320 МБ: перекодирование sharp (K22 §8; 40 Мп, одно-два одновременно)
     mem_limit: 320m
+    # процесс Node под USER node: capabilities не нужны, повышение привилегий запрещено (tests/deploy/compose-hardening.test.ts)
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     networks: [internal, caddy]
     logging: *log
 
@@ -127,6 +133,9 @@ services:
     stop_grace_period: 30s
     mem_limit: 128m
     # caddy-сеть – единственный выход наружу (push-сервисы); входящих маршрутов на worker нет
+    # процесс Node под USER node: capabilities не нужны, повышение привилегий запрещено (tests/deploy/compose-hardening.test.ts)
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     networks: [internal, caddy]
     logging: *log
 
@@ -148,6 +157,9 @@ services:
     depends_on:
       api: { condition: service_healthy }
     mem_limit: 192m
+    # процесс Node под USER node: capabilities не нужны, повышение привилегий запрещено (tests/deploy/compose-hardening.test.ts)
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     networks: [internal, caddy]
     logging: *log
 
@@ -170,6 +182,9 @@ services:
     depends_on:
       api: { condition: service_healthy }
     mem_limit: 160m
+    # процесс Node под USER node: capabilities не нужны, повышение привилегий запрещено (tests/deploy/compose-hardening.test.ts)
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     networks: [internal, caddy]
     logging: *log
 

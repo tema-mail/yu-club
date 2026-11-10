@@ -16,6 +16,8 @@ import { addDays, branchDay, parseLocalDate, systemClock, todayIn, type Clock, t
 import { getBranch } from '../network/index.ts';
 import {
   financeDenialOf,
+  getOperation,
+  guardFinance,
   OPERATION_SELECT,
   previewBalance,
   recordExpense,
@@ -218,6 +220,28 @@ export async function financeCrmRoutes(app: FastifyInstance, deps: FinanceCrmDep
       return { reversal: shape(ctx, r.reversal), replacement: shape(ctx, r.replacement) };
     }),
   );
+
+  // S4-95 карточка операции в CRM (13 §6.4): finance.view на филиал операции – Владелец и Директор зоны; Администратору – 403
+  // и отказ в аудит (как у сводки summary.ts: действие кассы, причина FORBIDDEN: finance.view); вне зоны и не-UUID – 404
+  // телом несуществующего (K1). Живая связь с объектом (K17 §14) – как в журнале №37; остаток – всегда, право уже проверено.
+  app.get('/finance/operations/:id', async (request, reply) => {
+    const { access, meta } = await deps.authenticate(request, reply);
+    const op = await getOperation(deps.pool, (request.params as { id: string }).id);
+    if (!op) throw notFound();
+    try {
+      await guardFinance(deps.pool, access, op.branchId, 'finance.view', { action: 'finance.operation.created', operationId: op.id });
+    } catch (err) {
+      const d = financeDenialOf(err);
+      if (d) await writeDenied(deps.pool, meta, { ...d, result: 'denied' }, clock);
+      throw err;
+    }
+    const link = await deps.pool.query<{ ref_type: string; ref_id: string; role: string }>(
+      `SELECT ref_type, ref_id, role FROM app.finance_operation_links WHERE operation_id = $1 AND unlinked_at IS NULL`,
+      [op.id],
+    );
+    const l = link.rows[0];
+    return { ...op, link: l ? { type: l.ref_type, id: l.ref_id, role: l.role } : null };
+  });
 
   // №46 справочник категорий
   app.get('/finance/categories', async (request, reply) => {

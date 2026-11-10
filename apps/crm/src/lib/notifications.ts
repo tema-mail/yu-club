@@ -68,8 +68,9 @@ export interface CampaignDto {
   rowVersion: number;
 }
 export interface CampaignCounters { sent: number; inboxOnly: number; excluded: number; error: number }
-export type CampaignListRow = CampaignDto & { counters: CampaignCounters };
-export interface TimelineEvent { id: string; at: string; action: string; objectType: string; objectId: string | null; actorType: string; actorId: string | null; actorRole: string | null; before: unknown; after: unknown; reason: string | null; result: string }
+/** Имена – от API всем с notifications.view (решение S4-80): /staff не нужен. */
+export type CampaignListRow = CampaignDto & { counters: CampaignCounters; authorName: string; confirmedByName: string | null };
+export interface TimelineEvent { id: string; at: string; action: string; objectType: string; objectId: string | null; actorType: string; actorId: string | null; actorRole: string | null; before: unknown; after: unknown; reason: string | null; result: string; actorName: string | null }
 export type CampaignDetail = CampaignListRow & { timeline: TimelineEvent[] };
 
 export interface NotificationView {
@@ -81,6 +82,8 @@ export interface NotificationView {
   bookingId: string | null;
   source: 'system' | 'staff';
   initiatorId: string | null;
+  /** Имя инициатора (source = 'staff'), у системных – null. */
+  authorName: string | null;
   title: string;
   body: string;
   url: string | null;
@@ -107,6 +110,16 @@ export interface ClientNotificationSummary {
 }
 
 export interface Page<T> { items: T[]; nextCursor: string | null }
+
+/** K11 №251: сбои критичных уведомлений для предупреждений Владельца. */
+export interface FailuresSummary { critical: number; period: { from: string; to: string; days: number } }
+
+/** K11 №252: бронь клиента для выбора записи в сообщении (CrmBookingRow + филиал и его зона). */
+export interface ClientBookingRow {
+  id: string; number: number; status: string; resourceName: string; start: string; end: string;
+  client: { id: string; name: string | null; phoneMasked: string; isGuest: boolean };
+  source: 'site' | 'crm'; rowVersion: number; needsDecision: boolean; branchId: string; timezone: string;
+}
 
 /** Белый список плейсхолдеров K21 §8 (templates.ts PLACEHOLDERS). */
 export const PLACEHOLDERS = ['client.firstName', 'branch.name', 'branch.address', 'city.name'] as const;

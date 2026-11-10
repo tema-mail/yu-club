@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
+import { resolveSettings } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
 import { getHomeBlocks } from './blocks.ts';
 import { GAME_DIRECTIONS, getGamePage, listGames } from './games.ts';
@@ -36,6 +37,8 @@ const gameParams = z.object({ direction: z.enum(GAME_DIRECTIONS), slug: z.string
 const pageQuery = z.object({ city: id });
 /** Только путь этого сайта: без хоста, параметров и доли (K23 §8). */
 const resolveQuery = z.object({ path: z.string().max(300).regex(/^\/(?![/\\])[^\s\\?#]*$/) });
+/** Реквизиты оператора – ключи K7 «Реквизиты оператора» (№218). */
+const REQUISITE_KEYS = ['legal.operator_name', 'legal.inn', 'legal.ogrn', 'legal.address', 'legal.phone', 'legal.email'] as const;
 
 /** Кэш: тело + ETag по версиям вошедших сущностей; совпал If-None-Match – 304 без тела. */
 function cached(request: FastifyRequest, reply: FastifyReply, versionIds: readonly string[], body: unknown) {
@@ -134,6 +137,15 @@ export async function contentPublicRoutes(app: FastifyInstance, deps: ContentPub
   app.get('/content/legal-versions', async (request, reply) => {
     const versions = await legalVersions(db);
     return cached(request, reply, Object.values(versions).map((v) => v ?? '-'), versions);
+  });
+
+  // №218 реквизиты оператора (K7 «Реквизиты оператора»): настройки сети legal.*, читает /contacts/ и юридические тексты сайта.
+  // Пустые – null: сайт блок не рисует. Версий сущностей у настроек нет – ETag по самим значениям; кэш тот же, 60 с.
+  app.get('/content/requisites', async (request, reply) => {
+    const s = await resolveSettings(db, REQUISITE_KEYS, { network: true }, clock.now());
+    const v = (key: (typeof REQUISITE_KEYS)[number]) => s[key].value.trim() || null;
+    const body = { operatorName: v('legal.operator_name'), inn: v('legal.inn'), ogrn: v('legal.ogrn'), address: v('legal.address'), phone: v('legal.phone'), email: v('legal.email') };
+    return cached(request, reply, [JSON.stringify(body)], body);
   });
 
   // №216 старый адрес → текущий канонический одним переходом; не найдено – 404 (кэш тот же: посетитель с мусорным адресом не нагружает базу)

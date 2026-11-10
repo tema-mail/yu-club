@@ -467,6 +467,21 @@ export function registerFinance(app: FastifyInstance, P: string, deps: FinanceMo
     return { reversal: shape(s, reversal), replacement: shape(s, replacement) };
   }));
 
+  // ---- S4-95 карточка операции (routes.crm.ts GET /finance/operations/:id): finance.view на филиал – Владелец, Директор зоны;
+  // Администратору – 403; вне зоны и не-UUID – 404. Живая связь – как в журнале №37; остаток – всегда, право уже проверено.
+  app.get(`${P}/finance/operations/:id`, async (req, reply) => {
+    try {
+      const s = deps.current(req);
+      const id = (req.params as { id: string }).id;
+      const found = UUID_RE.test(id) ? ops.find((o) => o.id === id) : undefined;
+      if (!found) throw notFound();
+      guard(s, found.branchId, 'finance.view');
+      return { ...found, link: linkOf(found.id) };
+    } catch (e) {
+      return send(reply, e);
+    }
+  });
+
   // ---- категории №46
   app.get(`${P}/finance/categories`, async (req, reply) => {
     try {
