@@ -1,6 +1,9 @@
 // Мок медиатеки CRM строго по apps/api/src/modules/content/routes.media.ts и media.ts (K11 №224–227, K22 §8): загрузка multipart с лимитом
 // 10 МБ и проверкой сигнатуры (SVG, GIF – MEDIA_TYPE_NOT_ALLOWED), дубль по sha256 – та же запись (200, duplicate), alt и подпись с rowVersion,
 // архив используемого живой версией – MEDIA_IN_USE со списком, удаление – только Владелец и только неиспользуемого. Подключается из mock-content.ts.
+// №227а очистка по требованию субъекта (media-purge.ts): только Владелец, reasonCode из списка, основание ≤ 200; ссылки на файл убираются из
+// черновиков, живые сущности получают новую версию без фото. Отличие от API (осознанное): строка медиа убирается из мока целиком –
+// в списке и по id её и так нет (у API status = 'purged'); повтор отвечает 404, а не 200 без изменений.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
 import { Fail, MAX_BYTES, type Media, type Rec, type Staffish, UUID, cms, invalid, notFound, refsOf, storageKey, str } from './mock-cms.ts';
@@ -126,6 +129,40 @@ export function registerMedia(app: FastifyInstance, P: string, h: MediaHelpers):
     assertRole(s, 'content.view');
     const m = mediaRow((req.params as { id: string }).id);
     return { usages: usages(m.id), inVersions: inVersions(m.id) };
+  }));
+  const PURGE_CODES = ['subject_request', 'consent_withdrawn', 'rights_claim', 'legal_order'];
+  /** stripMedia сервера: поле-идентификатор и элемент массива исчезают, картинка в Markdown вырезается. */
+  const strip = (value: unknown, id: string): unknown => {
+    if (typeof value === 'string') return value.replace(new RegExp(`!\\[[^\\]]*\\]\\(media:${id}\\)`, 'gi'), '');
+    if (Array.isArray(value)) return value.filter((x) => x !== id).map((x) => strip(x, id));
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([, x]) => x !== id).map(([k, x]) => [k, strip(x, id)]));
+    return value;
+  };
+  app.post(`${P}/content/media/:id/purge`, command('media.purge', (s, req) => {
+    assertRole(s, 'content.media.purge');
+    const b = strict(req.body, { reasonCode: (v) => PURGE_CODES.includes(String(v)), basis: (v) => typeof v === 'string' && v.length <= 200 }, ['reasonCode']);
+    const m = mediaRow((req.params as { id: string }).id);
+    const affected: Array<{ entityType: string; entityId: string; versionNo: number | null }> = [];
+    for (const r of cms.rows) {
+      const live = r.status === 'published' && r.liveVersionId ? cms.versions.find((v) => v.id === r.liveVersionId) : undefined;
+      if (live && JSON.stringify(live.snapshot).includes(m.id)) {
+        const media = { ...((live.snapshot.media ?? {}) as Rec) };
+        delete media[m.id];
+        const no = cms.versions.filter((v) => v.entityType === r.type && v.entityId === r.id).length + 1;
+        const v = { ...live, id: String(cms.seq++), versionNo: no, action: 'publish' as const, publishedBy: s.id, publishedAt: new Date().toISOString(), reason: `Очистка фото: ${String(b.reasonCode)}`, sourceVersionId: null, snapshot: { ...(strip(live.snapshot, m.id) as Rec), media } };
+        cms.versions.push(v);
+        r.liveVersionId = v.id;
+        r.rowVersion += 1;
+        affected.push({ entityType: r.type, entityId: r.id, versionNo: no });
+      }
+      if (JSON.stringify(r.draft).includes(m.id)) {
+        r.draft = strip(r.draft, m.id) as Rec;
+        r.rowVersion += 1;
+        if (!affected.some((a) => a.entityId === r.id)) affected.push({ entityType: r.type, entityId: r.id, versionNo: null });
+      }
+    }
+    cms.media = cms.media.filter((x) => x.id !== m.id);
+    return { status: 200, body: { purged: true, affected } };
   }));
   app.delete(`${P}/content/media/:id`, command('media.delete', (s, req) => {
     assertRole(s, 'content.media.purge');

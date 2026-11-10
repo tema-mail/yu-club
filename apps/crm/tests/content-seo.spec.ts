@@ -97,6 +97,39 @@ test('блоки главной: Директор видит историю ве
   await expect(hero.getByRole('button', { name: /Откатить/ })).toHaveCount(0);
 });
 
+test('очистка фото №227а: Владелец – причина из списка и подтверждение обязательны; файл уходит из медиатеки, материалы без него', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/content/media');
+  const tiles = page.getByTestId('media-grid').locator('li');
+  await expect(tiles).toHaveCount(3);
+  await tiles.filter({ hasText: 'cs2-turnir.jpg' }).getByRole('button').click();
+  await page.getByTestId('media-card').getByRole('button', { name: 'Очистить по требованию…' }).click();
+  const dlg = page.getByRole('dialog', { name: 'Очистить фото по требованию?' });
+  await expect(dlg).toContainText('Отменить нельзя');
+  await dlg.getByRole('button', { name: 'Очистить' }).click();
+  await expect(dlg.getByRole('alert')).toHaveText('Выберите причину очистки');
+  await dlg.getByLabel('Причина').selectOption('subject_request');
+  await dlg.getByLabel('Основание (необязательно)').fill('Заявление вх. №12 от 05.11.2026');
+  await dlg.getByRole('button', { name: 'Очистить' }).click();
+  await expect(dlg.getByRole('alert')).toHaveText('Подтвердите: файл удаляется насовсем, отменить нельзя');
+  await dlg.getByLabel('Понимаю: файл удаляется насовсем').check();
+  await dlg.getByRole('button', { name: 'Очистить' }).click();
+  await expect(page.getByTestId('media-upload-msg')).toContainText('Фото очищено');
+  await expect(page.getByTestId('media-upload-msg')).toContainText('Материалов без этого фото: 3');
+  await expect(tiles).toHaveCount(2);
+  await expect(page.getByTestId('media-card')).toHaveCount(0);
+  // публикация, где была обложка, – новая версия без фото
+  await open(page, `/content/publications/${CONTENT_IDS.pubNetwork}`);
+  await expect(page.getByTestId('version-list').locator('li').first()).toContainText('Очистка фото');
+});
+
+test('очистка фото: у Директора кнопки нет', async ({ page }) => {
+  await login(page, 'director@yu.test');
+  await open(page, '/content/media');
+  await page.getByTestId('media-grid').locator('li').first().getByRole('button').click();
+  await expect(page.getByRole('button', { name: 'Очистить по требованию…' })).toHaveCount(0);
+});
+
 test('игра: Директор видит SEO-панель только для чтения', async ({ page }) => {
   await login(page, 'director@yu.test');
   await open(page, `/content/games/${CONTENT_IDS.gameCs}`);
