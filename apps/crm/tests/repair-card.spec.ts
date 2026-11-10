@@ -37,9 +37,12 @@ async function registerOnVr1(page: Page) {
   await expect(page.getByTestId('rp-number')).toHaveText('R-000007');
   await expect(page.locator('astro-island[ssr]')).toHaveCount(0);
 }
+/** Как человек: ждёт предложенный период (приходит после гидратации), потом меняет конец. Без ожидания «Показать затронутых» уходил с пустым «С». */
 const period = async (page: Page, days: number) => {
   const end = new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
-  await page.getByTestId('rp-block-panel').getByLabel('По', { exact: true }).fill(`${end}T12:00`);
+  const panel = page.getByTestId('rp-block-panel');
+  await expect(panel.getByLabel('С (время филиала)')).toHaveValue(/T\d{2}:\d{2}$/);
+  await panel.getByLabel('По', { exact: true }).fill(`${end}T12:00`);
   await page.getByRole('button', { name: 'Показать затронутых' }).click();
 };
 
@@ -100,6 +103,19 @@ test('перенос из списка – диалог брони с кален
   const row = page.getByTestId('rp-booking-bk-vrroom');
   await expect(row).toContainText('18:00–20:00');
   await expect(row.getByTestId('rp-booking-status')).toHaveText('Подтверждена');
+});
+
+test('«По», введённое до прихода предложенного периода, не перетирается им', async ({ page }) => {
+  await page.route(/block-proposal$/, async (r) => { await new Promise((ok) => setTimeout(ok, 1500)); await r.continue(); });
+  await login(page, 'director@yu.test');
+  await registerOnVr1(page);
+  const panel = page.getByTestId('rp-block-panel');
+  const end = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+  await panel.getByLabel('По', { exact: true }).fill(`${end}T12:00`);
+  await expect(panel.getByLabel('С (время филиала)')).toHaveValue(/T\d{2}:\d{2}$/);
+  await expect(panel.getByLabel('По', { exact: true })).toHaveValue(`${end}T12:00`);
+  await page.getByRole('button', { name: 'Показать затронутых' }).click();
+  await expect(page.getByTestId('rp-booking-bk-vrroom')).toBeVisible();
 });
 
 test('план, статусы, порог согласования: Директор упирается, Владелец согласует; просрочка видна', async ({ page }) => {

@@ -43,22 +43,27 @@ export default function RepairBlockPanel(p: RepairBlockPanelProps) {
   const names = (ids: string[]) => ids.map((id) => p.units.find((u) => u.id === id)?.name ?? p.rooms.find((x) => x.id === id)?.name ?? 'Место').join(', ');
   const activeBlocks = r.blocks.filter((b) => b.active);
 
+  // Предложение приходит после гидратации, а поля уже на экране: ответ не перетирает то, что человек успел изменить, а устаревший
+  // ответ (первое предложение позже «Показать затронутых») не подменяет свежий список затронутых.
+  const seq = useRef(0);
+  const edited = useRef(new Set<'target' | 'start' | 'end'>());
+  const touch = (f: 'target' | 'start' | 'end') => edited.current.add(f);
   const fetchProposal = async (q = '') => {
+    const n = ++seq.current;
     setError('');
     try {
       const pr = await browserCall<BlockProposal>(`/repairs/${r.id}/block-proposal${q}`);
+      if (n !== seq.current) return;
       setProposal(pr);
       setBookings(pr.affectedBookings);
-      if (pr.target) {
+      if (pr.target && !edited.current.has('target')) {
         setType(pr.target.type);
         setTargetId(pr.target.ids[0] ?? '');
       }
-      if (pr.period) {
-        setStart(toLocalInput(pr.period.start, p.timezone));
-        setEnd(toLocalInput(pr.period.end, p.timezone));
-      }
+      if (pr.period && !edited.current.has('start')) setStart(toLocalInput(pr.period.start, p.timezone));
+      if (pr.period && !edited.current.has('end')) setEnd(toLocalInput(pr.period.end, p.timezone));
     } catch (e) {
-      setError(errorText(e));
+      if (n === seq.current) setError(errorText(e));
     }
   };
   useEffect(() => {
@@ -168,19 +173,19 @@ export default function RepairBlockPanel(p: RepairBlockPanelProps) {
           {p.canBlock && (
             <div class="yc-eq__pair">
               <label class="yc-field"><span class="yc-field__label">Что закрыть</span>
-                <select class="yc-input" value={type} onChange={(e) => { setType((e.currentTarget as HTMLSelectElement).value as 'unit' | 'room'); setTargetId(''); }}>
+                <select class="yc-input" value={type} onChange={(e) => { touch('target'); setType((e.currentTarget as HTMLSelectElement).value as 'unit' | 'room'); setTargetId(''); }}>
                   <option value="unit">Место (единица)</option>
                   <option value="room">Комнату целиком</option>
                 </select>
               </label>
               <label class="yc-field"><span class="yc-field__label">{type === 'unit' ? 'Место' : 'Комната'}</span>
-                <select class="yc-input" value={targetId} onChange={(e) => setTargetId((e.currentTarget as HTMLSelectElement).value)}>
+                <select class="yc-input" value={targetId} onChange={(e) => (touch('target'), setTargetId((e.currentTarget as HTMLSelectElement).value))}>
                   <option value="">Выберите…</option>
                   {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </label>
-              <label class="yc-field"><span class="yc-field__label">С (время филиала)</span><input class="yc-input" type="datetime-local" value={start} onInput={(e) => setStart((e.currentTarget as HTMLInputElement).value)} /></label>
-              <label class="yc-field"><span class="yc-field__label">По</span><input class="yc-input" type="datetime-local" value={end} onInput={(e) => setEnd((e.currentTarget as HTMLInputElement).value)} /></label>
+              <label class="yc-field"><span class="yc-field__label">С (время филиала)</span><input class="yc-input" type="datetime-local" value={start} onInput={(e) => (touch('start'), setStart((e.currentTarget as HTMLInputElement).value))} /></label>
+              <label class="yc-field"><span class="yc-field__label">По</span><input class="yc-input" type="datetime-local" value={end} onInput={(e) => (touch('end'), setEnd((e.currentTarget as HTMLInputElement).value))} /></label>
             </div>
           )}
           {!p.canBlock && proposal?.target && <p>Предложено закрыть: {names(proposal.target.ids)}.</p>}
