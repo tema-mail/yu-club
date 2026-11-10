@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { addDays, fmtDay, inZone, zonedIso } from '../lib/booking.ts';
+import { useLatest } from '../lib/latest.ts';
 import { addMonths, mondayOf, monthEnd, monthStart, monthTitle, SHIFT_STATUS, shiftError, type CoverageDto, type Interval, type ShiftDto, type ShiftStatus } from '../lib/shifts.ts';
 
 export interface CalBranch { id: string; name: string; timezone: string }
@@ -56,7 +57,9 @@ export default function ShiftCalendar({ branches, staff, meId, meName, initialBr
   const dates: string[] = [];
   for (let d = from; d <= to; d = addDays(d, 1)) dates.push(d);
 
+  const latest = useLatest(); // листание и фильтры: ответ прежнего запроса не подменяет свежий календарь
   const load = async () => {
+    const fresh = latest();
     setLoading(true);
     setError('');
     try {
@@ -65,14 +68,16 @@ export default function ShiftCalendar({ branches, staff, meId, meName, initialBr
         browserCall<{ items: ShiftDto[] }>(`/shifts?${scope}&from=${from}&to=${to}${status ? `&status=${status}` : ''}`),
         by === 'branch' ? browserCall<CoverageDto[]>(`/shifts/coverage?branchIds=${enc(branchId)}&from=${from}&to=${to}`) : Promise.resolve([] as CoverageDto[]),
       ]);
+      if (!fresh()) return;
       setShifts(list.items);
       setCoverage(cov);
     } catch (e) {
+      if (!fresh()) return;
       setError(shiftError(e));
       setShifts([]);
       setCoverage([]);
     } finally {
-      setLoading(false);
+      if (fresh()) setLoading(false);
     }
   };
   useEffect(() => {
