@@ -32,7 +32,7 @@ async function login(page: Page, email: string) {
   await expect(page).not.toHaveURL(/\/login/);
 }
 
-test('сокращение часов: предпросмотр затронутых, подтверждение, брони не отменяются', async ({ page }) => {
+test('TC-17: новый график в CRM – предпросмотр затронутых, сохранение, брони не отменяются, часы с датой на экране', async ({ page }) => {
   await login(page, 'director@yu.test');
   await page.goto(URL);
   const hours = page.getByTestId('hours');
