@@ -83,6 +83,8 @@ test('Администратор: рабочий стол филиала на г
   await expect(d.getByTestId('bd-events').getByRole('link', { name: /День рождения Анны/ })).toHaveAttribute('href', /^\/events\//);
   const feed = d.getByTestId('bd-feed');
   await expect(feed.getByRole('link', { name: 'Новый ремонт № Р-12' })).toHaveAttribute('href', '/repairs/e7000000-0000-4000-8000-000000000001');
+  // ссылка – общий feedHref (lib/notifications.ts): раньше рабочий стол знал только смену, ремонт и клиента – у брони было «undefined…»
+  await expect(feed.getByRole('link', { name: 'Новая запись № 1045' })).toHaveAttribute('href', '/bookings/b0000000-0000-4000-8000-000000000061');
   await expect(feed).not.toContainText('Т-3');
   await expect(d.getByRole('link', { name: 'Создать бронь' })).toHaveAttribute('href', '/schedule');
   await expect(d.getByRole('link', { name: 'Зарегистрировать неисправность' })).toHaveAttribute('href', '/repairs/new');

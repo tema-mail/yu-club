@@ -5,31 +5,12 @@
 // непрочитанные», «Отметить все прочитанными», «Показать ещё» по курсору. Escape и щелчок мимо – закрыть.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
+import { feedHref, type FeedItem, type FeedKind, type FeedPage } from '../lib/notifications.ts';
 
-type Kind =
-  | 'shift_changed' | 'repair_registered' | 'repair_closed' | 'service_notification_failed'
-  | 'booking_created' | 'booking_rescheduled' | 'booking_cancelled' | 'block_created'
-  | 'shift_unfilled' | 'event_preparation' | 'warranty_ending';
-type RefType = 'shift' | 'repair' | 'client' | 'booking' | 'resource_block' | 'event' | 'equipment' | 'branch';
-export interface FeedItem {
-  id: string; kind: Kind; branchId: string; branchName: string; refType: RefType; refId: string;
-  title: string; body: string | null; occurredAt: string; read: boolean;
-}
-interface FeedPage { items: FeedItem[]; nextCursor: string | null; unread: number }
-
-const KIND: Record<Kind, string> = {
+const KIND: Record<FeedKind, string> = {
   shift_changed: 'Смена', repair_registered: 'Ремонт', repair_closed: 'Ремонт', service_notification_failed: 'Уведомление клиенту',
   booking_created: 'Запись', booking_rescheduled: 'Перенос записи', booking_cancelled: 'Отмена записи', block_created: 'Блокировка',
   shift_unfilled: 'Пустая смена', event_preparation: 'Мероприятие', warranty_ending: 'Гарантия',
-};
-const enc = encodeURIComponent;
-/** Карточка связанной сущности. Блокировка – список блокировок филиала; пустая смена (ссылка на филиал) – расписание смен. */
-const hrefOf = (it: FeedItem): string => {
-  switch (it.refType) {
-    case 'resource_block': return `/resources/${enc(it.branchId)}/blocks`;
-    case 'branch': return '/shifts';
-    default: return `/${{ shift: 'shifts', repair: 'repairs', client: 'clients', booking: 'bookings', event: 'events', equipment: 'equipment' }[it.refType]}/${enc(it.refId)}`;
-  }
 };
 const POLL_MS = 60_000;
 const when = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
@@ -87,7 +68,7 @@ export default function StaffFeed() {
   const go = async (e: MouseEvent, it: FeedItem) => {
     e.preventDefault();
     if (!it.read) await browserCall(`/staff-feed/${encodeURIComponent(it.id)}/read`, { method: 'POST' }).catch(() => undefined);
-    location.assign(hrefOf(it));
+    location.assign(feedHref(it));
   };
   const readAll = async () => {
     setBusy(true);
@@ -144,7 +125,7 @@ export default function StaffFeed() {
             <ul style="list-style:none;margin:0;padding:0;display:grid;gap:var(--yc-sp-3xs)">
               {items.map((it) => (
                 <li key={it.id} data-testid="feed-item" data-read={it.read ? 'true' : 'false'}>
-                  <a href={hrefOf(it)} onClick={(e) => void go(e as unknown as MouseEvent, it)}
+                  <a href={feedHref(it)} onClick={(e) => void go(e as unknown as MouseEvent, it)}
                     style={`display:grid;gap:2px;padding:var(--yc-sp-2xs);border-radius:var(--yc-r-s);color:inherit;text-decoration:none;${it.read ? '' : 'background:var(--yc-accent-bg)'}`}>
                     <span style="font-size:var(--yc-fs-xs);color:var(--yc-muted)">
                       {KIND[it.kind]} · {it.branchName} · {when.format(new Date(it.occurredAt))}{it.read ? '' : ' · новое'}

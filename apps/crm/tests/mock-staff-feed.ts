@@ -4,6 +4,7 @@
 // (equipment.view / notifications.view / schedule.view / block.manage / event.view / shift.manage, 0441) в зоне филиала; чужое – 404. Порядок (occurredAt DESC, id DESC). Прочтение – своё у каждого.
 // Отличие от API (данные мока): id филиалов и сотрудников засева – не UUID. Сброс – вместе с POST /__test/reset (хук onRequest).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FeedKind, FeedPage, FeedRefType } from '../src/lib/notifications.ts';
 
 interface Staffish { id: string; role: string }
 interface BranchLite { id: string; name: string }
@@ -14,15 +15,10 @@ export interface StaffFeedMockDeps {
   branches: () => BranchLite[];
 }
 
-type Kind =
-  | 'shift_changed' | 'repair_registered' | 'repair_closed' | 'service_notification_failed'
-  | 'booking_created' | 'booking_rescheduled' | 'booking_cancelled' | 'block_created'
-  | 'shift_unfilled' | 'event_preparation' | 'warranty_ending';
 type Action = 'equipment.view' | 'notifications.view' | 'schedule.view' | 'block.manage' | 'event.view' | 'shift.manage';
-type RefType = 'shift' | 'repair' | 'client' | 'booking' | 'resource_block' | 'event' | 'equipment' | 'branch';
 interface Row {
   id: string; branchId: string; staffId: string | null; action: Action | null;
-  kind: Kind; refType: RefType; refId: string; title: string; body: string | null; occurredAt: string;
+  kind: FeedKind; refType: FeedRefType; refId: string; title: string; body: string | null; occurredAt: string;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -130,12 +126,12 @@ export function registerStaffFeed(app: FastifyInstance, P: string, d: StaffFeedM
         title: r.title, body: r.body, occurredAt: r.occurredAt, read: isRead(s, r.id) })),
       nextCursor: list.length > limit && last ? Buffer.from(JSON.stringify([last.occurredAt, last.id])).toString('base64url') : null,
       unread: unread(s),
-    };
+    } satisfies FeedPage;
   });
 
   app.get(`${P}/staff-feed/unread-count`, async (req, reply) => {
     reply.header('cache-control', 'no-store');
-    return { unread: unread(d.current(req)) };
+    return { unread: unread(d.current(req)) } satisfies Pick<FeedPage, 'unread'>;
   });
 
   app.post(`${P}/staff-feed/:id/read`, async (req, reply) => {
