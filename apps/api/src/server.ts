@@ -43,8 +43,9 @@ import { giftCrmRoutes, giftPublicRoutes } from './modules/events/routes.gifts.t
 import { eventCrmRoutes } from './modules/events/routes.crm.ts';
 import { eventPublicRoutes } from './modules/events/routes.public.ts';
 import { registerPaymentMethod } from './modules/finance/methods.ts';
+import { paymentLookup } from './modules/finance/payment.ts';
 import { loyaltyGate } from './modules/loyalty/gate.ts';
-import { pointsPaymentMethod } from './modules/loyalty/payment-method.ts';
+import { pointsPaymentMethod, setPointsPaymentDeps } from './modules/loyalty/payment-method.ts';
 import { loyaltyCrmRoutes } from './modules/loyalty/routes.crm.ts';
 import { loyaltyPublicRoutes } from './modules/loyalty/routes.public.ts';
 import { branchIdsOfCities, timezonesOf } from './modules/network/index.ts';
@@ -96,6 +97,7 @@ function registerModuleHooks(): void {
   if (hooksRegistered) return;
   registerBookingGate(loyaltyGate); // K15 §8: −50 → LOYALTY_LIMIT_REACHED
   registerPaymentMethod(pointsPaymentMethod); // K15 §6: оплата сеанса баллами
+  setPointsPaymentDeps({ bookings: paymentBookingProvider, payments: paymentLookup }); // доля резерва удержания брони
   registerEquipmentAttachmentOwners(); // K19 §9: вложения оборудования и ремонта
   registerEventAttachmentOwner(); // K19 §9, 11 §11.4: документ к расходу мероприятия
   registerEventSources(); // K6, K20 §4: блокировка видит мероприятие по строке занятости (S3-52)

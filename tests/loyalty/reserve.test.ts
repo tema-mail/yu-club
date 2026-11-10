@@ -306,6 +306,58 @@ describe('резерв брони', () => {
     }
   });
 
+  // ревизия п.3: бронь 1 удлинили переносом, пока worker не перенёс резерв удержания; её оплата не съедает долю брони 2
+  async function extendedFirstOfTwo(balance: number, day: string): Promise<{ c: string; first: string; second: string; pay: () => Promise<unknown> }> {
+    const c = await clientWith(balance);
+    const at = (iso: string, resourceId: string) => ({ resourceId, start: new Date(iso), end: new Date(Date.parse(iso) + 30 * 60_000) }); // свои дни: счётчик hour не сдвигается
+    const s1 = at(`${day}T04:00:00Z`, ids.b1pc1!);
+    const h = await hold(c, [s1, at(`${day}T06:00:00Z`, ids.b1pc2!)]);
+    await reserve(c, h.id); // 6000: по 3000 на бронь
+    const [first, second] = (await runOccupancyCommand(pool, (tx) => confirmHold(tx, c, h.id, clock))).bookings.map((b) => b.id) as [string, string];
+    const rv = async (id: string) => Number((await one<{ row_version: number }>('SELECT row_version FROM app.bookings WHERE id = $1', [id])).row_version);
+    await runOccupancyCommand(pool, async (tx) =>
+      rescheduleBooking(tx, first, { ctx: owner, rowVersion: await rv(first), reason: 'удлинили', resourceId: ids.b1pc1!, start: s1.start, end: new Date(s1.start.getTime() + 3_600_000) }, staffMeta(), clock),
+    );
+    now = new Date(s1.start.getTime() - 60_000);
+    await runOccupancyCommand(pool, async (tx) => markArrived(tx, first, { ctx: owner, rowVersion: await rv(first) }, staffMeta(), clock));
+    const b = (await paymentBookingProvider.payableBooking(pool, first))!;
+    const pay = () =>
+      inTx((tx) =>
+        chargePoints(tx, {
+          session: { id: first, bookingId: first, branchId: b.branchId, clientId: c, amountDueKop: b.priceKop, bookingVersion: b.version, status: 'unpaid', activePaymentId: null, rowVersion: 1 },
+          holdId: b.holdId, lineNo: 1, amountKop: b.priceKop, minutes: b.minutes, resourceType: b.resourceType,
+          idempotencyKey: `payment:${first}:1:1`, author: { type: 'staff', id: ids.owner! }, occurredAt: now, mode: 'exact',
+        }, { bookings: paymentBookingProvider, payments: lookup }),
+      );
+    return { c, first, second, pay };
+  }
+
+  it('удержание на 2 брони, бронь 1 удлинена до 60 минут, оплата 1 до worker: долю брони 2 не берёт – только свободный баланс', async () => {
+    const saved = now;
+    try {
+      const { pay } = await extendedFirstOfTwo(6000, '2026-11-20'); // свободно 0: своя доля 3000 из резерва удержания, ещё 3000 взять неоткуда
+      await expect(pay()).rejects.toMatchObject({ code: 'POINTS_INSUFFICIENT', details: { availableCenti: 3000, requiredCenti: 6000 } });
+    } finally {
+      now = saved;
+    }
+  });
+
+  it('то же со свободными 3000: оплата 1 проходит, после worker у брони 2 резерв 3000 цел, списание одно', async () => {
+    const saved = now;
+    try {
+      const { c, first, second, pay } = await extendedFirstOfTwo(9000, '2026-11-21');
+      await pay();
+      live.set(first, ['points']);
+      await deliver(RESERVE_HANDLERS.bookingConfirmed, await eventOf('booking.confirmed', 'bookingId', second));
+      const rows = await db.client.query(`SELECT booking_id, status, amount_centi FROM app.loyalty_reserves WHERE client_id = $1 AND status <> 'converted'`, [c]);
+      expect(rows.rows).toEqual([{ booking_id: second, status: 'booking', amount_centi: '3000' }]);
+      expect(await bal(c)).toMatchObject({ balanceCenti: 3000, reservedCenti: 3000, availableCenti: 0 });
+      expect(await spends(c)).toBe(1);
+    } finally {
+      now = saved;
+    }
+  });
+
   it('отмена брони → booking_cancelled; неявка → no_show без списания; оплата наличными → paid_other', async () => {
     const c = await clientWith(30_000);
     const ids3: string[] = [];
