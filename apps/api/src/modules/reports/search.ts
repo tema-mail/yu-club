@@ -245,7 +245,7 @@ export async function globalSearch(
       else if (roleAllows(ctx.role, 'equipment.view')) out.push({ type: 'equipment', items: [], more: false });
       return out;
     },
-    { timeoutMs: SEARCH_TIMEOUT_MS, budgetMs: SEARCH_BUDGET_MS, signal: deps.signal },
+    { timeoutMs: SEARCH_TIMEOUT_MS, budgetMs: SEARCH_BUDGET_MS, signal: deps.signal, lane: 'search' }, // предел – свой, выше (D5-10)
   ).finally(() => {
     searching -= 1;
   });

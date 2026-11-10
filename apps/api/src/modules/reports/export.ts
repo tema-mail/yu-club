@@ -490,7 +490,7 @@ export async function runExportJob(deps: ExportRunDeps, row: ExportRow, signal?:
         const doc = await buildDocument(env, { ...row, masked }, p, q, branches);
         return deps.store.writeAtomic(fileKey, exportStream(row.format, doc, progress, clock.now()));
       },
-      { timeoutMs: EXPORT_TIMEOUT_MS, budgetMs: EXPORT_TIMEOUT_MS, signal },
+      { timeoutMs: EXPORT_TIMEOUT_MS, budgetMs: EXPORT_TIMEOUT_MS, signal, lane: 'export' },
     ).then(async (written) => {
       const ttl = await resolveSettings(deps.pool, ['reports.export_ttl_hours'], { network: true }, clock.now());
       const now = clock.now();
@@ -502,8 +502,9 @@ export async function runExportJob(deps: ExportRunDeps, row: ExportRow, signal?:
     });
   } catch (err) {
     await deps.store.remove(fileKey).catch(() => {});
-    if (err instanceof AppError && err.code === 'REPORT_CANCELLED') {
-      // оборвал не сбой: автор отменил (статус уже cancelled) или worker останавливается – задача вернётся в очередь
+    if (err instanceof AppError && (err.code === 'REPORT_CANCELLED' || err.code === 'REPORT_BUSY')) {
+      // оборвал не сбой: автор отменил (статус уже cancelled), worker останавливается или в этом процессе уже идёт экспорт
+      // (полоса «экспорт ≤ 1», D5-10) – задача вернётся в очередь и пойдёт следующим проходом
       // сбой базы здесь не должен уйти необработанным отказом: строку подберёт failStale
       await deps.pool
         .query(`UPDATE app.report_exports SET status = 'queued', started_at = NULL WHERE id = $1 AND status = 'running'`, [row.id])

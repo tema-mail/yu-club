@@ -11,6 +11,7 @@ import { noNetwork, type AccessContext } from '../../apps/api/src/core/permissio
 import { fixedClock, type Clock } from '../../apps/api/src/core/time.ts';
 import { withTx } from '../../apps/api/src/modules/clients/index.ts';
 import { cancelExport, downloadExport, flattenRow, getExport, listExports, requestExport, runExportGc, startExportRunner, type ExportRunDeps } from '../../apps/api/src/modules/reports/export.ts';
+import { DEFAULT_REPORT_LIMITS, setReportLimits, withReportTx } from '../../apps/api/src/modules/reports/framework.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 import { reportFixtures, type Fx } from '../helpers/reports.ts';
 
@@ -245,6 +246,23 @@ describe('очередь', () => {
     await db.client.query(`UPDATE app.report_exports SET status = 'running', started_at = $2 WHERE id = $1`, [id, new Date(Date.parse(NOW) - 3_600_000)]);
     await drain();
     expect(await status(id)).toEqual({ status: 'failed', error_code: 'EXPORT_INTERRUPTED' });
+  });
+
+  it('полоса «экспорт ≤ 1» занята (D5-10): задача возвращается в очередь без ошибки и идёт следующим проходом', async () => {
+    setReportLimits(fx.reports, { export: 1, waitMs: 100 });
+    const holder = withReportTx(fx.reports, (tx) => tx.query('SELECT pg_sleep(0.8)'), { timeoutMs: 5_000, lane: 'export' });
+    await new Promise((r) => setTimeout(r, 50));
+    const id = await queued(otherId, 'busy');
+    const runner = startExportRunner(run, { start: false });
+    await runner.tick();
+    expect(await status(id)).toEqual({ status: 'queued', error_code: null });
+    expect((await db.client.query<{ s: Date | null }>(`SELECT started_at AS s FROM app.report_exports WHERE id = $1`, [id])).rows[0]!.s).toBeNull();
+    expect(await auditCount('export.failed', id)).toBe(0);
+    await holder;
+    setReportLimits(fx.reports, DEFAULT_REPORT_LIMITS);
+    await runner.tick();
+    expect((await status(id)).status).toBe('ready');
+    await runner.stop();
   });
 
   it('ошибка в файле: неизвестный показатель – failed с кодом, не молчание', async () => {
