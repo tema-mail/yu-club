@@ -4,14 +4,9 @@
 import { useEffect, useState } from 'preact/hooks';
 import { API_PREFIX } from '../lib/api.ts';
 import { ClientApiError, browserCall, errorText } from '../lib/client.ts';
+import type { InboxItem, InboxPage } from '../lib/inbox.ts';
 
 export const UNREAD_EVENT = 'yu:unread';
-
-export interface InboxItem {
-  id: string; title: string; body: string; category: 'service' | 'reminder' | 'marketing'; kind: string; at: string; read: boolean; url: string | null;
-  booking: { id: string; state: 'active' | 'cancelled' | 'finished' | 'unavailable' } | null;
-}
-interface InboxPage { items: InboxItem[]; nextCursor: string | null; unread: number }
 
 const CATEGORY: Record<InboxItem['category'], string> = { service: 'Запись', reminder: 'Напоминание', marketing: 'Акции и новости' };
 const BOOKING: Record<string, string> = { cancelled: 'Связано с отменённой записью', finished: 'Запись уже прошла', unavailable: 'Запись недоступна' };

@@ -5,6 +5,7 @@
 // 'mock-unsub-<clientId>' – подлинный, 'mock-unsub-expired' – 410 UNSUBSCRIBE_TOKEN_EXPIRED, прочее – 400 UNSUBSCRIBE_TOKEN_INVALID.
 // Только для e2e: POST /__test/inbox-reset – вернуть засев; GET /__test/inbox-calls – журнал запросов центра (значок не должен ходить без сессии).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { InboxItem, InboxPage } from '../src/lib/inbox.ts';
 import { clients, fail, readCookie, sessions } from './mock-clients.ts';
 
 type Category = 'service' | 'reminder' | 'marketing';
@@ -34,7 +35,7 @@ function seed() {
 const marketingOn = (clientId: string) => clients.find((c) => c.id === clientId)?.prefs?.marketingEnabled ?? false;
 const visible = (clientId: string) => rows.filter((r) => r.clientId === clientId && (r.category !== 'marketing' || marketingOn(clientId))).sort((a, b) => b.at - a.at || b.id.localeCompare(a.id));
 const unread = (clientId: string) => visible(clientId).filter((r) => !r.read).length;
-const dto = (r: Row) => ({ id: r.id, title: r.title, body: r.body, category: r.category, kind: r.kind, at: new Date(r.at).toISOString(), read: r.read, url: r.url, booking: r.booking });
+const dto = (r: Row): InboxItem => ({ id: r.id, title: r.title, body: r.body, category: r.category, kind: r.kind, at: new Date(r.at).toISOString(), read: r.read, url: r.url, booking: r.booking });
 
 function session(req: FastifyRequest): string | null {
   const token = readCookie(req.headers.cookie, 'yu_client');
@@ -85,14 +86,14 @@ export function registerNotifications(app: FastifyInstance, P: string) {
     const page = list.slice(0, limit);
     const last = page.at(-1);
     const nextCursor = list.length > limit && last ? Buffer.from(JSON.stringify([new Date(last.at).toISOString(), last.id])).toString('base64url') : null;
-    return { items: page.map(dto), nextCursor, unread: unread(id) };
+    return { items: page.map(dto), nextCursor, unread: unread(id) } satisfies InboxPage;
   });
 
   // №202
   app.get(`${P}/me/notifications/unread-count`, async (req, reply) => {
     const id = authed(req, reply);
     if (!id) return reply;
-    return { unread: unread(id) };
+    return { unread: unread(id) } satisfies Pick<InboxPage, 'unread'>;
   });
 
   // №203
