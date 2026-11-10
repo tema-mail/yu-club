@@ -12,18 +12,11 @@ import { systemClock, type Clock } from '../../core/time.ts';
 import { MEDIA_COLUMNS, type MediaRow } from './media.ts';
 import { entityTable } from './preview.ts';
 import type { EntityType, Snapshot } from './versions.ts';
+import { PURGE_BASIS_MAX, PURGE_REASON_CODES, PURGE_REASON_LABEL, type PurgeReasonCode } from '../../../../../packages/contracts/src/media-purge.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const PURGE_REASON_CODES = ['subject_request', 'consent_withdrawn', 'rights_claim', 'legal_order'] as const;
-export type PurgeReasonCode = (typeof PURGE_REASON_CODES)[number];
-/** Подписи кодов – те же в CRM (MediaLibrary.tsx) и в причине новой версии. */
-export const PURGE_REASON_LABEL: Record<PurgeReasonCode, string> = {
-  subject_request: 'Требование субъекта (ГК ст. 152.1)',
-  consent_withdrawn: 'Отзыв согласия на использование изображения',
-  rights_claim: 'Претензия правообладателя',
-  legal_order: 'Предписание или решение суда',
-};
-export const PURGE_BASIS_MAX = 200;
+// Коды и подписи причин – общие с CRM (packages/contracts/src/media-purge.ts): одна подпись на экране, в аудите и в версии.
+export { PURGE_BASIS_MAX, PURGE_REASON_CODES, PURGE_REASON_LABEL, type PurgeReasonCode };
 const ENTITY_TYPES: readonly EntityType[] = ['publication', 'game', 'room_page', 'branch_page', 'content_page', 'home_block'];
 /** Столбцы живой версии со ссылкой на медиа (0404). */
 const LIVE_COLUMNS: Partial<Record<EntityType, readonly string[]>> = {

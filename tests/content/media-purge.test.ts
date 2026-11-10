@@ -114,7 +114,7 @@ describe('S4-45: очистка', () => {
     const media = (await getMediaRow(f.pool, id))!;
     expect(media).toMatchObject({ status: 'purged', alt: null, title: null, original_name: null, variants: [] });
     const audit = await f.db.client.query<{ reason: string; after: { basis: string; affected: unknown[]; files: number } }>(`SELECT reason, after FROM journal.audit_events WHERE object_id = $1 AND action = 'media.purged'`, [id]);
-    expect(audit.rows[0]).toMatchObject({ reason: 'Требование субъекта (ГК ст. 152.1)', after: { reasonCode: 'subject_request', basis: BASIS, files: row0.variants.length } });
+    expect(audit.rows[0]).toMatchObject({ reason: 'Требование человека на фото', after: { reasonCode: 'subject_request', basis: BASIS, files: row0.variants.length } });
     expect(audit.rows[0]!.after.affected).toHaveLength(1);
     // журнал очисток (0444): код, хеш, число файлов и затронутые – без основания словами и без подписи
     const journal = await f.db.client.query(`SELECT * FROM journal.media_purged WHERE media_id = $1`, [id]);
