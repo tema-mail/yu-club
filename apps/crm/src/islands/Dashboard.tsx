@@ -1,7 +1,7 @@
 // Рабочий стол руководителя (S4-94; 13 §6.2–6.4, K24 §4, K11 №239): карточки сводного дашборда – каждая число своего отчёта и
 // ссылка в этот отчёт с тем же периодом и областью. Набор карточек решает сервер по правам: Директору – его зона, Администратору
 // денег не приходит. Поступления, возвраты, расходы, движение и остаток – отдельными карточками, «прибыли» нет.
-// У Владельца – предупреждения: расхождения последней ночной сверки и брони, ожидающие решения.
+// У Владельца – предупреждения: расхождения последней ночной сверки, брони, ожидающие решения, не дошедшие критичные уведомления (K21 §9).
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   fmtAt, fmtDate, fmtDelta, fmtMetric, fmtPeriod, presets, reportError, reportHref, todayIn,
@@ -120,6 +120,14 @@ async function loadWarnings(q: URLSearchParams, signal: AbortSignal): Promise<Wa
     const b = await getJson<ReportResult>(`/reports/bookings?${q}`, signal);
     const m: Metric | undefined = b.metrics.awaitingDecision;
     if (m?.state === 'ok' && m.value > 0) out.push({ key: 'decide', text: `Брони ждут решения: ${m.value}`, href: reportHref('bookings', { from: q.get('from')!, to: q.get('to')!, metric: 'awaitingDecision' }) });
+  } catch { /* то же */ }
+  try {
+    // K21 §9: критичные сервисные уведомления, которые не дошли клиенту, за период сервера – ведёт в журнал отправок с ошибкой
+    const f = await getJson<{ critical: number; periodFrom: string; periodTo: string }>('/notifications/failures/summary', signal);
+    if (f.critical > 0) {
+      const p = new URLSearchParams({ tab: 'rows', status: 'error', from: f.periodFrom, to: f.periodTo });
+      out.push({ key: 'failures', text: `Критичные уведомления не дошли: ${f.critical} (${fmtPeriod({ from: f.periodFrom, to: f.periodTo })})`, href: `/notifications?${p}` });
+    }
   } catch { /* то же */ }
   return out;
 }

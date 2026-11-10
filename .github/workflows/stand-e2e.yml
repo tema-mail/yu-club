@@ -1,0 +1,83 @@
+name: stand-e2e
+
+# Сквозные Playwright против живого стенда (tests/e2e, план §8): по кнопке и раз в сутки ночью по UTC.
+# Адреса – vars репозитория: YU_STAND_SITE_URL, YU_STAND_CRM_URL, YU_STAND_SSH_HOST (user@host), YU_STAND_SSH_HOSTKEY
+# (строка known_hosts; пусто – ssh-keyscan на прогоне). Логины и ключ – secrets: YU_STAND_ADMIN_LOGIN, YU_STAND_ADMIN_PASS,
+# YU_STAND_DEMO_PASS (их читает tests/e2e/stand.ts, когда нет файлов ~/.config/yu-club) и YU_STAND_SSH_KEY (приватный ключ:
+# код входа клиента тесты берут из лога API, базу стенда читают по ssh). Значения заводит владелец – docs/TEHDOLG-zapusk.md.
+# По расписанию прогон идёт только при vars.YU_STAND_NIGHTLY == 'true', чтобы до заведения секретов ночь не была красной.
+# Сертификат стенда самоподписанный (tls internal) – ignoreHTTPSErrors в tests/e2e/playwright.config.ts.
+# На стенд нагрузку не даём: workers: 1 в конфиге, второй прогон ждёт первого (concurrency).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *' # 02:00 UTC = 05:00 Москва, 09:00 Новосибирск
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stand-e2e
+  cancel-in-progress: false
+
+jobs:
+  stand-e2e:
+    if: github.event_name == 'workflow_dispatch' || vars.YU_STAND_NIGHTLY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SITE_URL: ${{ vars.YU_STAND_SITE_URL || 'https://yu-club.168.113.179.49.nip.io' }}
+      CRM_URL: ${{ vars.YU_STAND_CRM_URL || 'https://yu-crm.168.113.179.49.nip.io' }}
+      YU_HOST: ${{ vars.YU_STAND_SSH_HOST || 'root@168.113.179.49' }}
+      YU_KEY: ${{ runner.temp }}/yu-stand-key
+      YU_STAND_ADMIN_LOGIN: ${{ secrets.YU_STAND_ADMIN_LOGIN }}
+      YU_STAND_ADMIN_PASS: ${{ secrets.YU_STAND_ADMIN_PASS }}
+      YU_STAND_DEMO_PASS: ${{ secrets.YU_STAND_DEMO_PASS }}
+      E2E_OUT_DIR: ${{ github.workspace }}/e2e-out
+    steps:
+      - name: секреты репозитория заведены
+        env:
+          SSH_KEY: ${{ secrets.YU_STAND_SSH_KEY }}
+        run: |
+          missing=""
+          [ -n "$YU_STAND_ADMIN_LOGIN" ] || missing="$missing YU_STAND_ADMIN_LOGIN"
+          [ -n "$YU_STAND_ADMIN_PASS" ] || missing="$missing YU_STAND_ADMIN_PASS"
+          [ -n "$YU_STAND_DEMO_PASS" ] || missing="$missing YU_STAND_DEMO_PASS"
+          [ -n "$SSH_KEY" ] || missing="$missing YU_STAND_SSH_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Нет секретов репозитория:$missing – завести по docs/TEHDOLG-zapusk.md"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - name: ключ ssh к стенду
+        id: ssh
+        env:
+          SSH_KEY: ${{ secrets.YU_STAND_SSH_KEY }}
+          HOSTKEY: ${{ vars.YU_STAND_SSH_HOSTKEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > "$YU_KEY" && chmod 600 "$YU_KEY"
+          if [ -n "$HOSTKEY" ]; then printf '%s\n' "$HOSTKEY" >> ~/.ssh/known_hosts; else ssh-keyscan -H "${YU_HOST#*@}" >> ~/.ssh/known_hosts 2>/dev/null; fi
+          ssh -i "$YU_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 "$YU_HOST" 'docker ps --format "{{.Names}}"' | grep -x yu-club-api
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: e2e против стенда
+        run: npm run test:e2e:stand
+      - name: SQL на стенде – пересечений по активным единицам нет
+        if: ${{ !cancelled() && steps.ssh.outcome == 'success' }}
+        run: |
+          out=$(ssh -i "$YU_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 "$YU_HOST" \
+            'docker exec -i yu-club-postgres psql -U postgres -d yu_club -At -v ON_ERROR_STOP=1' < tests/support/overlap-check.sql)
+          echo "$out"
+          echo "$out" | awk -F'|' '$2 != 0 { bad = 1; print "ПРОВАЛ: " $0 } END { exit bad }'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stand-e2e-report
+          path: e2e-out/
+          retention-days: 14

@@ -4,11 +4,12 @@
 // правка – PATCH по rowVersion. «Проверить аудиторию» сохраняет черновик и зовёт №205; отправка – только после свежего
 // предпросмотра, через второе подтверждение с числом адресатов (AudiencePreview). Не черновик – карточка: счётчики, история,
 // отмена с причиной (оставшееся не уйдёт, ушедшее не отзывается).
-import { useRef, useState } from 'preact/hooks';
+// Запись клиента – выбором из списка (K11 №252: ближайшие и прошедшие брони клиента в зоне), не вводом ID; имена авторов – из API (S4-80).
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import {
   CAMPAIGN_BADGE, CAMPAIGN_STATUS, CATEGORY_LABEL, DIRECTION_LABEL, PLACEHOLDERS, describeAudience, fmtAt, notificationError, zonedDayStart,
-  type Audience, type AudiencePreviewDto, type CampaignCategory, type CampaignDetail, type CampaignDto, type SegmentV1, type TemplateDto,
+  type Audience, type AudiencePreviewDto, type CampaignCategory, type CampaignDetail, type CampaignDto, type ClientBookingRow, type SegmentV1, type TemplateDto,
 } from '../lib/notifications.ts';
 import AudiencePreview from './AudiencePreview.tsx';
 
@@ -58,6 +59,10 @@ function fromCampaign(c: CampaignDto | null, prefill: CampaignFormProps['prefill
   };
 }
 
+const BOOKING_STATUS: Record<string, string> = {
+  confirmed: 'подтверждена', arrived: 'клиент в клубе', completed: 'завершена', no_show: 'неявка', cancelled_by_client: 'отменена клиентом', cancelled_by_club: 'отменена клубом',
+};
+
 const ACTION_LABEL: Record<string, string> = {
   'notification.campaign_created': 'Создан черновик', 'notification.campaign_updated': 'Черновик изменён', 'notification.campaign_confirmed': 'Отправка подтверждена',
   'notification.campaign_cancelled': 'Рассылка отменена',
@@ -73,6 +78,9 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
   const [fieldErr, setFieldErr] = useState<Record<string, string>>({});
   const [found, setFound] = useState<Array<{ id: string; firstName: string | null; lastName: string | null; phoneMasked: string }>>([]);
   const [q, setQ] = useState('');
+  const [scope, setScope] = useState<'upcoming' | 'recent'>('upcoming');
+  const [bookings, setBookings] = useState<ClientBookingRow[] | null>(null);
+  const [bookingsError, setBookingsError] = useState('');
   const [cancelReason, setCancelReason] = useState('');
   const createKey = useRef(crypto.randomUUID());
   const cancelKey = useRef('');
@@ -81,7 +89,7 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
   const branchName = (id: string) => branches.find((b) => b.id === id)?.name ?? 'Филиал';
   const cityName = (id: string) => branches.find((b) => b.cityId === id)?.cityName ?? 'Город';
   const cities = [...new Map(branches.map((b) => [b.cityId, b.cityName])).entries()];
-  const author = (id: string | null) => (!id ? 'Система' : id === meId ? 'Вы' : (staffNames[id] ?? 'Сотрудник'));
+  const author = (id: string | null, name?: string | null) => (!id ? 'Система' : id === meId ? 'Вы' : (name ?? staffNames[id] ?? 'Сотрудник'));
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => {
     setD((x) => ({ ...x, [k]: v }));
     setDirty(true);
@@ -94,6 +102,21 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
     ...(d.category === 'marketing' && can.mass ? [['segment', 'Группа клиентов'] as [Kind, string]] : []),
   ];
   const kind: Kind = kinds.some(([k]) => k === d.kind) ? d.kind : 'booking';
+  const needBooking = kind === 'booking' || (kind === 'client' && d.category === 'service');
+
+  // Брони выбранного клиента (K11 №252): ближайшие или прошедшие, в зоне сотрудника
+  useEffect(() => {
+    if (!d.category || !needBooking || !d.clientId) return setBookings(null);
+    let live = true;
+    setBookings(null);
+    setBookingsError('');
+    browserCall<{ items: ClientBookingRow[] }>(`/clients/${encodeURIComponent(d.clientId)}/bookings?scope=${scope}&limit=20`)
+      .then((r) => live && setBookings(r.items))
+      .catch((e) => live && setBookingsError(notificationError(e)));
+    return () => {
+      live = false;
+    };
+  }, [d.clientId, scope, needBooking, d.category]);
 
   const audience = (): Audience => {
     if (kind === 'booking') return { kind: 'booking', bookingId: d.bookingId.trim() };
@@ -113,7 +136,7 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
   const localCheck = (): Record<string, string> => {
     const e: Record<string, string> = {};
     if (!d.category) e.category = 'Выберите категорию.';
-    if (kind === 'booking' && !d.bookingId.trim()) e.bookingId = 'Укажите запись клиента.';
+    if (kind === 'booking' && !d.bookingId.trim()) e.bookingId = d.clientId ? 'Выберите запись клиента.' : 'Найдите клиента и выберите его запись.';
     if (kind === 'client' && !d.clientId.trim()) e.clientId = 'Найдите и выберите клиента.';
     if (kind === 'client' && d.category === 'service' && !d.bookingId.trim()) e.bookingId = 'Сервисное – только по записи клиента.';
     if (kind === 'client' && d.category === 'marketing' && !can.network && !d.branchId) e.branchId = 'Выберите филиал, где клиент бывал.';
@@ -234,8 +257,8 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
             <dt>Текст</dt><dd>{campaign.body}</dd>
             <dt>Аудитория</dt><dd>{describe(campaign.audience)}</dd>
             <dt>Адресатов</dt><dd>{campaign.total ?? '–'}</dd>
-            <dt>Автор</dt><dd>{author(campaign.createdBy)}, {fmtAt(campaign.createdAt, cTz)}</dd>
-            <dt>Подтвердил</dt><dd>{campaign.confirmedBy ? `${author(campaign.confirmedBy)}, ${fmtAt(campaign.confirmedAt, cTz)}` : '–'}</dd>
+            <dt>Автор</dt><dd>{author(campaign.createdBy, detail?.authorName)}, {fmtAt(campaign.createdAt, cTz)}</dd>
+            <dt>Подтвердил</dt><dd>{campaign.confirmedBy ? `${author(campaign.confirmedBy, detail?.confirmedByName)}, ${fmtAt(campaign.confirmedAt, cTz)}` : '–'}</dd>
             {campaign.plannedAt && <><dt>Плановая отправка</dt><dd>{fmtAt(campaign.plannedAt, cTz)}</dd></>}
             {campaign.erid && <><dt>erid</dt><dd>{campaign.erid}</dd></>}
             {campaign.cancelledReason && <><dt>Причина отмены</dt><dd>{campaign.cancelledReason}</dd></>}
@@ -243,7 +266,7 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
           </dl>
           {error && <p class="yc-alert yc-alert--error" role="alert">{error}</p>}
           <div class="yc-eq__actions">
-            <a class="yc-btn yc-btn--ghost" href="/notifications?tab=rows">Строки отправки в журнале</a>
+            <a class="yc-btn yc-btn--ghost" href={`/notifications?tab=rows&campaignId=${encodeURIComponent(campaign.id)}`}>Строки отправки в журнале</a>
             {canCancel && <button class="yc-btn yc-btn--ghost yc-btn--danger-text" type="button" onClick={() => { cancelKey.current = crypto.randomUUID(); setCancelReason(''); cancelDlg.current?.showModal(); }}>Отменить рассылку</button>}
           </div>
         </section>
@@ -251,7 +274,7 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
           <section class="yc-panel" aria-labelledby="cc-history">
             <h2 id="cc-history">История</h2>
             <ul class="yc-history">
-              {detail.timeline.map((t) => <li class="yc-history__item"><span class="yc-history__head">{fmtAt(t.at, cTz)} – {ACTION_LABEL[t.action] ?? t.action}, {author(t.actorId)}{t.reason ? `: ${t.reason}` : ''}</span></li>)}
+              {detail.timeline.map((t) => <li class="yc-history__item"><span class="yc-history__head">{fmtAt(t.at, cTz)} – {ACTION_LABEL[t.action] ?? t.action}, {author(t.actorId, t.actorName)}{t.reason ? `: ${t.reason}` : ''}</span></li>)}
             </ul>
           </section>
         )}
@@ -301,7 +324,7 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
                   {kinds.map(([k, label]) => <button type="button" class="yc-seg__btn" aria-pressed={kind === k} onClick={() => set('kind', k)}>{label}</button>)}
                 </div>
               </fieldset>
-              {kind === 'client' && (
+              {(kind === 'client' || kind === 'booking') && (
                 <div class="yc-field">
                   <span class="yc-field__label">Клиент</span>
                   {d.clientId ? (
@@ -316,12 +339,31 @@ export default function CampaignForm({ initial, prefill, branches, timezone, tem
                   {err('clientId')}
                 </div>
               )}
-              {(kind === 'booking' || (kind === 'client' && d.category === 'service')) && (
-                <label class="yc-field"><span class="yc-field__label">Запись клиента (ID)</span>
-                  <input class="yc-input" name="bookingId" value={d.bookingId} maxlength={36} {...inv('bookingId')} onInput={(e) => set('bookingId', (e.target as HTMLInputElement).value)} />
-                  <span class="yc-field__hint">ID из карточки записи. Сообщение получит клиент этой записи.</span>
+              {needBooking && (
+                <fieldset class="yc-field" style="border:0;padding:0;margin:0" data-testid="cf-bookings" {...inv('bookingId')}>
+                  <legend class="yc-field__label">Запись клиента</legend>
+                  {!d.clientId ? (
+                    <span class="yc-field__hint">{d.bookingId ? 'Запись выбрана по ссылке. Чтобы выбрать другую, найдите клиента.' : 'Найдите клиента – покажем его записи.'}</span>
+                  ) : (
+                    <>
+                      <div class="yc-seg" role="group" aria-label="Какие записи">
+                        <button type="button" class="yc-seg__btn" aria-pressed={scope === 'upcoming'} onClick={() => setScope('upcoming')}>Ближайшие</button>
+                        <button type="button" class="yc-seg__btn" aria-pressed={scope === 'recent'} onClick={() => setScope('recent')}>Прошедшие</button>
+                      </div>
+                      {bookingsError && <p class="yc-alert yc-alert--error" role="alert">{bookingsError}</p>}
+                      {!bookings && !bookingsError && <p class="yc-empty" role="status">Загружаем записи…</p>}
+                      {bookings && bookings.length === 0 && <p class="yc-empty">{scope === 'upcoming' ? 'Ближайших записей в вашей зоне нет.' : 'Прошедших записей в вашей зоне нет.'}</p>}
+                      {bookings?.map((b) => (
+                        <label class="yc-check">
+                          <input type="radio" name="bookingId" value={b.id} checked={d.bookingId === b.id} onChange={() => set('bookingId', b.id)} />
+                          №{b.number} · {fmtAt(b.start, b.timezone)} · {b.resourceName} · {branchName(b.branchId)} · {BOOKING_STATUS[b.status] ?? b.status}
+                        </label>
+                      ))}
+                    </>
+                  )}
+                  <span class="yc-field__hint">Сообщение получит клиент этой записи.</span>
                   {err('bookingId')}
-                </label>
+                </fieldset>
               )}
               {kind === 'client' && d.category === 'marketing' && branches.length > 0 && (
                 <label class="yc-field"><span class="yc-field__label">Филиал</span>

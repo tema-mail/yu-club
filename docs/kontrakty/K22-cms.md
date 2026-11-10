@@ -155,6 +155,7 @@
 | K5 №213 | `GET /content/rooms/{roomId}` | `200 { description, gallery, features, rentFormatsText, seo } \| 404` – дополнение к K5 №4 |
 | K5 №214 | `GET /content/branches/{branchId}` | `200 { description, gallery, features, howToGet, postal, geo, seo } \| 404` |
 | K5 №215 | `GET /content/legal-versions` | `200 { privacyPolicy, personalDataConsent, cookiePolicy, advertisingConsent }` – живые `document_version` или `null` (для галочек входа и настроек) |
+| K5 №218 | `GET /content/requisites` | `200 { operatorName, inn, ogrn, address, phone, email }` – реквизиты оператора из настроек сети `legal.*` (K7 «Реквизиты оператора»), пустые – `null`; `/contacts/` рисует блок только при непустых; `ETag` по значениям (внесено 11.11.2026) |
 
 DTO ответов не содержат `draft`, автора, внутренних комментариев и `created_by` (12 §3 п.10).
 
@@ -205,7 +206,7 @@ DTO ответов не содержат `draft`, автора, внутренн
 
 ## 15. Настройки и окружение
 
-K7 (меняет Владелец): `content.ended_promotion_mode` – `banner_noindex` / `not_found`, умолчание `banner_noindex` (вопрос карты сайта 9). Окружение: `MEDIA_DIR`, `MEDIA_QUOTA_GB`, `MEDIA_PUBLIC_BASE` (`/media`), `PREVIEW_SECRET`, `SITE_INTERNAL_URL`, `CONTENT_CACHE_TTL_SECONDS`.
+K7 (меняет Владелец): `content.ended_promotion_mode` – `banner_noindex` / `not_found`, умолчание `banner_noindex` (вопрос карты сайта 9); реквизиты оператора `legal.*` (K7 «Реквизиты оператора») – сайту через №218. Окружение: `MEDIA_DIR`, `MEDIA_QUOTA_GB`, `MEDIA_PUBLIC_BASE` (`/media`), `PREVIEW_SECRET`, `SITE_INTERNAL_URL`, `CONTENT_CACHE_TTL_SECONDS`.
 
 ## 16. События и аудит
 

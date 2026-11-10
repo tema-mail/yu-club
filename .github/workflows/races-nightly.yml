@@ -1,0 +1,99 @@
+name: races-nightly
+
+# Гонки за слот ×100 ночью (план §8): тесты гонок на настоящей Postgres (сервис CI, как в ci.yml) гоняются циклом –
+# каждый повтор с новой базой, потому что внутри файла состояние копится (повтор «50 подтверждений одного слота»
+# упёрся бы в уже занятый слот; vitest --repeats не подходит).
+# «После прогона – SQL-проверка «ни одной пары пересечений по активным единицам»»: базы t_* тесты удаляют в afterAll
+# (tests/helpers/pg.ts), поэтому проверку ведёт наблюдатель tests/support/overlap-check.ts – во время цикла обходит живые
+# базы t_* кластера и гоняет tests/support/overlap-check.sql; сводка в overlap.log, вывод vitest в races.log, оба – артефактом.
+# Ручной запуск: число повторов и список файлов – входы.
+
+on:
+  schedule:
+    - cron: '30 3 * * *' # 03:30 UTC, после stand-e2e
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: Число повторов
+        default: '100'
+        required: false
+      files:
+        description: Файлы тестов через пробел (пусто – список по умолчанию из шага)
+        default: ''
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: races-nightly
+  cancel-in-progress: false
+
+jobs:
+  races-nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Одноразовый кластер CI, наружу не торчит – не секрет.
+          POSTGRES_PASSWORD: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres
+      REPEATS: ${{ inputs.repeats || '100' }}
+      FILES: ${{ inputs.files }}
+    steps:
+      # Файлы гонок держат пулы по 52 соединения и идут параллельно – как в ci.yml, у образа по умолчанию 100.
+      - name: postgres max_connections = 300
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart ${{ job.services.postgres.id }}
+          for i in $(seq 1 30); do docker exec ${{ job.services.postgres.id }} pg_isready -U postgres && break; sleep 1; done
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -Atc "SHOW max_connections" | grep -qx 300
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - name: гонки ×N под наблюдателем пересечений
+        run: |
+          set -u
+          : "${FILES:=tests/booking/hold-races.test.ts tests/booking/confirm.test.ts tests/booking/blocks.test.ts tests/resources/composite.test.ts tests/equipment/repair-blocks.test.ts tests/events/resources.test.ts tests/events/gift-booking.test.ts tests/clients/anonymize-race.test.ts}"
+          echo "повторов: $REPEATS; файлы: $FILES"
+          OVERLAP_ADMIN_URL="$TEST_DATABASE_URL" node tests/support/overlap-check.ts --watch > overlap.log 2>&1 &
+          watcher=$!
+          trap 'kill -TERM "$watcher" 2>/dev/null || true' EXIT
+          fails=0
+          for i in $(seq 1 "$REPEATS"); do
+            echo "=== повтор $i/$REPEATS $(date -u +%H:%M:%S)" | tee -a races.log
+            # shellcheck disable=SC2086 # список файлов намеренно разбивается по пробелам
+            if ! npx vitest run $FILES --reporter=dot >> races.log 2>&1; then
+              fails=$((fails + 1))
+              echo "ПРОВАЛ в повторе $i" | tee -a races.log
+            fi
+          done
+          kill -TERM "$watcher" 2>/dev/null || true
+          wait "$watcher"
+          wrc=$?
+          trap - EXIT
+          echo "--- наблюдатель пересечений (overlap.log)"
+          cat overlap.log
+          echo "повторов $REPEATS, провалов $fails, наблюдатель код $wrc"
+          [ "$fails" -eq 0 ] && [ "$wrc" -eq 0 ]
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: races-nightly-log
+          path: |
+            races.log
+            overlap.log
+          retention-days: 14

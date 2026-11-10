@@ -22,7 +22,7 @@ function hitOf(type: SearchType, x: Record<string, unknown>): Hit {
     case 'booking':
       return { id, href: `/bookings/${enc}`, title: `Бронь № ${String(x.number)}`, sub: `${String(x.startLocal ?? '')} · ${String(x.resourceName ?? '')} · ${BOOKING_STATUS_LABEL[String(x.status)] ?? String(x.status)}` };
     case 'finance_operation':
-      return { id, href: `/finance/${encodeURIComponent(String(x.branchId))}`, title: `Операция № ${String(x.number)}`, sub: `${fmtValue(Number(x.amountKop), 'kop')}${x.comment ? ` · ${String(x.comment)}` : ''}` };
+      return { id, href: `/finance/operations/${enc}`, title: `Операция № ${String(x.number)}`, sub: `${fmtValue(Number(x.amountKop), 'kop')}${x.comment ? ` · ${String(x.comment)}` : ''}` };
     case 'staff':
       return { id, href: `/staff/${enc}`, title: String(x.name), sub: ROLE[String(x.role)] ?? '' };
     case 'event':

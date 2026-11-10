@@ -16,6 +16,7 @@ import { clientCrmRoutes } from './modules/clients/routes.crm.ts';
 import { authenticateClient, clientPublicRoutes, type ClientPublicDeps } from './modules/clients/routes.public.ts';
 import { attachVisitorHolds } from './modules/booking/hold.ts';
 import { createFileStore, type FileStore } from './core/files.ts';
+import { createDeepHealth, type HealthThresholds } from './core/health.ts';
 import { attachmentCrmRoutes } from './modules/attachments/routes.crm.ts';
 import { registerEventSummaries } from './modules/equipment/items.ts';
 import { equipmentCrmRoutes } from './modules/equipment/routes.crm.ts';
@@ -87,6 +88,8 @@ export interface ServerDeps {
   content?: { mediaStore: FileStore; previewSecret?: string };
   /** Куда писать лог (по умолчанию stdout) – тесты проверяют, что код и токен в лог не попадают. */
   logStream?: NodeJS.WritableStream;
+  /** GET /health/deep (core/health.ts): пороги и срок кэша – тесты; по умолчанию DEFAULT_THRESHOLDS и 5 с. */
+  health?: { thresholds?: Partial<HealthThresholds>; cacheMs?: number };
 }
 
 /** Реестры модулей на процесс (ворота записи K9, способы оплаты K10 §5), а buildServer зовут повторно (тесты) –
@@ -112,11 +115,31 @@ function registerModuleHooks(): void {
 /** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
 export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
-/** Лог запроса как у Fastify по умолчанию, но без токена отписки: ?t= №205 – действующий ключ отказа от рекламы (K21 §4, K2 правило 4). */
+/** Параметры запроса, чьи значения в лог не пишутся (ПДн и секреты в строке поиска CRM и ЛК): остаётся имя и `*`. */
+const MASKED_QUERY = new Set(['q', 'phone', 'email', 'name', 'number', 'pin', 'code', 't', 'token']);
+
+/** Лог запроса как у Fastify по умолчанию, но без токена отписки (?t= №205 – действующий ключ отказа от рекламы, K21 §4, K2 правило 4)
+ *  и без значений поисковых и контактных параметров (tests/api/request-hygiene.test.ts). */
+function logUrl(raw: string): string {
+  const at = raw.indexOf('?');
+  if (at < 0) return raw;
+  const path = raw.slice(0, at);
+  if (path.startsWith('/api/public/v1/unsubscribe')) return path;
+  const query = raw
+    .slice(at + 1)
+    .split('&')
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      const name = eq < 0 ? pair : pair.slice(0, eq);
+      return MASKED_QUERY.has(name.toLowerCase()) ? `${name}=*` : pair;
+    })
+    .join('&');
+  return `${path}?${query}`;
+}
+
 const logSerializers = {
   req(req: FastifyRequest) {
-    const url = req.url.startsWith('/api/public/v1/unsubscribe') ? req.url.split('?')[0]! : req.url;
-    return { method: req.method, url, host: req.host, remoteAddress: req.ip, remotePort: req.socket?.remotePort };
+    return { method: req.method, url: logUrl(req.url), host: req.host, remoteAddress: req.ip, remotePort: req.socket?.remotePort };
   },
 };
 
@@ -140,11 +163,34 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     if (typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 500) {
       return reply.code(400).send({ error: { code: 'VALIDATION_FAILED', message: 'Неверный запрос', requestId: request.id } });
     }
-    request.log.error(err);
+    // 17 §13.2: JSON с кодом, маршрутом и reqId (метка pino), без тела запроса и без detail/where ошибок pg –
+    // там значения строк (телефон, email). Стек и SQL-код ошибки – для разбора.
+    const e = err as Error & { code?: unknown };
+    request.log.error(
+      { code: 'INTERNAL', method: request.method, route: request.routeOptions.url ?? 'unknown', error: { type: e.name, message: e.message, pgCode: typeof e.code === 'string' ? e.code : undefined, stack: e.stack } },
+      'необработанная ошибка API',
+    );
     return reply.code(500).send({ error: { code: 'INTERNAL', message: 'Внутренняя ошибка', requestId: request.id } });
   });
 
+  // Неизвестный маршрут – то же тело, что NOT_FOUND объекта: без «Route GET:/… not found» фреймворка (перебор маршрутов снаружи
+  // не отличает «нет маршрута» от «нет объекта»).
+  app.setNotFoundHandler((request, reply) => reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Не найдено', requestId: request.id } }));
+
   app.get('/health', async () => ({ status: 'ok', version: config.GIT_SHA }));
+  // 17 §13.1: база, outbox, пульс worker и очередь, диск, ошибки сервисных уведомлений – без авторизации, без ПДн и секретов.
+  // Тело: { status, version, checkedAt, checks } – status первым ключом (scripts/monitor-check.sh читает его без jq); down → 503.
+  const deepHealth = createDeepHealth({
+    pool: deps.network?.pool ?? deps.staff?.pool,
+    version: config.GIT_SHA,
+    dirs: { media: config.MEDIA_DIR, attachments: config.ATTACHMENTS_DIR },
+    ...(deps.health?.thresholds ? { thresholds: deps.health.thresholds } : {}),
+    ...(deps.health?.cacheMs !== undefined ? { cacheMs: deps.health.cacheMs } : {}),
+  });
+  app.get('/health/deep', async (_request, reply) => {
+    const r = await deepHealth();
+    return reply.code(r.status === 'down' ? 503 : 200).header('cache-control', 'no-store').send(r);
+  });
 
   if (deps.staff) {
     const staff: StaffDeps = { network: networkLookup, ...deps.staff };
