@@ -67,7 +67,7 @@ describe('реестр K7', () => {
     expect(SETTINGS['booking.max_anonymous_holds_per_branch'].levels).toEqual(['network', 'branch']);
     expect(SETTINGS['visit.arrive_early_min'].systemDefault).toBe(30); // Q-101
     expect(SETTINGS['visit.arrive_early_min'].levels).toEqual(['network', 'city', 'branch']);
-    expect(Object.keys(SETTINGS)).toHaveLength(77); // 21 ключ Э0–Э1 + 12 Э2 + 26 Э3 + 12 Э4 + 6 реквизитов оператора (K7)
+    expect(Object.keys(SETTINGS)).toHaveLength(80); // 21 ключ Э0–Э1 + 12 Э2 + 26 Э3 + 12 Э4 + 6 реквизитов оператора + 3 ленты событий CRM (K7)
   });
 
   it('реквизиты оператора (legal.*): пусто по умолчанию, только сеть и Владелец; ИНН, ОГРН и почта – по форме, пустая строка проходит', () => {
@@ -82,6 +82,9 @@ describe('реестр K7', () => {
     for (const [key, v] of ok) expect(settingDef(key).schema.safeParse(v).success, `${key}=${v}`).toBe(true);
     const bad: Array<[(typeof keys)[number], string]> = [['legal.inn', '12345'], ['legal.inn', '54051234567'], ['legal.ogrn', '10254'], ['legal.email', 'нет-собаки'], ['legal.operator_name', 'x'.repeat(201)], ['legal.phone', 'x'.repeat(31)]];
     for (const [key, v] of bad) expect(settingDef(key).schema.safeParse(v).success, `${key}=${v}`).toBe(false);
+    expect(SETTINGS['notifications.feed_shift_unfilled_hours'].systemDefault).toBe(24); // 13 §11, таймеры ленты
+    expect(SETTINGS['notifications.feed_event_prepare_days'].systemDefault).toBe(3);
+    expect(SETTINGS['notifications.feed_warranty_days'].systemDefault).toBe(30);
   });
 
   it('системное значение каждого ключа проходит его же схему', () => {
