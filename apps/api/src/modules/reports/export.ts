@@ -194,20 +194,25 @@ export async function requestExport(tx: Tx, ctx: AccessContext, raw: unknown, me
   const masked = !can(ctx, 'export.pd', { network: true });
   // срок прошёл, а уборка ещё не дошла: строка сразу expired (скачивание – 410), файл заберёт уборка как осиротевший
   await tx.query(`UPDATE app.report_exports SET status = 'expired', file_key = NULL WHERE staff_id = $1 AND params_hash = $2 AND status = 'ready' AND expires_at <= $3`, [staffId, hash, now]);
-  const inserted = await tx.query<ExportRow>(
-    `INSERT INTO app.report_exports (staff_id, report, format, params, params_hash, detail, masked, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (staff_id, params_hash) WHERE status IN ('queued','running') DO NOTHING RETURNING *`,
-    [staffId, n.report, n.format, JSON.stringify(n.params), hash, n.detail, masked, now],
-  );
-  const row = inserted.rows[0];
-  if (!row) {
-    // задача, с которой был конфликт, могла успеть стать ready между вставкой и чтением – это всё ещё она
-    const same = await tx.query<ExportRow>(
-      `SELECT * FROM app.report_exports WHERE staff_id = $1 AND params_hash = $2 AND status IN ('queued','running','ready') ORDER BY created_at DESC, id DESC LIMIT 1`,
+  let row: ExportRow | undefined;
+  for (let attempt = 0; attempt < 3 && !row; attempt++) {
+    const inserted = await tx.query<ExportRow>(
+      `INSERT INTO app.report_exports (staff_id, report, format, params, params_hash, detail, masked, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (staff_id, params_hash) WHERE status IN ('queued','running') DO NOTHING RETURNING *`,
+      [staffId, n.report, n.format, JSON.stringify(n.params), hash, n.detail, masked, now],
+    );
+    row = inserted.rows[0];
+    if (row) break;
+    // Конфликтная задача – самая новая строка этого запроса. Она могла успеть стать ready между вставкой и чтением –
+    // это всё ещё она. Если она успела стать cancelled/failed, старую ready не отдаём (прежний файл – K24 §2), вставляем снова.
+    const newest = await tx.query<ExportRow>(
+      `SELECT * FROM app.report_exports WHERE staff_id = $1 AND params_hash = $2 ORDER BY created_at DESC, id DESC LIMIT 1`,
       [staffId, hash],
     );
-    return { job: toJob(same.rows[0]!), created: false };
+    const same = newest.rows[0];
+    if (same && ['queued', 'running', 'ready'].includes(same.status)) return { job: toJob(same), created: false };
   }
+  if (!row) throw new Error('report_exports: не удалось поставить экспорт за 3 попытки');
   await writeAudit(tx, meta, { action: 'export.requested', object: { type: 'export', id: row.id }, after: { report: n.report, params: n.params, format: n.format, detail: n.detail, masked } }, clock);
   return { job: toJob(row), created: true };
 }
