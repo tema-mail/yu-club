@@ -4,7 +4,7 @@
 // Пока бронирования нет, настоящий бэкенд связей не даёт (noBranchLinks) – находит только по точному телефону.
 // №249 обезличивание (K9, D4-60…D4-65) – по clients/anonymize.ts: право client.anonymize (только Владелец), основание – код,
 // живые записи (бронь confirmed впереди или arrived, мероприятие не завершено) – 409 CLIENT_HAS_ACTIVE_RECORDS, повтор – 200 alreadyAnonymized.
-// №251–252 слияние дублей – mock-client-merge.ts; здесь – статус merged: в общем поиске нет, по id – есть, карточка без full.
+// №253–254 слияние дублей – mock-client-merge.ts; здесь – статус merged: в общем поиске нет, по id – есть, карточка без full.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { bookingFacts } from './mock-booking.ts';
