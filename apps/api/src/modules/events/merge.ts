@@ -21,7 +21,7 @@ export const eventsClientMerger: ClientMerger = {
   async reassign(tx: Tx, from: string, to: string): Promise<Record<string, number>> {
     const customer = (await tx.query('UPDATE app.events SET customer_client_id = $2, row_version = row_version + 1 WHERE customer_client_id = $1', [from, to])).rowCount ?? 0;
     const birthday = (await tx.query('UPDATE app.events SET birthday_client_id = $2, row_version = row_version + 1 WHERE birthday_client_id = $1', [from, to])).rowCount ?? 0;
-    let gifts = 0;
+    let gifts: number;
     try {
       gifts = (await tx.query('UPDATE app.birthday_gifts SET client_id = $2, row_version = row_version + 1 WHERE client_id = $1', [from, to])).rowCount ?? 0;
     } catch (err) {

@@ -63,7 +63,7 @@ export const bookingClientMerger: ClientMerger = {
     }
     const bookings = (await tx.query('UPDATE app.bookings SET client_id = $2 WHERE client_id = $1', [from, to])).rowCount ?? 0;
     const holds = (await tx.query('UPDATE app.holds SET client_id = $2 WHERE client_id = $1', [from, to])).rowCount ?? 0;
-    let clientTime = 0;
+    let clientTime: number;
     try {
       clientTime = (await tx.query('UPDATE app.client_time SET client_id = $2 WHERE client_id = $1', [from, to])).rowCount ?? 0;
     } catch (err) {
