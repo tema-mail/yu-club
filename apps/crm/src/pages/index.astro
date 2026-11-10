@@ -12,6 +12,7 @@ import { ApiError, BRANCH_STATUS_LABEL, serverCall } from '../lib/api.ts';
 import { STATUS_LABEL, fmtDay, fmtRange, inZone, today, zonedIso, addDays, type BookingPage, type CalendarDto } from '../lib/booking.ts';
 import { REPAIR_STATUS, PRIORITY, type RepairDto } from '../lib/equipment.ts';
 import { EVENT_STATUS, type EventRow } from '../lib/events.ts';
+import { feedHref, type FeedItem, type FeedPage } from '../lib/notifications.ts';
 
 const { branches, ctx, me, cookie } = Astro.locals;
 const can = (a: string) => me.actions.includes(a);
@@ -33,8 +34,6 @@ async function load<T>(allowed: boolean, f: () => Promise<T>): Promise<Got<T>> {
   }
 }
 interface ShiftNow { enabled: boolean; openShift: { openedAt: string; openedBy: string } | null }
-interface FeedItem { id: string; kind: string; branchId: string; refType: 'shift' | 'repair' | 'client'; refId: string; title: string; body: string | null; occurredAt: string; read: boolean }
-const FEED_HREF = { shift: '/shifts/', repair: '/repairs/', client: '/clients/' } as const;
 
 const branch = ctx.kind === 'branch' ? ctx.branch : null;
 const tz = branch?.timezone ?? timezone;
@@ -60,7 +59,7 @@ if (branch) {
       `/events?branchId=${id}&from=${encodeURIComponent(zonedIso(day, '00:00', tz))}&to=${encodeURIComponent(zonedIso(addDays(day, 1), '00:00', tz))}&limit=50`)).items
       .filter((e) => e.status !== 'cancelled' && e.status !== 'not_held')
       .sort((a, b) => (a.plannedStart ?? '').localeCompare(b.plannedStart ?? ''))),
-    load(true, async () => (await serverCall<{ items: FeedItem[] }>(cookie, '/staff-feed?limit=20')).items.filter((x) => x.branchId === branch.id).slice(0, 6)),
+    load(true, async () => (await serverCall<FeedPage>(cookie, '/staff-feed?limit=20')).items.filter((x) => x.branchId === branch.id).slice(0, 6)),
   ]);
   bd = { bookings, decide, shift, cash, repairs, calendar, events, feed };
 }
@@ -169,7 +168,7 @@ const title = branch ? `${branch.name}: сегодня` : heading;
               <ul class="yc-desk__list">
                 {bd.feed.v.map((x) => (
                   <li class="yc-desk__row">
-                    <a href={`${FEED_HREF[x.refType]}${encodeURIComponent(x.refId)}`}>{x.title}</a>
+                    <a href={feedHref(x)}>{x.title}</a>
                     <span>{fmtDay(inZone(x.occurredAt, tz).date)}, {hm(x.occurredAt)}{x.read ? '' : ' · новое'}{x.body ? ` · ${x.body}` : ''}</span>
                   </li>
                 ))}

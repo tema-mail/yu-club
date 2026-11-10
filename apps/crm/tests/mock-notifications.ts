@@ -11,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { bookingFacts } from './mock-booking.ts';
 import { registerStaffFeed } from './mock-staff-feed.ts';
 import type {
-  Audience, AudiencePreviewDto, CampaignCategory, CampaignDetail, CampaignDto, CampaignListRow, ClientNotificationSummary, FailuresSummary, NotificationView, SegmentV1, TemplateDto, TimelineEvent,
+  Audience, AudiencePreviewDto, CampaignCategory, CampaignDetail, CampaignDto, CampaignListRow, ClientNotificationSummary, FailuresSummary, NotificationView, Page, SegmentV1, TemplateDto, TimelineEvent,
 } from '../src/lib/notifications.ts';
 
 type Rec = Record<string, unknown>;
@@ -316,13 +316,13 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
   app.get(`${P}/notifications/campaigns`, handle(async (req, _reply, s) => {
     const q = parse({ from: when, to: when, branchId: opt(ref(branchIds)), category: opt(oneOf('service', 'marketing')), source: opt(oneOf('system', 'staff')), authorId: opt(ref(() => [s.id, 's-owner', 's-director', 's-admin', 's-admin-tsk', 's-two', 's-fresh'])), status: opt(oneOf('draft', 'confirmed', 'expanding', 'sending', 'done', 'cancelled')), clientId: opt(re(UUID)), ...page }, req.query);
     if (q.branchId && !inZone(s, String(q.branchId))) throw notFound();
-    if (!d.can(s, 'notifications.view') || q.source === 'system') return { items: [], nextCursor: null };
+    if (!d.can(s, 'notifications.view') || q.source === 'system') return { items: [], nextCursor: null } satisfies Page<CampaignListRow>;
     const all = campaigns.filter((c) => campaignInZone(s, c)
       && (!q.from || Date.parse(c.createdAt) >= Date.parse(String(q.from))) && (!q.to || Date.parse(c.createdAt) < Date.parse(String(q.to)))
       && (!q.branchId || c.areaIds.includes(String(q.branchId))) && (!q.category || c.category === q.category) && (!q.authorId || c.createdBy === q.authorId)
       && (!q.status || c.status === q.status) && (!q.clientId || c.recipients.some((r) => r.clientId === String(q.clientId).toLowerCase())));
     const p = pageOf(all, (c) => c.createdAt, q.cursor as string | undefined, q.limit as number | undefined);
-    return { items: p.items.map(listRow), nextCursor: p.nextCursor };
+    return { items: p.items.map(listRow), nextCursor: p.nextCursor } satisfies Page<CampaignListRow>;
   }));
 
   // ---- проверки кампании (campaigns.ts)
@@ -562,7 +562,7 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
 
   // №208
   const visibleRow = (s: Staffish, r: NotificationView) => d.can(s, 'notifications.view') && (r.branchId === null ? d.zone(s).network : inZone(s, r.branchId));
-  const listRows = (s: Staffish, q: Rec) => {
+  const listRows = (s: Staffish, q: Rec): Page<NotificationView> => {
     const all = rows.filter((r) => visibleRow(s, r) && (!q.clientId || r.clientId === String(q.clientId).toLowerCase()) && (!q.bookingId || r.bookingId === String(q.bookingId).toLowerCase())
       && (!q.branchId || r.branchId === q.branchId) && (!q.status || r.status === q.status) && (!q.category || r.category === q.category) && (!q.kind || r.kind === q.kind)
       && (!q.source || r.source === q.source) && (!q.campaignId || r.campaignId === String(q.campaignId).toLowerCase()) && (!q.from || Date.parse(r.plannedAt) >= Date.parse(String(q.from))) && (!q.to || Date.parse(r.plannedAt) < Date.parse(String(q.to))));
@@ -614,7 +614,7 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
   app.get(`${P}/notifications/templates`, handle(async (req, _reply, s) => {
     if (!d.can(s, 'notifications.view')) throw forbidden('notifications.view');
     const q = parse({ status: opt(oneOf('active', 'archived')) }, req.query);
-    return { items: templates.filter((t) => !q.status || t.status === q.status).sort((a, b) => (a.name === b.name ? (a.id < b.id ? -1 : 1) : a.name < b.name ? -1 : 1)) };
+    return { items: templates.filter((t) => !q.status || t.status === q.status).sort((a, b) => (a.name === b.name ? (a.id < b.id ? -1 : 1) : a.name < b.name ? -1 : 1)) } satisfies { items: TemplateDto[] };
   }));
 
   // №211 – assertCan(templates.manage, сеть): не-Владельцу 403
@@ -645,7 +645,7 @@ export function registerNotifications(app: FastifyInstance, P: string, d: Notifi
       const text2 = (body.body as string | undefined) ?? t.body;
       assertPlaceholders(title, text2);
       Object.assign(t, { name: (body.name as string | undefined) ?? t.name, title, body: text2, status: (body.status as TemplateDto['status'] | undefined) ?? t.status, rowVersion: t.rowVersion + 1 });
-      return { status: 200, body: { ...t } };
+      return { status: 200, body: { ...t } satisfies TemplateDto };
     });
   }));
 

@@ -7,6 +7,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { createHash, randomUUID } from 'node:crypto';
 import { PURGE_REASON_CODES } from '../../../packages/contracts/src/media-purge.ts';
+import type { MediaDto } from '../src/lib/content-dto.ts';
 import { Fail, MAX_BYTES, type Media, type Rec, type Staffish, UUID, cms, invalid, notFound, refsOf, storageKey, str } from './mock-cms.ts';
 
 type Handler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
@@ -21,7 +22,7 @@ export interface MediaHelpers {
 export function registerMedia(app: FastifyInstance, P: string, h: MediaHelpers): void {
   const { command, read, assertRole, strict, rv } = h;
 
-  const mediaDto = (m: Media) => ({ id: m.id, mime: m.mime, bytes: m.bytes, width: m.width, height: m.height, variants: [], storageKey: storageKey(m), url: `/media/${storageKey(m)}`, alt: m.alt, title: m.title, originalName: m.originalName, purpose: m.purpose, status: m.status, createdAt: m.createdAt, archivedAt: m.archivedAt, rowVersion: m.rowVersion });
+  const mediaDto = (m: Media): MediaDto => ({ id: m.id, mime: m.mime, bytes: m.bytes, width: m.width, height: m.height, variants: [], storageKey: storageKey(m), url: `/media/${storageKey(m)}`, alt: m.alt, title: m.title, originalName: m.originalName, purpose: m.purpose, status: m.status, createdAt: m.createdAt, archivedAt: m.archivedAt, rowVersion: m.rowVersion });
   const usages = (id: string) => {
     const out: Array<{ entityType: string; entityId: string; field: string; live: boolean }> = [];
     for (const r of cms.rows) {
@@ -99,7 +100,7 @@ export function registerMedia(app: FastifyInstance, P: string, h: MediaHelpers):
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     const limit = Math.min(Number(q.limit ?? 50), 100);
     const from = q.cursor ? Number(Buffer.from(q.cursor, 'base64url').toString()) : 0;
-    return { items: list.slice(from, from + limit).map(mediaDto), nextCursor: from + limit < list.length ? Buffer.from(String(from + limit)).toString('base64url') : null };
+    return { items: list.slice(from, from + limit).map(mediaDto), nextCursor: from + limit < list.length ? Buffer.from(String(from + limit)).toString('base64url') : null } satisfies { items: MediaDto[]; nextCursor: string | null };
   }));
   app.get(`${P}/content/media/:id`, read((s, req) => {
     assertRole(s, 'content.view');

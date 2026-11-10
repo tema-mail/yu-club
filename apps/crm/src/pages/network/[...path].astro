@@ -143,7 +143,7 @@ const title = notFound
           save={branch.status === 'archived' ? undefined : { method: 'PATCH', path: `/branches/${branch.id}`, label: 'Сохранить', versioned: true }}
           remove={can('network.branch.archive') ? {
             what: 'Филиал', archived: branch.status === 'archived', versioned: true,
-            archivePath: `/branches/${branch.id}/archive`, restorePath: `/branches/${branch.id}/restore`,
+            archivePath: `/branches/${branch.id}/archive`, // возврата из архива в API нет (network/routes.ts, ТЗ 02: архив окончательный)
           } : undefined}
           history={{ objectType: 'branch', objectId: branch.id, timezone: branch.timezone }} />
       )}
@@ -156,7 +156,7 @@ const title = notFound
       {city && (
         <EntityCard client:load fields={cityFields} values={city as unknown as Record<string, unknown>} rowVersion={city.rowVersion}
           save={city.status === 'archived' ? undefined : { method: 'PATCH', path: `/cities/${city.id}`, label: 'Сохранить', versioned: true }}
-          remove={{ what: 'Город', archived: city.status === 'archived', versioned: true, archivePath: `/cities/${city.id}/archive`, restorePath: `/cities/${city.id}/restore` }}
+          remove={{ what: 'Город', archived: city.status === 'archived', versioned: true, archivePath: `/cities/${city.id}/archive` }}
           history={{ objectType: 'city', objectId: city.id, timezone: city.timezone }} />
       )}
     </>

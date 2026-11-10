@@ -91,7 +91,7 @@ test('список филиалов грузится порциями, поис�
   await expect(rows(page)).toHaveCount(2);
 });
 
-test('удаление филиала – окно «в архив», архив – отдельный фильтр, возврат', async ({ page }) => {
+test('удаление филиала – окно «в архив», архив – отдельный фильтр, без возврата (в API его нет)', async ({ page }) => {
   await login(page, 'owner@yu.test');
   await page.goto('/network/branches?q=Фрунзе');
   await rows(page).getByRole('link').click();
@@ -114,8 +114,8 @@ test('удаление филиала – окно «в архив», архив
   await expect(page.getByRole('button', { name: 'Архив' })).toHaveAttribute('aria-pressed', 'true');
 
   await rows(page).getByRole('link').click();
-  await page.getByRole('button', { name: 'Вернуть из архива' }).click();
-  await expect(page.getByRole('button', { name: 'Сохранить' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Запись в архиве' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Вернуть из архива' })).toHaveCount(0);
 });
 
 test('город с действующими филиалами не уходит в архив – причина в окне', async ({ page }) => {

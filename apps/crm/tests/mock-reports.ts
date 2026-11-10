@@ -7,7 +7,7 @@
 // сегмент hour и source/category/place не сужают строки; задача экспорта сама проходит queued → running → ready за ~1 с.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import type { ExportJob, Metric, MetricUnit, Period, ReconcileRun, SearchGroup, SearchResponse } from '../src/lib/reports.ts';
+import type { DashboardCard, DashboardResult, DetailResult, ExportJob, Metric, MetricUnit, Period, ReconcileRun, ReportResult, SearchGroup, SearchResponse, UnitCalendar, UnitRow } from '../src/lib/reports.ts';
 import { maskPhone } from './mock-clients.ts';
 
 type Rec = Record<string, unknown>;
@@ -420,14 +420,14 @@ const unitId = (bi: number, ui: number) => hex('7a000000-0000-4000-8000-', bi * 
 const bookedPerDay = (bi: number, ui: number, day: string) => ((Number(day.slice(8)) + ui + bi) % 4) * 60 + (ui >= 2 && ui <= 3 ? 120 : 0); // VR1/VR2: аренда комнаты 14–16
 const blockedPerDay = (bi: number, ui: number) => (ui === 3 ? 60 : 0);
 
-function unitRows(env: Env, bs: BranchLite[], p: Period, q: Query): Rec[] {
+function unitRows(env: Env, bs: BranchLite[], p: Period, q: Query): UnitRow[] {
   const now = Date.now();
-  const rows: Rec[] = [];
+  const rows: UnitRow[] = [];
   for (const b of bs) {
     const bi = env.branches.indexOf(b);
     UNITS.forEach(([name, type], ui) => {
       if (q.resourceType?.length && !q.resourceType.includes(type)) return;
-      const r = { unitId: unitId(bi, ui), unitName: name, resourceId: hex('7b000000-0000-4000-8000-', bi * 10 + ui), resourceType: type, roomId: null, branchId: b.id, branchName: b.name,
+      const r: UnitRow = { unitId: unitId(bi, ui), unitName: name, resourceId: hex('7b000000-0000-4000-8000-', bi * 10 + ui), resourceType: type, roomId: null, branchId: b.id, branchName: b.name,
         availableMin: 0, availableElapsedMin: 0, blockedMin: 0, technicalMin: 0, bookedMin: 0, usedMin: 0, freeMin: 0 };
       for (let d = p.from; d <= p.to; d = addDays(d, 1)) {
         const open = Date.parse(at(d, 10));
@@ -445,25 +445,25 @@ function unitRows(env: Env, bs: BranchLite[], p: Period, q: Query): Rec[] {
   }
   return rows;
 }
-function loadMetrics(rows: Rec[], prev: Rec[]): Record<string, Metric> {
-  const sum = (rs: Rec[], k: string) => rs.reduce((a, r) => a + Number(r[k]), 0);
-  const keys = { available: 'availableMin', availableElapsed: 'availableElapsedMin', blocked: 'blockedMin', technical: 'technicalMin', booked: 'bookedMin', used: 'usedMin', free: 'freeMin' };
+function loadMetrics(rows: UnitRow[], prev: UnitRow[]): Record<string, Metric> {
+  const sum = (rs: UnitRow[], k: keyof UnitRow) => rs.reduce((a, r) => a + Number(r[k]), 0);
+  const keys: Record<string, keyof UnitRow> = { available: 'availableMin', availableElapsed: 'availableElapsedMin', blocked: 'blockedMin', technical: 'technicalMin', booked: 'bookedMin', used: 'usedMin', free: 'freeMin' };
   if (!rows.length) return Object.fromEntries([...Object.keys(keys), 'actualLoad', 'commercialLoad'].map((k) => [k, { state: 'no_data' }]));
   const out: Record<string, Metric> = Object.fromEntries(Object.entries(keys).map(([k, c]) => [k, ok(sum(rows, c), 'minutes', prev.length ? sum(prev, c) : null)]));
-  const pct = (rs: Rec[], top: string, base: string) => (sum(rs, base) > 0 ? (sum(rs, top) / sum(rs, base)) * 100 : null);
-  const load = (top: string, base: string): Metric => {
+  const pct = (rs: UnitRow[], top: keyof UnitRow, base: keyof UnitRow) => (sum(rs, base) > 0 ? (sum(rs, top) / sum(rs, base)) * 100 : null);
+  const load = (top: keyof UnitRow, base: keyof UnitRow): Metric => {
     const v = pct(rows, top, base);
     return v === null ? { state: 'unavailable', reason: 'missing_input' } : ok(v, 'pct', prev.length ? pct(prev, top, base) : null);
   };
   return { ...out, actualLoad: load('usedMin', 'availableElapsedMin'), commercialLoad: load('bookedMin', 'availableMin') };
 }
-function utilization(env: Env, q: RQ) {
+function utilization(env: Env, q: RQ): ReportResult & { rows: UnitRow[] } {
   const bs = resolveBranches(env, 'reports.ops.view', q);
   const pp = prevPeriod(q.period);
   const rows = unitRows(env, bs, q.period, q);
   const prev = unitRows(env, bs, pp, q);
-  const group = (k: string) => [...new Set(rows.map((r) => String(r[k])))].map((key) => ({ key, metrics: loadMetrics(rows.filter((r) => r[k] === key), prev.filter((r) => r[k] === key)) }));
-  const out: Rec = { metrics: loadMetrics(rows, prev), rows, groups: { byBranch: group('branchId'), byResourceType: group('resourceType'), wholeRoom: [] },
+  const group = (k: 'branchId' | 'resourceType') => [...new Set(rows.map((r) => String(r[k])))].map((key) => ({ key, metrics: loadMetrics(rows.filter((r) => r[k] === key), prev.filter((r) => r[k] === key)) }));
+  const out: ReportResult & { rows: UnitRow[] } = { metrics: loadMetrics(rows, prev), rows, groups: { byBranch: group('branchId'), byResourceType: group('resourceType'), wholeRoom: [] },
     labels: { actualLoad: 'к прошедшему времени периода', commercialLoad: 'ко всему периоду; не равна фактической: бронь может закончиться неявкой', unit: 'единица = место' },
     period: q.period, prevPeriod: pp, computedAt: new Date().toISOString(), dateBasis: 'session_start', dayRule: DAY_RULE };
   if (q.series === 'day') {
@@ -489,7 +489,7 @@ function page<T>(rows: T[], q: Query): { slice: T[]; nextCursor: string | null }
   return { slice: rows.slice(from, from + limit), nextCursor: from + limit < rows.length ? String(from + limit) : null };
 }
 
-function metricsOf(env: Env, name: string, q: RQ): Rec {
+function metricsOf(env: Env, name: string, q: RQ): ReportResult {
   if (name === 'utilization') return utilization(env, q);
   const r = REPORTS[name]!;
   const bs = resolveBranches(env, r.action, q);
@@ -500,29 +500,29 @@ function metricsOf(env: Env, name: string, q: RQ): Rec {
   return { metrics, dateBasis, ...(r.labels ? { labels: r.labels } : {}), period: q.period, prevPeriod: prevPeriod(q.period), computedAt: new Date().toISOString(), dayRule: DAY_RULE };
 }
 
-function detailOf(env: Env, name: string, q0: RQ): Rec {
+function detailOf(env: Env, name: string, q0: RQ): DetailResult {
   const q = applySegment(name, q0);
   if (name === 'utilization') {
-    const u = utilization(env, q) as { metrics: Record<string, Metric>; rows: Rec[] };
+    const u = utilization(env, q);
     if (!q.metric || !Object.hasOwn(u.metrics, q.metric)) throw filterInvalid('Неизвестный показатель', { field: 'metric' });
-    const col: Record<string, string> = { available: 'availableMin', availableElapsed: 'availableElapsedMin', blocked: 'blockedMin', technical: 'technicalMin', booked: 'bookedMin', used: 'usedMin', free: 'freeMin' };
+    const col: Record<string, keyof UnitRow> = { available: 'availableMin', availableElapsed: 'availableElapsedMin', blocked: 'blockedMin', technical: 'technicalMin', booked: 'bookedMin', used: 'usedMin', free: 'freeMin' };
     const pg = page([...u.rows].sort((a, b) => (String(a.unitId) < String(b.unitId) ? -1 : 1)), q);
     const rows = pg.slice.map((r) => {
       if (q.metric === 'actualLoad' || q.metric === 'commercialLoad') {
-        const [top, base] = q.metric === 'actualLoad' ? ['usedMin', 'availableElapsedMin'] : ['bookedMin', 'availableMin'];
+        const [top, base]: Array<keyof UnitRow> = q.metric === 'actualLoad' ? ['usedMin', 'availableElapsedMin'] : ['bookedMin', 'availableMin'];
         return { ...r, value: Number(r[base!]) > 0 ? (Number(r[top!]) / Number(r[base!])) * 100 : null };
       }
       return { ...r, value: r[col[q.metric!]!] };
     });
-    return { columns: Object.keys(rows[0] ?? {}), rows, total: u.metrics[q.metric], nextCursor: pg.nextCursor };
+    return { columns: Object.keys(rows[0] ?? {}), rows, total: u.metrics[q.metric]!, nextCursor: pg.nextCursor };
   }
   const r = REPORTS[name]!;
   const bs = resolveBranches(env, r.action, q);
   const defs = r.defs(q, env);
   const d = q.metric !== undefined && Object.hasOwn(defs, q.metric) ? defs[q.metric]! : undefined;
   if (!d) {
-    const m = metricsOf(env, name, q0).metrics as Record<string, Metric>;
-    if (q.metric && m[q.metric]?.state === 'unavailable') return { columns: r.columns, rows: [], total: m[q.metric], nextCursor: null };
+    const m = metricsOf(env, name, q0).metrics;
+    if (q.metric && m[q.metric]?.state === 'unavailable') return { columns: r.columns, rows: [], total: m[q.metric]!, nextCursor: null };
     throw filterInvalid('Неизвестный показатель', { field: 'metric' });
   }
   if (name === 'staff' && MONEY.has(q.metric!) && (!env.deps.can(env.s, 'reports.payroll.view') || (q.metric === 'paid' && !wideOf(env, q)))) {
@@ -536,12 +536,12 @@ function detailOf(env: Env, name: string, q0: RQ): Rec {
   return { columns: r.columns, rows: pg.slice.map((x) => r.project(x, env, d.agg === 'distinct' ? 1 : d.value ? d.value(x) : 1)), total, nextCursor: pg.nextCursor };
 }
 
-function dashboard(env: Env, q: RQ): Rec {
-  const cards: Rec[] = [];
+function dashboard(env: Env, q: RQ): DashboardResult {
+  const cards: DashboardCard[] = [];
   const can = (a: string) => env.deps.can(env.s, a);
   const add = (report: string, list: Array<[string, string, string?]>) => {
-    const m = metricsOf(env, report, q) as { metrics: Record<string, Metric>; labels?: Record<string, string> };
-    for (const [key, title, note] of list) cards.push({ key, title, metric: m.metrics[key], link: { report, metric: key }, ...(note ? { note } : {}) });
+    const m = metricsOf(env, report, q);
+    for (const [key, title, note] of list) cards.push({ key, title, metric: m.metrics[key]!, link: { report, metric: key }, ...(note ? { note } : {}) });
   };
   if (can('reports.ops.view')) {
     add('bookings', [['created', 'Создано броней'], ['visited', 'Состоялось посещений'], ['cancelledByClient', 'Отмены клиентом'], ['cancelledByClub', 'Отмены клубом'], ['noShows', 'Неявки']]);
@@ -726,7 +726,7 @@ export function registerReports(app: FastifyInstance, P: string, deps: ReportsMo
     const cursor = (req.query as Rec).cursor;
     if (cursor !== undefined && Number.isNaN(Date.parse(String(cursor)))) throw filterInvalid('Неверный курсор', { field: 'cursor' });
     const runs = reconcileRuns().filter((r) => cursor === undefined || r.startedAt < new Date(String(cursor)).toISOString());
-    return { items: runs.map((r) => (e.zone.network ? r : { ...r, discrepancyCount: undefined, error: undefined, discrepancies: r.discrepancies.filter((d) => d.branchId !== null && e.zone.branchIds.includes(d.branchId)) })), nextCursor: null };
+    return { items: runs.map((r) => (e.zone.network ? r : { ...r, discrepancyCount: undefined, error: undefined, discrepancies: r.discrepancies.filter((d) => d.branchId !== null && e.zone.branchIds.includes(d.branchId)) })), nextCursor: null } satisfies { items: ReconcileRun[]; nextCursor: string | null };
   }));
   app.get(`${P}/search`, handle((req) => search(env(req), (req.query as Rec | undefined)?.q)));
   app.get(`${P}/reports/utilization/calendar`, handle((req) => {
@@ -749,7 +749,7 @@ export function registerReports(app: FastifyInstance, P: string, deps: ReportsMo
       if (x.end > cur) cur = x.end;
     }
     if (cur < at(date, 22)) free.push({ start: cur, end: at(date, 22) });
-    return { unitId: id, date, open: [iv(10, 0, 22, 0)], booked, blocked, free };
+    return { unitId: id, date, open: [iv(10, 0, 22, 0)], booked, blocked, free } satisfies UnitCalendar;
   }));
   app.get(`${P}/reports/:report/detail`, handle((req) => {
     const q = parseQuery(req.query);
@@ -766,7 +766,7 @@ export function registerReports(app: FastifyInstance, P: string, deps: ReportsMo
     const cursor = (req.query as Rec).cursor;
     if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 400)) throw filterInvalid('Неверный курсор', { field: 'cursor' });
     if (!deps.can(e.s, 'reports.export')) throw forbidden('reports.export');
-    return { items: exportsList.filter((j) => j.staffId === e.s.id).map(publicJob), nextCursor: null };
+    return { items: exportsList.filter((j) => j.staffId === e.s.id).map(publicJob), nextCursor: null } satisfies { items: ExportJob[]; nextCursor: string | null };
   }));
   app.get(`${P}/reports/exports/:id`, handle((req) => publicJob(ownJob(env(req), prm(req).id))));
   app.get(`${P}/reports/exports/:id/file`, handle((req, reply) => {

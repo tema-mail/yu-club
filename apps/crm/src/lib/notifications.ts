@@ -111,6 +111,27 @@ export interface ClientNotificationSummary {
 
 export interface Page<T> { items: T[]; nextCursor: string | null }
 
+/** Лента событий сотрудника (staff-feed.ts, 13 §11): строка и страница – как отдаёт API; общие для ленты в шапке, рабочего стола и мока. */
+export type FeedKind =
+  | 'shift_changed' | 'repair_registered' | 'repair_closed' | 'service_notification_failed'
+  | 'booking_created' | 'booking_rescheduled' | 'booking_cancelled' | 'block_created'
+  | 'shift_unfilled' | 'event_preparation' | 'warranty_ending';
+export type FeedRefType = 'shift' | 'repair' | 'client' | 'booking' | 'resource_block' | 'event' | 'equipment' | 'branch';
+export interface FeedItem {
+  id: string; kind: FeedKind; branchId: string; branchName: string; refType: FeedRefType; refId: string;
+  title: string; body: string | null; occurredAt: string; read: boolean;
+}
+export interface FeedPage { items: FeedItem[]; nextCursor: string | null; unread: number }
+/** Карточка связанной сущности. Блокировка – список блокировок филиала; пустая смена (ссылка на филиал) – расписание смен. */
+export function feedHref(it: Pick<FeedItem, 'refType' | 'refId' | 'branchId'>): string {
+  const enc = encodeURIComponent;
+  switch (it.refType) {
+    case 'resource_block': return `/resources/${enc(it.branchId)}/blocks`;
+    case 'branch': return '/shifts';
+    default: return `/${{ shift: 'shifts', repair: 'repairs', client: 'clients', booking: 'bookings', event: 'events', equipment: 'equipment' }[it.refType]}/${enc(it.refId)}`;
+  }
+}
+
 /** K11 №251: сбои критичных уведомлений для предупреждений Владельца. */
 export interface FailuresSummary { critical: number; period: { from: string; to: string; days: number } }
 
