@@ -70,3 +70,26 @@ test('подвал: все разделы, карта сайта и юридич
     expect((await request.get(href, { maxRedirects: 0 })).status(), href).toBe(200);
   }
 });
+
+test('фавикон: ссылки в head и файлы отдаются с нужным типом', async ({ page, request }) => {
+  await page.goto('/');
+  const icons = await page.locator('head link[rel="icon"], head link[rel="apple-touch-icon"]').evaluateAll((ls) => ls.map((l) => l.getAttribute('href')));
+  expect(icons).toEqual(['/favicon.ico', '/favicon.svg', '/apple-touch-icon.png']);
+  const types: Record<string, RegExp> = { '/favicon.ico': /image\/(x-icon|vnd\.microsoft\.icon)/, '/favicon.svg': /image\/svg\+xml/, '/apple-touch-icon.png': /image\/png/ };
+  for (const [href, type] of Object.entries(types)) {
+    const res = await request.get(href);
+    expect(res.status(), href).toBe(200);
+    expect(res.headers()['content-type'], href).toMatch(type);
+    expect((await res.body()).length, href).toBeGreaterThan(200);
+  }
+});
+
+test('404: код 404 и ссылка на контакты', async ({ page }) => {
+  const res = await page.goto('/nope/missing/');
+  expect(res?.status()).toBe(404);
+  const link = page.getByTestId('not-found').getByRole('link', { name: 'Контакты' });
+  await expect(link).toHaveAttribute('href', '/contacts/');
+  await link.click();
+  await expect(page).toHaveURL(/\/contacts\/$/);
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+});
