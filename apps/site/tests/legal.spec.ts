@@ -1,6 +1,7 @@
 // Юридическая проверка сайта (скилл юр-проверка-сайта, Россия, 152-ФЗ ст. 9, КоАП 13.11): документы в подвале и по адресу,
 // галочка согласия везде пустая, со ссылкой на /personal-data-consent/, кнопка без неё неактивна; возраст (Q-34, умолчание):
-// кабинет – от 14 лет, текст в той же галочке при входе и при входе в потоке записи. Серверные отказы без согласия – auth.spec, birthday.spec.
+// кабинет – от 14 лет, текст в той же галочке при входе и при входе в потоке записи; заявку на праздник оставляет взрослый (18 лет, Q-75:
+// данные гостей не собираем). Серверные отказы без согласия – auth.spec, birthday.spec.
 import { expect, test, type Page } from '../../../tests/support/e2e.ts';
 import { MOCK_PORT, STAGE_PORT } from '../playwright.config.ts';
 import { MOCK_CODE } from './mock-api.ts';
@@ -60,5 +61,20 @@ test('вход в потоке записи: та же галочка с воз�
   await expect(page.locator('label', { has: consent })).toContainText('Мне есть 14 лет');
   await expect(page.locator('label', { has: consent }).locator(CONSENT_LINK)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Войти и продолжить' })).toBeDisabled();
+  await noPrechecked(page);
+});
+
+test('заявка на праздник: оставляет взрослый, гостей не собираем; галочка пустая, с 18 годами и ссылкой; кнопка неактивна', async ({ page }) => {
+  await page.goto('/birthday/');
+  const note = page.getByTestId('party-adult-note');
+  await expect(note).toContainText('родитель или другой законный представитель');
+  await expect(note).toContainText('только контакт заказчика');
+  const form = page.getByTestId('party-form');
+  const label = form.locator('label', { hasText: /согласие на обработку/ });
+  await expect(label).toHaveCount(1);
+  await expect(label).toContainText('Мне есть 18 лет');
+  await expect(label.locator('input[type=checkbox]')).not.toBeChecked();
+  await expect(label.locator(CONSENT_LINK)).toHaveAttribute('target', '_blank');
+  await expect(form.getByRole('button', { name: 'Отправить заявку' })).toBeDisabled();
   await noPrechecked(page);
 });
