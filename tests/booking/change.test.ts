@@ -6,12 +6,15 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AuditRequestMeta } from '../../apps/api/src/core/audit.ts';
 import { AppError } from '../../apps/api/src/core/errors.ts';
+import { clearSubscriptions, processEvent } from '../../apps/api/src/core/outbox.ts';
 import type { AccessContext } from '../../apps/api/src/core/permissions.ts';
 import type { Clock } from '../../apps/api/src/core/time.ts';
 import { cancelBooking, rescheduleBooking, type CancelBy, type RescheduleInput } from '../../apps/api/src/modules/booking/change.ts';
 import { confirmHold } from '../../apps/api/src/modules/booking/confirm.ts';
 import { createHold } from '../../apps/api/src/modules/booking/hold.ts';
 import { runOccupancyCommand } from '../../apps/api/src/modules/booking/occupancy.ts';
+import { bookingLookup } from '../../apps/api/src/modules/booking/providers.ts';
+import { HANDLERS, registerNotificationHandlers } from '../../apps/api/src/modules/notifications/handlers.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/pg.ts';
 
 const SYS = '00000000-0000-0000-0000-000000000001';
@@ -74,6 +77,8 @@ let foreign: AccessContext;
 beforeAll(async () => {
   db = await createTestDatabase({ migrate: true });
   pool = new pg.Pool({ connectionString: db.url, options: '-c role=yu_app -c search_path=app,journal', max: 12 });
+  clearSubscriptions();
+  registerNotificationHandlers({ bookings: bookingLookup, clock }); // как worker: событие отмены → сервисное уведомление (TC-11)
   const city = await one(`INSERT INTO app.cities (code, slug, name, timezone) VALUES ('nsk', 'nsk', 'НСК', 'Asia/Novosibirsk') RETURNING id`);
   for (const code of ['b1', 'b2']) {
     ids[code] = (await one(`INSERT INTO app.branches (city_id, code, slug, name, address, timezone, status) VALUES ($1, $2, $2, $2, 'адрес', 'Asia/Novosibirsk', 'active') RETURNING id`, [city.id, code])).id;
@@ -107,6 +112,7 @@ beforeAll(async () => {
   ids.client_plans = (await one(`SELECT id FROM app.dict_reasons WHERE domain = 'booking_cancel_client' AND code = 'changed_plans'`)).id;
 });
 afterAll(async () => {
+  clearSubscriptions();
   await pool.end();
   await db.drop();
 });
@@ -175,7 +181,7 @@ describe('отмена сотрудником (K11 №6, 01 §12), TC-11', () =>
     expect((await row(id)).status).toBe('confirmed');
   });
 
-  it('TC-11: отмена клубом – ресурс свободен, причина и сотрудник записаны, событие для уведомления, штрафа нет', async () => {
+  it('TC-11: отмена клубом – ресурс свободен и его берёт другой, причина и сотрудник записаны, уведомление клиенту сформировано, неявки и штрафа нет', async () => {
     const a = await newClient();
     const id = await book(a, ids.pc2!, '2026-11-17T06:00:00Z');
     await cancel(id, { kind: 'staff', ctx: admin, rowVersion: 1, initiator: 'club', reasonId: ids.club_equipment!, comment: 'Сломался монитор' });
@@ -184,6 +190,14 @@ describe('отмена сотрудником (K11 №6, 01 §12), TC-11', () =>
     expect(await events('booking.cancelled', id)).toEqual([expect.objectContaining({ cancelledBy: 'club', reasonCode: 'equipment_failure', publicReason: 'Неисправность оборудования' })]);
     const audit = await one<{ actor_id: string; reason: string }>(`SELECT actor_id, reason FROM journal.audit_events WHERE action = 'booking.cancelled' AND object_id = $1`, [id]);
     expect(audit).toEqual({ actor_id: ids.admin, reason: 'Сломался монитор' });
+    // уведомление формируется: обработчик K14 на событии → сервисная строка «отменено клубом» в плане отправки
+    const ev = await one(`SELECT id FROM app.outbox_events WHERE event_type = 'booking.cancelled' AND aggregate_id = $1`, [id]);
+    expect(await processEvent(pool, HANDLERS.cancelled, ev.id, clock.now())).toBe('processed');
+    const notice = await db.client.query(`SELECT kind, status, category, client_id FROM app.notifications WHERE booking_id = $1`, [id]);
+    expect(notice.rows).toEqual([{ kind: 'booking_cancelled', status: 'planned', category: 'service', client_id: a }]);
+    // штрафа нет: ни неявки, ни штрафной записи, ни проводок баллов
+    expect(await events('no_show.marked', id)).toEqual([]);
+    expect((await one<{ n: number }>(`SELECT count(*)::int n FROM app.no_shows WHERE booking_id = $1`, [id])).n).toBe(0);
     expect((await one<{ n: number }>(`SELECT count(*)::int n FROM journal.ledger_entries`)).n).toBe(0);
     expect(await codeOf(book(await newClient(), ids.pc2!, '2026-11-17T06:00:00Z'))).toBe('ok');
   });
