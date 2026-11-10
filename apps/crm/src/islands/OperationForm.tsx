@@ -115,6 +115,7 @@ export default function OperationForm(p: OperationFormProps) {
   useEffect(() => {
     setPreview(null);
     if (!p.full || !kind || kop === null || target) return; // при исправлении сторно меняет остаток – подсказка была бы неверной
+    let live = true; // сумма изменилась, пока ответ в пути: подсказка прежней суммы не показывается
     const t = setTimeout(async () => {
       try {
         const r = await send<{ currentKop: number; afterKop: number; allowed: boolean }>(
@@ -122,12 +123,15 @@ export default function OperationForm(p: OperationFormProps) {
           { place, deltaKop: kind === 'income' ? kop : -kop },
           crypto.randomUUID(),
         );
-        setPreview(r);
+        if (live) setPreview(r);
       } catch {
-        setPreview(null); // предпросмотр – подсказка; окончательная проверка в команде
+        if (live) setPreview(null); // предпросмотр – подсказка; окончательная проверка в команде
       }
     }, 300);
-    return () => clearTimeout(t);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
   }, [kind, kop, place, p.full, p.branch.id, target]);
 
   useEffect(() => {

@@ -28,15 +28,16 @@ async function open(page: Page, url: string) {
   await expect(page.locator('astro-island[ssr]')).toHaveCount(0);
 }
 const pause = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
-/** Задерживает первый запрос к API, чей адрес подходит под match; обещание выполняется, когда задержанный ответ дошёл до страницы. */
+/** Задерживает ответ на первый запрос к API, чей адрес подходит под match; обещание выполняется, когда задержанный ответ дошёл до страницы. */
 function slow(page: Page, match: (url: URL) => boolean, ms = 1500): Promise<void> {
   let taken = false;
   return new Promise((done) => {
     void page.route((u) => u.pathname.startsWith('/api/') && match(u), async (r) => {
       if (taken) return r.fallback();
       taken = true;
+      const res = await r.fetch(); // сервер отвечает сразу, а до страницы ответ доходит позже – как на медленной сети
       await pause(ms);
-      await r.continue();
+      await r.fulfill({ response: res });
       await r.request().response();
       await pause(300); // ответ разобран островом
       done();
@@ -110,4 +111,37 @@ test('Подарок: окна первого дня, пришедшие пос�
   const sent = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/book'));
   await d.getByRole('button', { name: 'Записать', exact: true }).click();
   expect(((await sent).postDataJSON() as { start: string }).start.slice(0, 10)).toBe(values[1]);
+});
+
+test('Касса: подсказка «остаток после» прежней суммы, пришедшая позже, не подменяет подсказку новой', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/finance/b-nsk-krasny');
+  await expect(page.getByRole('status').filter({ hasText: 'Загружаем' })).toHaveCount(0);
+  const late = slow(page, (u) => u.pathname.endsWith('/finance/preview'), 2500);
+  const dlg = page.getByRole('dialog');
+  await page.getByRole('button', { name: 'Внести доход' }).click();
+  await dlg.getByLabel('Источник').selectOption({ label: 'Мероприятие' });
+  const first = page.waitForRequest((r) => r.url().endsWith('/finance/preview'));
+  await dlg.getByLabel('Сумма, ₽').fill('100');
+  await first;
+  await dlg.getByLabel('Сумма, ₽').fill('200');
+  await expect(dlg.getByTestId('op-preview')).toHaveText('Остаток (наличные): 14 700,00 ₽ → 14 900,00 ₽');
+  await late;
+  await expect(dlg.getByTestId('op-preview')).toHaveText('Остаток (наличные): 14 700,00 ₽ → 14 900,00 ₽');
+});
+
+test('Касса: журнал, начатый до операции и пришедший после, не прячет внесённую операцию', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  const late = slow(page, (u) => u.pathname.endsWith('/finance/operations'), 4000);
+  await page.goto('/finance/b-nsk-krasny');
+  await expect(page.locator('astro-island[ssr]')).toHaveCount(0);
+  const dlg = page.getByRole('dialog');
+  await page.getByRole('button', { name: 'Внести доход' }).click();
+  await dlg.getByLabel('Источник').selectOption({ label: 'Мероприятие' });
+  await dlg.getByLabel('Сумма, ₽').fill('50');
+  await dlg.getByLabel('Комментарий (необязательно)').fill('Поздний журнал');
+  await dlg.getByRole('button', { name: 'Сохранить' }).click();
+  await expect(page.getByTestId('op-saved')).toBeVisible();
+  await late;
+  await expect(page.getByTestId('fin-journal').locator('tbody tr').filter({ hasText: 'Поздний журнал' })).toHaveCount(1);
 });
