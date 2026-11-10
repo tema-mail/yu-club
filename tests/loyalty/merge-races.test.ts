@@ -19,6 +19,8 @@ import { eventsClientMerger } from '../../apps/api/src/modules/events/merge.ts';
 import { financeClientMerger } from '../../apps/api/src/modules/finance/merge.ts';
 import { createBatch, debitBatches, getBalance, openAccount, postPoints, SYSTEM_AUTHOR } from '../../apps/api/src/modules/loyalty/account.ts';
 import { onVisitReverted, type AccrualDeps } from '../../apps/api/src/modules/loyalty/accrual.ts';
+import { adjust } from '../../apps/api/src/modules/loyalty/adjust.ts';
+import { issueGoods } from '../../apps/api/src/modules/loyalty/goods.ts';
 import { loyaltyClientMerger } from '../../apps/api/src/modules/loyalty/merge.ts';
 import { revertPenalty, type PenaltyDeps } from '../../apps/api/src/modules/loyalty/penalty.ts';
 import { notificationsClientMerger } from '../../apps/api/src/modules/notifications/merge.ts';
@@ -166,5 +168,19 @@ describe('коррекция, стартовавшая во время слия�
     expect(await bal(q)).toBe(2000);
     expect(await bal(p)).toBe(0);
     expect(await bal(m)).toBe(0);
+  });
+
+  it('корректировка и выдача товара на вторую во время слияния – CLIENT_MERGED под замком, счёт второй не тронут', async () => {
+    const p = await addClient();
+    const m = await addClient();
+    await accrueVisit(m, 3000);
+    const goodsId = (await db.client.query<{ id: string }>(`INSERT INTO app.loyalty_goods (name, price_points_centi) VALUES ('Кружка', 400) RETURNING id`)).rows[0]!.id;
+    await db.client.query(`INSERT INTO app.loyalty_goods_branches (goods_id, branch_id, stock) VALUES ($1, $2, NULL)`, [goodsId, branchId]);
+    expect(await duringMerge(p, m, (tx) => adjust(tx, owner, { clientId: m, deltaCenti: 100, reason: 'тест' }, meta(), clock))).toBe('CLIENT_MERGED');
+    const q = await addClient();
+    await accrueVisit(q, 3000);
+    const r = await addClient();
+    expect(await duringMerge(r, q, (tx) => issueGoods(tx, owner, { clientId: q, goodsId, branchId, idempotencyKey: randomUUID() }, meta(), clock))).toBe('CLIENT_MERGED');
+    expect([await bal(m), await bal(p), await bal(q), await bal(r)]).toEqual([0, 3000, 0, 3000]);
   });
 });

@@ -10,7 +10,7 @@ import { AppError } from '../../core/errors.ts';
 import type { Tx } from '../../core/ledger.ts';
 import { assertCan, type AccessContext } from '../../core/permissions.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { debitBatches, openAccount, postPoints, reservedCenti } from './account.ts';
+import { debitBatches, openClientAccount, postPoints, reservedCenti } from './account.ts';
 import { openWithOwner, returnSpendToOwner } from './merged.ts';
 
 export interface GoodsDto {
@@ -144,7 +144,7 @@ export async function issueGoods(
   assertCan(ctx, 'loyalty.goods.issue', { branchId: input.branchId });
   const now = clock.now();
   const key = `loyalty-goods:${input.idempotencyKey}`;
-  const acc = await openAccount(tx, input.clientId, now);
+  const acc = await openClientAccount(tx, input.clientId, now); // объединённая карточка – CLIENT_MERGED под замком счёта (D5-09)
   const prior = (await tx.query<{ id: string; spend_entry_id: string }>(
     `SELECT o.id, o.spend_entry_id FROM app.loyalty_goods_orders o JOIN journal.ledger_entries e ON e.id = o.spend_entry_id WHERE e.idempotency_key = $1`,
     [`${key}#0`],
