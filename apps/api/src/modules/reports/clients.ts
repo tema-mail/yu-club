@@ -2,6 +2,7 @@
 // посещаемости 3.2 и сюда не входят (приёмка 12). История посещений для «впервые», «вернувшихся» и «повторных» – вся сеть
 // (решение: первый приход в клуб – факт о клиенте, а не о филиале); в строках по филиалу считается филиал посещения, поэтому
 // итог сети не равен сумме филиалов (подпись). Новый профиль ≠ первый визит. Детализация обезличена без client.view.full (K24 §6).
+// История берётся из агрегата пар клиент × филиал (0448, D5-11), а не перебором всех посещений сети – смысл K24 §3.6 тот же.
 import type { Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
 import {
@@ -13,11 +14,19 @@ export const CLIENTS_ACTION = 'reports.clients.view';
 export const CLIENTS_LABELS = { byBranch: 'Один клиент может быть в нескольких филиалах: итог сети не равен сумме филиалов' };
 
 const VISITS = 'app.rpt_visits';
+/** Первое посещение и число посещений пары клиент × филиал (0448, D5-11): история без чтения всех посещений сети. */
+const FIRST_VISITS = 'app.rpt_client_first_visits';
 
 export type ClientsPeriodMetric = 'withVisit' | 'firstTime' | 'returning' | 'repeat' | 'notVisited' | 'profileVisits';
 const PERIOD_METRICS: readonly ClientsPeriodMetric[] = ['withVisit', 'firstTime', 'returning', 'repeat', 'notVisited', 'profileVisits'];
 
 const arr = (w: readonly BranchWindow[]): [Array<string | null>, Date[], Date[]] => [w.map((x) => x.branchId), w.map((x) => x.start), w.map((x) => x.end)];
+
+/** Охват окон: филиалы списком ($1) и общие границы ($4, $5) – как в where() (S4-131): строк не меняют, дают индексу начало брони. */
+const HULL = `t.branch_id = ANY($1::uuid[]) AND t.planned_start >= $4::timestamptz AND t.planned_start < $5::timestamptz`;
+const hullOf = (w: readonly BranchWindow[]): [Date, Date] => [
+  new Date(Math.min(...w.map((x) => x.start.getTime()))), new Date(Math.max(...w.map((x) => x.end.getTime()))),
+];
 
 // ---- один проход по истории профилей: итог и детализация – из одних и тех же строк (Σ detail = aggregate, TC-20)
 
@@ -31,7 +40,7 @@ interface ClientStat {
   notVisited: boolean;
 }
 
-interface StatRow {
+export interface StatRow {
   client_id: string;
   branch_id: string;
   n: string;
@@ -41,28 +50,42 @@ interface StatRow {
   had_prior: boolean;
 }
 
-/** Один проход по истории: строка на клиента (perBranch – на пару клиент × филиал посещения). История h – вся сеть.
+/** Строка на клиента с посещением в филиалах области когда-либо (perBranch – на пару клиент × филиал посещения): посещения периода n,
+ *  начало суток периода первого из них, было ли посещение в области до периода; first_at и total – по всей сети.
  *  Один раз на снимок (oncePerSnapshot): детализация листает страницы, итог экрана читает те же строки. */
-function statRows(tx: Tx, windows: readonly BranchWindow[], perBranch: boolean): Promise<StatRow[]> {
+export function clientStatRows(tx: Tx, windows: readonly BranchWindow[], perBranch: boolean): Promise<StatRow[]> {
+  if (windows.length === 0) return Promise.resolve([]);
   return oncePerSnapshot(tx, `clients.stats:${perBranch}:${JSON.stringify(arr(windows))}`, () => readStatRows(tx, windows, perBranch));
 }
 
+/** История – агрегат пар клиент × филиал (0448): «было до периода» = первое посещение в филиале раньше начала его суток периода,
+ *  сеть – min и сумма пар. Посещения периода – из rpt_visits по началу брони с охватом окон (индекс). Полного чтения посещений сети нет (S4-131). */
 async function readStatRows(tx: Tx, windows: readonly BranchWindow[], perBranch: boolean): Promise<StatRow[]> {
   const [ids, starts, ends] = arr(windows);
   const r = await tx.query<StatRow>(
     `WITH w AS (SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS x(branch_id, s, e)),
-     v AS (SELECT client_id, branch_id, planned_start FROM ${VISITS} WHERE client_kind = 'profile'),
-     h AS (SELECT client_id, min(planned_start) AS first_at, count(*) AS total FROM v GROUP BY client_id),
+     p AS (
+       SELECT t.client_id, t.branch_id, w.s FROM ${VISITS} t JOIN w ON w.branch_id = t.branch_id AND t.planned_start >= w.s AND t.planned_start < w.e
+       WHERE t.client_kind = 'profile' AND ${HULL}
+     ),
+     a AS (
+       SELECT f.client_id, f.branch_id, f.first_visit_at < w.s AS prior FROM ${FIRST_VISITS} f JOIN w ON w.branch_id = f.branch_id
+       WHERE f.client_kind = 'profile' AND f.branch_id = ANY($1::uuid[])
+     ),
      s AS (
-       SELECT v.client_id, ${perBranch ? 'v.branch_id::text' : 'min(v.branch_id::text)'} AS branch_id,
-              count(*) FILTER (WHERE v.planned_start >= w.s AND v.planned_start < w.e) AS n,
-              min(w.s) FILTER (WHERE v.planned_start >= w.s AND v.planned_start < w.e) AS window_start,
-              bool_or(v.planned_start < w.s) AS had_prior
-       FROM v JOIN w ON w.branch_id = v.branch_id GROUP BY v.client_id${perBranch ? ', v.branch_id' : ''}
+       SELECT x.client_id, ${perBranch ? 'x.branch_id::text' : 'min(x.branch_id::text)'} AS branch_id,
+              count(*) FILTER (WHERE x.in_period) AS n, min(x.s) AS window_start, bool_or(x.prior) AS had_prior
+       FROM (SELECT client_id, branch_id, true AS in_period, s, false AS prior FROM p
+             UNION ALL SELECT client_id, branch_id, false, NULL::timestamptz, prior FROM a) x
+       GROUP BY x.client_id${perBranch ? ', x.branch_id' : ''}
+     ),
+     h AS (
+       SELECT f.client_id, min(f.first_visit_at) AS first_at, sum(f.visits_count) AS total FROM ${FIRST_VISITS} f
+       WHERE f.client_kind = 'profile' AND f.client_id IN (SELECT client_id FROM s) GROUP BY f.client_id
      )
      SELECT s.client_id, s.branch_id, s.n, h.first_at, h.total, s.window_start, s.had_prior
      FROM s JOIN h ON h.client_id = s.client_id ORDER BY ${perBranch ? 's.branch_id, ' : ''}s.client_id`,
-    [ids, starts, ends],
+    [ids, starts, ends, ...hullOf(windows)],
   );
   return r.rows;
 }
@@ -79,14 +102,14 @@ function toStat(x: StatRow): ClientStat {
 /** Строка на клиента области. История – вся сеть; «до периода» и «в периоде» – по суткам филиала посещения. */
 async function clientStats(tx: Tx, windows: readonly BranchWindow[]): Promise<ClientStat[]> {
   if (windows.length === 0) return [];
-  return (await statRows(tx, windows, false)).map(toStat);
+  return (await clientStatRows(tx, windows, false)).map(toStat);
 }
 
 /** То же для каждого филиала отдельно (clientStats(windowsOf([b]))) – одним проходом вместо прохода на филиал (S4-131). */
 async function clientStatsByBranch(tx: Tx, windows: readonly BranchWindow[]): Promise<Map<string, ClientStat[]>> {
   const out = new Map<string, ClientStat[]>(windows.map((w) => [w.branchId!, []]));
   if (windows.length === 0) return out;
-  for (const row of await statRows(tx, windows, true)) out.get(row.branch_id)?.push(toStat(row));
+  for (const row of await clientStatRows(tx, windows, true)) out.get(row.branch_id)?.push(toStat(row));
   return out;
 }
 
@@ -165,11 +188,11 @@ async function readIntervalRows(tx: Tx, windows: readonly BranchWindow[]): Promi
               lag(t.planned_start) OVER (PARTITION BY t.client_id ORDER BY t.planned_start) AS prev
        FROM ${VISITS} t JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e)
          ON w.branch_id = t.branch_id AND t.planned_start >= w.s AND t.planned_start < w.e
-       WHERE t.client_kind = 'profile'
+       WHERE t.client_kind = 'profile' AND ${HULL}
      )
      SELECT client_id, min(branch_id::text) AS branch_id, avg(extract(epoch FROM planned_start - prev)) / ${DAY_SEC} AS days
      FROM v WHERE prev IS NOT NULL GROUP BY client_id ORDER BY client_id`,
-    [ids, starts, ends],
+    [ids, starts, ends, ...hullOf(windows)],
   );
   return r.rows.map((x) => ({ client_id: x.client_id, branch_id: x.branch_id, days: Number(x.days) }));
 }
@@ -251,8 +274,8 @@ function visitsPerClientRows(tx: Tx, windows: readonly BranchWindow[]): Promise<
     await tx.query<{ client_id: string; branch_id: string; n: string }>(
       `SELECT t.client_id, min(t.branch_id::text) AS branch_id, count(*) AS n FROM ${VISITS} t
        JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON w.branch_id = t.branch_id AND t.planned_start >= w.s AND t.planned_start < w.e
-       WHERE t.client_kind = 'profile' GROUP BY t.client_id ORDER BY t.client_id`,
-      [ids, starts, ends],
+       WHERE t.client_kind = 'profile' AND ${HULL} GROUP BY t.client_id ORDER BY t.client_id`,
+      [ids, starts, ends, ...hullOf(windows)],
     )
   ).rows);
 }

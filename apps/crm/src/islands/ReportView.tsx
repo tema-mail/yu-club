@@ -9,7 +9,7 @@ import ReportChart, { type ChartSeries, type ReportChartProps } from './ReportCh
 import ReportDetail from './ReportDetail.tsx';
 import UtilizationCalendar from './UtilizationCalendar.tsx';
 import {
-  BOOKING_STATUS_LABEL, METHOD_LABEL, RESOURCE_TYPE_LABEL, dateBasisOf, daysIn, fmtAt, fmtDelta, fmtMetric, fmtPeriod, metricTitle, presets, reportError, reportInfo, todayIn,
+  BOOKING_STATUS_LABEL, METHOD_LABEL, RESOURCE_TYPE_LABEL, busyNotice, busyRetrySec, dateBasisOf, daysIn, fmtAt, fmtDelta, fmtMetric, fmtPeriod, metricTitle, presets, reportError, reportInfo, todayIn,
   type Metric, type MetricUnit, type ReportInfo, type ReportResult, type SeriesPoint,
 } from '../lib/reports.ts';
 
@@ -45,6 +45,28 @@ export async function getJson<T>(path: string, signal?: AbortSignal): Promise<T>
   return (await res.json()) as T;
 }
 
+const abortable = (ms: number, signal: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const abort = () => reject(new DOMException('Запрос отменён', 'AbortError'));
+    if (signal.aborted) return abort();
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => (clearTimeout(t), abort()), { once: true });
+  });
+
+/** Отчёт с одним автоповтором (D5-10): 503 REPORT_BUSY – фраза с числом секунд, ожидание Retry-After и ещё одна попытка;
+ *  второй отказ – ошибкой экрана с кнопкой «Повторить». Смена фильтра (signal) прерывает ожидание. */
+export async function getReport<T>(path: string, signal: AbortSignal, onBusy: (notice: string) => void): Promise<T> {
+  try {
+    return await getJson<T>(path, signal);
+  } catch (e) {
+    const sec = busyRetrySec(e);
+    if (sec === null) throw e;
+    onBusy(busyNotice(sec));
+    await abortable(sec * 1000, signal);
+    return getJson<T>(path, signal);
+  }
+}
+
 /** Параметры запроса отчёта – те же для экрана, детализации и экспорта (K24 §7). */
 export function reportQuery(f: ReportFilters): URLSearchParams {
   const p = new URLSearchParams({ from: f.from, to: f.to });
@@ -65,6 +87,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
   const [result, setResult] = useState<ReportResult | null>(null);
   const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState(''); // ожидание автоповтора при 503 REPORT_BUSY
   const [useExport, setUseExport] = useState(false);
   const [metric, setMetric] = useState(initialMetric);
   const [applied, setApplied] = useState<ReportFilters>(initial);
@@ -89,6 +112,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
     setResult(null);
     setSegment({ key: '', label: '' });
     setError('');
+    setNotice('');
     setUseExport(false);
     if (next.from > next.to) {
       setState('error');
@@ -99,7 +123,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
     try {
       const p = reportQuery(next);
       p.set('series', 'day'); // график по дням у любого отчёта, где API отдаёт series (K11 №240); без series – графика нет
-      const r = await getJson<ReportResult>(`/reports/${report.key}?${p}`, c.signal);
+      const r = await getReport<ReportResult>(`/reports/${report.key}?${p}`, c.signal, (n) => mine === seq.current && setNotice(n));
       if (mine !== seq.current) return; // ответ на прежние фильтры – не показываем
       setApplied(next);
       setResult(r);
@@ -204,7 +228,7 @@ export default function ReportView({ report, initial, metric: initialMetric, bra
       </p>
 
       {state === 'idle' && needsButton && <p class="yc-empty" data-testid="needs-run">Период длиннее {HEAVY_DAYS} дней – отчёт тяжёлый. Нажмите «Сформировать».</p>}
-      {state === 'loading' && <p class="yc-empty" role="status" data-testid="report-loading">Считаем отчёт…</p>}
+      {state === 'loading' && <p class="yc-empty" role="status" data-testid="report-loading">{notice || 'Считаем отчёт…'}</p>}
       {state === 'error' && (
         <div class="yc-alert yc-alert--error" role="alert" data-testid="report-error">
           {error}

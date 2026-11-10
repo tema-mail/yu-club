@@ -251,7 +251,9 @@ async function main(): Promise<void> {
       ? vapidKeys(config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY, config.VAPID_SUBJECT)
       : null;
   const schedule = scheduleFromEnv();
-  const reportsPool = config.REPORTS_DATABASE_URL ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX) : null;
+  const reportsPool = config.REPORTS_DATABASE_URL
+    ? createReportsPool(config.REPORTS_DATABASE_URL, config.REPORTS_POOL_MAX, { screen: config.REPORTS_SCREEN_MAX, export: config.REPORTS_EXPORT_MAX, waitMs: config.REPORTS_BUSY_WAIT_MS })
+    : null;
   const tasks = await startWorkerTasks({
     pool,
     boss,
