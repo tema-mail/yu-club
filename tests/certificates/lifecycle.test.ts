@@ -124,10 +124,19 @@ afterAll(async () => {
 });
 
 describe('сгорание (K16 §4, TC-08)', () => {
-  it('5 000 − 1 500 − 2 000 → сгорает 1 500 отдельной записью, касса не меняется; повтор прохода – ничего', async () => {
+  it('TC-08: продажа 5 000 – одно поступление в кассу; погашения 1 500 и 2 000 уменьшают остаток без нового дохода; сгорание 1 500 – отдельной записью, касса не меняется; повтор прохода – ничего', async () => {
+    const cashBefore = await cashOf(saleBranch);
+    const opsBefore = await opsCount();
     const cert = await sell(500_000, 'cash', 30);
+    expect(await balanceOf(cert.certificate.id)).toBe(500_000);
+    expect((await cashOf(saleBranch)).cash_branch).toBe((cashBefore.cash_branch ?? 0) + 500_000); // продажа – поступление
+    expect(await opsCount()).toBe(opsBefore + 1);
+    const sale = await db.client.query(`SELECT kind, source, amount_kop FROM journal.finance_operations WHERE ref_type = 'certificate' AND ref_id = $1`, [cert.certificate.id]);
+    expect(sale.rows).toEqual([{ kind: 'income', source: 'certificate_sale', amount_kop: '500000' }]);
     await redeem(cert, 150_000);
     await redeem(cert, 200_000);
+    expect(await balanceOf(cert.certificate.id)).toBe(150_000);
+    expect(await opsCount()).toBe(opsBefore + 1); // погашение – не поступление: операций кассы не прибавилось
     const cash = await cashOf(saleBranch);
     const ops = await opsCount();
     expect(await expireDueCertificates(pool, at(cert.certificate, -1))).toBe(0); // до границы не сгорает

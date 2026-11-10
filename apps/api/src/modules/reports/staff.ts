@@ -5,10 +5,13 @@
 // филиалов своей зоны, записи без филиала (выплата, сетевые корректировки) – только сетевая область. Деньги только с reports.payroll.view,
 // в файле – ещё и reports.export.payroll (K24 §8), иначе unavailable/not_permitted. TC-19: выплата по ведомости (K3) и расход кассы на неё
 // (rpt_payout_expenses) – разные показатели, расход один раз, начисление расходом не считается. Перенос минуса ведомости – один раз (0416).
+// Имя сотрудника в строке детализации – через staff/index.ts с основного пула (ADR 0002: yu_reports таблицу сотрудников не видит);
+// видит роль со staff.view на филиале строки (K1), без него – только ID.
 import type { Tx } from '../../core/audit.ts';
-import { roleAllows } from '../../core/permissions.ts';
+import { can, roleAllows } from '../../core/permissions.ts';
 import { resolveSettings } from '../../core/settings.ts';
 import { formatLocal, instantToLocal, type TimeZone } from '../../core/time.ts';
+import { getStaffRefs, staffDisplayName } from '../staff/index.ts';
 import {
   computeMetrics, DAY_RULE, detailPage, localAt, metricDef, noData, okMetric, prevPeriod, resolveBranches, unavailable, where, windowsOf,
   type BranchWindow, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
@@ -115,6 +118,18 @@ async function forecastTotal(tx: Tx, windows: readonly BranchWindow[], feeMin: n
 
 const forecastOf = (minutes: number, hourly: number, fee: number, feeMin: number): number => Math.floor((minutes * hourly + 30) / 60) + (minutes >= feeMin ? fee : 0);
 
+/** Показатели для точек графика (series.ts): смены и пустые интервалы всем, деньги – с reports.payroll.view; выплата без филиала –
+ *  только в сетевой области (как moneyWindows), прогноз – не агрегат источника, точек не даёт. */
+export async function staffSeriesDefs(env: ReportEnv, p: ReportParams): Promise<{ defs: Record<string, MetricDef>; networkRows: boolean }> {
+  const defs: Record<string, MetricDef> = { ...shiftDefs(env.clock.now(), await feeMinOf(env)), ...gapDefs() };
+  const networkRows = env.ctx.network && !p.cityId && !p.branchIds?.length;
+  if (moneyAllowed(env)) {
+    const { paid, ...money } = moneyDefs();
+    Object.assign(defs, money, networkRows ? { paid } : {});
+  }
+  return { defs, networkRows };
+}
+
 export interface StaffResult {
   metrics: Record<StaffMetric, Metric>;
   labels: typeof STAFF_LABELS;
@@ -162,6 +177,7 @@ export interface StaffDetailRow {
   id: string;
   kind: 'shift' | 'gap' | 'entry' | 'payout_expense';
   staffId: string | null;
+  staffName: string | null;
   branchId: string | null;
   atLocal: string | null;
   status: string | null;
@@ -180,6 +196,18 @@ interface PayoutRow { operation_id: string; staff_id: string; branch_id: string;
 
 const colValue = (def: MetricDef, row: Record<string, unknown>): number => (def.agg === 'sum' ? Number(row[def.col!] ?? 0) : 1);
 
+/** Имена сотрудников строк: staff.view на филиале строки (без филиала – по роли), иначе строка остаётся с одним ID. */
+async function withStaffNames(env: ReportEnv, rows: StaffDetailRow[]): Promise<StaffDetailRow[]> {
+  const allowed = (r: StaffDetailRow): boolean => r.staffId !== null && (r.branchId ? can(env.ctx, 'staff.view', { branchId: r.branchId }) : roleAllows(env.ctx.role, 'staff.view'));
+  const ids = rows.filter(allowed).map((r) => r.staffId!);
+  if (ids.length === 0) return rows;
+  const refs = await getStaffRefs(env.main, ids);
+  return rows.map((r) => {
+    const ref = allowed(r) ? refs.get(r.staffId!) : undefined;
+    return ref ? { ...r, staffName: staffDisplayName(ref) } : r;
+  });
+}
+
 export async function staffDetail(
   env: ReportEnv,
   p: ReportParams,
@@ -192,7 +220,7 @@ export async function staffDetail(
   const feeMin = await feeMinOf(env);
   const isMoney = typeof metric === 'string' && MONEY_KEYS.has(metric);
   if (isMoney && !moneyAllowed(env)) return { rows: [], total: unavailable('not_permitted'), nextCursor: null };
-  const blank = { staffId: null, status: null, plannedMinutes: null, paidMinutes: null, refType: null, refId: null, basis: null };
+  const blank = { staffId: null, staffName: null, status: null, plannedMinutes: null, paidMinutes: null, refType: null, refId: null, basis: null };
 
   if (metric === 'forecast') {
     const page = await detailPage<FactRow>(env.tx, forecastDef(), windows, opts);
@@ -201,7 +229,7 @@ export async function staffDetail(
       ...blank, id: r.shift_id, kind: 'shift', staffId: r.staff_id, branchId: r.branch_id, atLocal: localAt(env, r.planned_start, zones.get(r.branch_id)!), status: r.status,
       plannedMinutes: r.planned_minutes, value: forecastOf(r.planned_minutes, Number(r.hourly_kop), Number(r.attendance_fee_kop), feeMin),
     }));
-    return { rows, total: t.rows === 0 ? noData : okMetric(t.value, 'kop'), nextCursor: page.nextCursor };
+    return { rows: await withStaffNames(env, rows), total: t.rows === 0 ? noData : okMetric(t.value, 'kop'), nextCursor: page.nextCursor };
   }
   const all: Record<string, MetricDef> = { ...shiftDefs(env.clock.now(), feeMin), ...gapDefs(), ...moneyDefs() };
   const def = metricDef(all, metric);
@@ -229,5 +257,5 @@ export async function staffDetail(
     const atLocal = env.fileDates ? instantToLocal(r.payroll_at, tz).date : formatLocal(r.payroll_at, tz, 'date');
     return { ...blank, id: r.entry_id, kind: 'entry', staffId: r.staff_id, branchId: r.branch_id, atLocal, status: r.kind, refType: r.ref_type, refId: r.ref_id, basis: r.basis, value };
   });
-  return { rows, total: page.total.rows === 0 ? noData : okMetric(page.total.value, def.unit), nextCursor: page.nextCursor };
+  return { rows: await withStaffNames(env, rows), total: page.total.rows === 0 ? noData : okMetric(page.total.value, def.unit), nextCursor: page.nextCursor };
 }

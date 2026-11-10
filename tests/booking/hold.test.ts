@@ -1,6 +1,7 @@
 // S1-06: удержание 15 мин (K5 №5–11, K6 releaseExpiredHolds, 01 §7): создание, общий таймер, истечение
 // (в транзакции и задачей), кука yu_visitor, потолок анонимных, лимит по IP, attach к клиенту и client_time.
-// TC-05 (истечение), TC-06 (перезапуск таймера), TC-04 (пересечение ресурсов одного клиента) из tz/20 §10.
+// Углы TC-05 (истечение), TC-06 (перезапуск таймера), TC-04 (пересечение ресурсов одного клиента) из tz/20 §10 по HTTP и через attach;
+// сами сценарии целиком и гонки N соединений – tc-races.test.ts.
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import pg from 'pg';
@@ -273,7 +274,7 @@ describe('attach к клиенту при входе (K5 №11, client_time)', (
     ids.clientHold = h.id;
   });
 
-  it('TC-04: ПК 14:00–15:00 и VR 14:30–15:00 одного клиента – CLIENT_OVERLAP (по сети); VR 15:00–15:30 – можно', async () => {
+  it('attach: ПК 14:00–15:00 и VR 14:30–15:00 одного клиента – CLIENT_OVERLAP (по сети); VR 15:00–15:30 – можно (угол TC-04)', async () => {
     // у клиента в филиале 1 – удержание VR1 17.11 07:00–08:00Z (14:00–15:00 местного); в филиале 2 – попытки
     const v = randomUUID();
     const overlap = await run((c) => createHold(c, { clientId: null, visitorId: v }, { branchId: ids.b2!, items: [{ resourceId: ids.b2pc!, ...at('2026-11-17T07:30:00Z', 30) }] }, clock));

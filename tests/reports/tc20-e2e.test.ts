@@ -232,19 +232,26 @@ describe('S4-132: TC-20 и 18 §8.4 (отчёты) по HTTP', () => {
     expect(checked).toBeGreaterThan(0);
   });
 
-  it('TC-20.11 сумма филиалов = сеть: денежные и минутные показатели всех отчётов сходятся по фильтру филиала', async () => {
-    // баллы – без сверки: ручная корректировка без филиала видна только в сетевой области (K24 §8, nullableBranch), засев Э2 её делает
-    for (const report of REPORTS.filter((r) => r !== 'loyalty')) {
+  it('TC-20.11 сумма филиалов + без филиала = сеть: денежные и минутные показатели всех отчётов сходятся по фильтру филиала', async () => {
+    // запись без филиала (ручная корректировка баллов, выплата зарплаты) видна только в сетевой области (K24 §8, nullableBranch):
+    // её сумма – из строк сетевой детализации с branchId = null (0443: у баллов филиал операции в строке)
+    let noBranchSeen = 0;
+    for (const report of REPORTS) {
       for (const period of PERIODS) {
         const net = (await summary('owner', report, period)).metrics;
         const parts = await Promise.all(['demo-nsk-krasny', 'demo-msk-arbat', 'demo-msk-dst'].map(async (c) => (await summary('owner', report, { ...period, branchIds: ids[c] })).metrics));
         for (const [key, m] of Object.entries(net)) {
-          if (m.state !== 'ok' || !['kop', 'centi', 'minutes'].includes(m.unit) || /^avg|^per|Load$/.test(key)) continue;
+          // баланс на дату – не поток: клиент с бронями в двух филиалах входит в оба (K24 §3.7)
+          if (m.state !== 'ok' || !['kop', 'centi', 'minutes'].includes(m.unit) || /^avg|^per|Load$|^totalBalance$/.test(key)) continue;
           const sum = parts.reduce((a, p) => a + val(p[key]), 0);
-          expect([report, key, period.from, sum]).toEqual([report, key, period.from, m.value]);
+          if (sum === m.value) continue;
+          const noBranch = (await walk('owner', report, key, period)).rows.filter((r) => r.branchId === null);
+          noBranchSeen += noBranch.length;
+          expect([report, key, period.from, sum + noBranch.reduce((a, r) => a + Number(r.value), 0)]).toEqual([report, key, period.from, m.value]);
         }
       }
     }
+    expect(noBranchSeen).toBeGreaterThan(0); // засев Э2 делает корректировку баллов без филиала – сверка её видела
   });
 
   it('TC-20.12 часовой пояс: приход 30.11 23:30 Москвы – в ноябре Арбата, 01.12 01:00 Новосибирска – в декабре Красного', async () => {
@@ -255,7 +262,7 @@ describe('S4-132: TC-20 и 18 §8.4 (отчёты) по HTTP', () => {
     expect(await other('demo-nsk-krasny', DEC)).toContain(70_000);
   });
 
-  it('TC-20.13 отчёт = первичка (18 §8.4): приходы, расходы, визиты и брони пересчитаны из таблиц операций по суткам филиала', async () => {
+  it('TC-20: итог воспроизводится из первичных операций с учётом фильтров периода и филиала и часового пояса – приходы, расходы, визиты и брони пересчитаны из таблиц операций по суткам филиала (TC-20.13, 18 §8.4)', async () => {
     for (const period of PERIODS) {
       for (const code of ['demo-nsk-krasny', 'demo-msk-arbat']) {
         const f = { ...period, branchIds: ids[code] };

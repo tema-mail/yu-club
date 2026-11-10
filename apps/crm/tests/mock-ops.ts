@@ -132,16 +132,6 @@ export function registerOps(app: FastifyInstance, P: string, d: OpsDeps): void {
   const conflict = (reply: FastifyReply, current: number) => d.fail(reply, 409, 'VERSION_CONFLICT', 'Запись изменилась – обновите форму', { current });
   const linkInvalid = (reply: FastifyReply, field: string) => d.fail(reply, 422, 'RESOURCE_LINK_INVALID', 'Связанный объект не найден в этом филиале или в архиве', { field });
 
-  // K21 §9 / K24 §4: сбои критичных уведомлений для предупреждений Владельца – форма ответа потока уведомлений
-  // (notifications/routes.crm.ts, делает другой поток): { critical, periodFrom, periodTo }, период – последние сутки по зоне сети.
-  // Право – notifications.view. Здесь, а не в mock-notifications.ts: тот файл ведёт поток уведомлений.
-  app.get(`${P}/notifications/failures/summary`, async (req, reply) => {
-    if (!d.can(d.current(req), 'notifications.view')) return d.fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав', { action: 'notifications.view' });
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Novosibirsk' }).format(new Date());
-    const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
-    return { critical: 2, periodFrom: yesterday, periodTo: today };
-  });
-
   /** Видимость по филиалу (view) → право (perm). Вне зоны – 404, без права – 403. */
   function guard(req: FastifyRequest, reply: FastifyReply, branchId: string, view: string, perm?: string): Staffish | null {
     const s = d.current(req);
