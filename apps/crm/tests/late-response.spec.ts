@@ -145,3 +145,32 @@ test('Касса: журнал, начатый до операции и приш
   await late;
   await expect(page.getByTestId('fin-journal').locator('tbody tr').filter({ hasText: 'Поздний журнал' })).toHaveCount(1);
 });
+
+test('График филиала: перечитывание после нового исключения не стирает несохранённые часы недели', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/resources/b-nsk-krasny/schedule');
+  const hours = page.getByTestId('hours');
+  await hours.getByLabel('Пт, закрытие').fill('19:30');
+  const box = page.getByTestId('exceptions');
+  const d = new Date(Date.now() + 40 * 86_400_000).toISOString().slice(0, 10);
+  await box.getByLabel('Дата').fill(d);
+  await box.getByLabel('Вид').selectOption({ label: 'Технический день – закрыто' });
+  await box.getByLabel('Причина *').fill('Поздний ответ');
+  await box.getByRole('button', { name: 'Проверить затронутые брони' }).click();
+  const reread = page.waitForResponse((r) => r.request().method() === 'GET' && new URL(r.url()).pathname.endsWith('/hours'));
+  await page.getByTestId('exception-affected').getByRole('button', { name: /^Сохранить исключение/ }).click();
+  await expect(box.getByText('Сохранено.')).toBeVisible();
+  await expect(box.locator('.yc-history__item').filter({ hasText: 'Поздний ответ' })).toHaveCount(1);
+  await reread;
+  await pause(300); // эффект графика срабатывает после отрисовки
+  await expect(hours.getByLabel('Пт, закрытие')).toHaveValue('19:30');
+});
+
+test('Карточка брони: перечитывание после действия не стирает набранный и не сохранённый комментарий', async ({ page }) => {
+  await login(page, 'admin@yu.test');
+  await open(page, '/bookings/b0000000-0000-4000-8000-000000000001'); // идёт сейчас (crm-booking.spec STARTED)
+  await page.getByLabel('Служебный комментарий').fill('Попросил второй геймпад');
+  await page.getByRole('button', { name: 'Отметить приход' }).click();
+  await expect(page.getByTestId('booking-status')).toHaveText('Пришёл');
+  await expect(page.getByLabel('Служебный комментарий')).toHaveValue('Попросил второй геймпад');
+});

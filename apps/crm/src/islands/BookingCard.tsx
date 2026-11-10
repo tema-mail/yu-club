@@ -51,6 +51,7 @@ export default function BookingCard({ initial, reasons, canComment }: BookingCar
   const [reasonId, setReasonId] = useState('');
   const [text, setText] = useState('');
   const [comment, setComment] = useState(initial.internalComment ?? '');
+  const serverComment = useRef(initial.internalComment ?? ''); // последний комментарий с сервера – чтобы отличить несохранённый ввод
   const dialog = useRef<HTMLDialogElement>(null);
   const tz = b.timezone;
   const at = (iso: string) => fmtRange(iso, iso, tz).split('–')[0]; // «03.11, 12:00»
@@ -62,7 +63,10 @@ export default function BookingCard({ initial, reasons, canComment }: BookingCar
     try {
       const fresh = await bookingApi.card(b.id);
       setB(fresh);
-      setComment(fresh.internalComment ?? '');
+      // Перечитывание (после действия, по таймеру окна прихода) не стирает комментарий, который человек набирает и ещё не сохранил (§10 OTCHET)
+      const was = serverComment.current;
+      serverComment.current = fresh.internalComment ?? '';
+      setComment((c) => (c === was ? serverComment.current : c));
     } catch (e) {
       setNotice({ ok: false, text: `Не удалось обновить карточку: ${bookingError(e)}` });
     }
