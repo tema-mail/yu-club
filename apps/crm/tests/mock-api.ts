@@ -285,23 +285,22 @@ function registerNetwork(app: FastifyInstance, P: string) {
     return c;
   });
 
-  for (const op of ['archive', 'restore'] as const) {
-    app.post(`${P}/cities/:cityId/${op}`, async (req, reply) => {
-      const s = currentStaff(req)!;
-      if (!can(s, 'network.city.manage')) return forbidden(reply);
-      const c = cities.find((x) => x.id === (req.params as { cityId: string }).cityId);
-      if (!c) return notFound(reply);
-      const stale = staleVersion(reply, (req.body ?? {}) as Record<string, unknown>, c);
-      if (stale) return stale;
-      if (op === 'archive' && branches.some((b) => b.cityId === c.id && b.status !== 'archived')) {
-        return fail(reply, 409, 'CITY_HAS_ACTIVE_BRANCHES', 'В городе есть действующие филиалы – сначала отправьте их в архив');
-      }
-      const before = { ...c };
-      Object.assign(c, { status: op === 'archive' ? 'archived' : 'active', rowVersion: c.rowVersion + 1 });
-      writeAudit(s, 'city', c.id, op === 'archive' ? 'city.archived' : 'city.updated', before, c);
-      return c;
-    });
-  }
+  // Возврата из архива у города и филиала в API нет (network/routes.ts, ТЗ 02: архив окончательный) – только архив.
+  app.post(`${P}/cities/:cityId/archive`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    if (!can(s, 'network.city.manage')) return forbidden(reply);
+    const c = cities.find((x) => x.id === (req.params as { cityId: string }).cityId);
+    if (!c) return notFound(reply);
+    const stale = staleVersion(reply, (req.body ?? {}) as Record<string, unknown>, c);
+    if (stale) return stale;
+    if (branches.some((b) => b.cityId === c.id && b.status !== 'archived')) {
+      return fail(reply, 409, 'CITY_HAS_ACTIVE_BRANCHES', 'В городе есть действующие филиалы – сначала отправьте их в архив');
+    }
+    const before = { ...c };
+    Object.assign(c, { status: 'archived', rowVersion: c.rowVersion + 1 });
+    writeAudit(s, 'city', c.id, 'city.archived', before, c);
+    return c;
+  });
 
   // Курсорная пагинация K11; MOCK_PAGE_SIZE ужимает страницу, чтобы e2e проходили по курсору до конца.
   // Архивные филиалы – только по archived=true (рабочие списки и переключатель их не видят).
@@ -369,20 +368,18 @@ function registerNetwork(app: FastifyInstance, P: string) {
     return b;
   });
 
-  for (const op of ['archive', 'restore'] as const) {
-    app.post(`${P}/branches/:branchId/${op}`, async (req, reply) => {
-      const s = currentStaff(req)!;
-      const b = branches.find((x) => x.id === (req.params as { branchId: string }).branchId);
-      if (!b || !access(s).branchIds.includes(b.id)) return notFound(reply);
-      if (!can(s, 'network.branch.archive')) return forbidden(reply);
-      const stale = staleVersion(reply, (req.body ?? {}) as Record<string, unknown>, b);
-      if (stale) return stale;
-      const before = { ...b };
-      Object.assign(b, { status: op === 'archive' ? 'archived' : 'preparing', rowVersion: b.rowVersion + 1 });
-      writeAudit(s, 'branch', b.id, op === 'archive' ? 'branch.archived' : 'branch.status_changed', before, b);
-      return b;
-    });
-  }
+  app.post(`${P}/branches/:branchId/archive`, async (req, reply) => {
+    const s = currentStaff(req)!;
+    const b = branches.find((x) => x.id === (req.params as { branchId: string }).branchId);
+    if (!b || !access(s).branchIds.includes(b.id)) return notFound(reply);
+    if (!can(s, 'network.branch.archive')) return forbidden(reply);
+    const stale = staleVersion(reply, (req.body ?? {}) as Record<string, unknown>, b);
+    if (stale) return stale;
+    const before = { ...b };
+    Object.assign(b, { status: 'archived', rowVersion: b.rowVersion + 1 });
+    writeAudit(s, 'branch', b.id, 'branch.archived', before, b);
+    return b;
+  });
 
   // Хронология объекта (K2 objectTimeline): audit.view – в зоне, audit.view.own – только свои действия.
   // HTTP-маршрута в K11 нет – предложение контракта: GET /audit/timeline?objectType=&objectId=&cursor=&limit=.

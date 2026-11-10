@@ -100,8 +100,9 @@ export function buildMock() {
   });
 
   // Черновик для предпросмотра (K22 §11, S4-43): только с секретом и токеном; в тексте – атака, очистка на стороне сайта.
-  app.get('/api/internal/v1/content/preview/:token', async (request, reply) => {
-    const { token } = request.params as { token: string };
+  // Звёздочка, как в API (routes.internal.ts): токен длиннее предела параметра Fastify (100 символов).
+  app.get('/api/internal/v1/content/preview/*', async (request, reply) => {
+    const token = (request.params as { '*': string })['*'];
     if (request.headers['x-preview-secret'] !== process.env.MOCK_PREVIEW_SECRET || token !== 'draft-token') return reply.code(404).send({ error: { code: 'PREVIEW_TOKEN_INVALID', message: 'Не найдено' } });
     const media = 'aaaaaaaa-0000-4000-8000-000000000001';
     return {
