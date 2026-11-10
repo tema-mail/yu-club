@@ -16,6 +16,11 @@ const schema = z.object({
   // Пул отчётов K24 §9: роль yu_reports (только SELECT на rpt_*, default_transaction_read_only = on). Нет – маршруты отчётов не подключаются.
   REPORTS_DATABASE_URL: z.string().min(1).optional(),
   REPORTS_POOL_MAX: z.coerce.number().int().min(1).max(20).default(3),
+  // Предел одновременных отчётов на процесс (D5-10): экранных и экспортов; сверх – ожидание REPORTS_BUSY_WAIT_MS, затем 503 REPORT_BUSY.
+  // Экран 2 + экспорт 1 = REPORTS_POOL_MAX 3: ждущие отчёты соединений пула не держат.
+  REPORTS_SCREEN_MAX: z.coerce.number().int().min(1).max(20).default(2),
+  REPORTS_EXPORT_MAX: z.coerce.number().int().min(1).max(20).default(1),
+  REPORTS_BUSY_WAIT_MS: z.coerce.number().int().min(0).max(120_000).default(10_000),
   // Секрет HMAC токенов сессий (K12). Без него вход сотрудников выключен.
   SESSION_PEPPER: z.string().min(32, 'не короче 32 символов').optional(),
   // Секрет HMAC кода сертификата (K16 §3, S2-08): pin_hash в базе и замена кода в request_hash идемпотентности.

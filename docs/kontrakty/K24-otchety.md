@@ -14,6 +14,7 @@
 | `rpt_bookings` | `booking` | 0406 | бронь (текущая версия) | `booking_id, number, branch_id, city_id, client_id, client_kind ('profile'\|'guest'), resource_id, resource_type, room_id, start, end, minutes, status, created_at, source, price_kop, cancelled_at, cancelled_by ('client'\|'club'\|null), cancel_reason_code, versions_count, needs_decision` |
 | `rpt_booking_reschedules` | `booking` | 0406 | версия ≥ 2 | `booking_id, branch_id, version, rescheduled_at, old_start, new_start` |
 | `rpt_visits` | `booking` | 0406 | живое посещение | `visit_id, booking_id, branch_id, client_id, arrived_at, completed_at, planned_start, planned_end, planned_minutes, resource_type` |
+| `rpt_client_first_visits` | `booking` | 0448 (D5-11) | пара клиент × филиал с живым посещением | `client_id, branch_id, client_kind, first_visit_at` (min начала брони), `visits_count` – история для «впервые», «вернувшихся», «повторных», «не посещавших» (3.6) без перебора всех посещений |
 | `rpt_no_shows` | `booking` | 0406 | живая неявка | `no_show_id, booking_id, branch_id, client_id, planned_start, marked_at, reason_code` |
 | `rpt_unit_booked` | `booking` | 0406 | строка занятости активной брони по единице | `unit_id, resource_id, room_id, branch_id, booking_id, period, whole_room boolean` (бронь составной конфигурации «комната целиком» – `true`) |
 | `rpt_unit_blocks` | `booking` | 0406 | блокировка по единице | `unit_id, branch_id, block_id, period, reason_code, kind ('repair'\|'maintenance'\|'admin'\|'closure')` |
@@ -53,7 +54,7 @@ type Metric =
 
 **Детализация = итог** (14 §15, приёмка 17–18; TC-20): у каждого показателя есть `detail` – список исходных строк с теми же фильтрами и условием сегмента; агрегат и детализация строятся **одним** построителем условия (`framework.ts: where(spec)`), сумма строк детализации совпадает с агрегатом при тех же правилах округления (копейки целые, баллы – сотые; доли и проценты округляются только при показе, до 0,1). Тест-свойство S4-62: для случайных фильтров `Σ detail = aggregate`.
 
-**Актуальность** (14 §2.4, приёмка 20): отчёты считаются по живой базе в момент запроса – `computedAt` в ответе; при ошибке расчёта показывается ошибка, а не прошлый результат (кэша результатов на сервере нет – решение; если S4-131 покажет > 5 с – вводятся дневные агрегаты `report_daily_*` со своим `refreshedAt`, отдельной правкой контракта).
+**Актуальность** (14 §2.4, приёмка 20): отчёты считаются по живой базе в момент запроса – `computedAt` в ответе; при ошибке расчёта показывается ошибка, а не прошлый результат (кэша результатов на сервере нет – решение; если S4-131 покажет > 5 с – вводятся дневные агрегаты `report_daily_*` со своим `refreshedAt`, отдельной правкой контракта). **Отступление D5-12 (10.11):** сводный дашборд (№239) на экране – снимок на 60 с на процесс по ключу «сотрудник × роль, зона и зоны грантов × фильтр × период»; `computedAt` – момент расчёта снимка, экран его показывает, кнопки «обновить» нет; ошибка не кэшируется (при ошибке – ошибка); файл экспорта сводки и остальные отчёты считаются в момент запроса. Агрегаты вместо перебора истории вводят владельцы данных: 0418 (остаток кассы), 0448 (первое посещение клиента, D5-11).
 
 ## 3. Одиннадцать отчётов (14 §3)
 
@@ -254,6 +255,7 @@ queued|running → failed (error_code)
 | явная кнопка «Сформировать» (14 §15) | у отчётов 3.3 и 3.6 при периоде > 31 дня; остальные – по смене фильтра с отменой предыдущего запроса (`AbortController`; сервер по закрытию запроса делает `pg_cancel_backend` своей роли по `pid` соединения этого запроса, отдельным соединением мимо занятого пула – D4-22), старые и новые данные не смешиваются |
 | гонка с записью | снимок `REPEATABLE READ`; отчёт не берёт блокировок строк |
 | нагрузка экспорта | одна задача `reports:export` на сотрудника одновременно, всего ≤ 2 (`teamConcurrency`) |
+| одновременных отчётов на процесс (D5-10, 10.11) | экранных ≤ 2, экспортов ≤ 1 (`REPORTS_SCREEN_MAX`, `REPORTS_EXPORT_MAX`); сверх – ожидание до 10 с (`REPORTS_BUSY_WAIT_MS`), затем `503 REPORT_BUSY` с `Retry-After`; экспорт при `REPORT_BUSY` возвращается в очередь; поиск – свой предел §5. CRM – одна повторная попытка по `Retry-After` |
 
 ## 10. API CRM (дополняет K11)
 

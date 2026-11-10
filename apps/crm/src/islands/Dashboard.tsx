@@ -7,7 +7,7 @@ import {
   fmtAt, fmtDate, fmtDelta, fmtMetric, fmtPeriod, presets, reportError, reportHref, todayIn,
   type DashboardCard, type DashboardResult, type Metric, type Period, type ReconcileRun, type ReportResult,
 } from '../lib/reports.ts';
-import { getJson } from './ReportView.tsx';
+import { getJson, getReport } from './ReportView.tsx';
 import type { FailuresSummary } from '../lib/notifications.ts';
 
 export interface DashboardProps {
@@ -35,6 +35,7 @@ export default function Dashboard({ cityId, timezone, warnings }: DashboardProps
   const [data, setData] = useState<DashboardResult | null>(null);
   const [warns, setWarns] = useState<Warning[]>([]);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState(''); // ожидание автоповтора при 503 REPORT_BUSY (D5-10)
   const ctrl = useRef<AbortController | null>(null);
   const period: Period = all.find((p) => p.key === periodKey)!.period;
 
@@ -44,9 +45,10 @@ export default function Dashboard({ cityId, timezone, warnings }: DashboardProps
     ctrl.current = c;
     setData(null);
     setError('');
+    setNotice('');
     const q = new URLSearchParams({ from: period.from, to: period.to });
     if (cityId) q.set('cityId', cityId);
-    getJson<DashboardResult>(`/reports/dashboard?${q}`, c.signal).then(setData).catch((e: unknown) => {
+    getReport<DashboardResult>(`/reports/dashboard?${q}`, c.signal, (n) => !c.signal.aborted && setNotice(n)).then(setData).catch((e: unknown) => {
       if ((e as Error).name !== 'AbortError') setError(reportError(e));
     });
     if (warnings) void loadWarnings(q, timezone, c.signal).then((w) => { if (!c.signal.aborted) setWarns(w); });
@@ -72,7 +74,7 @@ export default function Dashboard({ cityId, timezone, warnings }: DashboardProps
         </ul>
       )}
       {error && <p class="yc-alert yc-alert--error" role="alert">{error}</p>}
-      {!data && !error && <p class="yc-empty" role="status">Считаем показатели…</p>}
+      {!data && !error && <p class="yc-empty" role="status">{notice || 'Считаем показатели…'}</p>}
       {data && (
         <>
           <p style="margin:0;font-size:var(--yc-fs-xs);color:var(--yc-muted)">

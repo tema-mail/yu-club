@@ -1609,6 +1609,27 @@ ALTER TABLE journal.reconcile_discrepancies DROP CONSTRAINT reconcile_discrepanc
 ```
 Решения S4-00: (1) K24 §12 расширяет только `check_name`, но расхождение загрузки ссылается на единицу занятости – без `occupancy_unit` в CHECK `object_type` его не записать; бронь вне расписания – `details.bookingId`, уровень – `details.level = 'warning'` (столбца уровня в 0211 нет). (2) `status = 'cancelled'` – отмена задачи автором (K11 №247); в K24 §7 такого статуса не было.
 
+### 0448 – client_first_visits (booking; D5-11, S4-131)
+
+История посещений для отчёта клиентов (K24 §3.6) без перебора всех посещений сети. Номер 0448, а не зарезервированный 0442: стенд обновляется поверх, на нём применены 0441–0446, 0447 – слияние клиентов, раннер отвергает миграцию младше применённых.
+
+```sql
+CREATE TABLE app.client_first_visits (                   -- строка на пару клиент × филиал с живым посещением
+  client_id uuid NOT NULL REFERENCES app.clients(id),
+  branch_id uuid NOT NULL REFERENCES app.branches(id),
+  first_visit_at timestamptz NOT NULL,                   -- min(lower(bookings.period)) живых посещений пары
+  visits_count integer NOT NULL CHECK (visits_count > 0),
+  PRIMARY KEY (client_id, branch_id)
+);
+CREATE INDEX client_first_visits_branch_idx ON app.client_first_visits (branch_id, first_visit_at);
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON app.client_first_visits FROM yu_app;   -- пишут только триггеры (SECURITY DEFINER)
+-- AFTER INSERT ON visits (на оператор, переходная таблица): прибавка пары, first = least(...)
+-- AFTER UPDATE OF status ON visits (на строку, статус сменился): пересчёт пары из живых посещений под FOR UPDATE строки агрегата
+-- AFTER UPDATE OF period ON bookings (на строку, сменилось начало, есть живое посещение): тот же пересчёт
+-- бэкфил – группировкой живых посещений; app.rpt_client_first_visits (+ client_kind) – SELECT для yu_reports
+```
+Сеть: первое посещение клиента = min по парам, всего посещений = сумма; область – пары её филиалов, «было до периода» = `first_visit_at` раньше начала суток периода филиала. Пара, а не строка на клиента: иначе «не посещавшие в периоде» в зоне Директора снова читали бы историю.
+
 ### 0411 – staff_feed (notifications; ждёт Э3 и Q-147)
 
 ```sql

@@ -2,6 +2,8 @@
 // сумма по филиалам (Q-83). Итог и детализация показателя строятся ОДНИМ построителем where(spec), поэтому Σ detail = aggregate
 // (TC-20). Чтение – только представления rpt_* под ролью yu_reports в READ ONLY-снимке REPEATABLE READ (withReportTx);
 // ПДн – через clients/index.ts основным пулом, маска на сервере (maskClient). Кэша результатов нет: computedAt – момент расчёта.
+// Одновременных отчётов на процесс – не больше предела полосы (экран 2, экспорт 1; D5-10): отчёты и брони делят процессор одной
+// базы, и без предела две сводки и два экспорта занимали четыре ядра (S4-131). Сверх – ожидание, затем REPORT_BUSY 503 с Retry-After.
 import pg from 'pg';
 import type { Db, Tx } from '../../core/audit.ts';
 import { AppError } from '../../core/errors.ts';
@@ -478,16 +480,107 @@ export interface ReportsPool {
   options?: { connectionString?: string | undefined };
 }
 
+/** Полоса отчёта: экран (дашборд, отчёты, детализация, календарь), экспорт (worker), поиск – свой предел в search.ts (K24 §5). */
+export type ReportLane = 'screen' | 'export' | 'search';
+
 export interface ReportTxOpts {
   timeoutMs?: number | undefined;
   /** Общий бюджет на весь отчёт. По умолчанию: экран – SCREEN_BUDGET_MS, длинные запросы (экспорт) – их timeoutMs. */
   budgetMs?: number | undefined;
-  /** Клиент закрыл запрос: идущий запрос отменяется в базе (K24 §9). */
+  /** Клиент закрыл запрос: идущий запрос отменяется в базе (K24 §9); ждущий места – выходит из очереди. */
   signal?: AbortSignal | undefined;
+  /** По умолчанию – экран. */
+  lane?: ReportLane | undefined;
 }
 
 const reportTimeout = () => new AppError('REPORT_TIMEOUT', 504, 'Отчёт не уложился – сузьте период или сформируйте файл');
 const reportCancelled = () => new AppError('REPORT_CANCELLED', 409, 'Запрос отчёта отменён');
+
+// ---- предел одновременных отчётов на процесс (D5-10)
+
+export interface ReportLimits {
+  /** Экранных отчётов одновременно. */
+  screen: number;
+  /** Экспортов одновременно. */
+  export: number;
+  /** Сколько ждать свободного места, затем REPORT_BUSY. */
+  waitMs: number;
+}
+
+/** Умолчания: экран 2 + экспорт 1 = пул yu_reports из 3 соединений; env – REPORTS_SCREEN_MAX, REPORTS_EXPORT_MAX, REPORTS_BUSY_WAIT_MS (config.ts). */
+export const DEFAULT_REPORT_LIMITS: ReportLimits = { screen: 2, export: 1, waitMs: 10_000 };
+const BUSY_RETRY_AFTER_SEC = 5;
+
+interface Waiter {
+  grant(): void;
+  drop(err: AppError): void;
+}
+interface Lane {
+  running: number;
+  queue: Waiter[];
+}
+interface Gate {
+  limits: ReportLimits;
+  lanes: Record<Exclude<ReportLane, 'search'>, Lane>;
+}
+
+/** Предел – на пул (один пул на процесс API, свой у worker); пул без настройки – умолчания. */
+const gates = new WeakMap<object, Gate>();
+
+function gateOf(pool: ReportsPool): Gate {
+  let g = gates.get(pool);
+  if (!g) {
+    g = { limits: DEFAULT_REPORT_LIMITS, lanes: { screen: { running: 0, queue: [] }, export: { running: 0, queue: [] } } };
+    gates.set(pool, g);
+  }
+  return g;
+}
+
+/** Действующие пределы пула: раннер экспорта не берёт задач больше, чем пустит полоса (иначе лишняя ждёт и уходит в очередь по кругу). */
+export function reportLimits(pool: ReportsPool): ReportLimits {
+  return gateOf(pool).limits;
+}
+
+export function setReportLimits(pool: ReportsPool, limits: Partial<ReportLimits>): void {
+  const g = gateOf(pool);
+  g.limits = { ...g.limits, ...limits };
+}
+
+const reportBusy = () => new AppError('REPORT_BUSY', 503, 'Отчёты заняты – повторите через несколько секунд', { retryAfterSec: BUSY_RETRY_AFTER_SEC });
+
+/** Место в полосе: свободно – сразу; нет – ждать до waitMs (закрытый запрос – REPORT_CANCELLED), не дождались – REPORT_BUSY. Возвращает освобождение. */
+async function acquire(pool: ReportsPool, lane: Exclude<ReportLane, 'search'>, signal: AbortSignal | undefined): Promise<() => void> {
+  const g = gateOf(pool);
+  const l = g.lanes[lane];
+  const release = () => {
+    const next = l.queue.shift();
+    if (next) next.grant(); // место переходит ждущему: running не меняется
+    else l.running -= 1;
+  };
+  if (l.running < g.limits[lane]) {
+    l.running += 1;
+    return release;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const w: Waiter = { grant: () => (cleanup(), resolve()), drop: (err) => (cleanup(), reject(err)) };
+    const leave = (err: AppError) => {
+      const i = l.queue.indexOf(w);
+      if (i >= 0) {
+        l.queue.splice(i, 1);
+        w.drop(err);
+      }
+    };
+    const timer = setTimeout(() => leave(reportBusy()), g.limits.waitMs);
+    const onAbort = () => leave(reportCancelled());
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    l.queue.push(w);
+  });
+  return release;
+}
 
 /** pg_cancel_backend своей роли (K24 §9). Ошибка отмены не важнее ответа: дальше сработает statement_timeout. */
 async function cancelBackend(pool: ReportsPool, pid: number): Promise<void> {
@@ -514,17 +607,30 @@ async function cancelBackend(pool: ReportsPool, pid: number): Promise<void> {
   }
 }
 
-/** Отдельный пул под ролью yu_reports: исчерпание не задевает основной (17 §6). */
-export function createReportsPool(url: string, max = 3): pg.Pool {
+/** Отдельный пул под ролью yu_reports: исчерпание не задевает основной (17 §6). limits – предел одновременных отчётов на этот пул (D5-10). */
+export function createReportsPool(url: string, max = 3, limits: Partial<ReportLimits> = {}): pg.Pool {
   const pool = new pg.Pool({ connectionString: url, options: '-c search_path=app', max, connectionTimeoutMillis: POOL_WAIT_MS });
   // без обработчика ошибка простаивающего соединения роняет процесс API (как в worker.ts)
   pool.on('error', (err) => console.error('пул yu_reports: ошибка простаивающего соединения', err.message));
+  setReportLimits(pool, limits);
   return pool;
 }
 
-/** Один снимок на отчёт: REPEATABLE READ READ ONLY, statement_timeout (экран 15 с, экспорт 300 с), work_mem 16 МБ, общий бюджет времени и отмена по закрытию запроса. */
+/** Один снимок на отчёт: место в полосе (D5-10), REPEATABLE READ READ ONLY, statement_timeout (экран 15 с, экспорт 300 с), work_mem 16 МБ,
+ *  общий бюджет времени и отмена по закрытию запроса. */
 export async function withReportTx<T>(pool: ReportsPool, fn: (tx: Tx) => Promise<T>, opts: ReportTxOpts = {}): Promise<T> {
   if (opts.signal?.aborted) throw reportCancelled();
+  const lane = opts.lane ?? 'screen';
+  const release = lane === 'search' ? () => {} : await acquire(pool, lane, opts.signal);
+  try {
+    return await reportSnapshot(pool, fn, opts);
+  } finally {
+    release();
+  }
+}
+
+async function reportSnapshot<T>(pool: ReportsPool, fn: (tx: Tx) => Promise<T>, opts: ReportTxOpts): Promise<T> {
+  if (opts.signal?.aborted) throw reportCancelled(); // закрыли, пока ждали места
   const c = await pool.connect().catch((err: unknown) => {
     if (err instanceof Error && /timeout/i.test(err.message)) throw reportTimeout();
     throw err;

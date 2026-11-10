@@ -11,6 +11,7 @@ import { registerEventMoney } from './mock-event-money.ts';
 import { giftIdsOfEvent, registerGifts, resetGifts } from './mock-gifts.ts';
 import { getFinanceOp, recordMoney, setLinkSource } from './mock-finance.ts';
 import { opsHoursOn, opsState } from './mock-ops.ts';
+import { maskPhone } from './mock-clients.ts'; // как clients/index.ts maskPhone в API – одна маска во всех моках
 
 export type Rec = Record<string, unknown>;
 type Role = 'owner' | 'director' | 'admin';
@@ -89,7 +90,6 @@ export const isMoment = (v: unknown): v is string => typeof v === 'string' && /T
 export const iso = (ms: number) => new Date(ms).toISOString();
 const round = (x: number) => Math.round(x);
 const CLIENT = (n: number) => `c0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-const mask = (p: string) => (p.length >= 4 ? `+7 *** ***-${p.slice(-4, -2)}-${p.slice(-2)}` : '***');
 const normalize = (raw: unknown): string => {
   const d = String(raw ?? '').replace(/\D/g, '');
   if (d.length === 11 && (d[0] === '7' || d[0] === '8')) return `+7${d.slice(1)}`;
@@ -128,7 +128,7 @@ export function summary(e: Ev) {
 }
 const dto = (d: EventsMockDeps, e: Ev) => ({
   id: e.id, number: e.number, typeId: e.typeId, typeCode: typeOf(e).code, title: e.title, branchId: e.branchId, timezone: branchOfEvent(d, e).timezone,
-  plannedStart: e.plannedStart, plannedEnd: e.plannedEnd, status: e.status, customer: { clientId: e.customerClientId, name: e.customerName, phoneMasked: mask(e.customerPhone) },
+  plannedStart: e.plannedStart, plannedEnd: e.plannedEnd, status: e.status, customer: { clientId: e.customerClientId, name: e.customerName, phoneMasked: maskPhone(e.customerPhone) },
   birthdayPerson: { clientId: e.birthdayClientId, name: e.birthdayName }, participantsCount: e.participants, responsibleStaffId: e.responsibleStaffId, wishes: e.wishes,
   packageId: e.packageId, party: e.party, source: e.source, cancel: e.cancel, rowVersion: e.rowVersion,
 });

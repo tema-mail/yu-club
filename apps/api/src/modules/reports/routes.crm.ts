@@ -9,7 +9,7 @@ import { AppError } from '../../core/errors.ts';
 import { roleAllows, type AccessContext } from '../../core/permissions.ts';
 import { resolveSettings } from '../../core/settings.ts';
 import { systemClock, type Clock } from '../../core/time.ts';
-import { dashboard } from './dashboard.ts';
+import { cachedDashboard, dashboard, dashboardKey } from './dashboard.ts';
 import { parsePeriod, withReportTx, type ReportEnv, type ReportParams, type ReportsPool } from './framework.ts';
 import { defined, HANDLERS, parseQuery, segmented, type Query, type ReportHandler } from './report-handlers.ts';
 import { globalSearch } from './search.ts';
@@ -53,10 +53,14 @@ export async function reportsCrmRoutes(app: FastifyInstance, deps: ReportsCrmDep
     return withReportTx(deps.reports, (tx) => fn({ tx, main: deps.pool, ctx: access, clock }, q), { signal: closedByClient(reply) });
   };
 
-  // №239
-  app.get('/reports/dashboard', (request, reply) =>
-    run(request, reply, async (env, q) => dashboard(env, await periodParams(deps, clock, q))),
-  );
+  // №239: снимок сводки на 60 с (D5-12) – повторный показ не занимает ни место отчёта, ни соединение
+  app.get('/reports/dashboard', async (request, reply) => {
+    const { access } = await deps.authenticate(request, reply);
+    const p = await periodParams(deps, clock, parseQuery(request.query));
+    return cachedDashboard(deps.reports, dashboardKey(access, p), () =>
+      withReportTx(deps.reports, (tx) => dashboard({ tx, main: deps.pool, ctx: access, clock }, p), { signal: closedByClient(reply) }),
+    );
+  });
 
   // №248: журнал ночной сверки (audit.view). Директор видит расхождения только своей зоны и без объектов сети.
   app.get('/reports/reconcile/runs', async (request, reply) => {
