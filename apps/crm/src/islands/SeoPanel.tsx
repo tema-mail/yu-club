@@ -26,6 +26,8 @@ export interface SeoPanelProps {
   titleSuffix?: string;
   /** Откуда берётся описание, если поле пусто: «анонс» у публикаций, «коротко» у игры. */
   descriptionFrom?: string;
+  /** Адрес задан картой сайта (страницы /about/, /rules/…, баннер главной «/»): поля адреса нет, только мета. */
+  fixedPath?: string;
 }
 export const SEO_LIMITS = { seoTitle: { warn: 70, max: 120 }, seoDescription: { warn: 160, max: 300 }, h1: { warn: 90, max: 90 } } as const;
 /** Ошибки длины до отправки: сервер отрежет то же (common.ts seoShape). */
@@ -48,10 +50,10 @@ export default function SeoPanel(props: SeoPanelProps) {
   const [check, setCheck] = useState<Check>(null);
   const [history, setHistory] = useState<Array<{ oldSlug: string; createdAt: string }>>([]);
   const set = (k: keyof SeoValue, val: string | boolean) => props.onChange({ ...v, [k]: val });
-  const path = v.slug ? (props.entityType === 'publication' ? publicationPath(props.parent as PublicationType, v.slug) : gamePath(props.parent as 'pc', v.slug)) : '';
+  const path = props.fixedPath ?? (v.slug ? (props.entityType === 'publication' ? publicationPath(props.parent as PublicationType, v.slug) : gamePath(props.parent as 'pc', v.slug)) : '');
 
   useEffect(() => {
-    if (!props.entityId) return;
+    if (!props.entityId || props.fixedPath) return;
     browserCall<{ items: Array<{ oldSlug: string; createdAt: string }> }>(`/seo/history?entityType=${props.entityType}&entityId=${props.entityId}`).then((r) => setHistory(r.items)).catch(() => setHistory([]));
   }, [props.entityId]);
 
@@ -81,7 +83,8 @@ export default function SeoPanel(props: SeoPanelProps) {
 
   return (
     <section class="yc-ct__box" aria-labelledby="seo-title-h" data-testid="seo-panel">
-      <h2 id="seo-title-h">Поиск и адрес</h2>
+      <h2 id="seo-title-h">{props.fixedPath ? 'Поиск' : 'Поиск и адрес'}</h2>
+      {!props.fixedPath && (<>
       <Field id="seo-slug" label="Адрес страницы" error={slugMsg} hint="Английские слова по смыслу: латиница, цифры, дефис.">
         <input {...aria('seo-slug', slugMsg, true)} class="yc-input" maxLength={200} value={v.slug} disabled={props.disabled} onInput={(e) => { set('slug', e.currentTarget.value.trim().toLowerCase()); setCheck(null); }} onBlur={() => void verify()} />
       </Field>
@@ -92,6 +95,7 @@ export default function SeoPanel(props: SeoPanelProps) {
       {check?.ok && check.code === 'SLUG_IN_HISTORY' && <p class="yc-ct__warn" role="status">Этот адрес раньше был у другого материала: ссылки, которые вели туда, начнут вести сюда.</p>}
       {movedFrom && <p class="yc-ct__warn" role="status" data-testid="seo-moved">Адрес опубликованного материала меняется: старый адрес /{movedFrom}/ будет вести на новый (301) после публикации.</p>}
       {history.length > 0 && <p class="yc-ct__muted">Прежние адреса (ведут сюда): {history.map((h) => h.oldSlug).join(', ')}</p>}
+      </>)}
       <Field id="seo-seoTitle" label="Title" error={props.errors.seoTitle} hint={`Пусто – «Заголовок${suffix}».`}>
         <input {...aria('seo-seoTitle', props.errors.seoTitle, true)} class="yc-input" value={v.seoTitle} disabled={props.disabled} onInput={(e) => set('seoTitle', e.currentTarget.value)} />
       </Field>

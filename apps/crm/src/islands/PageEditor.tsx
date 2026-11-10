@@ -6,7 +6,9 @@ import { useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { aria, clean, ConflictNotice, DraftActions, Field, fieldErrors, STATUS_BADGE, STATUS_LABEL, type AllowedAction, type ContentStatus, type DraftDto } from '../lib/content.tsx';
 import { RATIO_HINT } from './MediaLibrary.tsx';
+import { pagePath } from '../../../../packages/contracts/src/paths.ts';
 import MediaPicker from './MediaPicker.tsx';
+import SeoPanel, { seoLengthErrors, type SeoValue } from './SeoPanel.tsx';
 
 export type PageKind = 'page' | 'room' | 'branch';
 export interface PageEditorProps {
@@ -23,6 +25,10 @@ export interface PageEditorProps {
   canEdit: boolean;
   canPublish: boolean;
 }
+
+/** Мета страницы по ключу (K23 §4): адрес фиксирован картой сайта, слага нет. */
+const seoOf = (d: Record<string, unknown>): SeoValue => ({ slug: '', seoTitle: String(d.seoTitle ?? ''), seoDescription: String(d.seoDescription ?? ''), h1: String(d.h1 ?? '') });
+const seoFields = (v: SeoValue) => ({ seoTitle: v.seoTitle, seoDescription: v.seoDescription, h1: v.h1 });
 
 export function pageActions(status: ContentStatus, canEdit: boolean, canPublish: boolean): AllowedAction[] {
   const out: AllowedAction[] = [];
@@ -48,6 +54,7 @@ const formOf = (d: Record<string, unknown>) => {
 export default function PageEditor(props: PageEditorProps) {
   const [dto, setDto] = useState<DraftDto>(props.initial);
   const [form, setForm] = useState(formOf(dto.draft));
+  const [seo, setSeo] = useState<SeoValue>(seoOf(dto.draft));
   const [gallery, setGallery] = useState<string[]>(Array.isArray(dto.draft.gallery) ? (dto.draft.gallery as string[]) : []);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -64,7 +71,7 @@ export default function PageEditor(props: PageEditorProps) {
 
   const draftBody = (): Record<string, unknown> => {
     const keep = { ...dto.draft };
-    if (props.kind === 'page') return clean({ ...keep, title: form.title, body: form.body, documentVersion: props.legal ? form.documentVersion : undefined });
+    if (props.kind === 'page') return clean({ ...keep, title: form.title, body: form.body, documentVersion: props.legal ? form.documentVersion : undefined, ...seoFields(seo) });
     const features = form.features.split('\n').map((x) => x.trim()).filter(Boolean);
     const common = { ...keep, description: form.description, features, gallery: gallery.filter(Boolean) };
     if (props.kind === 'room') return clean({ ...common, rentFormatsText: form.rentFormatsText });
@@ -76,6 +83,7 @@ export default function PageEditor(props: PageEditorProps) {
     const fresh = await browserCall<DraftDto>(`${props.base}/draft${props.query}`);
     setDto(fresh);
     setForm(formOf(fresh.draft));
+    setSeo(seoOf(fresh.draft));
     setGallery(Array.isArray(fresh.draft.gallery) ? (fresh.draft.gallery as string[]) : []);
     setConflict(false);
     setErrors({});
@@ -90,6 +98,8 @@ export default function PageEditor(props: PageEditorProps) {
   const save = async () => {
     setErrors({});
     setMsg(null);
+    const long = props.kind === 'page' ? seoLengthErrors(seo) : {};
+    if (Object.keys(long).length) return setErrors({ ...long, _: 'Проверьте отмеченные поля.' });
     if (props.kind === 'branch' && form.postalCode && !/^\d{6}$/.test(form.postalCode.trim())) return setErrors({ postal: 'Индекс – 6 цифр' });
     setBusy(true);
     try {
@@ -158,6 +168,10 @@ export default function PageEditor(props: PageEditorProps) {
             </fieldset>
           )}
         </fieldset>
+        {props.kind === 'page' && (
+          <SeoPanel entityType="publication" parent="" entityId={dto.id} liveSlug={null} published={dto.status === 'published'} title={form.title} lead={form.body.replace(/[*_#>`[\]()]/g, '').slice(0, 160)}
+            descriptionFrom="начало текста" fixedPath={pagePath(props.docKey as Parameters<typeof pagePath>[0])} value={seo} onChange={(v) => { setSeo(v); setDirty(true); }} errors={errors} disabled={readOnly || busy} />
+        )}
         <p class={`yc-alert ${msg ? (msg.ok ? 'yc-alert--ok' : 'yc-alert--error') : ''}`} role="status" aria-live="polite">{msg?.text ?? ''}</p>
       </form>
       <DraftActions

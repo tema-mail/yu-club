@@ -41,6 +41,24 @@ test('игра: SEO-панель – адрес с проверкой занят
   await expect(page.getByTestId('seo-panel').getByLabel('Адрес страницы')).toHaveValue('cs2');
 });
 
+test('страница «О клубе»: SEO без поля адреса – адрес задан картой сайта; title, description, H1 сохраняются в черновик', async ({ page }) => {
+  await login(page, 'owner@yu.test');
+  await open(page, '/content/pages/about');
+  const seo = page.getByTestId('seo-panel');
+  await expect(seo.getByLabel('Адрес страницы')).toHaveCount(0);
+  await expect(seo.getByTestId('seo-snippet')).toContainText('yu-club.ru/about/');
+  await page.getByLabel('Заголовок').fill('О клубе');
+  await page.getByLabel('Текст', { exact: true }).fill('Сеть компьютерных клубов.');
+  await seo.getByLabel('Title').fill('О сети Ю-Клуб – компьютерные клубы');
+  await seo.getByLabel('Description').fill('Кто мы и как устроены клубы.');
+  await seo.getByLabel('H1').fill('О нашем клубе');
+  await page.getByRole('button', { name: 'Сохранить черновик' }).click();
+  await saved(page);
+  await page.reload();
+  await expect(page.getByTestId('seo-panel').getByLabel('H1')).toHaveValue('О нашем клубе');
+  await expect(page.getByTestId('seo-panel').getByLabel('Title')).toHaveValue('О сети Ю-Клуб – компьютерные клубы');
+});
+
 test('игра: Директор видит SEO-панель только для чтения', async ({ page }) => {
   await login(page, 'director@yu.test');
   await open(page, `/content/games/${CONTENT_IDS.gameCs}`);
