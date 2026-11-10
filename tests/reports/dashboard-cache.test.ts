@@ -33,6 +33,21 @@ describe('снимок сводки (D5-12)', () => {
     for (const x of differ) expect(x).not.toBe(k);
   });
 
+  it('сужение зоны гранта (b3,b4 → b3) – новый ключ: сводка без отозванного филиала сразу, а не через 60 с', async () => {
+    const grant = (branches: string[], cities: string[] = []) => ctx({ grants: new Map([['reports.ops.view', { cityIds: new Set(cities), branchIds: new Set(branches) }]]) });
+    const wide = dashboardKey(grant(['b3', 'b4']), P);
+    expect(dashboardKey(grant(['b3']), P)).not.toBe(wide);
+    expect(dashboardKey(grant(['b4', 'b3']), P)).toBe(wide); // порядок зоны – не важен
+    expect(dashboardKey(grant(['b3', 'b4'], ['c1']), P)).not.toBe(wide);
+    const owner = {};
+    const seen: string[][] = [];
+    const compute = (branches: string[]) => async () => (seen.push(branches), { ...result(seen.length), cards: branches.map((b) => ({ key: b, title: b, metric: { state: 'no_data' as const }, link: { report: 'bookings', metric: 'created' } })) });
+    await cachedDashboard(owner, wide, compute(['b3', 'b4']), 1_000);
+    const narrowed = await cachedDashboard(owner, dashboardKey(grant(['b3']), P), compute(['b3']), 1_001);
+    expect(narrowed.cards.map((c) => c.key)).toEqual(['b3']);
+    expect(seen).toEqual([['b3', 'b4'], ['b3']]);
+  });
+
   it('в пределах 60 с – тот же снимок; позже – расчёт заново; ошибка не остаётся в кэше', async () => {
     const owner = {};
     let n = 0;

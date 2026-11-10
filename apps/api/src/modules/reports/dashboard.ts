@@ -87,9 +87,12 @@ const dashboardCaches = new WeakMap<object, Map<string, { until: number; value: 
 
 const sorted = (xs: Iterable<string>): string[] => [...xs].sort();
 
-/** Всё, от чего зависят карточки: сотрудник, роль, зона, делегированные права на сегодня и фильтр с периодом. */
+/** Всё, от чего зависят карточки: сотрудник, роль, зона, делегированные права на сегодня и фильтр с периодом. Каждая зона (Set) –
+ *  отсортированным массивом: JSON.stringify(Set) = {}, и сужение зоны гранта не меняло бы ключ – отозванный филиал виден до 60 с. */
 export function dashboardKey(ctx: AccessContext, p: ReportParams): string {
-  const grants = ctx.grants ? [...ctx.grants.entries()].sort(([a], [b]) => a.localeCompare(b)) : [];
+  const grants = ctx.grants
+    ? [...ctx.grants.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([action, z]) => [action, sorted(z.cityIds), sorted(z.branchIds)])
+    : [];
   return JSON.stringify([
     ctx.actor.staffId, ctx.role, ctx.network, sorted(ctx.cityIds), sorted(ctx.branchIds), grants,
     p.period.from, p.period.to, p.cityId ?? null, sorted(p.branchIds ?? []),
