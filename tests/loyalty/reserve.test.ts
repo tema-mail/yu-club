@@ -212,6 +212,44 @@ describe('резерв брони', () => {
     }
   });
 
+  // ревизия 10.11: платёж прошёл раньше, чем worker обработал booking.confirmed (порядок outbox не гарантирован, K15:13)
+  async function paidBeforeEvent(method: PaymentMethod): Promise<string> {
+    const c = await clientWith(5000);
+    const s = slot(ids.b1pc2!, 30);
+    const h = await hold(c, [s]);
+    await reserve(c, h.id);
+    const id = (await runOccupancyCommand(pool, (tx) => confirmHold(tx, c, h.id, clock))).bookings[0]!.id;
+    const saved = now;
+    now = new Date(s.start.getTime() - 60_000);
+    try {
+      const rv = Number((await one<{ row_version: number }>('SELECT row_version FROM app.bookings WHERE id = $1', [id])).row_version);
+      await runOccupancyCommand(pool, (tx) => markArrived(tx, id, { ctx: owner, rowVersion: rv }, staffMeta(), clock));
+      if (method === 'points') {
+        await inTx(async (tx) => { // списание как в chargePoints: резерва брони ещё нет – закрывать нечего
+          await openAccount(tx, c, now);
+          const p = await postPoints(tx, c, { amount: -3000, type: 'loyalty.manual', basis: 'тест: оплата баллами', branchId: null, occurredAt: now }, randomUUID(), SYSTEM_AUTHOR);
+          await debitBatches(tx, { clientId: c, entryId: p.entryId, amount: 3000, balanceBefore: p.balanceBefore, kind: 'manual' });
+        });
+      }
+      live.set(id, [method]);
+      await deliver(RESERVE_HANDLERS.bookingConfirmed, await eventOf('booking.confirmed', 'bookingId', id));
+      expect((await reserves(c)).map((x) => `${x.status}:${x.amount_centi}`)).toEqual(['converted:3000']);
+    } finally {
+      now = saved;
+    }
+    return c;
+  }
+
+  it('оплачено баллами до события booking.confirmed: резерва брони нет, доступно = баланс', async () => {
+    const c = await paidBeforeEvent('points');
+    expect(await bal(c)).toMatchObject({ balanceCenti: 2000, reservedCenti: 0, availableCenti: 2000 });
+  });
+
+  it('оплачено наличными до события booking.confirmed: резерва брони нет, доступно = баланс', async () => {
+    const c = await paidBeforeEvent('cash');
+    expect(await bal(c)).toMatchObject({ balanceCenti: 5000, reservedCenti: 0, availableCenti: 5000 });
+  });
+
   it('отмена брони → booking_cancelled; неявка → no_show без списания; оплата наличными → paid_other', async () => {
     const c = await clientWith(30_000);
     const ids3: string[] = [];

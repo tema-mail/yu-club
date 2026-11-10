@@ -117,7 +117,7 @@ export async function releaseHoldReserve(tx: Tx, input: { clientId: string; hold
 /** booking.confirmed: резервы подтверждённых удержаний клиента с неизменной подписью → converted, на каждую живую
  *  бронь – резерв 'booking', если доступных баллов хватает на все брони удержания; иначе – released('insufficient'),
  *  при смене позиций до подтверждения – released('hold_changed'). Резервы брони никогда не превышают доступный баланс. */
-export async function convertReserves(tx: Tx, clientId: string, deps: { bookings: ReserveBookings; clock: Clock }): Promise<number> {
+export async function convertReserves(tx: Tx, clientId: string, deps: { bookings: ReserveBookings; payments?: PaymentLookup; clock: Clock }): Promise<number> {
   const now = deps.clock.now();
   const acc = await openAccount(tx, clientId, now);
   const holds = await tx.query<{ id: string; hold_id: string }>(
@@ -128,8 +128,15 @@ export async function convertReserves(tx: Tx, clientId: string, deps: { bookings
   );
   let made = 0;
   for (const res of holds.rows) {
-    // живая бронь – и уже с приходом: worker мог обработать событие после «Пришёл» (стенд 10.11), резерв не теряется
-    const bookings = (await deps.bookings.holdBookings(tx, res.hold_id)).filter((b) => LIVE_BOOKING.has(b.status) && b.minutes > 0);
+    // живая бронь – и уже с приходом: worker мог обработать событие после «Пришёл» (стенд 10.11), резерв не теряется.
+    // Оплаченной брони резерв не нужен: порядок outbox не гарантирован (K15:13) – платёж (баллами или нет) мог пройти
+    // раньше этого события, и его payment.recorded уже не найдёт резерв, чтобы закрыть
+    const bookings: Array<{ bookingId: string; minutes: number }> = [];
+    for (const b of await deps.bookings.holdBookings(tx, res.hold_id)) {
+      if (!LIVE_BOOKING.has(b.status) || b.minutes <= 0) continue;
+      if (b.status !== 'confirmed' && deps.payments && (await deps.payments.livePayment(tx, b.bookingId))) continue;
+      bookings.push(b);
+    }
     const need = bookings.reduce((s, b) => s + b.minutes * 100, 0);
     const available = Math.max(0, Math.max(0, acc.balance) - (await reservedCenti(tx, acc.clientId, now, { holdId: res.hold_id })));
     if (available < need) {
