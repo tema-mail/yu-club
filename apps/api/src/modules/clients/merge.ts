@@ -28,12 +28,18 @@ export interface MergeContext {
  *  других людей; reassign – перенос from → to в транзакции слияния, возвращает итоги числами для журнала. */
 export interface ClientMerger {
   name: string;
+  /** Замки модуля ДО строк клиентов – по общему порядку системы (счёт баллов → удержание/бронь → клиент, K17, hold.ts),
+   *  иначе команда, уже держащая свою строку и ждущая клиента, дала бы взаимоблокировку. Порядок вызова – PRELOCK_ORDER. */
+  prelock?(tx: Tx, from: string, to: string, now: Date): Promise<void>;
   preview(db: Db, clientId: string, now: Date): Promise<unknown>;
   reassign(tx: Tx, from: string, to: string, ctx: MergeContext): Promise<Record<string, number>>;
 }
 
 /** Порядок вызова: брони и время клиента раньше всего остального (резервы баллов едут за бронями). */
 export const REQUIRED_CLIENT_MERGERS = ['booking', 'finance', 'loyalty', 'certificates', 'events', 'notifications'] as const;
+
+/** Порядок предварительных замков: счета баллов раньше броней (K17 «счёт – до строки брони»), брони раньше клиента. */
+export const PRELOCK_ORDER = ['loyalty', 'booking'] as const;
 
 const mergers = new Map<string, ClientMerger>();
 
@@ -208,6 +214,16 @@ export async function mergeClients(
     throw new AppError('VALIDATION_FAILED', 400, 'Неверное основание объединения', { field: 'reason', allowed: MERGE_REASONS });
   }
   const list = orderedMergers();
+  // До замков: обе карточки есть (иначе модули завели бы счета несуществующему клиенту) и не закрыты.
+  const pre = await tx.query<Row>(`SELECT ${ROW_COLS} FROM app.clients WHERE id = ANY($1::uuid[])`, [[input.primaryId, input.secondaryId]]);
+  if (pre.rows.length !== 2) throw notFound();
+  await assertVisible(tx, ctx, pre.rows.map((r) => r.id), links);
+  for (const r of pre.rows) assertMergeable(r);
+  const now = clock.now();
+  const from = input.secondaryId.toLowerCase();
+  const to = input.primaryId.toLowerCase();
+  const prelockers = [...PRELOCK_ORDER.map((n) => mergers.get(n)!), ...list.filter((m) => !(PRELOCK_ORDER as readonly string[]).includes(m.name))];
+  for (const m of prelockers) if (m.prelock) await m.prelock(tx, from, to, now);
   const { p, s } = await lockPair(tx, input.primaryId, input.secondaryId);
   await assertVisible(tx, ctx, [p.id, s.id], links);
   assertMergeable(s);
@@ -215,7 +231,6 @@ export async function mergeClients(
   const blocker = primaryBlocker(p, s);
   if (blocker) throw new AppError('CLIENT_NOT_MERGEABLE', 409, 'Основной должна быть зарегистрированная карточка', { clientId: p.id, reason: blocker });
 
-  const now = clock.now();
   const mctx: MergeContext = { mergeId: randomUUID(), staffId: ctx.actor.staffId, reason: input.reason, now };
   const results: MergeResult['results'] = {};
   for (const m of list) results[m.name] = await m.reassign(tx, s.id, p.id, mctx);
