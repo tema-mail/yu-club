@@ -219,7 +219,24 @@ describe('очередь', () => {
     const a2 = await queued(directorId, 'q2');
     const b1 = await queued(otherId, 'q3');
     setReportLimits(fx.reports, { export: 2 }); // предел K24 §9 «всего 2» проверяется на процессе, которому полоса D5-10 разрешает 2
-    const runner = startExportRunner(run, { start: false });
+    // Задачи держатся на записи файла, пока раннер не набрал две: иначе первая задача директора успевала закончиться до второго claim,
+    // и тот же проход брал его вторую задачу (законно: running у сотрудника уже нет) – тест падал через раз.
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    let writing = 0;
+    const held: ExportRunDeps = {
+      ...run,
+      store: {
+        ...store,
+        writeAtomic: async (...a: Parameters<FileStore['writeAtomic']>) => {
+          writing += 1;
+          if (writing === 2) open(); // обе задачи взяты – цикл раннера уже вышел
+          await gate;
+          return store.writeAtomic(...a);
+        },
+      },
+    };
+    const runner = startExportRunner(held, { start: false });
     await runner.tick(); // по одной на сотрудника: вторая задача того же сотрудника ждёт
     expect((await status(b1)).status).toBe('ready');
     expect([(await status(a1)).status, (await status(a2)).status].sort()).toEqual(['queued', 'ready']);
@@ -266,14 +283,17 @@ describe('очередь', () => {
 
   it('полоса «экспорт ≤ 1» занята (D5-10): задача возвращается в очередь без ошибки и идёт следующим проходом', async () => {
     setReportLimits(fx.reports, { export: 1, waitMs: 100 });
-    const holder = withReportTx(fx.reports, (tx) => tx.query('SELECT pg_sleep(0.8)'), { timeoutMs: 5_000, lane: 'export' });
-    await new Promise((r) => setTimeout(r, 50));
+    // место держится до явного release, а не pg_sleep(0.8): под нагрузкой проход раннера мог не уложиться в 0,8 с и получить место
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const holder = withReportTx(fx.reports, () => hold, { timeoutMs: 5_000, lane: 'export' });
     const id = await queued(otherId, 'busy');
     const runner = startExportRunner(run, { start: false });
     await runner.tick();
     expect(await status(id)).toEqual({ status: 'queued', error_code: null });
     expect((await db.client.query<{ s: Date | null }>(`SELECT started_at AS s FROM app.report_exports WHERE id = $1`, [id])).rows[0]!.s).toBeNull();
     expect(await auditCount('export.failed', id)).toBe(0);
+    release();
     await holder;
     setReportLimits(fx.reports, DEFAULT_REPORT_LIMITS);
     await runner.tick();
