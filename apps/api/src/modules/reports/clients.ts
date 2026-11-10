@@ -41,8 +41,13 @@ interface StatRow {
   had_prior: boolean;
 }
 
-/** Один проход по истории: строка на клиента (perBranch – на пару клиент × филиал посещения). История h – вся сеть. */
-async function statRows(tx: Tx, windows: readonly BranchWindow[], perBranch: boolean): Promise<StatRow[]> {
+/** Один проход по истории: строка на клиента (perBranch – на пару клиент × филиал посещения). История h – вся сеть.
+ *  Один раз на снимок (oncePerSnapshot): детализация листает страницы, итог экрана читает те же строки. */
+function statRows(tx: Tx, windows: readonly BranchWindow[], perBranch: boolean): Promise<StatRow[]> {
+  return oncePerSnapshot(tx, `clients.stats:${perBranch}:${JSON.stringify(arr(windows))}`, () => readStatRows(tx, windows, perBranch));
+}
+
+async function readStatRows(tx: Tx, windows: readonly BranchWindow[], perBranch: boolean): Promise<StatRow[]> {
   const [ids, starts, ends] = arr(windows);
   const r = await tx.query<StatRow>(
     `WITH w AS (SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS x(branch_id, s, e)),
@@ -239,6 +244,19 @@ export async function clientsReport(env: ReportEnv, p: ReportParams): Promise<Cl
 
 // ---- детализация
 
+/** Посещения в периоде на клиента. Один раз на снимок (oncePerSnapshot): страницы детализации не перечитывают строки. */
+function visitsPerClientRows(tx: Tx, windows: readonly BranchWindow[]): Promise<Array<{ client_id: string; branch_id: string; n: string }>> {
+  const [ids, starts, ends] = arr(windows);
+  return oncePerSnapshot(tx, `clients.visitsPerClient:${JSON.stringify([ids, starts, ends])}`, async () => (
+    await tx.query<{ client_id: string; branch_id: string; n: string }>(
+      `SELECT t.client_id, min(t.branch_id::text) AS branch_id, count(*) AS n FROM ${VISITS} t
+       JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON w.branch_id = t.branch_id AND t.planned_start >= w.s AND t.planned_start < w.e
+       WHERE t.client_kind = 'profile' GROUP BY t.client_id ORDER BY t.client_id`,
+      [ids, starts, ends],
+    )
+  ).rows);
+}
+
 export interface ClientDetailRow {
   clientId: string;
   client: MaskedClient | null;
@@ -292,15 +310,7 @@ export async function clientsDetail(
   }
   if (metric === 'visitsPerClient') {
     if (windows.length === 0) return { rows: [], total: noData, nextCursor: null };
-    const [ids, starts, ends] = arr(windows);
-    const rows = (
-      await env.tx.query<{ client_id: string; branch_id: string; n: string }>(
-        `SELECT t.client_id, min(t.branch_id::text) AS branch_id, count(*) AS n FROM ${VISITS} t
-         JOIN unnest($1::uuid[], $2::timestamptz[], $3::timestamptz[]) AS w(branch_id, s, e) ON w.branch_id = t.branch_id AND t.planned_start >= w.s AND t.planned_start < w.e
-         WHERE t.client_kind = 'profile' GROUP BY t.client_id ORDER BY t.client_id`,
-        [ids, starts, ends],
-      )
-    ).rows;
+    const rows = await visitsPerClientRows(env.tx, windows);
     const values = rows.map((r) => Number(r.n));
     const { slice, nextCursor } = pageByKey(rows, (r) => r.client_id, opts);
     return {
