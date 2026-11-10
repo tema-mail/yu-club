@@ -118,6 +118,7 @@ export function assertCanClient(db: Db | Tx, ctx: AccessContext, action: Action,
 | `client.update` (телефон, статус) | ✓ | ✓ | | client | 03 §12, решение |
 | `client.merge` | ✓ | | | network | R-14: «объединение клиентов – Владелец» |
 | `client.export` / `export.pd` | ✓ | | | network | 04 §5 «по отдельным правам»; N-06: Директору экспорт ПДн нельзя |
+| `client.anonymize` (обезличивание, K9, K11 №249) | ✓ | | | network | 03 §13, Q-91; решение D4-60: необратимо, как экспорт ПДн – только Владелец; не делегируется |
 | `tariff.manage` | ✓ | | | branch | 17 §7.3, решение |
 | `settings.network.manage` | ✓ | | | network | 04 §4.3 |
 | `settings.branch.manage` | ✓ | ✓ | | branch | 04 §4.2 «операционные настройки, если разрешено» |
