@@ -32,6 +32,9 @@ test('Владелец: карточки по группам, деньги ра�
   const warn = desk(page).getByTestId('desk-warnings');
   await expect(warn.getByRole('link', { name: 'Ночная сверка 11.11.2026 нашла расхождения: 3' })).toHaveAttribute('href', '/reports/reconcile');
   await expect(warn.getByRole('link', { name: /Брони ждут решения: \d+/ })).toBeVisible();
+  // K21 §9, K24 §4: ошибки критичных уведомлений – GET /notifications/failures/summary {critical, periodFrom, periodTo}; ведёт в журнал отправок с ошибкой за период
+  await expect(warn.getByRole('link', { name: 'Критичные уведомления не дошли: 2 (10.11.2026 – 11.11.2026)' }))
+    .toHaveAttribute('href', '/notifications?tab=rows&status=error&from=2026-11-10&to=2026-11-11');
 
   const created = desk(page).getByTestId('desk-card-created');
   await expect(created).toHaveAttribute('href', '/reports/bookings?from=2026-11-09&to=2026-11-15&metric=created');
