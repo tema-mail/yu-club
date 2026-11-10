@@ -2,7 +2,7 @@
 // себе – нельзя (блока на своей карточке нет). Действия предлагаются только из `delegable` ответа списка – закрытый список DELEGABLE сервера;
 // зона – только из назначений получателя (город целиком или филиал), `network.branch.create` – только на город. Задним числом не выдаётся:
 // дата начала – с сегодняшнего дня. Решает всё равно сервер: GRANT_ACTION_NOT_DELEGABLE, GRANT_SCOPE_INVALID, GRANT_ALREADY_ACTIVE.
-// `client.merge` – слияние дублей (K9 «Слияние», K11 №251–252): делегированное право действует на клиентов с бронями в зоне права.
+// `client.merge` – слияние дублей (K9 «Слияние», K11 №253–254): делегированное право действует на клиентов с бронями в зоне права.
 import { useRef, useState } from 'preact/hooks';
 import { ApiError, browserCall } from '../lib/api.ts';
 import { fmtDate } from '../lib/shifts.ts';
