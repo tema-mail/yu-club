@@ -2,7 +2,7 @@
 // Повторяет контракты: K12 (вход, сессия, пароль), K11 №1 GET /me, K11 №18 сеть (список и карточка филиала),
 // K1 (роли и зоны: объект вне зоны – 404 с телом, как у несуществующего), ADR 0002 (тело ошибки).
 // S0-15: города и филиалы (создание, правка с rowVersion, архив), хронология аудита (K2), справочники –
-// точно по apps/api/src/modules/dictionaries/routes.ts. S1-25: поиск и карточка клиента – по clients/routes.crm.ts.
+// точно по apps/api/src/modules/dictionaries/routes.ts. S1-25: поиск и карточка клиента – mock-clients.ts (по clients/routes.crm.ts).
 // S0-15c: сотрудники – в mock-staff.ts (по staff/routes.staff.ts). S1-24: ресурсы, график, блокировки, тарифы – mock-ops.ts.
 // S1-22/23: календарь и брони – mock-booking.ts (по booking/routes.crm.ts). S2-60/61: касса – mock-finance.ts (по finance/routes.crm.ts).
 // S2-67/68: сертификаты – mock-certificates.ts (по certificates/routes.crm.ts). S2-65/66: баллы – mock-loyalty.ts (по loyalty/routes.crm.ts).
@@ -14,6 +14,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { randomBytes, randomUUID } from 'node:crypto';
 import { registerBooking, resetBooking } from './mock-booking.ts';
 import { registerCertificates, resetCertificates } from './mock-certificates.ts';
+import { clientInZone, clientsState, maskPhone, normalizePhone, registerClients, resetClients, seedClientAudit, type MockClient } from './mock-clients.ts';
 import { CONTENT_ACTIONS, registerContent } from './mock-content.ts';
 import { EQUIPMENT_ACTIONS, registerEquipment, resetEquipment } from './mock-equipment.ts';
 import { EVENT_ACTIONS, registerEvents, resetEvents } from './mock-events.ts';
@@ -153,7 +154,7 @@ interface AuditEvent {
   actor: { id: string; name: string; role: Role } | null; before: Record<string, unknown>; after: Record<string, unknown>; reason: string | null;
 }
 let audit: AuditEvent[] = [];
-// Засев аудита клиентов (seedClientAudit) – в buildMock и /__test/reset: данные клиентов объявлены ниже.
+// Засев аудита клиентов (seedClientAudit из mock-clients.ts) – в buildMock и /__test/reset.
 
 function diff(before: Record<string, unknown>, after: Record<string, unknown>) {
   const b: Record<string, unknown> = {};
@@ -398,8 +399,8 @@ function registerNetwork(app: FastifyInstance, P: string) {
     const opsBranch = opsObjectBranch(q.objectType ?? '', q.objectId ?? '');
     if (opsBranch !== undefined && (!opsBranch || !access(s).network)) return notFound(reply);
     if (q.objectType === 'client') {
-      const c = clients.find((x) => x.id === q.objectId);
-      if (!c || !clientInZone(s, c)) return notFound(reply);
+      const c = clientsState().find((x) => x.id === q.objectId);
+      if (!c || !clientInZone(access(s), c)) return notFound(reply);
     }
     const all = audit
       .filter((e) => e.objectType === q.objectType && e.objectId === q.objectId && (can(s, 'audit.view') || e.actor?.id === s.id))
@@ -535,118 +536,6 @@ function registerDictionaries(app: FastifyInstance, P: string) {
   }
 }
 
-// ---- клиенты: точно по apps/api/src/modules/clients/routes.crm.ts (K11 №15–16, S1-11)
-// Связь клиент – филиал (брони, S1-07) в моке – поле links: так не-Владелец видит клиентов своей зоны.
-// Пока бронирования нет, настоящий бэкенд связей не даёт (noBranchLinks) – находит только по точному телефону.
-
-const CLIENT_STATUSES = ['guest', 'active', 'restricted', 'blocked', 'deletion_requested', 'anonymized'] as const;
-type ClientStatus = (typeof CLIENT_STATUSES)[number];
-interface MockClient {
-  id: string; status: ClientStatus; firstName: string | null; lastName: string | null; phoneE164: string | null;
-  email: string | null; birthDate: string | null; statusReason: string | null; statusUntil: string | null;
-  registrationSource: string | null; phoneVerifiedAt: string | null; registeredAt: string | null; createdAt: string;
-  lastLoginAt: string | null; rowVersion: number; links: string[];
-}
-
-const clientId = (n: number) => `c0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
-function seedClients(): MockClient[] {
-  const base = { email: null, birthDate: null, statusReason: null, statusUntil: null, registrationSource: null, lastLoginAt: null, rowVersion: 1 };
-  return [
-    { ...base, id: clientId(1), status: 'active', firstName: 'Ольга', lastName: 'Смирнова', phoneE164: '+79131234567', email: 'olga@yu.test',
-      birthDate: '1995-04-12', registrationSource: 'site', phoneVerifiedAt: '2026-10-01T05:00:00.000Z', registeredAt: '2026-10-01T05:00:00.000Z',
-      createdAt: '2026-09-28T09:30:00.000Z', lastLoginAt: '2026-10-30T12:15:00.000Z', rowVersion: 3, links: ['b-nsk-krasny'] },
-    { ...base, id: clientId(2), status: 'guest', firstName: 'Иван', lastName: 'Петров', phoneE164: '+79139876543',
-      phoneVerifiedAt: null, registeredAt: null, createdAt: '2026-10-15T11:00:00.000Z', links: ['b-nsk-krasny'] },
-    { ...base, id: clientId(3), status: 'blocked', firstName: 'Мария', lastName: 'Кузнецова', phoneE164: '+79230001122', email: 'maria@yu.test',
-      statusReason: 'Нарушение правил клуба', registrationSource: 'site', phoneVerifiedAt: '2026-08-01T05:00:00.000Z',
-      registeredAt: '2026-08-01T05:00:00.000Z', createdAt: '2026-08-01T05:00:00.000Z', links: ['b-tsk-lenina'] },
-    { ...base, id: clientId(4), status: 'anonymized', firstName: null, lastName: null, phoneE164: null,
-      phoneVerifiedAt: null, registeredAt: null, createdAt: '2026-01-10T05:00:00.000Z', links: ['b-nsk-krasny'] },
-  ];
-}
-let clients = seedClients();
-
-// Аудит клиента пишется уже маскированным (K2 redact: PD_KEYS) – так его отдаёт и хронология.
-function seedClientAudit(): AuditEvent[] {
-  const sys = null as unknown as AuditEvent['actor'];
-  return [
-    { id: randomUUID(), at: '2026-09-28T09:30:00.000Z', objectType: 'client', objectId: clientId(1), action: 'client.created', actor: sys,
-      before: {}, after: { status: 'guest', phoneE164: '+7******4567', firstName: 'О***', lastName: 'С***' }, reason: null },
-    { id: randomUUID(), at: '2026-10-01T05:00:00.000Z', objectType: 'client', objectId: clientId(1), action: 'client.status_changed', actor: sys,
-      before: { status: 'guest' }, after: { status: 'active' }, reason: null },
-  ];
-}
-
-const maskPhone = (e164: string | null) =>
-  !e164 ? '' : e164.startsWith('+7') && e164.length === 12 ? `+7 ••• ••• ••-${e164.slice(-2)}` : `${e164.slice(0, 2)} ••• ${e164.slice(-2)}`;
-const clientRef = (c: MockClient) => ({ id: c.id, status: c.status, firstName: c.firstName, lastName: c.lastName, phoneMasked: maskPhone(c.phoneE164) });
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Упрощённый normalizePhone (clients/index.ts): РФ по умолчанию, неверный – null. */
-function normalizePhone(t: string): string | null {
-  const raw = t.trim().replace(/[\s().-]/g, '');
-  const digits = raw.startsWith('+') ? raw.slice(1) : raw;
-  if (!/^\d+$/.test(digits)) return null;
-  if (raw.startsWith('+')) return /^[1-9]\d{7,14}$/.test(digits) && (!digits.startsWith('7') || digits.length === 11) ? `+${digits}` : null;
-  if (digits.length === 11 && (digits[0] === '8' || digits[0] === '7')) return `+7${digits.slice(1)}`;
-  return digits.length === 10 ? `+7${digits}` : null;
-}
-
-/** Клиент в зоне сотрудника: Владелец – все, остальные – по связи с филиалами зоны. */
-const clientInZone = (s: MockStaff, c: MockClient) => access(s).network || c.links.some((b) => access(s).branchIds.includes(b));
-
-function registerClients(app: FastifyInstance, P: string) {
-  app.get(`${P}/clients`, async (req, reply) => {
-    const s = currentStaff(req)!;
-    if (!can(s, 'client.view.basic')) return fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав', { action: 'client.view.basic' });
-    const q = req.query as { q?: string; branchId?: string; status?: string; cursor?: string; limit?: string };
-    const t = (q.q ?? '').trim();
-    const status = (q.status ?? '').split(',').filter((x) => x !== '');
-    const limit = q.limit === undefined ? 50 : Number(q.limit);
-    if ((q.q ?? '').length > 100 || status.some((x) => !(CLIENT_STATUSES as readonly string[]).includes(x)) || !Number.isInteger(limit) || limit < 1 || limit > 100) {
-      return invalid(reply, [{ path: 'query', message: 'Неверные данные запроса' }]);
-    }
-    let match: (c: MockClient) => boolean = () => true;
-    let byPhone = false;
-    if (UUID.test(t)) match = (c) => c.id === t.toLowerCase();
-    else if (/^[+\d\s().-]+$/.test(t)) {
-      const digits = t.replace(/\D/g, '');
-      if (digits.length < 4) return fail(reply, 400, 'VALIDATION_FAILED', 'Для поиска по телефону нужно от 4 цифр', { field: 'q' });
-      const e164 = digits.length === 4 ? null : normalizePhone(t);
-      byPhone = e164 !== null;
-      match = digits.length === 4 ? (c) => (c.phoneE164 ?? '').endsWith(digits) : e164 ? (c) => c.phoneE164 === e164 : (c) => (c.phoneE164 ?? '').includes(digits);
-    } else if (t.includes('@')) match = (c) => c.email === t.toLowerCase();
-    else if (t) {
-      const words = t.toLowerCase().split(/\s+/).slice(0, 3);
-      match = (c) => words.every((w) => (c.lastName ?? '').toLowerCase().startsWith(w) || (c.firstName ?? '').toLowerCase().startsWith(w));
-    }
-    const zone = access(s);
-    if (q.branchId && !zone.branchIds.includes(q.branchId)) return notFound(reply);
-    const key = (c: MockClient) => `${(c.lastName ?? '').toLowerCase()}\u0000${(c.firstName ?? '').toLowerCase()}\u0000${c.id}`;
-    const all = clients
-      .filter((c) => match(c) && (byPhone || clientInZone(s, c)) && (!q.branchId || c.links.includes(q.branchId)))
-      .filter((c) => (status.length ? status.includes(c.status) : c.status !== 'anonymized'))
-      .sort((a, b) => (key(a) < key(b) ? -1 : 1))
-      .map((c) => ({ ...clientRef(c), lastVisitAt: null, lastBranchId: null }));
-    return page(all, { ...q, limit: String(limit) });
-  });
-
-  app.get(`${P}/clients/:clientId`, async (req, reply) => {
-    const s = currentStaff(req)!;
-    if (!can(s, 'client.view.basic')) return fail(reply, 403, 'FORBIDDEN', 'Недостаточно прав', { action: 'client.view.basic' });
-    const c = clients.find((x) => x.id === (req.params as { clientId: string }).clientId);
-    if (!c || !clientInZone(s, c)) return notFound(reply);
-    return {
-      ...clientRef(c), isGuest: c.status === 'guest', phoneVerified: c.phoneVerifiedAt !== null, registeredAt: c.registeredAt,
-      full: can(s, 'client.view.full')
-        ? { phoneE164: c.phoneE164, email: c.email, birthDate: c.birthDate, statusReason: c.statusReason, statusUntil: c.statusUntil,
-            registrationSource: c.registrationSource, createdAt: c.createdAt, lastLoginAt: c.lastLoginAt }
-        : null,
-      rowVersion: c.rowVersion,
-    };
-  });
-}
-
 export function buildMock() {
   const app = Fastify({ logger: false });
   const P = '/api/crm/v1';
@@ -706,7 +595,7 @@ export function buildMock() {
     cities = seedCities();
     branches = seedBranches(cities);
     dict = seedDictionaries();
-    clients = seedClients();
+    resetClients();
     audit = seedClientAudit();
     resetStaff();
     resetOps();
@@ -725,18 +614,18 @@ export function buildMock() {
 
   registerNetwork(app, P);
   registerDictionaries(app, P);
-  registerClients(app, P);
+  registerClients(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), fail, page });
   registerOps(app, P, {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
     reasons: () => dict.reasons, resourceTypes: () => dict['resource-types'], fail, audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),
   });
   registerBooking(app, P, {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches,
-    reasons: () => dict.reasons as Array<DictRow & { id: string }>, clients: () => clients, normalizePhone, maskPhone, fail,
+    reasons: () => dict.reasons as Array<DictRow & { id: string }>, clients: clientsState, normalizePhone, maskPhone, fail,
     guest: (phoneE164, firstName, lastName) => {
       const c: MockClient = { id: randomUUID(), status: 'guest', firstName, lastName, phoneE164, email: null, birthDate: null, statusReason: null, statusUntil: null,
         registrationSource: 'crm', phoneVerifiedAt: null, registeredAt: null, createdAt: new Date().toISOString(), lastLoginAt: null, rowVersion: 1, links: [] };
-      clients.push(c);
+      clientsState().push(c);
       return c;
     },
   });
@@ -745,13 +634,13 @@ export function buildMock() {
     fail, audit: (x, ...rest) => writeAudit(x as MockStaff, ...rest),
   });
   resetCertificates(branches);
-  registerCertificates(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients });
+  registerCertificates(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: clientsState });
   resetFinance(branches);
   registerFinance(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches });
   resetLoyalty();
   registerLoyalty(app, P, {
     current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a),
-    clientVisible: (x, id) => clients.some((c) => c.id === id && clientInZone(x as MockStaff, c)), branchExists: (id) => branches.some((b) => b.id === id),
+    clientVisible: (x, id) => clientsState().some((c) => c.id === id && clientInZone(access(x as MockStaff), c)), branchExists: (id) => branches.some((b) => b.id === id),
   });
   // Служебная сессия Владельца: провайдеры оплаты читают настройки и баллы без прав сотрудника (как server.ts).
   const serviceToken = randomBytes(24).toString('hex');
@@ -784,9 +673,9 @@ export function buildMock() {
     endSessions: (id) => { for (const [t, sid] of sessions) if (sid === id) sessions.delete(t); },
   });
   resetEvents(branches);
-  registerEvents(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients });
-  registerNotifications(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients, grant: (r, a) => { ACTIONS[r] = [...new Set([...ACTIONS[r], ...a])]; } });
-  registerReports(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: () => clients, staff: () => staff, grant: (r, a) => { ACTIONS[r] = [...new Set([...ACTIONS[r], ...a])]; } });
+  registerEvents(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: clientsState });
+  registerNotifications(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: clientsState, grant: (r, a) => { ACTIONS[r] = [...new Set([...ACTIONS[r], ...a])]; } });
+  registerReports(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches, clients: clientsState, staff: () => staff, grant: (r, a) => { ACTIONS[r] = [...new Set([...ACTIONS[r], ...a])]; } });
   for (const r of ['owner', 'director', 'admin'] as const) ACTIONS[r] = [...new Set([...ACTIONS[r], ...CONTENT_ACTIONS[r]])]; // S4-84…89: контент – mock-content.ts (сброс – его хук)
   registerContent(app, P, { current: (req) => currentStaff(req)!, zone: (x) => access(x as MockStaff), can: (x, a) => can(x as MockStaff, a), branches: () => branches });
   return app;
