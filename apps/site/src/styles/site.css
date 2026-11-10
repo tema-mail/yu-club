@@ -298,7 +298,7 @@ a { color: inherit; }
   border-radius: var(--yu-r-s);
   background: var(--yu-warn-soft);
   color: var(--yu-text);
-  font-size: var(--yu-fs-s);
+  font-size: var(--yu-fs-m); /* плашка – текст для чтения, не подпись: 16 px (S4-133) */
   max-width: var(--yu-measure);
 }
 

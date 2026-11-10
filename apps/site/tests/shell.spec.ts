@@ -84,6 +84,23 @@ test('фавикон: ссылки в head и файлы отдаются с н�
   }
 });
 
+test('390 px: основной текст абзацев – не меньше 16 px; мелкие подписи (дата, охват) не в счёт', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const path of ['/', '/giveaways/', '/promotions/', '/news/', '/news/tomsk-opening/', '/tournaments/']) {
+    await page.goto(path);
+    const small = await page.locator('main p, main li > p').evaluateAll((ps) =>
+      ps
+        .filter((p) => !p.matches('.pub-card__date, .pub-card__scope, .pub__meta') && (p.textContent ?? '').trim().length > 20)
+        .filter((p) => parseFloat(getComputedStyle(p).fontSize) < 15.9)
+        .map((p) => `${getComputedStyle(p).fontSize} ${p.className}: ${(p.textContent ?? '').trim().slice(0, 40)}`),
+    );
+    expect(small, path).toEqual([]);
+  }
+  // Карточки публикаций на главной и в списках действительно проверены, а не пропущены.
+  await page.goto('/news/');
+  await expect(page.locator('.pub-card__lead').first()).toHaveCSS('font-size', /^1[6-9]/);
+});
+
 test('404: код 404 и ссылка на контакты', async ({ page }) => {
   const res = await page.goto('/nope/missing/');
   expect(res?.status()).toBe(404);
