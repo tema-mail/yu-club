@@ -1,4 +1,4 @@
-// Мок слияния дублей (K11 №251–252) строго по apps/api/src/modules/clients/routes.crm.ts и clients/merge.ts (K9 «Слияние»,
+// Мок слияния дублей (K11 №253–254) строго по apps/api/src/modules/clients/routes.crm.ts и clients/merge.ts (K9 «Слияние»,
 // решения D5-01…D5-08): право client.merge (Владелец по сети; делегирование в моке не моделируется – прав сверх роли у мока нет).
 // Предпросмотр: обе карточки, данные шести модулей (состав полей – как у обработчиков booking, finance, loyalty, certificates,
 // events, notifications), конфликты, заполнение пустого, статус после, canMerge/blocker. Слияние: Idempotency-Key обязателен,

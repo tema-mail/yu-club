@@ -1,5 +1,5 @@
 // K11 №15–16: поиск и карточка клиента в CRM (/api/crm/v1/clients); №249 – обезличивание (K9, только Владелец);
-// №251–252 – предпросмотр и слияние дублей (K9 «Слияние», право client.merge: Владелец по сети или делегированное право
+// №253–254 – предпросмотр и слияние дублей (K9 «Слияние», право client.merge: Владелец по сети или делегированное право
 // в его зоне – обе карточки в зоне права). Объединённая карточка – 200 с фактом объединения без ПДн. Тонкий слой (ADR 0002 п.7):
 // Zod-разбор → функции модуля (index.ts) → AppError в ответ. Вход сотрудника (authenticate) передаёт server.ts.
 // Телефон в списке всегда маскирован (03 §14); полный – только в карточке с правом client.view.full.
@@ -86,7 +86,7 @@ export async function clientCrmRoutes(app: FastifyInstance, deps: ClientsCrmDeps
     return { ...access, network: false, cityIds: new Set(), branchIds: new Set(zone!.branchIds), grants: new Map() };
   };
 
-  // №251: обе карточки, данные модулей, конфликтующие поля (03 §11.2) – до подтверждения.
+  // №253: обе карточки, данные модулей, конфликтующие поля (03 §11.2) – до подтверждения.
   app.get('/:clientId/merge-preview', async (request, reply) => {
     const { access, meta } = await deps.authenticate(request, reply);
     const { clientId } = parse(cardParams, request.params);
@@ -95,7 +95,7 @@ export async function clientCrmRoutes(app: FastifyInstance, deps: ClientsCrmDeps
     return mergePreview(deps.pool, ctx, { primaryId: clientId, secondaryId: q.with }, links, deps.clock ?? systemClock);
   });
 
-  // №252: одна транзакция; Idempotency-Key обязателен – повтор с тем же ключом отдаёт тот же ответ без второго слияния.
+  // №254: одна транзакция; Idempotency-Key обязателен – повтор с тем же ключом отдаёт тот же ответ без второго слияния.
   app.post('/:clientId/merge', async (request, reply) => {
     const { access, meta } = await deps.authenticate(request, reply);
     const { clientId } = parse(cardParams, request.params);
