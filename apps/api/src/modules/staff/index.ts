@@ -30,3 +30,14 @@ export async function searchStaffByName(
   );
   return r.rows.map((x) => ({ id: x.id, firstName: x.first_name, lastName: x.last_name, role: x.role }));
 }
+
+/** Сотрудники по ID для строк отчётов (K24 §6): имя коллеги видит роль со staff.view – проверяет вызывающий. Архивные тоже: прошлая смена хранит имя. */
+export async function getStaffRefs(db: Db | Tx, ids: string[]): Promise<Map<string, StaffRef>> {
+  const uniq = [...new Set(ids)];
+  if (uniq.length === 0) return new Map();
+  const r = await db.query<{ id: string; first_name: string; last_name: string; role: string }>(`SELECT id, first_name, last_name, role FROM app.staff WHERE id = ANY($1::uuid[])`, [uniq]);
+  return new Map(r.rows.map((x) => [x.id, { id: x.id, firstName: x.first_name, lastName: x.last_name, role: x.role }]));
+}
+
+/** Имя для строки отчёта: «Имя Фамилия», пустое – null. */
+export const staffDisplayName = (ref: StaffRef): string | null => `${ref.firstName.trim()} ${ref.lastName.trim()}`.trim() || null;

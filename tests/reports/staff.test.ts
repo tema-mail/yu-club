@@ -117,7 +117,16 @@ describe('смены', () => {
     const unclosed = await fx.run(fx.owner(), (env) => staffDetail(env, { period: OCT, branchIds: [a] }, 'unclosedShifts'));
     expect(unclosed.rows.map((x) => [x.kind, x.status])).toEqual([['shift', 'planned']]);
     const empty = await fx.run(fx.owner(), (env) => staffDetail(env, { period: OCT, branchIds: [a] }, 'emptyIntervals', { limit: 3 }));
-    expect(empty.rows.every((x) => x.kind === 'gap' && x.staffId === null)).toBe(true);
+    expect(empty.rows.every((x) => x.kind === 'gap' && x.staffId === null && x.staffName === null)).toBe(true);
+  });
+
+  it('имя сотрудника в строках – через провайдер staff, роли с staff.view (Владелец, Директор зоны); пустой интервал – без имени', async () => {
+    const worked = await fx.run(fx.owner(), (env) => staffDetail(env, { period: OCT }, 'workedShifts'));
+    expect(worked.rows.length).toBeGreaterThan(0);
+    expect(worked.rows.every((x) => x.staffId === s1 && x.staffName === 'И Ф')).toBe(true);
+    const dir = await fx.run(fx.director([a]), (env) => staffDetail(env, { period: OCT }, 'accrued'));
+    expect(dir.rows.length).toBeGreaterThan(0);
+    expect(dir.rows.every((x) => x.kind === 'entry' && x.staffName === 'И Ф')).toBe(true);
   });
 
   it('прогноз – по плановым сменам и ставке на дату, не в учёте', async () => {
