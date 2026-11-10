@@ -112,11 +112,31 @@ function registerModuleHooks(): void {
 /** K1: назначение на город раскрывается в филиалы, дата назначения – по зоне цели (modules/network). */
 export const networkLookup: NetworkLookup = { branchesOfCities: branchIdsOfCities, timezonesOf };
 
-/** Лог запроса как у Fastify по умолчанию, но без токена отписки: ?t= №205 – действующий ключ отказа от рекламы (K21 §4, K2 правило 4). */
+/** Параметры запроса, чьи значения в лог не пишутся (ПДн и секреты в строке поиска CRM и ЛК): остаётся имя и `*`. */
+const MASKED_QUERY = new Set(['q', 'phone', 'email', 'name', 'number', 'pin', 'code', 't', 'token']);
+
+/** Лог запроса как у Fastify по умолчанию, но без токена отписки (?t= №205 – действующий ключ отказа от рекламы, K21 §4, K2 правило 4)
+ *  и без значений поисковых и контактных параметров (tests/api/request-hygiene.test.ts). */
+function logUrl(raw: string): string {
+  const at = raw.indexOf('?');
+  if (at < 0) return raw;
+  const path = raw.slice(0, at);
+  if (path.startsWith('/api/public/v1/unsubscribe')) return path;
+  const query = raw
+    .slice(at + 1)
+    .split('&')
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      const name = eq < 0 ? pair : pair.slice(0, eq);
+      return MASKED_QUERY.has(name.toLowerCase()) ? `${name}=*` : pair;
+    })
+    .join('&');
+  return `${path}?${query}`;
+}
+
 const logSerializers = {
   req(req: FastifyRequest) {
-    const url = req.url.startsWith('/api/public/v1/unsubscribe') ? req.url.split('?')[0]! : req.url;
-    return { method: req.method, url, host: req.host, remoteAddress: req.ip, remotePort: req.socket?.remotePort };
+    return { method: req.method, url: logUrl(req.url), host: req.host, remoteAddress: req.ip, remotePort: req.socket?.remotePort };
   },
 };
 
@@ -143,6 +163,10 @@ export function buildServer(config: Config, deps: ServerDeps = {}): FastifyInsta
     request.log.error(err);
     return reply.code(500).send({ error: { code: 'INTERNAL', message: 'Внутренняя ошибка', requestId: request.id } });
   });
+
+  // Неизвестный маршрут – то же тело, что NOT_FOUND объекта: без «Route GET:/… not found» фреймворка (перебор маршрутов снаружи
+  // не отличает «нет маршрута» от «нет объекта»).
+  app.setNotFoundHandler((request, reply) => reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Не найдено', requestId: request.id } }));
 
   app.get('/health', async () => ({ status: 'ok', version: config.GIT_SHA }));
 
