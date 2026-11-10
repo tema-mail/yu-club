@@ -42,6 +42,11 @@ jobs:
           for i in $(seq 1 30); do docker exec ${{ job.services.postgres.id }} pg_isready -U postgres && break; sleep 1; done
           docker exec ${{ job.services.postgres.id }} psql -U postgres -Atc "SHOW max_connections" | grep -qx 300
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Новая миграция старше всех в базе слияния – иначе раннер отвергнет её на стенде (0440 → 0447 → 0450).
+      - name: порядок миграций
+        run: scripts/check-migration-order.sh ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD^1' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
