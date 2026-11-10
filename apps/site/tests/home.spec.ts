@@ -9,7 +9,10 @@ test('блоки CMS: H1 из баннера, о клубе, направлен�
   await page.goto('/');
   await expect(page.locator('h1')).toHaveCount(1);
   await expect(page.locator('h1')).toHaveText('Играй с друзьями в Ю-Клуб');
-  await expect(page.getByTestId('home-hero').getByRole('link', { name: 'Записаться онлайн' })).toHaveAttribute('href', '/schedule/');
+  // Главное действие баннера – «Выбрать время» (19 §4.2, D4-66); CTA из CMS в то же расписание второй кнопкой не дублируется.
+  const hero = page.getByTestId('home-hero');
+  await expect(hero.getByRole('link', { name: 'Выбрать время' })).toHaveAttribute('href', '/schedule/');
+  await expect(hero.getByRole('link', { name: 'Записаться онлайн' })).toHaveCount(0);
   await expect(page.getByTestId('home-about').locator('strong')).toHaveText('каждый день');
   await expect(page.getByTestId('home-directions').getByRole('link', { name: 'VR' })).toHaveAttribute('href', '/games/vr/');
   await expect(page.getByTestId('home-strip').getByRole('link')).toHaveAttribute('href', '/promotions/happy-hours/');
