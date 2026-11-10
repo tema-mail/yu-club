@@ -69,4 +69,12 @@ describe('записи без филиала у края периода – су
     expect(val(await dayDetail('loyalty', 'adjusted', '2026-11-04'))).toBe(70);
     expect(val((await card('loyalty', PREV)).metrics.adjusted)).toBe(30); // запись 31.10 – только в прошлом периоде
   });
+
+  it('уведомления: то же для строк без филиала', async () => {
+    const r = await card('comms', PERIOD);
+    expect(r.series.points.map((x) => Number(x.serviceCreated))).toEqual([0, 0, 0, 2]);
+    expect(val(r.metrics.serviceCreated)).toBe(2);
+    expect(r.metrics.serviceCreated).toMatchObject({ prev: 1 });
+    expect(val(await dayDetail('comms', 'serviceCreated', '2026-11-04'))).toBe(2);
+  });
 });

@@ -10,6 +10,7 @@ import {
   computeMetrics, DAY_RULE, detailPage, loadMaskedClients, localAt, metricDef, noData, okMetric, pageLimit, prevPeriod, resolveBranches, unavailable, windowsOf,
   type BranchWindow, type MaskedClient, type Metric, type MetricDef, type Period, type ReportEnv, type ReportParams,
 } from './framework.ts';
+import { noBranchWindow } from './series.ts';
 
 export const COMMS_ACTION = 'reports.comms.view';
 
@@ -58,10 +59,10 @@ export function commsDefs(): Record<string, MetricDef> {
   return defs;
 }
 
-/** Окна уведомлений: строка без филиала – только в сетевой области без фильтра. */
+/** Окна уведомлений: строка без филиала – только в сетевой области без фильтра, сутки UTC периода (series.ts noBranchWindow). */
 function noticeWindows(env: ReportEnv, p: ReportParams, branches: readonly BranchInfo[], period: Period): BranchWindow[] {
   const w = windowsOf(branches, period);
-  if (networkWide(env, p) && w.length > 0) w.push({ branchId: null, ...span(w) });
+  if (networkWide(env, p) && w.length > 0) w.push(noBranchWindow(period));
   return w;
 }
 
