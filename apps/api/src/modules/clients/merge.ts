@@ -53,6 +53,31 @@ export function clearClientMergers(): void {
   mergers.clear();
 }
 
+/** Действующая карточка: по merged_into_id до конца цепочки (основную тоже могли объединить позже). Нет такой – сам id.
+ *  Для модулей, у которых записи до слияния остались по id второй (журналы только на вставку, K3): коррекция – на действующую. */
+export async function effectiveClientId(db: Db, clientId: string): Promise<string> {
+  const r = await db.query<{ id: string }>(
+    `WITH RECURSIVE ch(id, next, depth) AS (
+       SELECT id, merged_into_id, 0 FROM app.clients WHERE id = $1::uuid
+       UNION ALL SELECT c.id, c.merged_into_id, ch.depth + 1 FROM app.clients c JOIN ch ON c.id = ch.next WHERE ch.depth < 32)
+     SELECT id FROM ch WHERE next IS NULL LIMIT 1`,
+    [clientId],
+  );
+  return r.rows[0]?.id ?? clientId.toLowerCase();
+}
+
+/** Сама карточка и все, что объединены в неё (цепочкой): записи до слияния ищутся по любому из этих id. */
+export async function clientIdsMergedInto(db: Db, clientId: string): Promise<string[]> {
+  const r = await db.query<{ id: string }>(
+    `WITH RECURSIVE ch(id, depth) AS (
+       SELECT $1::uuid, 0
+       UNION ALL SELECT c.id, ch.depth + 1 FROM app.clients c JOIN ch ON c.merged_into_id = ch.id WHERE ch.depth < 32)
+     SELECT id FROM ch`,
+    [clientId],
+  );
+  return r.rows.map((x) => x.id);
+}
+
 function orderedMergers(): ClientMerger[] {
   const missing = REQUIRED_CLIENT_MERGERS.filter((n) => !mergers.has(n));
   if (missing.length > 0) throw new Error(`mergeClients: не зарегистрирован обработчик модуля ${missing.join(', ')}`);
